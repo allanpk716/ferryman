@@ -25,6 +25,9 @@ def now_s() -> float:
     return datetime.now(timezone.utc).timestamp()
 
 
+SUBAGENT_EVENT_LEAK_S = 3600     # 子代理计数泄漏防护：1h 无新事件视为已结束（Stop 丢失场景）
+
+
 @dataclass
 class SessionState:
     agent: str                       # "cc" | "codex"
@@ -46,6 +49,39 @@ class Ledger:
         self._by_key: dict[tuple[str, str], SessionState] = {}
         self._by_path: dict[str, SessionState] = {}
         self.last_transcript_write: float = 0.0   # 健康监控用（DESIGN §4）
+        # T32 子代理计数：(agent, session_id) → (运行数, 最后事件时刻)。仅内存——
+        # daemon 重启丢计数由 T31 悬空检测兜底；Stop 丢失由泄漏防护兜底。
+        self._subagents: dict[tuple[str, str], tuple[int, float]] = {}
+
+    def subagent_event(self, agent: str, session_id: str, event: str) -> int:
+        """SubagentStart/Stop 事件计数（嵌套各计一次，探针实测同属主会话）。返回当前运行数。"""
+        with self._lock:
+            key = (agent, session_id)
+            count, _last = self._subagents.get(key, (0, 0.0))
+            count = count + 1 if event == "start" else max(0, count - 1)
+            if count == 0:
+                self._subagents.pop(key, None)
+            else:
+                self._subagents[key] = (count, now_s())
+            return count
+
+    def subagent_active(self, agent: str, session_id: str) -> bool:
+        """该会话是否有子代理运行中（含泄漏防护：事件超 1h 未更新 → 视为 0 并清理）。"""
+        with self._lock:
+            key = (agent, session_id)
+            ent = self._subagents.get(key)
+            if ent is None:
+                return False
+            count, last = ent
+            if now_s() - last > SUBAGENT_EVENT_LEAK_S:
+                del self._subagents[key]
+                return False
+            return count > 0
+
+    def subagents_active_count(self) -> int:
+        with self._lock:
+            cutoff = now_s() - SUBAGENT_EVENT_LEAK_S
+            return sum(c for c, last in self._subagents.values() if last > cutoff)
 
     def touch(self, agent: str, session_id: str, transcript_path: str,
               *, mtime: float, size: int, cwd: str = "", title: str | None = None,

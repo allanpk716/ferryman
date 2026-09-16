@@ -52,6 +52,8 @@ class Watcher(threading.Thread):
         if not self.cc_dir.exists():
             return
         for p in self.cc_dir.glob("**/*.jsonl"):
+            if "subagents" in p.parts:
+                continue       # T32：子代理转录（<sid>/subagents/agent-*.jsonl）不是独立会话，不摆渡
             try:
                 mtime, size = p.stat().st_mtime, p.stat().st_size
             except OSError:
@@ -82,6 +84,8 @@ class Watcher(threading.Thread):
             return
         if st.handed_off_at >= st.last_write:
             return                      # 交接仍覆盖最新活动
+        if self.ledger.subagent_active(st.agent, st.session_id):
+            return                      # T32：子代理运行中（钩子计数，内存判定）→ 推迟，不置 handed_off
         if st.agent == "cc" and has_dangling_tool_use(Path(st.transcript_path)):
             return                      # 悬空 tool_use：工具/子代理仍在跑，本轮推迟（不置 handed_off，下轮重查）
         self._enrich(st)                # 懒富化：标题/峰值（每版本一次读盘）

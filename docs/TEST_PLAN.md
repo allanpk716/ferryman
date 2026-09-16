@@ -45,6 +45,7 @@
 | T17 | P0 | restore 钩子 | source=resume/compact → 无输出退出；clear → 输出注入上下文；daemon 死 → exit 0 | 3 断言 |
 | T18 | P1 | 20MB 级大会话 | 用真实大会话副本（本地，不入库）跑 L0+分块 | L0 完成 <2min、材料缩比 ≥2×、不 OOM |
 | T31 | P1 | 悬空 tool_use 判定 | 尾部窗口集合差（tool_use id − tool_result id）；单测 7 例 + 守望级"悬空不入队/对照入队" | 悬空→推迟（不置 handed_off），matched/text-only/空文件→静止；窗口切割漏判可容忍（covers_until 兜底） |
+| T32 | P1 | 子代理生命周期钩子 | 探针（2026-09-16 实测 CC 2.1.273：前台/后台/嵌套两层均触发）+ 计数单测 + 守望"计数>0 不入队" + /subagent 端点 + ps1 真跑 + install 注册断言 + 端到端（真实钩子→daemon events_total） | 计数>0→推迟；嵌套各计一次；重复 stop 钳 0；1h 泄漏防护；`subagents/` 转录不登记；daemon 重启→T31 兜底 |
 
 ## 3. [半自动] 需要你执行 1-2 个动作（我负责搭环境、写校验脚本、读结果）
 

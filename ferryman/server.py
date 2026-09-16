@@ -40,6 +40,7 @@ class GateStats:
         self.last_call: float = 0.0
         self.blocks = 0
         self.warns = 0
+        self.subagent_events = 0    # T32：SubagentStart/Stop 累计事件数（端到端验证/观察）
 
     def hit(self, agent: str) -> None:
         with self.lock:
@@ -215,6 +216,20 @@ class FerryDaemon:
 
     # ---------- 健康 ----------
 
+    def subagent(self, body: dict) -> dict:
+        """T32：SubagentStart/Stop 事件上报 → 台账计数。非法 event 抛 ValueError（→400）。"""
+        event = str(body.get("event") or "")
+        if event not in ("start", "stop"):
+            raise ValueError(f"event 必须是 start|stop，得到: {event!r}")
+        agent = str(body.get("agent") or "cc")
+        session_id = str(body.get("session_id") or "")
+        if not session_id:
+            raise ValueError("session_id 不能为空")
+        count = self.ledger.subagent_event(agent, session_id, event)
+        with self.stats.lock:
+            self.stats.subagent_events += 1
+        return {"ok": True, "active": count > 0}
+
     def health(self) -> dict:
         now = now_s()
         with self.stats.lock:
@@ -230,6 +245,8 @@ class FerryDaemon:
             "gate_calls_by_agent": dict(self.stats.by_agent),
             "last_gate_call_s_ago": round(now - last_call, 1) if last_call else None,
             "last_transcript_write_s_ago": round(now - last_write, 1) if last_write else None,
+            "subagents_active": self.ledger.subagents_active_count(),
+            "subagent_events_total": self.stats.subagent_events,
             "health_alert": alert,
             "health_msg": ("疑似钩子失效：1h 内有会话写入但 gate 零调用"
                            if alert else ("启动宽限中" if in_grace else "ok")),
@@ -268,7 +285,7 @@ def make_server(daemon: FerryDaemon, port: int, token: str) -> ThreadingHTTPServ
             self.wfile.write(data)
 
         def do_POST(self):  # noqa: N802
-            if self.path != "/gate":
+            if self.path not in ("/gate", "/subagent"):
                 self._json(404, {"error": "not found"})
                 return
             if not self._authed():
@@ -276,7 +293,10 @@ def make_server(daemon: FerryDaemon, port: int, token: str) -> ThreadingHTTPServ
             try:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
-                self._json(200, daemon.gate(body))
+                if self.path == "/gate":
+                    self._json(200, daemon.gate(body))
+                else:
+                    self._json(200, daemon.subagent(body))
             except (ValueError, UnicodeDecodeError) as e:
                 self._json(400, {"error": f"bad request: {e}"})
 

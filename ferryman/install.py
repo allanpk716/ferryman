@@ -43,13 +43,23 @@ def install_cc(settings_path: Path | None = None) -> int:
         "hooks": [{"type": "command",
                    "command": f'{ps} "{repo / "hooks" / "ferryman-restore.ps1"}"',
                    "timeout": 3}]})
+    # T32：子代理生命周期（CC ≥2.1.273；旧版本不触发事件 → T31 悬空检测兜底）
+    for evt in ("SubagentStart", "SubagentStop"):
+        merge(evt, {"hooks": [{
+            "type": "command",
+            "command": f'{ps} "{repo / "hooks" / "ferryman-subagent.ps1"}"',
+            "timeout": 3}]})
 
     settings_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"已追加 Ferryman 钩子到 {settings_path}（备份: {backup.name}）")
     print()
     print("[!] CC Switch 地雷（DESIGN §3）：切换供应商会全量覆盖 settings.json。")
-    print("   请把以下两段同步进 CC Switch 的供应商模板，否则切一次钩子就没了：")
-    print(json.dumps(hooks.get("UserPromptSubmit", [])[-1], ensure_ascii=False, indent=2))
-    print(json.dumps(hooks.get("SessionStart", [])[-1], ensure_ascii=False, indent=2))
+    print("   请把以下钩子段同步进 CC Switch 的供应商模板，否则切一次钩子就没了：")
+    for evt in ("UserPromptSubmit", "SessionStart", "SubagentStart", "SubagentStop"):
+        entries = [e for e in hooks.get(evt, [])
+                   if "ferryman" in json.dumps(e, ensure_ascii=False)]
+        if entries:
+            print(f"# {evt}")
+            print(json.dumps(entries[-1], ensure_ascii=False, indent=2))
     return 0

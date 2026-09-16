@@ -127,3 +127,38 @@ def test_t17_restore_failopen_daemon_down():
                 {"FERRYMAN_PORT": str(free_port()),
                  "FERRYMAN_TOKEN_FILE": "C:/nonexistent.token"})
     assert r.returncode == 0 and not r.stdout.strip()
+
+
+# ---------- T32 subagent 钩子 ----------
+
+def test_t32_subagent_hook_roundtrip(h):
+    r = _run_ps("ferryman-subagent.ps1",
+                {"session_id": "hook-sub1", "agent_id": "a123",
+                 "agent_type": "general-purpose", "hook_event_name": "SubagentStart"},
+                _gate_env(h))
+    assert r.returncode == 0 and not r.stdout.strip()     # fire-and-forget：无输出
+    assert h.daemon.ledger.subagent_active("cc", "hook-sub1") is True
+    r = _run_ps("ferryman-subagent.ps1",
+                {"session_id": "hook-sub1", "agent_id": "a123",
+                 "hook_event_name": "SubagentStop"},
+                _gate_env(h))
+    assert r.returncode == 0
+    assert h.daemon.ledger.subagent_active("cc", "hook-sub1") is False
+
+
+def test_t32_subagent_hook_failopen_daemon_down():
+    r = _run_ps("ferryman-subagent.ps1",
+                {"session_id": "s", "hook_event_name": "SubagentStart"},
+                {"FERRYMAN_PORT": str(free_port()),
+                 "FERRYMAN_TOKEN_FILE": "C:/nonexistent.token"})
+    assert r.returncode == 0 and not r.stdout.strip()     # daemon 死 → 静默放行
+
+
+def test_t32_subagent_hook_env_disable_short_circuits():
+    t0 = time.time()
+    r = _run_ps("ferryman-subagent.ps1",
+                {"session_id": "s", "hook_event_name": "SubagentStart"},
+                {"FERRYMAN_DISABLE": "1", "FERRYMAN_PORT": str(free_port()),
+                 "FERRYMAN_TOKEN_FILE": "C:/nonexistent.token"})
+    assert r.returncode == 0 and not r.stdout.strip()
+    assert time.time() - t0 < 5                          # 首行短路，不碰网络

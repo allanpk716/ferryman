@@ -28,6 +28,13 @@ def test_install_appends_keeps_orca_and_is_idempotent(tmp_path, capsys):
     ss = data["hooks"]["SessionStart"]
     assert ss and ss[0]["matcher"] == "clear|startup"
 
+    # T32：子代理生命周期钩子（SubagentStart/Stop → daemon 计数）
+    for evt in ("SubagentStart", "SubagentStop"):
+        entries = [e for e in data["hooks"].get(evt, [])
+                   if "ferryman" in json.dumps(e, ensure_ascii=False)]
+        assert len(entries) == 1
+        assert "ferryman-subagent.ps1" in json.dumps(entries[0])
+
     install_cc(settings_path=p)                     # 幂等：ferryman 条目不重复
     data2 = json.loads(p.read_text(encoding="utf-8"))
     ups2 = data2["hooks"]["UserPromptSubmit"]

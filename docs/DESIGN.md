@@ -32,9 +32,10 @@ Python 3.12+（uv）守护进程，绑定 127.0.0.1:7311：
 - **时钟统一**：daemon 内部一切时间均为 **UTC epoch 秒**；jsonl 时间戳（带时区）与文件 mtime 都转 UTC 后才比较——杜绝"行内 UTC vs 本地 mtime"双时钟错位。
 - mtime 轮询（1-5s）；`/gate` O(1)；摆渡执行器独立线程。
 - **悬空 tool_use 判定（CC，T31）**：入队摆渡前查 transcript 尾部（默认 256KB 窗口，集合差：tool_use id − tool_result id）——有未归还的 tool_use（静默长工具/子代理运行中，含 sidechain 行与独立后台代理文件）即推迟本轮（不置 handed_off_at，下轮重查）。机械信号而非语义状态；窗口切割/中途被杀的漏判与永悬空可容忍——正确性由 covers_until 兜底，gate 本就 fail-open。
+- **子代理生命周期计数（CC ≥2.1.273，T32；2026-09-16 探针实测三坑点全通过）**：`install-cc` 注册 `SubagentStart`/`SubagentStop` 钩子（`hooks/ferryman-subagent.ps1`，fire-and-forget fail-open）→ `POST /subagent` → 台账按 `(agent, session_id)` 维护运行计数（嵌套各计一次，事件同属主会话）。`_maybe_enqueue` **先查计数（内存，0 磁盘开销）再落 T31 悬空检测**——计数为主、文件启发式为兜底：daemon 重启丢计数、旧版 CC 不触发事件，都由 T31 覆盖；Stop 丢失（崩溃/强杀）由**泄漏防护**（1h 无新事件视为 0）兜底。子代理 transcript（`<sid>/subagents/agent-*.jsonl`）**不再登记为独立会话**（此前被当独立会话白摆渡）。`/stats` 暴露 `subagents_active`/`subagent_events_total`。
 - **`/gate` 契约**：`POST {agent, session_id, transcript_path, cwd, prompt}` → `{decision: allow|block, reason, handoff_path, additional_context?}`。**钩子统一故障规则：连接拒绝/超时（内层 1.5s）/任何非 200（含 401）→ 本地立即放行（exit 0），绝不因钩子侧故障阻断**；异常计数进健康告警。
 - **/gate 鉴权**：daemon 启动生成随机 token → `~/ferryman/daemon.token`（0600），钩子携带 `Authorization: Bearer`。
-- **健康监控**：/stats（gate 调用计数/按 Agent/最近调用）；告警条件（防误报）= **滑动 1h 窗口内：有 transcript 新写入（用户确实活跃）而 gate 调用数 = 0** → Toast"钩子疑似失效"（午休/会议离开不触发——离开时无新写入）。`ferryman doctor`：钩子在位（settings.json + CC Switch 模板）、端口/token、Codex 信任状态、gateway 传输安全。
+- **健康监控**：/stats（gate 调用计数/按 Agent/最近调用/子代理计数）；告警条件 = **滑动 1h 窗口内：有 transcript 新写入而 gate 调用数 = 0**，且**已过启动宽限期（10min——重启后计数器归零 + 自主会话无人发 prompt 的持续写入不再误报，2026-09-16 夜间实测修复）** → Toast"钩子疑似失效"。已知局限（待细化）：信号用"任意写入"（含工具结果）而非"用户消息"，长时自主会话（无 prompt 持续写文件）在宽限期后仍可能误报——细化方案待与 T32 的会话分类（主会话 vs 子代理）协同。`ferryman doctor`：钩子在位（settings.json + CC Switch 模板）、端口/token、Codex 信任状态、gateway 传输安全。
 - **启动回填**：lookback=0（只登记不总结）；总结只对启动后活动的会话生效。
 - **摆渡队列**：并发 1、深度 10、可配日预算；溢出 = 延迟（不丢弃）；挂起 >30min 或**任务墙钟总时限（默认 8min，含 L2 全部块与重试）到点** → 强制降级骨架-only；预算耗尽 → 新任务直接骨架-only，gate reason 注明"仅骨架"。骨架-only 交接对 gate 是有效交接。
 - **配置校验（拒启）**：按 Agent 分组校验 `summarize_threshold < block_threshold` 且 `block_threshold − summarize_threshold ≥ 2min`（独立硬约束，不依赖 SLA 定义）。
