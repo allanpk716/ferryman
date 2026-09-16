@@ -17,11 +17,11 @@
 
 ## 3. 环境事实
 
-- CC 2.1.232（不升级）；Codex CLI 0.153.0。CC 会话 `~/.claude/projects/<转义>/<id>.jsonl`（1644 个/1.1GB）；Codex `~/.codex/sessions/年/月/日/rollout-*.jsonl`（317 个/93MB）。
+- CC 2.1.273（2026-09-16 夜间升级，为 SubagentStart/Stop 钩子；文档基线 2.1.232）；Codex CLI 0.153.0。CC 会话 `~/.claude/projects/<转义>/<id>.jsonl`（1644 个/1.1GB）；Codex `~/.codex/sessions/年/月/日/rollout-*.jsonl`（317 个/93MB）。
 - transcript 格式官方不保证稳定 → 防御式解析、缺字段退 mtime-only。
 - 实测：`ai-title` 行存在（可作交接命名）但**无 timestamp 字段** → 闲置判定用文件 mtime。
 - 现有 hooks 全挂 Orca 的 claude-hook.cmd，本项目追加共存；⚠ CC Switch 切换供应商会覆盖 `~/.claude/settings.json` → 钩子必须注册进 CC Switch 模板。
-- 通知复用 claude-notify（Pushover + Toast）。
+- 通知（T25，2026-09-16 落地）：daemon 自持 `notify.py`（不耦合插件路径）——block 时异步双通道：Pushover（手机）+ Win10 WinRT Toast（桌面），文案带交接路径；`[notify] enabled` 默认 false，凭据复用 claude-notify 的环境变量 `PUSHOVER_TOKEN/PUSHOVER_USER`（HKCU 用户级持久，config 可覆盖）；通道任何故障只吞不抛，绝不影响 gate 决策。
 - 主力机（daemon，Windows）GPU 仅 RTX 3060；本地模型在 4090x2（双 4090D 49GB）：Qwen3.8-27B，SGLang 双副本（general:18000/long:18001）+ router + gateway `0.0.0.0:[REDACTED-PORT]`（OpenAI 兼容，nginx+APIKey）。**传输要求**：跨机仅走内网或 Tailscale（禁公网明文）；gateway 绑定面/TLS 为 `ferryman doctor` 部署检查项。
 
 ## 4. 架构与安全

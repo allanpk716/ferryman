@@ -184,9 +184,15 @@ class FerryDaemon:
         return txt[:WARN_CONTEXT_CAP]
 
     def _notify_block(self, st: SessionState, H: dict, idle: float) -> None:
-        # TODO: 接 claude-notify（Pushover/Toast）；当前先落日志由 serve 打印
         print(f"[gate] BLOCK {st.agent}/{st.session_id[:8]} idle={idle / 60:.0f}m "
               f"handoff={H['handoff_id']}", flush=True)
+        # T25：Pushover/Toast 双通道（文案带交接路径）；异步线程——gate 返回不等通知，
+        # 通道内任何故障自行吞掉（绝不影响 block 决策）。
+        from . import notify
+        threading.Thread(
+            target=notify.notify_block,
+            args=(H["path"], st.agent, st.session_id, self.cfg),
+            daemon=True, name="ferryman-notify").start()
 
     # ---------- 归还 ----------
 

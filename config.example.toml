@@ -21,3 +21,13 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
 model = "glm-5.3-flash"
 window = 1048576
 # api_key = "..."
+
+[notify]
+# 拦截通知（T25）：block 时 Pushover（手机）+ Windows Toast（桌面），文案带交接路径。
+# enabled 默认 false；凭据留空则回落环境变量 PUSHOVER_TOKEN / PUSHOVER_USER
+# （与 claude-notify 插件共用同一对，HKCU 用户级）。
+enabled = true
+pushover = true
+toast = true
+# pushover_token = ""
+# pushover_user = ""

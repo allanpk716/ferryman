@@ -38,12 +38,22 @@ class ServerCfg:
 
 
 @dataclass
+class NotifyCfg:
+    enabled: bool = False                # 默认关：未配置不响，测试套件不弹 toast/不出网（T25）
+    pushover: bool = True
+    pushover_token: str = ""             # 空 → 回落环境变量 PUSHOVER_TOKEN
+    pushover_user: str = ""              # 空 → 回落环境变量 PUSHOVER_USER
+    toast: bool = True
+
+
+@dataclass
 class Config:
     gate_cc: str = "observe"             # 验证期默认 observe（DESIGN §6.2）
     gate_codex: str = "off"              # E0b 后再议
     thresholds: ThresholdCfg = field(default_factory=ThresholdCfg)
     watch: WatchCfg = field(default_factory=WatchCfg)
     server: ServerCfg = field(default_factory=ServerCfg)
+    notify: NotifyCfg = field(default_factory=NotifyCfg)
     ferry_provider: str = "local"
 
     @property
@@ -84,6 +94,15 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
             cfg.server = ServerCfg(
                 port=int(s.get("port", cfg.server.port)),
                 data_dir=str(s.get("data_dir", "")),
+            )
+        if "notify" in data:
+            n = data["notify"]
+            cfg.notify = NotifyCfg(
+                enabled=bool(n.get("enabled", cfg.notify.enabled)),
+                pushover=bool(n.get("pushover", cfg.notify.pushover)),
+                pushover_token=str(n.get("pushover_token", "")),
+                pushover_user=str(n.get("pushover_user", "")),
+                toast=bool(n.get("toast", cfg.notify.toast)),
             )
         cfg.ferry_provider = str(data.get("ferry", {}).get("provider", cfg.ferry_provider))
     validate(cfg, relax_min_gap=relax_min_gap)
