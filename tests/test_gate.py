@@ -47,6 +47,14 @@ def test_bypass_prefix(env):
     assert d.stats.bypass == 1
 
 
+def test_bypass_prefix_qiangxu(env):
+    """「强续」前缀放行——CC 下 !! 不可达（! 首字符即触发 bash 模式），换可达关键词。"""
+    d, *_ = env
+    r = d.gate(_body("s", "p", "c", prompt="强续我知道缓存死了，继续"))
+    assert r == {"decision": "allow", "reason": "bypass"}
+    assert d.stats.bypass == 1
+
+
 def test_no_ledger(env):
     d, *_ = env
     r = d.gate(_body("ghost", "C:/nope.jsonl", "C:/any"))
@@ -96,6 +104,21 @@ def test_branch5_block_with_valid_handoff(env):
     assert enqueued == []                                    # 分支5 不再入队
 
 
+def test_branch5_copy_guides_post_clear(env):
+    """block 文案须自带三步指引（/clear 会抹掉文案，空屏后用户无任何提示）。"""
+    d, led, store, *_ = env
+    from datetime import datetime, timezone
+    covers = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    proj = str(env[4] / "proj")
+    _reg(led, "s1", "C:/p1.jsonl", proj, idle_s=BLOCK + 5)
+    store.save_handoff(session_id="s1", agent="cc", cwd=proj, title="t",
+                       covers_until_iso=covers, status="fresh", handoff_md="md")
+    r = d.gate(_body("s1", "C:/p1.jsonl", proj, prompt="被拦"))
+    assert r["decision"] == "block"
+    assert "随便发一个字" in r["reason"]                       # /clear 后怎么续（关键痛点）
+    assert "强续" in r["reason"] and "!!" not in r["reason"]   # 可达的逃生关键词
+
+
 # ---- enforce：分支 7 → 6 → 降级 ----
 
 def test_branch7_warn_then_branch6_blocks_then_degrade(env):
@@ -111,6 +134,7 @@ def test_branch7_warn_then_branch6_blocks_then_degrade(env):
     for i in (1, 2, 3):                                      # 分支6：连续 3 次 block
         r = d.gate(_body("s2", "C:/p2.jsonl", proj2))
         assert r["decision"] == "block" and f"第 {i} 次" in r["reason"]
+        assert "强续" in r["reason"]                          # 逃生关键词可达
     r4 = d.gate(_body("s2", "C:/p2.jsonl", proj2))           # 第 4 次：降级放行
     assert r4["decision"] == "allow" and r4["additional_context"]
     assert d.pending.get(key) is None                        # pending 清除

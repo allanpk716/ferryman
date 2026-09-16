@@ -1,7 +1,7 @@
 """HTTP 服务：/gate（闸门状态机）+ /restore（归还）+ /stats（健康监控）。
 
 DESIGN §6.10 状态机（单一权威定义，实现不得偏离）：
-  1. "!!" 前缀              → allow（记 bypass）
+  1. 「强续」/"!!" 前缀      → allow（记 bypass；!! 为 Codex 兼容）
   2. gate_mode: off → allow；observe → 只警告不拦
   3. 应拦窗口 = idle ≥ 拦截阈值 OR pending 激活
   4. 非应拦窗口              → allow
@@ -101,8 +101,9 @@ class FerryDaemon:
         prompt = str(body.get("prompt") or "")
         self.stats.hit(agent)
 
-        # 1. 魔法前缀：单次放行
-        if prompt.startswith("!!"):
+        # 1. 魔法前缀：单次放行（「强续」为主——CC 下 ! 首字符触发 bash 模式，!! 打不出来；
+        #    !! 保留匹配以兼容 Codex）
+        if prompt.startswith("强续") or prompt.startswith("!!"):
             self.stats.bypass += 1
             return {"decision": "allow", "reason": "bypass"}
         st = self.ledger.get(agent, session_id) or self.ledger.get_by_path(transcript_path)
@@ -146,10 +147,10 @@ class FerryDaemon:
             self.store.mark_blocked(H["handoff_id"])
             self._notify_block(st, H, idle)
             return {"decision": "block",
-                    "reason": (f"此会话已闲置 {idle / 60:.0f} 分钟，缓存已失效；"
-                               f"交接文档已生成: {H['path']}\n"
-                               f"请 /clear 后开新会话（将自动注入交接与你刚才的输入）；"
-                               f"或输入 !! 前缀强制继续本会话。"),
+                    "reason": (f"此会话已闲置 {idle / 60:.0f} 分钟，缓存已失效；交接已生成: {H['path']}\n"
+                               f"① /clear ② 开新会话 ③ 随便发一个字（如「继续」）——"
+                               f"交接与你这句输入会自动注入，新会话第一句就会告诉你干到哪、接下来干嘛。\n"
+                               f"（不愿换会话：以「强续」开头发消息强制继续；本指引会随注入自动带回，无需记忆）"),
                     "suppressOriginalPrompt": True,
                     "handoff_path": H["path"]}
         if p is not None:                                   # 分支 6
@@ -161,8 +162,8 @@ class FerryDaemon:
             self.stats.blocks += 1
             self.store.save_pending_prompt(st.session_id, prompt)
             return {"decision": "block",
-                    "reason": (f"交接仍未就绪（第 {n} 次）；稍候重试，"
-                               f"或 !! 前缀强制继续，或开新会话。"),
+                    "reason": (f"交接仍未就绪（第 {n} 次）；稍候重试，或以「强续」开头强制继续，"
+                               f"或 /clear 开新会话。"),
                     "suppressOriginalPrompt": True}
         # 分支 7：警告一次 + 置 pending + 触发摆渡
         self.pending.set(key)

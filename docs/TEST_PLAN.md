@@ -27,7 +27,7 @@
 | T04 | P0 | `extract.extract` | 骨架：files 按次数降序、命令去重+160 截断；正文：tool_result 整块丢弃、只取 text 块、单条 4000 截断；peak_ctx 取 usage 三项之和最大值 | 构造 fixture jsonl 逐字段断言 |
 | T05 | P0 | `ledger` | 同 transcript_path 换 session_id → lineage 继承闲置史；正/反斜杠+大小写路径互通（`get_by_path`）；mtime< daemon_start → observed_active=False（lookback=0） | 3 组断言 |
 | T06 | P0 | `store` | valid_handoff：agent+cwd 双键（错配不认）、covers_until 60s 容差、stale/pending 不算、24h 窗口外不算、多份取 covers_until 最大；pending_prompt 超 500token 截断；mark_injected 去重；写后无 `.tmp` 残留（原子性） | 逐条断言 |
-| T07 | P0 | `server.FerryDaemon.gate`（mock ledger/store/enqueue） | 全分支：!!bypass→no-ledger→mode off/observe→非窗口 allow→分支5(有效交接 block+存待续)→分支6 连续 3 次 block 后第 4 次降级→分支7 警告一次+置 pending+入队；pending 新周期清除（用户回来又走 summarize 时长）；pending 24h TTL | 状态机表驱动用例 ≥12 条，每分支至少 1 正 1 反 |
+| T07 | P0 | `server.FerryDaemon.gate`（mock ledger/store/enqueue） | 全分支：强续/!!bypass→no-ledger→mode off/observe→非窗口 allow→分支5(有效交接 block+存待续+三步指引文案)→分支6 连续 3 次 block 后第 4 次降级→分支7 警告一次+置 pending+入队；pending 新周期清除（用户回来又走 summarize 时长）；pending 24h TTL | 状态机表驱动用例 ≥12 条，每分支至少 1 正 1 反 |
 | T08 | P1 | `eval.verify_handoff` | 后缀匹配、父目录合法、`...` 截断前缀匹配、host 形态（127.0.0.1）跳过、真幻觉必捕 | 5 用例 |
 | T09 | P1 | `install`（tmp_path 假 settings.json） | 追加不覆盖既有（模拟 Orca 条目）；幂等（跑两次只有一份）；备份文件生成 | 3 断言 |
 
@@ -63,7 +63,7 @@
 | # | 级 | 内容 | 观察点 |
 |---|---|---|---|
 | T26 | P0（一周） | **observe 模式真实使用一周** | 误伤率（活跃会话被警告的频次）、警告文案是否烦人、健康告警是否误报/漏报 |
-| T27 | P1 | 经济学实测 | 被拦后 /clear 续接 vs `!!` 放行续聊，各 3-5 次：额度消耗感知对比（订阅制只能看体感与速度） |
+| T27 | P1 | 经济学实测 | 被拦后 /clear 续接 vs 「强续」放行续聊，各 3-5 次：额度消耗感知对比（订阅制只能看体感与速度） |
 | T28 | P1 | 并行/多 worktree 归还 | 同目录多会话同时被拦 → /clear 后多候选清单体验；A/B 交接是否会错配（清单应可见可纠正） |
 | T29 | P2 | 4090x2 gateway 加固回归 | 加 key/TLS 后 `providers.local` 连通性与 E1 结果不回归 |
 | T30 | P2 | 极端路径 | 30 天后归档清理正确；daemon 连跑 7 天内存平稳（无 fd/句柄泄漏）；机器睡眠唤醒后闲置判定仍正确 |
