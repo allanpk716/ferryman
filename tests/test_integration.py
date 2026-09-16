@@ -194,8 +194,24 @@ def test_t15_auth_and_health(h):
     assert h.get("/stats")["gate_calls_total"] >= 0      # 正确 token 通
 
     d = h.daemon
-    d.stats.total = 0                                    # 场景：1h 内有写入但 gate 零调用
+    d.started_at = now_s() - 601                         # 场景前提：已过启动宽限期
+    d.stats.total = 0                                    # 1h 内有写入但 gate 零调用
     h.ledger.last_transcript_write = now_s()
     assert d.health()["health_alert"] is True
     d.stats.hit("cc")                                    # 一旦有调用 → 解除
     assert d.health()["health_alert"] is False
+
+
+# ---------- 健康误报：daemon 重启宽限期 ----------
+# 真实场景（2026-09-16 夜间实测）：daemon 重启后计数器归零，而自主运行的会话
+# 仍在写 transcript（无人发 prompt → UserPromptSubmit 不触发 → gate 零调用），
+# 旧逻辑立即误报"钩子失效"。T26 验收标准含"健康告警是否误报"。
+
+def test_health_grace_period_after_daemon_restart(h):
+    d = h.daemon
+    d.stats.total = 0
+    h.ledger.last_transcript_write = now_s()
+    assert d.health()["health_alert"] is False        # 启动 <10min：宽限，不误报
+
+    d.started_at = now_s() - 601                      # 宽限期已过，同条件才告警
+    assert d.health()["health_alert"] is True

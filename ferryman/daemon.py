@@ -192,10 +192,10 @@ def serve(relax_min_gap: bool = False) -> int:
             print("[queue] 满，任务延迟（下轮轮询重试）", flush=True)
             return False
 
-    daemon = FerryDaemon(cfg, ledger, store, enqueue)
+    started_at = now_s()
+    daemon = FerryDaemon(cfg, ledger, store, enqueue, started_at)
     server = make_server(daemon, cfg.server.port, token)
 
-    started_at = now_s()
     watcher = Watcher(cfg, ledger, store, enqueue, started_at)
     worker = FerryWorker(cfg, store, tasks)
     watcher.start()

@@ -28,6 +28,7 @@ from .store import Store
 DEGRADE_AFTER_BLOCKS = 3        # DESIGNS §6.10-6：连续兜底拦截 3 次 → 降级
 PENDING_TTL_S = 24 * 3600
 WARN_CONTEXT_CAP = 2000         # 警告 additionalContext 的字符上限
+HEALTH_GRACE_S = 600            # daemon 启动宽限：计数器刚归零不足以判钩子失效（防误报，T26）
 
 
 class GateStats:
@@ -83,13 +84,15 @@ class PendingTable:
 class FerryDaemon:
     """server 与 daemon 编排层共享的状态容器（ledger/store/queue 由 daemon 注入）。"""
 
-    def __init__(self, cfg, ledger: Ledger, store: Store, enqueue_ferry) -> None:
+    def __init__(self, cfg, ledger: Ledger, store: Store, enqueue_ferry,
+                 started_at: float | None = None) -> None:
         self.cfg = cfg
         self.ledger = ledger
         self.store = store
         self.enqueue_ferry = enqueue_ferry   # callable(SessionState) —— 台账状态入队摆渡
         self.stats = GateStats()
         self.pending = PendingTable()
+        self.started_at = started_at if started_at is not None else now_s()
 
     # ---------- 闸门状态机 ----------
 
@@ -217,14 +220,19 @@ class FerryDaemon:
         with self.stats.lock:
             total, last_call = self.stats.total, self.stats.last_call
         last_write = self.ledger.last_transcript_write
-        alert = (now - last_write < 3600) and (total == 0 or now - last_call > 3600)
+        # 启动宽限：计数器刚归零 + 会话可能在无人发 prompt 的情况下持续写文件
+        # （自主/后台会话），不足以判定钩子失效；过宽限期才允许告警（防误报，T26）。
+        in_grace = now - self.started_at < HEALTH_GRACE_S
+        alert = (not in_grace) and (now - last_write < 3600) \
+            and (total == 0 or now - last_call > 3600)
         return {
             "gate_calls_total": total,
             "gate_calls_by_agent": dict(self.stats.by_agent),
             "last_gate_call_s_ago": round(now - last_call, 1) if last_call else None,
             "last_transcript_write_s_ago": round(now - last_write, 1) if last_write else None,
             "health_alert": alert,
-            "health_msg": ("疑似钩子失效：1h 内有会话写入但 gate 零调用" if alert else "ok"),
+            "health_msg": ("疑似钩子失效：1h 内有会话写入但 gate 零调用"
+                           if alert else ("启动宽限中" if in_grace else "ok")),
         }
 
 
