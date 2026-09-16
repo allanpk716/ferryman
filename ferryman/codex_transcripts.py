@@ -71,3 +71,28 @@ def token_count_turns(path: Path) -> list[Turn]:
         return []
     turns.sort(key=lambda t: t.ts)
     return turns
+
+
+def session_cwd(path: Path) -> str:
+    """首条 session_meta 的 payload.cwd（防御式：缺失/坏行/超头部未见过返回空）。
+
+    session_meta 恒为 rollout 首行（2026-06 实测）；只扫头部 10 行防大开文件。
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= 10:
+                    break
+                if '"session_meta"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("type") == "session_meta":
+                    p = d.get("payload")
+                    if isinstance(p, dict):
+                        return str(p.get("cwd") or "")
+    except OSError:
+        return ""
+    return ""

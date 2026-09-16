@@ -108,9 +108,11 @@ class Watcher(threading.Thread):
                 st.cwd = facts.cwd or ""
             st.peak_ctx = facts.peak_ctx
         else:
-            from .codex_transcripts import token_count_turns
+            from .codex_transcripts import session_cwd, token_count_turns
             turns = token_count_turns(Path(st.transcript_path))
             st.peak_ctx = max((t.input_tokens for t in turns), default=0)
+            if not st.cwd:                      # session_meta 首行的 cwd（T23：gate/归还匹配必需）
+                st.cwd = session_cwd(Path(st.transcript_path))
         st.enriched_write = st.last_write
 
 

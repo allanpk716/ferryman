@@ -55,7 +55,7 @@
 | T20 | P0 | 被拦 prompt 抹除体验（坑#4） | 被拦后 TUI 上翻，看原句能否找回 | — | 找回方式写进 block 文案（或确认找不到） |
 | T21 | **P0** | **CC Switch 存活（§3 地雷）** | 在 CC Switch 里切一次供应商 | 前后跑检测脚本比对 settings.json 钩子在位 | 钩子存活=通过；被抹 → 立即做模板同步 |
 | T22 | P0 | /clear 归还（真实） | 被 T19 拦后手敲 /clear 开新会话 | 检查新会话 transcript 首轮是否含注入上下文+待续 prompt | 新会话第一轮就知道"刚才干到哪" |
-| T23 | P1 | Codex /hooks 信任流 | 我写好 Codex 钩子配置后，你在 Codex TUI 里 `/hooks` 完成信任 | 比对被拦 turn 前后 rollout 文件（应零新增） | 被拦 turn 零 token、不写 rollout |
+| T23 | P1 | Codex /hooks 信任流 | 我写好 Codex 钩子配置后，你在 Codex TUI 里 `/hooks` 完成信任 | ~~写好配置~~✅（2026-09-16 夜：双 ps1 + hooks.json + daemon cwd 提取修复 + 4 例真跑；手册见 docs/T23-CODEX-TRUST.md）→ 剩你：TUI 信任 + DEBUG 抓包校准 schema | 被拦 turn 零 token、不写 rollout |
 | T24 | P1 | E1 横评定路由 | 把 DeepSeek/GLM key 填进 `~/ferryman/config.toml`（照 config.example.toml） | 跑 `ferryman eval --provider deepseek/glm` 出横评表 | 三候选三层标准齐全 → 拍板默认路由 |
 | T25 | P1 | claude-notify 接入验证 | 手机收 Pushover / 桌面看 Toast | ~~实现接入~~✅（2026-09-16 夜：`notify.py` 双通道 + 单测/集成 84 绿 + Toast 真机验证 OK + daemon 已启用 `[notify] enabled`）→ 白天补：真实 block 触发后手机收 Pushover | 两通道至少一路收到且文案带交接路径 |
 

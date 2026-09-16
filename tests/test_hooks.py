@@ -162,3 +162,72 @@ def test_t32_subagent_hook_env_disable_short_circuits():
                  "FERRYMAN_TOKEN_FILE": "C:/nonexistent.token"})
     assert r.returncode == 0 and not r.stdout.strip()
     assert time.time() - t0 < 5                          # 首行短路，不碰网络
+
+
+# ---------- T23 Codex 钩子（准备阶段：脚本契约已真跑验证；TUI /hooks 信任待用户） ----------
+
+def _write_rollout(codex_dir, uuid: str, cwd: str = "C:/proj"):
+    """合成 rollout：<dir>/年/月/日/rollout-<ts>-<uuid>.jsonl（session_meta + token_count 轮次）。"""
+    import os
+    d = codex_dir / "2026" / "09" / "16"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"rollout-2026-09-16T12-00-00-{uuid}.jsonl"
+    lines = [
+        {"type": "session_meta", "timestamp": "2026-09-16T12:00:00.000Z",
+         "payload": {"session_id": uuid, "cwd": cwd, "cli_version": "0.153.0"}},
+        {"type": "event_msg", "timestamp": "2026-09-16T12:00:01.000Z",
+         "payload": {"type": "token_count",
+                     "info": {"last_token_usage": {"input_tokens": 2000,
+                                                    "cached_input_tokens": 100,
+                                                    "cached_omitted_tokens": 0,
+                                                    "output_tokens": 5}}}},
+    ]
+    f.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+                 encoding="utf-8")
+    os.utime(f, None)
+    return f
+
+
+def test_t23_codex_gate_hook_blocks_idle(h):
+    h.cfg.gate_codex = "enforce"
+    proj = str(h.tmp / "proj")
+    f = _write_rollout(h.tmp / "no-codex", "codexgat01", cwd=proj)
+    # 防御式字段：rollout_path / transcript_path 二选一（真实 schema 晨间信任后校准）
+    body = {"session_id": "codexgat01", "rollout_path": str(f),
+            "cwd": proj, "prompt": "hi"}
+    deadline = time.time() + 15
+    out = ""
+    while time.time() < deadline:
+        r = _run_ps("ferryman-gate-codex.ps1", body, _gate_env(h))
+        out = r.stdout.decode("utf-8", errors="replace").strip()
+        if out:
+            break
+        time.sleep(1)                                    # 未达拦截阈值先放行(空输出)
+    assert r.returncode == 0
+    payload = json.loads(out)                            # stdout 必须是合法 block JSON
+    assert payload["decision"] == "block"
+    assert payload.get("suppressOriginalPrompt") is True
+    assert payload.get("reason")
+
+
+def test_t23_codex_gate_hook_failopen_daemon_down():
+    r = _run_ps("ferryman-gate-codex.ps1",
+                {"session_id": "s", "rollout_path": "C:/x.jsonl", "prompt": "hi"},
+                {"FERRYMAN_PORT": str(free_port()),
+                 "FERRYMAN_TOKEN_FILE": "C:/nonexistent.token"})
+    assert r.returncode == 0 and not r.stdout.strip()    # daemon 死 → 放行零输出
+
+
+def test_t23_codex_restore_hook_filters_source(h):
+    r = _run_ps("ferryman-restore-codex.ps1",
+                {"session_id": "s", "cwd": "C:/x", "source": "resume"},
+                _gate_env(h))
+    assert r.returncode == 0 and not r.stdout.strip()    # resume/compact 不注入
+
+
+def test_t23_codex_restore_hook_failopen_daemon_down():
+    r = _run_ps("ferryman-restore-codex.ps1",
+                {"session_id": "s", "cwd": "C:/x", "source": "clear"},
+                {"FERRYMAN_PORT": str(free_port()),
+                 "FERRYMAN_TOKEN_FILE": "C:/nonexistent.token"})
+    assert r.returncode == 0 and not r.stdout.strip()
