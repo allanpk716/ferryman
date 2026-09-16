@@ -48,7 +48,7 @@ def install_cc(settings_path: Path | None = None) -> int:
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"已追加 Ferryman 钩子到 {settings_path}（备份: {backup.name}）")
     print()
-    print("⚠️  CC Switch 地雷（DESIGN §3）：切换供应商会全量覆盖 settings.json。")
+    print("[!] CC Switch 地雷（DESIGN §3）：切换供应商会全量覆盖 settings.json。")
     print("   请把以下两段同步进 CC Switch 的供应商模板，否则切一次钩子就没了：")
     print(json.dumps(hooks.get("UserPromptSubmit", [])[-1], ensure_ascii=False, indent=2))
     print(json.dumps(hooks.get("SessionStart", [])[-1], ensure_ascii=False, indent=2))
