@@ -1,0 +1,17 @@
+[project]
+name = "ferryman"
+version = "0.1.0"
+description = "摆渡人：会话闲置缓存失效后的自动交接守护进程（守望→摆渡→闸门→归还）"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+ferryman = "ferryman.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8"]

@@ -1,0 +1,23 @@
+# Ferryman 配置样例 —— 复制到 ~/ferryman/config.toml 并填入真实凭据。
+# 真实配置在仓库外，永不入库。未配置时仅内置 local 默认项可用。
+
+[providers.local]
+# 本机 4090x2 gateway（实测：LAN/Tailscale 可达，暂无鉴权，229K 窗口）
+base_url = "http://<你的本地推理网关>:[REDACTED-PORT]/v1"
+model = "[REDACTED-MODEL]"
+window = 229376
+# api_key = ""
+
+[providers.deepseek]
+# 验证期执行默认（DESIGN §6.5）—— 需要填 API key（https://platform.deepseek.com）
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-v4.1-flash"   # 确切模型名以官方 pricing 页为准
+window = 1048576
+# api_key = "sk-..."
+
+[providers.glm]
+# 智谱直连（BigModel 开放平台）—— Coding Plan 不含外部 API 额度，需单独资源包
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+model = "glm-5.3-flash"
+window = 1048576
+# api_key = "..."
