@@ -13,9 +13,9 @@ import time
 from pathlib import Path
 
 
-def install_cc() -> int:
+def install_cc(settings_path: Path | None = None) -> int:
     repo = Path(__file__).resolve().parent.parent
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = settings_path or (Path.home() / ".claude" / "settings.json")
     if not settings_path.exists():
         settings_path.write_text("{}", encoding="utf-8")
     backup = settings_path.with_name(

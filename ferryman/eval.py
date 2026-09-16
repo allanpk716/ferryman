@@ -62,7 +62,7 @@ def verify_handoff(handoff: str, truth_paths: list[str]) -> dict:
             nf = nf.split("...")[0].rstrip("/.")
         hit = any(
             nf == t or t.endswith("/" + nf) or nf.endswith(t)
-            or (truncated and t.startswith(nf))
+            or (truncated and nf in t)   # 相对截断形态（如 docs/2026-09-02-...）按包含匹配
             for t in truth
         )
         (ok if hit else bad).append(f)

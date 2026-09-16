@@ -132,11 +132,16 @@ class Store:
             self._index["pending_prompts"] = kept
             self._flush()
 
-    def pop_pending_prompt(self, session_id: str) -> str | None:
+    def pop_pending_prompt(self, session_id: str, consume_for: str | None = None) -> str | None:
+        """取未消费的待续 prompt；传 consume_for 时同时标记消费（注入一次后不再给）。"""
         with self._lock:
             for p in self._index["pending_prompts"]:
                 if p.get("session_id") == session_id and not p.get("consumed_by"):
-                    return p["prompt"]
+                    prompt = p["prompt"]
+                    if consume_for:
+                        p["consumed_by"] = consume_for
+                        self._flush()
+                    return prompt
             return None
 
     # ---------- 归还 ----------
