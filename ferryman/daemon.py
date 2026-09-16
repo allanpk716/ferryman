@@ -136,13 +136,18 @@ class FerryWorker(threading.Thread):
         result = {}
         try:
             def _run():
-                md, meta = ferry_session(path, self.providers[self.cfg.ferry_provider])
-                result["md"], result["meta"] = md, meta
+                try:
+                    md, meta = ferry_session(path, self.providers[self.cfg.ferry_provider])
+                    result["md"], result["meta"] = md, meta
+                except Exception as e:  # noqa: BLE001 — 线程内异常带回主线程
+                    result["error"] = e
             t = threading.Thread(target=_run, daemon=True)
             t.start()
             t.join(FERRY_WALL_TIMEOUT_S)
             if t.is_alive():
                 raise TimeoutError(f"摆渡墙钟超时 {FERRY_WALL_TIMEOUT_S}s")
+            if "error" in result:
+                raise result["error"]
         except Exception as e:  # noqa: BLE001 — 降级骨架-only
             print(f"[ferry] 降级骨架-only（{sid[:8]}）: {e}", flush=True)
             self._save_skeleton(path, agent, sid, item.get("cwd", ""))

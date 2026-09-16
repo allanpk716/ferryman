@@ -15,3 +15,6 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+markers = ["slow: 长跑用例（大会话/真实模型），CI 可 -m 'not slow' 跳过"]
