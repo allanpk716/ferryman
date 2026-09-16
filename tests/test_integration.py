@@ -1,4 +1,4 @@
-"""T10-T15 · 集成测试：全链路 / skeleton 降级 / 墙钟强杀 / 队列背压 / 懒富化 / 鉴权健康。
+"""T10-T15, T31 · 集成测试：全链路 / skeleton 降级 / 墙钟强杀 / 队列背压 / 懒富化 / 鉴权健康 / 悬空 tool_use 推迟。
 
 全离线：摆渡模型用 monkeypatch 假件替代（不连 4090x2、不出网）。
 """
@@ -134,6 +134,55 @@ def test_t14_enrich_once_per_version(tmp_path, monkeypatch):
     for _ in range(3):
         watcher._maybe_enqueue(st)
     assert calls["n"] == 1                               # 同一 last_write 版本只读盘一次
+
+
+# ---------- T31 悬空 tool_use 推迟入队 ----------
+
+def _dangling_session(projects: Path, sid: str, cwd: str) -> Path:
+    """写一个尾部悬空 tool_use（工具/子代理运行中）的会话。"""
+    import json
+    lines = [
+        {"type": "user", "timestamp": "2026-09-16T12:00:00.000Z", "cwd": cwd,
+         "sessionId": sid, "message": {"role": "user", "content": "跑个长任务"}},
+        {"type": "assistant", "timestamp": "2026-09-16T12:00:02.000Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "text", "text": "好"},
+             {"type": "tool_use", "id": "toolu_dangle1", "name": "Bash", "input": {}}],
+             "usage": {"input_tokens": 2000, "cache_read_input_tokens": 100,
+                        "cache_creation_input_tokens": 0, "output_tokens": 5}}},
+    ]
+    f = projects / "C--proj" / f"{sid}.jsonl"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+                 encoding="utf-8")
+    return f
+
+
+def test_t31_dangling_defers_enqueue(tmp_path):
+    """达阈值的 CC 会话若尾部悬空 tool_use → 不入队；对照组正常会话 → 入队。"""
+    from ferryman.ledger import Ledger
+
+    cfg = Config()
+    cfg.thresholds = ThresholdCfg(summarize_s=0.1, block_s=1.0, min_ctx_tokens=10)
+    led = Ledger()
+    proj = str(tmp_path / "proj")
+    enqueued: list[str] = []
+
+    watcher = Watcher.__new__(Watcher)
+    watcher.cfg, watcher.ledger, watcher.store = cfg, led, None
+    watcher.enqueue = lambda st: enqueued.append(st.session_id) or True
+    watcher.started_at = 0
+
+    f1 = _dangling_session(tmp_path / "projects", "dangle-1", proj)
+    f2 = write_session(tmp_path / "projects", "calm-2", proj)   # 对照：无悬空
+    for sid, path in (("dangle-1", f1), ("calm-2", f2)):
+        st = led.touch("cc", sid, str(path), mtime=now_s(), size=10, cwd=proj,
+                       daemon_started_at=0)
+        st.last_write -= 5                                        # 造闲置
+        for _ in range(3):
+            watcher._maybe_enqueue(st)
+    assert "calm-2" in enqueued
+    assert "dangle-1" not in enqueued                            # 运行中 → 每轮都推迟
 
 
 # ---------- T15 鉴权与健康 ----------

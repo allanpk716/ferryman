@@ -31,6 +31,7 @@ Python 3.12+（uv）守护进程，绑定 127.0.0.1:7311：
 - **台账**：主键 `agent + session_id`；辅助键 `transcript_path`；**会话族系（lineage）**：同一 transcript_path 出现新 session_id → 继承闲置史与交接关联；**新文件情形**（resume 产生新 jsonl）以**首条 user 消息内容 hash** 建族系链（E0a 附带实测两家 CLI 的 resume 行为校准）。
 - **时钟统一**：daemon 内部一切时间均为 **UTC epoch 秒**；jsonl 时间戳（带时区）与文件 mtime 都转 UTC 后才比较——杜绝"行内 UTC vs 本地 mtime"双时钟错位。
 - mtime 轮询（1-5s）；`/gate` O(1)；摆渡执行器独立线程。
+- **悬空 tool_use 判定（CC，T31）**：入队摆渡前查 transcript 尾部（默认 256KB 窗口，集合差：tool_use id − tool_result id）——有未归还的 tool_use（静默长工具/子代理运行中，含 sidechain 行与独立后台代理文件）即推迟本轮（不置 handed_off_at，下轮重查）。机械信号而非语义状态；窗口切割/中途被杀的漏判与永悬空可容忍——正确性由 covers_until 兜底，gate 本就 fail-open。
 - **`/gate` 契约**：`POST {agent, session_id, transcript_path, cwd, prompt}` → `{decision: allow|block, reason, handoff_path, additional_context?}`。**钩子统一故障规则：连接拒绝/超时（内层 1.5s）/任何非 200（含 401）→ 本地立即放行（exit 0），绝不因钩子侧故障阻断**；异常计数进健康告警。
 - **/gate 鉴权**：daemon 启动生成随机 token → `~/ferryman/daemon.token`（0600），钩子携带 `Authorization: Bearer`。
 - **健康监控**：/stats（gate 调用计数/按 Agent/最近调用）；告警条件（防误报）= **滑动 1h 窗口内：有 transcript 新写入（用户确实活跃）而 gate 调用数 = 0** → Toast"钩子疑似失效"（午休/会议离开不触发——离开时无新写入）。`ferryman doctor`：钩子在位（settings.json + CC Switch 模板）、端口/token、Codex 信任状态、gateway 传输安全。

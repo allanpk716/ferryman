@@ -70,6 +70,48 @@ def assistant_turns(path: Path) -> list[Turn]:
     return turns
 
 
+def has_dangling_tool_use(path: Path, tail_bytes: int = 262_144) -> bool:
+    """尾部悬空 tool_use 判定：最近的 tool_use 是否已全部收到 tool_result。
+
+    True = 仍有工具/子代理在跑（会话按 mtime 看似闲置，实则运行中），守望应推迟摆渡。
+    tool_result 恒在对应 tool_use 之后写入，故只需尾部窗口内做集合差：
+    出现过的 tool_use id − 出现过的 tool_result id ≠ ∅ 即悬空。
+    只读尾部 tail_bytes 字节；坏行/缺字段/无 assistant 行一律 False
+    （宁可多摆渡不误判运行中；漏判由 covers_until 兜住正确性）。
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            end = f.tell()
+            f.seek(max(0, end - tail_bytes))
+            data = f.read()
+    except OSError:
+        return False
+    lines = data.decode("utf-8", errors="replace").split("\n")
+    if end > tail_bytes and lines:
+        lines = lines[1:]                  # 窗口首行可能是半行，丢弃
+    used: set[str] = set()
+    served: set[str] = set()
+    for line in lines:
+        if '"tool_use"' not in line and '"tool_result"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        content = (d.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_use" and isinstance(b.get("id"), str):
+                used.add(b["id"])
+            elif b.get("type") == "tool_result" and isinstance(b.get("tool_use_id"), str):
+                served.add(b["tool_use_id"])
+    return bool(used - served)
+
+
 def ai_title(path: Path) -> str | None:
     """会话的自动生成标题（取最后一个 ai-title 行；该类行本身无 timestamp 字段）。"""
     title: str | None = None

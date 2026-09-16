@@ -18,6 +18,7 @@ from .ferry import ferry_session, load_config as load_providers
 from .ledger import Ledger, now_s
 from .server import FerryDaemon, ensure_token, make_server
 from .store import Store
+from .transcripts import has_dangling_tool_use
 
 FERRY_WALL_TIMEOUT_S = 480       # 墙钟总时限 8min（DESIGN §4）
 
@@ -81,6 +82,8 @@ class Watcher(threading.Thread):
             return
         if st.handed_off_at >= st.last_write:
             return                      # 交接仍覆盖最新活动
+        if st.agent == "cc" and has_dangling_tool_use(Path(st.transcript_path)):
+            return                      # 悬空 tool_use：工具/子代理仍在跑，本轮推迟（不置 handed_off，下轮重查）
         self._enrich(st)                # 懒富化：标题/峰值（每版本一次读盘）
         if st.peak_ctx < th.min_ctx_tokens:
             st.handed_off_at = st.last_write   # 过小会话：标记已处理防反复读盘

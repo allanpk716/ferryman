@@ -44,6 +44,7 @@
 | T16 | P0 | **钩子脚本 × 测试 daemon**（PowerShell 真跑） | `powershell -File hooks/ferryman-gate.ps1` 喂 mock stdin：block 响应 → stdout 为合法 CC JSON（`additionalContext` 必须嵌 `hookSpecificOutput`）；allow+警告 → 嵌套结构正确；**daemon 停机 → exit 0 无输出（fail-open）**；`FERRYMAN_DISABLE=1` → exit 0 且不产生任何网络调用 | 每条断言退出码+stdout JSON 结构 |
 | T17 | P0 | restore 钩子 | source=resume/compact → 无输出退出；clear → 输出注入上下文；daemon 死 → exit 0 | 3 断言 |
 | T18 | P1 | 20MB 级大会话 | 用真实大会话副本（本地，不入库）跑 L0+分块 | L0 完成 <2min、材料缩比 ≥2×、不 OOM |
+| T31 | P1 | 悬空 tool_use 判定 | 尾部窗口集合差（tool_use id − tool_result id）；单测 7 例 + 守望级"悬空不入队/对照入队" | 悬空→推迟（不置 handed_off），matched/text-only/空文件→静止；窗口切割漏判可容忍（covers_until 兜底） |
 
 ## 3. [半自动] 需要你执行 1-2 个动作（我负责搭环境、写校验脚本、读结果）
 
