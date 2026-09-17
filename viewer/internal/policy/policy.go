@@ -26,6 +26,9 @@ func Derive(p Params) (Result, error) {
 	if p.PCache <= 0 {
 		return Result{}, errors.New("p_cache 缺省：无缓存经济，拒绝推导（宁可不算不造数）")
 	}
+	if p.TTLS <= 0 {
+		return Result{}, errors.New("ttl_s 未配置：策略参数拒绝推导（先实测缓存寿命）")
+	}
 	per := p.Per
 	if per <= 0 {
 		per = 1
@@ -46,6 +49,9 @@ func Derive(p Params) (Result, error) {
 	if p.MaxWaitS > 0 && p.MaxWaitS < cap {
 		cap = p.MaxWaitS
 	} // 手动只能往下收
+	if pb <= 0 {
+		return Result{}, errors.New("per_beat 非正：参数不自洽")
+	}
 	return Result{TauS: tau, CacheRead: cr, PerBeat: pb, Expire: ex, CapS: cap}, nil
 }
 

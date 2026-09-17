@@ -69,6 +69,18 @@ func TestNoCachePriceRefuses(t *testing.T) {
 	}
 }
 
+// TestRefusesBadTTL TTL 零值拒绝推导——堵 SimulateBeats 的 t += 0 死循环。
+func TestRefusesBadTTL(t *testing.T) {
+	_, err := Derive(Params{PIn: 6.9, PCache: 1.7, POut: 24, Per: 10000,
+		PrefixTokens: 150000, TTLS: 0})
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "拒绝推导") {
+		t.Fatalf("err=%v, want contains 拒绝推导", err)
+	}
+}
+
 // TestSimulateAndDoNothing 排跳与不作为成本：
 // τ=480, cap≈1428：t0=0, windowEnd=1500 → 跳在 480、960（第三跳 1440 > cap 1428 被截）
 // t0=0, windowEnd=700 → 只有 480；dur=700>600 → DoNothing=Expire=103.5；dur=500≤600 → 0
