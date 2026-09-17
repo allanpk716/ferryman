@@ -1,8 +1,10 @@
-"""用量采集：纯解析器测试（设计 §3.7）。"""
+"""用量采集：纯解析器与增量状态测试（设计 §3.7）。"""
 
 import json
+from pathlib import Path
 
-from ferryman.harvest import parse_usage_chunk
+from ferryman.accounts import Accounts
+from ferryman.harvest import HarvestState, parse_usage_chunk
 
 
 def _user_line(ts="2026-09-18T01:00:00Z", cwd="C:/proj"):
@@ -63,3 +65,87 @@ def test_parse_skips_nondict_and_null_token_lines():
              + _asst_line() + "\n")
     rows, _t, _c = parse_usage_chunk(chunk)
     assert len(rows) == 1 and rows[0]["output_tokens"] == 50
+
+
+def _mk_session(p: Path):
+    p.write_text(_user_line() + "\n" + _asst_line() + "\n", encoding="utf-8")
+
+
+def test_incremental_and_offsets(tmp_path):
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    _mk_session(f)
+    hs = HarvestState(acc)
+    rows = hs.maybe_harvest(f, f.stat().st_size, agent="cc")
+    assert len(rows) == 1
+    assert rows[0]["offset"] == f.stat().st_size      # 本批结束偏移
+    assert rows[0]["title"] == "" and rows[0]["project"] == "C:/proj"
+    # 无新增 → 空
+    assert hs.maybe_harvest(f, f.stat().st_size, agent="cc") == []
+    # 追加一条 assistant → 只有新增量
+    with open(f, "a", encoding="utf-8") as fh:
+        fh.write(_asst_line(ts="2026-09-18T01:01:00Z") + "\n")
+    rows2 = hs.maybe_harvest(f, f.stat().st_size, agent="cc")
+    assert len(rows2) == 1 and rows2[0]["offset"] == f.stat().st_size
+
+
+def test_partial_line_held_back(tmp_path):
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    f.write_text(_user_line() + "\n", encoding="utf-8")
+    hs = HarvestState(acc)
+    hs.maybe_harvest(f, f.stat().st_size, agent="cc")
+    half = _asst_line()[:30]                          # 无换行的半行
+    with open(f, "a", encoding="utf-8") as fh:
+        fh.write(half)
+    assert hs.maybe_harvest(f, f.stat().st_size, agent="cc") == []
+    with open(f, "a", encoding="utf-8") as fh:        # 补完
+        fh.write(_asst_line()[30:] + "\n")
+    rows = hs.maybe_harvest(f, f.stat().st_size, agent="cc")
+    assert len(rows) == 1
+
+
+def test_title_carried_across_batches(tmp_path):
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    title_line = json.dumps({"type": "ai-title", "aiTitle": "起名了"})
+    f.write_text(title_line + "\n", encoding="utf-8")
+    hs = HarvestState(acc)
+    hs.maybe_harvest(f, f.stat().st_size, agent="cc")
+    with open(f, "a", encoding="utf-8") as fh:
+        fh.write(_asst_line() + "\n")
+    rows = hs.maybe_harvest(f, f.stat().st_size, agent="cc")
+    assert rows and rows[0]["title"] == "起名了"       # 标题跨批次携带
+
+
+def test_resume_from_accounts(tmp_path):
+    """重启恢复：新 HarvestState 从账本行恢复偏移与标题，不重复采集。"""
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    f.write_text(json.dumps({"type": "ai-title", "aiTitle": "旧名"}) + "\n"
+                 + _asst_line() + "\n", encoding="utf-8")
+    hs = HarvestState(acc)
+    for r in hs.maybe_harvest(f, f.stat().st_size, agent="cc"):
+        acc.record("usage", ts=r["ts"], agent="cc", session_id="s1",
+                   lineage_id="L", project=r["project"], model=r["model"],
+                   title=r["title"], input_tokens=r["input_tokens"],
+                   cache_read_tokens=r["cache_read_tokens"],
+                   cache_creation_tokens=r["cache_creation_tokens"],
+                   output_tokens=r["output_tokens"], offset=r["offset"])
+    with open(f, "a", encoding="utf-8") as fh:        # 停机期间新增
+        fh.write(_asst_line(ts="2026-09-18T02:00:00Z") + "\n")
+    hs2 = HarvestState(acc)                            # "重启"
+    rows = hs2.maybe_harvest(f, f.stat().st_size, agent="cc")
+    assert len(rows) == 1                              # 只采新增
+    assert rows[0]["title"] == "旧名"                  # 标题也已恢复
+
+
+def test_shrink_rereads(tmp_path):
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    _mk_session(f)
+    hs = HarvestState(acc)
+    hs.maybe_harvest(f, f.stat().st_size, agent="cc")
+    f.write_text(_asst_line(ts="2026-09-18T03:00:00Z") + "\n", encoding="utf-8")
+    rows = hs.maybe_harvest(f, f.stat().st_size, agent="cc")   # 收缩→从头重采
+    assert len(rows) == 1

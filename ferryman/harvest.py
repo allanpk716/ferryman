@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 
 def _ts_of(rec: dict) -> float | None:
@@ -75,3 +76,70 @@ def parse_usage_chunk(text: str, *, title: str = "",
                      "cache_creation_tokens": cache_creation_tokens,
                      "output_tokens": output_tokens})
     return rows, title, cwd
+
+
+class HarvestState:
+    """每会话文件的采集偏移；daemon 重启后由账本恢复（usage 行自带 offset）。
+
+    病态场景（同路径文件被重写收缩）：偏移清零从头重采，可能与旧行重复——
+    append-only 不改写旧账，report 层可按 (session_id, offset) 去重。
+    """
+
+    def __init__(self, accounts) -> None:
+        self._accounts = accounts
+        self._offsets: dict[tuple[str, str], int] = {}
+        self._titles: dict[tuple[str, str], str] = {}
+        self._cwds: dict[tuple[str, str], str] = {}
+        try:
+            entries = accounts.read(kind="usage")
+        except Exception:                    # 账本读失败 → 从零采（重复风险接受）
+            entries = []
+        for e in entries:
+            key = (e.get("agent", ""), e.get("session_id", ""))
+            off = int(e.get("offset", 0))
+            if off > self._offsets.get(key, -1):
+                self._offsets[key] = off
+            if e.get("title"):
+                self._titles[key] = e["title"]
+            if e.get("project"):
+                self._cwds[key] = e["project"]
+
+    def maybe_harvest(self, path: Path, size: int, *, agent: str) -> list[dict]:
+        """有新增则尾读出 usage 行（带 title/project/offset）；无新增返回空。
+
+        残行（无换行结尾）整段留待下一轮；文件打不开返回空、不推进偏移。
+        """
+        key = (agent, path.stem)
+        offset = self._offsets.get(key, 0)
+        if size < offset:                    # 重写/收缩 → 从头重采
+            offset = 0
+        if size == offset:
+            return []
+        try:
+            with open(path, "rb") as f:
+                f.seek(offset)
+                raw = f.read(size - offset)
+        except OSError:
+            return []
+        if not raw:
+            return []
+        end = len(raw)
+        if not raw.endswith(b"\n"):
+            nl = raw.rfind(b"\n")
+            if nl < 0:
+                return []                    # 一整段没有完整行
+            end = nl + 1
+        chunk = raw[:end].decode("utf-8", errors="replace")
+        rows, title, cwd = parse_usage_chunk(
+            chunk, title=self._titles.get(key, ""), cwd=self._cwds.get(key, ""))
+        new_offset = offset + end
+        for r in rows:
+            r["title"] = title
+            r["project"] = cwd
+            r["offset"] = new_offset
+        if title:
+            self._titles[key] = title
+        if cwd:
+            self._cwds[key] = cwd
+        self._offsets[key] = new_offset
+        return rows
