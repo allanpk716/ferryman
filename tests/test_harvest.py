@@ -149,3 +149,18 @@ def test_shrink_rereads(tmp_path):
     f.write_text(_asst_line(ts="2026-09-18T03:00:00Z") + "\n", encoding="utf-8")
     rows = hs.maybe_harvest(f, f.stat().st_size, agent="cc")   # 收缩→从头重采
     assert len(rows) == 1
+
+
+def test_resume_survives_null_offset_row(tmp_path):
+    """账本毒药行防御：usage 行 offset 为 null——构造不抛，从 0 正常恢复（审查 Nit）。"""
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    _mk_session(f)
+    with open(acc.dir / "209901.jsonl", "a", encoding="utf-8") as fh:   # 手写毒药行，不经 record()
+        fh.write(json.dumps({"kind": "usage", "agent": "cc", "session_id": "s1",
+                             "offset": None, "model": "glm-5.3",
+                             "input_tokens": 1, "cache_read_tokens": 0,
+                             "cache_creation_tokens": 0, "output_tokens": 0}) + "\n")
+    hs = HarvestState(acc)                            # 不抛
+    rows = hs.maybe_harvest(f, f.stat().st_size, agent="cc")
+    assert len(rows) == 1 and rows[0]["offset"] == f.stat().st_size

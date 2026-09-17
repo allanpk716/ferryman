@@ -96,7 +96,7 @@ class HarvestState:
             entries = []
         for e in entries:
             key = (e.get("agent", ""), e.get("session_id", ""))
-            off = int(e.get("offset", 0))
+            off = int(e.get("offset") or 0)
             if off > self._offsets.get(key, -1):
                 self._offsets[key] = off
             if e.get("title"):
@@ -108,6 +108,8 @@ class HarvestState:
         """有新增则尾读出 usage 行（带 title/project/offset）；无新增返回空。
 
         残行（无换行结尾）整段留待下一轮；文件打不开返回空、不推进偏移。
+        键按 (agent, 文件名 stem)——假设监视目录树下会话文件名唯一（CC 为 UUID）；
+        同名冲突会导致状态串扰。
         """
         key = (agent, path.stem)
         offset = self._offsets.get(key, 0)
