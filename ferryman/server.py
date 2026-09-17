@@ -99,6 +99,10 @@ class FerryDaemon:
         self.accounts = accounts             # None = 不记账（旧测试零改动）
         self.stats = GateStats()
         self.pending = PendingTable()
+        # T41 等待窗口表：(agent, sid) → {"opened_ts": ...}。内存态，重启丢失可接受
+        # （同 PendingTable）——丢窗 = 该次等待不入账，宁缺毋错；泄漏兜底沿用台账
+        # 子代理计数 1h 规则（Stop 丢失则窗不闭、不记，不另设定时器）。
+        self._windows: dict[tuple[str, str], dict] = {}
         self.started_at = started_at if started_at is not None else now_s()
 
     # ---------- 闸门状态机 ----------
@@ -110,6 +114,12 @@ class FerryDaemon:
         cwd = str(body.get("cwd") or "")
         prompt = str(body.get("prompt") or "")
         self.stats.hit(agent)
+
+        # 0. 主会话来讯 = 等待提前结束（词汇表"等待窗口"）——强续/bypass prompt 亦算
+        #    恢复写入，故闭窗钩子置于 bypass 判定之前（R1；且台账 miss 也要闭）。
+        wk = (agent, session_id)
+        if wk in self._windows:
+            self._close_window(wk, "prompt")
 
         # 1. 魔法前缀：单次放行（「强续」为主——CC 下 ! 首字符触发 bash 模式，!! 打不出来；
         #    !! 保留匹配以兼容 Codex）
@@ -230,6 +240,19 @@ class FerryDaemon:
         except Exception as e:  # noqa: BLE001 — 记账永不弄断闸门（与 _book_handoff 同纪律）
             print(f"[account] {kind} 记账失败（忽略，闸门不受影响）: {e}", flush=True)
 
+    def _close_window(self, key: tuple[str, str], reason: str) -> None:
+        """闭等待窗口并入账 window 流水（pop 先行 → 天然幂等，绝不双记）。"""
+        w = self._windows.pop(key, None)
+        if w is None or self.accounts is None:
+            return
+        agent, sid = key
+        st = self.ledger.get(agent, sid)
+        closed = now_s()
+        self._acct("window", st, agent=agent, session_id=sid,
+                   opened_ts=round(w["opened_ts"], 3), closed_ts=round(closed, 3),
+                   dur_s=round(closed - w["opened_ts"], 1),
+                   prefix_tokens=(st.peak_ctx if st else 0), close_reason=reason)
+
     # ---------- 归还 ----------
 
     def restore(self, agent: str, cwd: str, session_id: str) -> dict:
@@ -278,6 +301,12 @@ class FerryDaemon:
         count = self.ledger.subagent_event(agent, session_id, event)
         with self.stats.lock:
             self.stats.subagent_events += 1
+        # T41 等待窗口：首个子代理 start 开窗（嵌套不重复开）；计数归零闭窗
+        key = (agent, session_id)
+        if count > 0 and key not in self._windows:
+            self._windows[key] = {"opened_ts": now_s()}
+        if count == 0 and key in self._windows:
+            self._close_window(key, "subagents_done")
         return {"ok": True, "active": count > 0}
 
     def health(self) -> dict:

@@ -128,6 +128,15 @@ class Harness:
         with urllib.request.urlopen(req, timeout=5) as r:
             return json.loads(r.read().decode("utf-8"))
 
+    def sub(self, body: dict) -> dict:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/subagent",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.token}",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode("utf-8"))
+
     def get(self, path: str, token: str | None = None):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}",

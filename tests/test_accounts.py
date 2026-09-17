@@ -157,3 +157,36 @@ def test_restore_books_inject(h):
     assert e["tokens"] > 0 and e["handoff_id"]
     blk = h.accounts.read(kind="block")[-1]        # R9：inject 与 block 同谱系（Q7 因果链）
     assert e["lineage_id"] == blk["lineage_id"]
+
+
+def test_window_books_on_subagent_cycle(h):
+    h.sub({"event": "start", "agent": "cc", "session_id": "acct3"})
+    h.sub({"event": "start", "agent": "cc", "session_id": "acct3"})   # 嵌套：计数 2
+    h.sub({"event": "stop", "agent": "cc", "session_id": "acct3"})
+    h.sub({"event": "stop", "agent": "cc", "session_id": "acct3"})    # 计数归零 → 闭窗
+    assert h.wait_for(lambda: h.accounts.read(kind="window"))
+    e = h.accounts.read(kind="window")[0]
+    assert e["session_id"] == "acct3"
+    assert e["dur_s"] >= 0 and e["close_reason"] == "subagents_done"
+    assert set(e) >= {"opened_ts", "closed_ts", "dur_s", "prefix_tokens"}
+
+
+def test_window_closes_on_prompt(h):
+    h.sub({"event": "start", "agent": "cc", "session_id": "acct4"})
+    r = h.gate({"agent": "cc", "session_id": "acct4", "prompt": "人回来了"})
+    assert r["decision"] == "allow"
+    e = h.accounts.read(kind="window")[-1]
+    assert e["close_reason"] == "prompt"
+    # 窗已闭：后续 stop 不再产生第二条
+    h.sub({"event": "stop", "agent": "cc", "session_id": "acct4"})
+    assert len([x for x in h.accounts.read(kind="window")
+                if x["session_id"] == "acct4"]) == 1
+
+
+def test_window_closes_on_bypass_prompt(h):
+    """R1：强续/bypass 亦是主会话恢复写入——等待窗口同样闭窗（钩子须在 bypass 分支之前）。"""
+    h.sub({"event": "start", "agent": "cc", "session_id": "acct5"})
+    r = h.gate({"agent": "cc", "session_id": "acct5", "prompt": "强续 继续"})
+    assert r["decision"] == "allow" and r["reason"] == "bypass"
+    e = h.accounts.read(kind="window")[-1]
+    assert e["session_id"] == "acct5" and e["close_reason"] == "prompt"
