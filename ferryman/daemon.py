@@ -50,11 +50,16 @@ class Watcher(threading.Thread):
     """mtime 轮询：登记台账 + 对达总结阈值的活跃会话懒富化并入队摆渡。"""
 
     def __init__(self, cfg: Config, ledger: Ledger, store: Store,
-                 enqueue, started_at: float):
+                 enqueue, started_at: float, accounts=None):
         super().__init__(daemon=True, name="ferryman-watch")
         self.cfg, self.ledger, self.store = cfg, ledger, store
         self.enqueue = enqueue
         self.started_at = started_at
+        self.accounts = accounts          # None = 不采集（旧调用/测试零改动）
+        self.harvest = None
+        if accounts is not None and cfg.watch.harvest_usage:
+            from .harvest import HarvestState
+            self.harvest = HarvestState(accounts)
         self._stop = threading.Event()
         cc_dir = cfg.watch.cc_projects_dir or str(Path.home() / ".claude" / "projects")
         self.cc_dir = Path(cc_dir)
@@ -83,6 +88,7 @@ class Watcher(threading.Thread):
                 continue
             st = self.ledger.touch("cc", p.stem, str(p), mtime=mtime, size=size,
                                    daemon_started_at=self.started_at)
+            self._harvest_usage(p, size, st)
             self._maybe_enqueue(st)
 
     def _poll_codex(self) -> None:
@@ -143,7 +149,30 @@ class Watcher(threading.Thread):
             st.peak_ctx = max((t.input_tokens for t in turns), default=0)
             if not st.cwd:                      # session_meta 首行的 cwd（T23：gate/归还匹配必需）
                 st.cwd = session_cwd(Path(st.transcript_path))
-        st.enriched_write = st.last_write
+                st.enriched_write = st.last_write
+
+    def _harvest_usage(self, path: Path, size: int, st) -> None:
+        """T42 用量采集：账本故障不得弄断守望（故障隔离不变量，模式同 _book_handoff）。"""
+        if getattr(self, "harvest", None) is None:   # __new__ 裸构造的旧测试无此属性 → 视同不采集
+            return
+        try:
+            rows = self.harvest.maybe_harvest(path, size, agent="cc")
+            if not rows:
+                return
+            from .ledger import _norm_path
+            lineage = _norm_path(str(path))
+            for r in rows:
+                self.accounts.record(
+                    "usage", ts=r["ts"], agent="cc", session_id=st.session_id,
+                    lineage_id=lineage, project=r["project"] or st.cwd,
+                    model=r["model"], title=r["title"],
+                    input_tokens=r["input_tokens"],
+                    cache_read_tokens=r["cache_read_tokens"],
+                    cache_creation_tokens=r["cache_creation_tokens"],
+                    output_tokens=r["output_tokens"], offset=r["offset"])
+        except Exception as e:  # noqa: BLE001 — 采集故障只警告
+            print(f"[harvest] 用量采集失败（忽略继续）: {path.name}: {e}",
+                  flush=True)
 
 
 class FerryWorker(threading.Thread):
@@ -297,7 +326,7 @@ def serve(relax_min_gap: bool = False) -> int:
          "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False),
         encoding="utf-8")
 
-    watcher = Watcher(cfg, ledger, store, enqueue, started_at)
+    watcher = Watcher(cfg, ledger, store, enqueue, started_at, accounts)
     worker = FerryWorker(cfg, store, tasks, accounts)
     watcher.start()
     worker.start()

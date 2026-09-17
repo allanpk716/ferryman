@@ -15,7 +15,7 @@ import ferryman.daemon as daemon_mod
 from ferryman.config import Config, ThresholdCfg
 from ferryman.daemon import Watcher
 from ferryman.ledger import now_s
-from helpers import Harness, free_port, write_session
+from helpers import Harness, free_port, now_iso, write_session
 
 
 # ---------- T10 全链路 ----------
@@ -232,3 +232,59 @@ def test_health_grace_period_after_daemon_restart(h):
 
     d.started_at = now_s() - 601                      # 宽限期已过，同条件才告警
     assert d.health()["health_alert"] is True
+
+
+# ---------- T42 用量采集：守望接线 ----------
+
+def test_usage_harvested_to_accounts(h):
+    """T42：守望把会话用量落账为 usage 行（含标题/cwd），追加只采增量。"""
+    import json as _json
+    sid = "usid-0001"
+    write_session(h.projects, sid, "C:/proj", usage_input=1234)
+    assert h.wait_for(
+        lambda: h.accounts.read(kind="usage", session=sid))
+    rows = h.accounts.read(kind="usage", session=sid)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["agent"] == "cc" and r["session_id"] == sid
+    assert r["input_tokens"] == 1234 and r["cache_read_tokens"] == 100
+    assert r["model"] == "" and r["title"] == "集成测试会话"
+    assert r["lineage_id"] and r["offset"] > 0
+    # 追加一条 assistant → 只 +1 行
+    f = h.projects / "C--proj" / f"{sid}.jsonl"
+    ts2 = now_iso()
+    f.open("a", encoding="utf-8").write(_json.dumps(
+        {"type": "assistant", "timestamp": ts2,
+         "message": {"role": "assistant",
+                     "content": [{"type": "text", "text": "又一步"}],
+                     "usage": {"input_tokens": 5, "cache_read_input_tokens": 2000,
+                               "cache_creation_input_tokens": 0,
+                               "output_tokens": 7}}}) + "\n")
+    assert h.wait_for(
+        lambda: len(h.accounts.read(kind="usage", session=sid)) == 2)
+
+
+def test_usage_harvest_disabled(tmp_path):
+    """watch.harvest_usage=False → 不落 usage 行。"""
+    from ferryman.accounts import Accounts
+    from ferryman.config import ServerCfg, WatchCfg
+    from ferryman.ledger import Ledger
+    from ferryman.store import Store
+
+    projects = tmp_path / "projects"
+    cfg = Config()
+    cfg.watch = WatchCfg(poll_interval_s=0.2,
+                         cc_projects_dir=str(projects),
+                         codex_sessions_dir=str(tmp_path / "no-codex"))
+    cfg.watch.harvest_usage = False
+    cfg.server = ServerCfg(port=free_port(), data_dir=str(tmp_path / "data"))
+    accounts = Accounts(Path(cfg.data_dir))
+    watcher = Watcher(cfg, Ledger(), Store(Path(cfg.data_dir)),
+                      lambda st: True, now_s(), accounts)
+    watcher.start()
+    try:
+        write_session(projects, "usid-0002", "C:/proj")
+        time.sleep(1.0)
+        assert accounts.read(kind="usage") == []
+    finally:
+        watcher.stop()

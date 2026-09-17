@@ -106,7 +106,8 @@ class Harness:
                                                       base_url="http://127.0.0.1:9/v1",
                                                       model="fake")})
         self.server = make_server(self.daemon, self.port, self.token)
-        self.watcher = Watcher(cfg, self.ledger, self.store, enqueue, self.started_at)
+        self.watcher = Watcher(cfg, self.ledger, self.store, enqueue, self.started_at,
+                               self.accounts)
         self.worker = FerryWorker(cfg, self.store, self.tasks,
                                   accounts=self.accounts)
         threading.Thread(target=self.server.serve_forever,

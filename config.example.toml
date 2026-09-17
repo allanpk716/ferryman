@@ -41,6 +41,7 @@ toast = true
 # codex_extra_dirs = []   # 额外 codex 会话目录；Orca 运行时目录
 #                         # (%APPDATA%\orca\codex-runtime-home\home\sessions) 存在时自动追加
 #                         # ——2026-09-17 真机抓包发现经 Orca 启动的 codex 写在那里
+# harvest_usage = true   # 用量采集（usage 科目）：会话文件 30 天清理后的审计地基
 
 [prices.glm]
 # 费用账本（T41）：GLM Coding Plan 积分系数（2026-09-17 实测口径，

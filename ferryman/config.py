@@ -26,6 +26,7 @@ class WatchCfg:
     # 重定向到 %APPDATA%\orca\codex-runtime-home\home\sessions——不扫则这些会话
     # gate 能收到但永远不被摆渡）。Orca 目录存在时自动追加，无需配置。
     codex_extra_dirs: list[str] = field(default_factory=list)
+    harvest_usage: bool = True           # 用量采集（usage 科目）：30 天清理后的审计地基，隐私敏感可关
 
 
 @dataclass
@@ -102,6 +103,7 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
                 cc_projects_dir=str(w.get("cc_projects_dir", "")),
                 codex_sessions_dir=str(w.get("codex_sessions_dir", "")),
                 codex_extra_dirs=[str(d) for d in w.get("codex_extra_dirs", [])],
+                harvest_usage=bool(w.get("harvest_usage", True)),
             )
         if "server" in data:
             s = data["server"]
