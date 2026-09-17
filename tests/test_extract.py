@@ -122,3 +122,92 @@ def test_material_text_contains_skeleton_and_items(tmp_path):
     facts, items, _turns = extract(_fixture(tmp_path))
     md = material_text(facts, items)
     assert "确定性骨架" in md and "a.ts" in md and "[user] 做点事" in md
+
+
+# ---------- T44a 末段定格 + 命令取段 ----------
+
+def test_freeze_plain_tail(tmp_path):
+    f = _write(tmp_path, [
+        {"type": "user", "timestamp": "2026-09-16T10:00:00.000Z",
+         "message": {"role": "user", "content": "前面的话"}},
+        {"type": "assistant", "timestamp": "2026-09-16T10:00:10.000Z",
+         "message": {"role": "assistant", "content": "早先回复"}},
+        {"type": "user", "timestamp": "2026-09-16T10:00:20.000Z",
+         "message": {"role": "user", "content": "最后问题"}},
+        {"type": "assistant", "timestamp": "2026-09-16T10:00:30.000Z",
+         "message": {"role": "assistant", "content": [{"type": "text", "text": "最后回复"}]}},
+    ])
+    facts, _items, _turns = extract(f)
+    sk = facts.skeleton_text()
+    assert "## 末段定格" in sk
+    assert "[user] 最后问题" in sk
+    assert "[assistant] 最后回复" in sk
+    assert "前面的话" not in sk and "早先回复" not in sk     # 只定格末轮，不带历史
+
+
+def test_freeze_caps_and_marker(tmp_path):
+    long_text = "前" * 1500 + "后" * 500                     # 2000 字助手文本
+    f = _write(tmp_path, [
+        {"type": "user", "timestamp": "2026-09-16T10:00:00.000Z",
+         "message": {"role": "user", "content": "问"}},
+        {"type": "assistant", "timestamp": "2026-09-16T10:00:10.000Z",
+         "message": {"role": "assistant", "content": [{"type": "text", "text": long_text}]}},
+    ])
+    facts, _items, _turns = extract(f)
+    sk = facts.skeleton_text()
+    assert "前" * 1500 in sk                                 # 保留前 1500 字
+    assert "（已截断，全文见会话文件）" in sk                 # 尾标
+    assert "后" * 100 not in sk                              # 截断部分不出现
+
+
+def test_freeze_choice_tail(tmp_path):
+    ask = {"type": "tool_use", "name": "AskUserQuestion",
+           "input": {"questions": [
+               {"question": "选哪个",
+                "options": [{"label": "甲"}, {"label": "乙"}]}]}}
+    f = _write(tmp_path, [
+        {"type": "user", "timestamp": "2026-09-16T10:00:00.000Z",
+         "message": {"role": "user", "content": "怎么办"}},
+        {"type": "assistant", "timestamp": "2026-09-16T10:00:10.000Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "text", "text": "请选择方案"},
+             ask]}},
+    ])
+    facts, _items, _turns = extract(f)
+    sk = facts.skeleton_text()
+    assert "【上次停在选择】" in sk
+    assert "问题：选哪个" in sk
+    assert "选项：甲" in sk and "选项：乙" in sk
+    assert '"options"' not in sk and "questions" not in sk   # 不倒 JSON 原文
+
+
+def test_freeze_tool_only_tail(tmp_path):
+    f = _write(tmp_path, [
+        {"type": "user", "timestamp": "2026-09-16T10:00:00.000Z",
+         "message": {"role": "user", "content": "跑一下"}},
+        {"type": "assistant", "timestamp": "2026-09-16T10:00:10.000Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "tool_use", "name": "Bash", "input": {"command": "pytest -q"}}]}},
+    ])
+    facts, _items, _turns = extract(f)
+    sk = facts.skeleton_text()
+    assert "（末条为工具调用：Bash，无文字回复）" in sk
+
+
+def test_commands_recent_tail(tmp_path):
+    lines = [{"type": "user", "timestamp": "2026-09-16T10:00:00.000Z",
+              "message": {"role": "user", "content": "开始"}}]
+    for i in range(80):
+        lines.append({"type": "assistant",
+                      "timestamp": f"2026-09-16T10:{i // 60:02d}:{i % 60:02d}.000Z",
+                      "message": {"role": "assistant", "content": [
+                          {"type": "tool_use", "name": "Bash",
+                           "input": {"command": f"cmd_{i:03d} --flag {i}"}}]}})
+    f = _write(tmp_path, lines)
+    facts, _items, _turns = extract(f)
+    assert len(facts.commands) == 80                         # 收集端全量保留
+    sk = facts.skeleton_text()
+    assert "最近 20 条" in sk                                # 渲染端取尾部
+    assert "cmd_079" in sk                                   # 含最后一条
+    assert "cmd_000" not in sk                               # 不含最早一条
+    assert "cmd_060" in sk                                   # 尾 20 的首条（第 61 条）
