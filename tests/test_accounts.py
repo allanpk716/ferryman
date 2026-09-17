@@ -4,7 +4,7 @@ import time
 import pytest
 
 from ferryman.accounts import Accounts
-from helpers import write_session
+from helpers import MIN_CTX, write_session
 
 AUG = time.mktime(time.strptime("2026-08-15 12:00:00", "%Y-%m-%d %H:%M:%S"))
 SEP = time.mktime(time.strptime("2026-09-16 12:00:00", "%Y-%m-%d %H:%M:%S"))
@@ -116,3 +116,42 @@ def test_booking_failure_never_breaks_ferry(h, monkeypatch):
     assert h.wait_for(lambda: h.store.restore_candidates("cc", "C:/proj"))
     # 摆渡产物存在（fresh 或 skeleton），且 worker 线程未死
     assert h.worker.is_alive()
+
+
+def _stale_blocked_session(h):
+    """造一个已达拦截阈值、有有效交接的会话（enforce 下必被拦）。"""
+    write_session(h.projects, "acct2", "C:/proj")
+    assert h.wait_for(lambda: h.store.restore_candidates("cc", "C:/proj"))
+    body = {"agent": "cc", "session_id": "acct2",
+            "transcript_path": str(h.projects / "C--proj" / "acct2.jsonl"),
+            "cwd": "C:/proj", "prompt": "继续干活"}
+    return body
+
+
+def test_block_books_entry(h):
+    body = _stale_blocked_session(h)
+    r = h.gate(body)
+    if r["decision"] == "allow":        # observe/骨架时序兜底：等到 block 为止
+        assert h.wait_for(lambda: h.gate(body)["decision"] == "block")
+    e = h.accounts.read(kind="block")[-1]
+    assert e["session_id"] == "acct2"
+    assert e["prefix_tokens"] >= MIN_CTX or e["prefix_tokens"] == 0  # peak_ctx 尽力而为
+    assert e["idle_s"] > 0
+
+
+def test_bypass_books_entry(h):
+    body = _stale_blocked_session(h)
+    r = h.gate({**body, "prompt": "强续 无论如何继续"})
+    assert r["decision"] == "allow"
+    e = h.accounts.read(kind="bypass")[-1]
+    assert e["session_id"] == "acct2"
+
+
+def test_restore_books_inject(h):
+    body = _stale_blocked_session(h)
+    assert h.wait_for(lambda: h.gate(body)["decision"] == "block")
+    r = h.get(f"/restore?agent=cc&cwd=C:/proj&session_id=newsid")
+    assert r["context"]
+    e = h.accounts.read(kind="inject")[-1]
+    assert e["session_id"] == "newsid"
+    assert e["tokens"] > 0 and e["handoff_id"]

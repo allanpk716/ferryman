@@ -88,7 +88,8 @@ class Harness:
             except queue.Full:
                 return False
 
-        self.daemon = FerryDaemon(cfg, self.ledger, self.store, enqueue)
+        self.daemon = FerryDaemon(cfg, self.ledger, self.store, enqueue,
+                                  accounts=self.accounts)
 
         def default_fake(path, provider, agent="cc"):
             md = ("[Ferryman 交接 · 会话 集成测试会话]\n\n<<<INJECT>>>\n注入层：干完了 fb.py\n"

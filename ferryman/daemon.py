@@ -274,7 +274,7 @@ def serve(relax_min_gap: bool = False) -> int:
             return False
 
     started_at = now_s()
-    daemon = FerryDaemon(cfg, ledger, store, enqueue, started_at)
+    daemon = FerryDaemon(cfg, ledger, store, enqueue, started_at=started_at)
     try:
         server = make_server(daemon, cfg.server.port, token)
     except OSError:

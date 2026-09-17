@@ -24,6 +24,7 @@ from typing import Protocol
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+from .accounts import Accounts
 from .ferry import INJECT_CLOSE, INJECT_OPEN
 from .ledger import Ledger, SessionState, now_s
 from .store import Store
@@ -89,11 +90,13 @@ class FerryDaemon:
     """server 与 daemon 编排层共享的状态容器（ledger/store/queue 由 daemon 注入）。"""
 
     def __init__(self, cfg, ledger: Ledger, store: Store, enqueue_ferry,
+                 accounts: Accounts | None = None,
                  started_at: float | None = None) -> None:
         self.cfg = cfg
         self.ledger = ledger
         self.store = store
         self.enqueue_ferry = enqueue_ferry   # callable(SessionState) —— 台账状态入队摆渡
+        self.accounts = accounts             # None = 不记账（旧测试零改动）
         self.stats = GateStats()
         self.pending = PendingTable()
         self.started_at = started_at if started_at is not None else now_s()
@@ -112,6 +115,9 @@ class FerryDaemon:
         #    !! 保留匹配以兼容 Codex）
         if prompt.startswith("强续") or prompt.startswith("!!"):
             self.stats.bypass += 1
+            st_b = self.ledger.get(agent, session_id)    # 只取一次（lineage 尽力而为）
+            self._acct("bypass", st_b, agent=agent, session_id=session_id,
+                       prefix_tokens=st_b.peak_ctx if st_b else 0)
             return {"decision": "allow", "reason": "bypass"}
         st = self.ledger.get(agent, session_id) or self.ledger.get_by_path(transcript_path)
 
@@ -150,6 +156,7 @@ class FerryDaemon:
         if H is not None:                                   # 分支 5
             self.pending.clear(key)
             self.stats.blocks += 1
+            self._acct("block", st, prefix_tokens=st.peak_ctx, idle_s=round(idle, 1))
             self.store.save_pending_prompt(st.session_id, prompt)
             self.store.mark_blocked(H["handoff_id"])
             self._notify_block(st, H, idle)
@@ -167,6 +174,7 @@ class FerryDaemon:
                 return {"decision": "allow",
                         "additional_context": self._warn_ctx(idle, None)}
             self.stats.blocks += 1
+            self._acct("block", st, prefix_tokens=st.peak_ctx, idle_s=round(idle, 1))
             self.store.save_pending_prompt(st.session_id, prompt)
             return {"decision": "block",
                     "reason": (f"交接仍未就绪（第 {n} 次）；稍候重试，或以「强续」开头强制继续，"
@@ -197,6 +205,25 @@ class FerryDaemon:
             args=(H["path"], st.agent, st.session_id, self.cfg),
             daemon=True, name="ferryman-notify").start()
 
+    def _acct(self, kind: str, st: SessionState | None = None, *,
+              agent: str = "", session_id: str = "", **fields) -> None:
+        """记账薄封装：st 优先（lineage 用归一化 transcript 路径），无 st 用显式参数。"""
+        if self.accounts is None:
+            return
+        try:
+            from .ledger import _norm_path
+            if st is not None:
+                agent, session_id = st.agent, st.session_id
+                lineage = _norm_path(st.transcript_path) if st.transcript_path else session_id
+                project = st.cwd or ""
+            else:
+                lineage = session_id      # 无台账线索：lineage 退化为 session 自身
+                project = ""
+            self.accounts.record(kind, agent=agent, session_id=session_id,
+                                 lineage_id=lineage, project=project, **fields)
+        except Exception as e:  # noqa: BLE001 — 记账永不弄断闸门（与 _book_handoff 同纪律）
+            print(f"[account] {kind} 记账失败（忽略，闸门不受影响）: {e}", flush=True)
+
     # ---------- 归还 ----------
 
     def restore(self, agent: str, cwd: str, session_id: str) -> dict:
@@ -220,6 +247,10 @@ class FerryDaemon:
                + inject
                + (f"\n\n用户被拦时的原话（待续 prompt）：{pending}" if pending else "")
                + f"\n\n完整交接文档: {newest['path']}（需要更多细节时读取）")
+        from .extract import token_estimate
+        self._acct("inject", self.ledger.get(agent, session_id),
+                   agent=agent, session_id=session_id,
+                   tokens=token_estimate(ctx), handoff_id=newest["handoff_id"])
         self.store.mark_injected(newest["handoff_id"], session_id)
         return {"context": ctx[:6000]}
 
