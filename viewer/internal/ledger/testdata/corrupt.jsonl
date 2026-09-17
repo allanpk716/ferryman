@@ -1,0 +1,4 @@
+{"v":1,"kind":"usage","ts":1780003000.1,"ts_iso":"2026-09-18T10:05:00+0800","agent":"cc","session_id":"sess-delta","lineage_id":"lin-delta","project":"Ferryman","model":"claude-sonnet-5","title":"Delta 会话","input_tokens":100,"cache_read_tokens":10,"cache_creation_tokens":5,"output_tokens":50,"offset":0}
+{broken
+{"v":1,"kind":"usage","ts":1780003000.2,"ts_iso":"2026-09-18T10:05:01+0800","agent":"cc","session_id":"sess-delta","lineage_id":"lin-delta","project":"Ferryman","model":"claude-sonnet-5","title":"","input_tokens":200,"cache_read_tokens":20,"cache_creation_tokens":10,"output_tokens":60,"offset":12000}
+
