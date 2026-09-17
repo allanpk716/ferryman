@@ -228,26 +228,30 @@ class FerryWorker(threading.Thread):
 
     def _book_handoff(self, item: dict, agent: str, sid: str,
                       meta: dict, outcome: str) -> None:
-        """摆渡记账：usage 失败记 0（墙钟超时线程被弃，usage 不可得）。"""
+        """摆渡记账：usage 失败记 0（墙钟超时线程被弃，usage 不可得）。
+        记账永不弄断摆渡——任何异常吞为警告（骨架兜底不变量优先）。"""
         if self.accounts is None:
             return
-        from .ledger import _norm_path
-        books = load_prices()
-        provider = self.cfg.ferry_provider
-        price_ver = None
-        book = books.get(provider)
-        if book is not None:
-            pv = book.at(time.time())
-            price_ver = price_tag(provider, pv) if pv else None
-        usage = meta.get("usage") or {}
-        self.accounts.record(
-            "handoff", agent=agent, session_id=sid,
-            lineage_id=_norm_path(item["transcript_path"]),
-            project=item.get("cwd", ""), provider=provider,
-            model=str(meta.get("model", "")), price_ver=price_ver,
-            prompt_tokens=int(usage.get("prompt_tokens", 0)),
-            completion_tokens=int(usage.get("completion_tokens", 0)),
-            outcome=outcome, wall_s=float(meta.get("wall_s", 0.0)))
+        try:
+            from .ledger import _norm_path
+            books = load_prices()
+            provider = self.cfg.ferry_provider
+            price_ver = None
+            book = books.get(provider)
+            if book is not None:
+                pv = book.at(time.time())
+                price_ver = price_tag(provider, pv) if pv else None
+            usage = meta.get("usage") or {}
+            self.accounts.record(
+                "handoff", agent=agent, session_id=sid,
+                lineage_id=_norm_path(item["transcript_path"]),
+                project=item.get("cwd", ""), provider=provider,
+                model=str(meta.get("model", "")), price_ver=price_ver,
+                prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                completion_tokens=int(usage.get("completion_tokens", 0)),
+                outcome=outcome, wall_s=float(meta.get("wall_s", 0.0)))
+        except Exception as e:  # noqa: BLE001 — 坏价格 TOML 等记账故障不得弄断摆渡
+            print(f"[account] handoff 记账失败（忽略，摆渡不受影响）: {e}", flush=True)
 
 
 def serve(relax_min_gap: bool = False) -> int:

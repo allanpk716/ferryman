@@ -101,3 +101,18 @@ def test_ferry_completion_books_handoff(h):
     assert e["provider"] == "fake"
     assert e["outcome"] in ("fresh", "skeleton", "failed")
     assert "content" not in e and "md" not in e        # 隐私不变量：无正文
+
+
+def test_booking_failure_never_breaks_ferry(h, monkeypatch):
+    """记账抛异常（坏价格表）时摆渡照常产出交接——骨架兜底不变量优先。"""
+    import ferryman.daemon as daemon_mod
+    from ferryman.accounts import Accounts
+
+    def boom(self, *a, **k):
+        raise RuntimeError("坏 [prices.*] TOML")
+
+    monkeypatch.setattr(daemon_mod.FerryWorker, "_book_handoff", boom)
+    write_session(h.projects, "acct-boom", "C:/proj")
+    assert h.wait_for(lambda: h.store.restore_candidates("cc", "C:/proj"))
+    # 摆渡产物存在（fresh 或 skeleton），且 worker 线程未死
+    assert h.worker.is_alive()
