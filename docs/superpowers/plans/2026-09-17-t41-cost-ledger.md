@@ -968,8 +968,11 @@ subagent() 内（`count = self.ledger.subagent_event(...)` 之后）：
 
 ```python
         key = (agent, session_id)
-        if count > 0 and key not in self._windows:
-            self._windows[key] = {"opened_ts": now_s()}
+        if count > 0:
+            w = self._windows.get(key)
+            if w is None or now_s() - w["opened_ts"] > SUBAGENT_EVENT_LEAK_S:
+                # 首开；或上一轮 Stop 丢失、泄漏超时后重锚（旧窗不沿用，防 dur_s 虚高跨泄漏间隙，R10）
+                self._windows[key] = {"opened_ts": now_s()}
         if count == 0 and key in self._windows:
             self._close_window(key, "subagents_done")
 ```
