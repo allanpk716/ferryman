@@ -149,7 +149,7 @@ class Watcher(threading.Thread):
             st.peak_ctx = max((t.input_tokens for t in turns), default=0)
             if not st.cwd:                      # session_meta 首行的 cwd（T23：gate/归还匹配必需）
                 st.cwd = session_cwd(Path(st.transcript_path))
-                st.enriched_write = st.last_write
+        st.enriched_write = st.last_write
 
     def _harvest_usage(self, path: Path, size: int, st) -> None:
         """T42 用量采集：账本故障不得弄断守望（故障隔离不变量，模式同 _book_handoff）。"""

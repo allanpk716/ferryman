@@ -3,6 +3,7 @@
 - 只取数字与类型，永不落消息内容（隐私不变量）；
 - 增量：记住每文件已消费字节偏移，只解析新增的完整行（残行留待下轮）；
 - 断点：偏移随 usage 流水入账，daemon 重启后从账本恢复——账本即唯一状态；
+  偏移先推进后返回，record() 中途失败时该批尾部行永久丢失（at-most-once，故障隔离语义）；
 - 范围 v1：仅 CC 主会话（subagents 转录由守望 glob 层排除；Codex 挂后续）。
 """
 
@@ -82,7 +83,8 @@ class HarvestState:
     """每会话文件的采集偏移；daemon 重启后由账本恢复（usage 行自带 offset）。
 
     病态场景（同路径文件被重写收缩）：偏移清零从头重采，可能与旧行重复——
-    append-only 不改写旧账，report 层可按 (session_id, offset) 去重。
+    append-only 不改写旧账，report 层可按 (lineage_id, ts) 去重
+    （重采行的 ts 取自转录原文，重复行 ts 相同）。
     """
 
     def __init__(self, accounts) -> None:
