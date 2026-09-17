@@ -28,6 +28,9 @@ _KIND_FIELDS: dict[str, set[str]] = {
     "inject": {"tokens", "handoff_id"},
     "bypass": {"prefix_tokens"},
     "window": {"opened_ts", "closed_ts", "dur_s", "prefix_tokens", "close_reason"},
+    # 逐次请求的用量遥测（设计 §3.7；会话文件 30 天清理后的审计地基）
+    "usage": {"model", "title", "input_tokens", "cache_read_tokens",
+              "cache_creation_tokens", "output_tokens", "offset"},
 }
 _COMMON = {"ts", "ts_iso", "kind", "v", "agent", "session_id", "lineage_id", "project"}
 KINDS = tuple(_KIND_FIELDS)

@@ -232,3 +232,16 @@ def test_window_reanchors_after_leak_gap(h):
     h.sub({"event": "stop", "agent": "cc", "session_id": "acct6"})
     e = [x for x in h.accounts.read(kind="window") if x["session_id"] == "acct6"][-1]
     assert e["dur_s"] < SUBAGENT_EVENT_LEAK_S
+
+
+def test_usage_kind_roundtrip(tmp_path):
+    acc = Accounts(tmp_path)
+    e = acc.record("usage", ts=1758150005.0, agent="cc", session_id="s1",
+                   lineage_id="L1", project="C:/proj", model="glm-5.3",
+                   title="修登录bug", input_tokens=100, cache_read_tokens=9000,
+                   cache_creation_tokens=0, output_tokens=50, offset=2048)
+    assert e["kind"] == "usage" and e["offset"] == 2048
+    with pytest.raises(ValueError, match="不落这些字段"):
+        acc.record("usage", agent="cc", session_id="s1", model="m", title="",
+                   input_tokens=1, cache_read_tokens=0, cache_creation_tokens=0,
+                   output_tokens=0, offset=1, message_content="泄漏")
