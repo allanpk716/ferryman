@@ -307,6 +307,23 @@ def test_filters(tmp_path):
     assert len(acc.read(since=SEP + 1)) == 0
     assert len(acc.read(until=AUG + 1)) == 0
     assert len(acc.read(lineage="L2")) == 1
+
+
+def test_reserved_fields_stamped_not_passable(tmp_path):
+    acc = Accounts(tmp_path)
+    with pytest.raises(ValueError, match="保留字段"):
+        rec_handoff(acc, v=2)
+    with pytest.raises(ValueError, match="保留字段"):
+        rec_handoff(acc, ts_iso="2020-01-01")
+
+
+def test_read_skips_corrupt_tail_line(tmp_path):
+    acc = Accounts(tmp_path)
+    rec_handoff(acc)
+    f = tmp_path / "accounts" / (time.strftime("%Y%m") + ".jsonl")
+    with open(f, "a", encoding="utf-8") as fh:      # 模拟崩溃撕裂的尾行
+        fh.write('{"v": 1, "kind": "handoff", TRUN')
+    assert len(acc.read()) == 1                      # 好行仍在，坏行被跳过
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -364,6 +381,9 @@ class Accounts:
         bad = set(fields) - _COMMON - _KIND_FIELDS[kind]
         if bad:
             raise ValueError(f"账本不落这些字段（隐私不变量）: {sorted(bad)}")
+        reserved = {"v", "ts_iso"} & set(fields)
+        if reserved:
+            raise ValueError(f"保留字段由模块盖章，不可传入: {sorted(reserved)}")
         missing = _KIND_FIELDS[kind] - set(fields)
         if missing:
             raise ValueError(f"{kind} 缺必填字段: {sorted(missing)}")
@@ -387,10 +407,14 @@ class Accounts:
              lineage: str | None = None, kind: str | None = None) -> list[dict]:
         out: list[dict] = []
         for f in sorted(self.dir.glob("*.jsonl")):
-            for line in f.read_text(encoding="utf-8").splitlines():
+            for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
                 if not line.strip():
                     continue
-                e = json.loads(line)
+                try:
+                    e = json.loads(line)
+                except ValueError:      # 崩溃撕裂的尾行：跳过但告警可见（不静默丢账）
+                    print(f"[accounts] 跳过损坏行 {f.name}:{i}", flush=True)
+                    continue
                 if since is not None and e.get("ts", 0) < since:
                     continue
                 if until is not None and e.get("ts", 0) > until:
