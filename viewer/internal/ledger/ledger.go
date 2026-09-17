@@ -4,7 +4,10 @@ package ledger
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -45,9 +48,12 @@ type Entry struct {
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
 	WallS            float64 `json:"wall_s"`
-	Tokens           int64   `json:"tokens"` // inject
-	IdleS            float64 `json:"idle_s"` // block
-	Hit              bool    `json:"hit"`    // beat
+	PriceVer         string  `json:"price_ver"`  // handoff / beat
+	CacheRead        int64   `json:"cache_read"` // beat（注意与 usage 的 cache_read_tokens 是两个键）
+	Tokens           int64   `json:"tokens"`     // inject
+	HandoffID        string  `json:"handoff_id"` // inject
+	IdleS            float64 `json:"idle_s"`     // block
+	Hit              bool    `json:"hit"`        // beat
 	CostPred         float64 `json:"cost_pred"`
 	CostActual       float64 `json:"cost_actual"`
 }
@@ -72,8 +78,8 @@ type SessionSummary struct {
 }
 
 // Load 读 dir 下按文件名排序的全部 *.jsonl，逐行解码为 Entry。
-// 空行静默跳过；损坏行 log 后跳过不中断（与 accounts.py read 同策略）。
-// 任一文件不可读时返回错误。
+// 空行静默跳过；损坏行、超长行 log 后跳过不中断（对齐 accounts.py read 的容错并更进一步——
+// 单条病态行不允许拖垮整个 Load）。文件打不开时返回错误。
 func Load(dir string) ([]Entry, error) {
 	names, err := os.ReadDir(dir) // os.ReadDir 保证按文件名排序
 	if err != nil {
@@ -84,36 +90,66 @@ func Load(dir string) ([]Entry, error) {
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".jsonl") {
 			continue
 		}
-		f, err := os.Open(filepath.Join(dir, de.Name()))
-		if err != nil {
-			return nil, err
-		}
-		// 单行上限 1 MiB：默认 Scanner 缓冲 64 KiB，长 title 的 usage 行可能超
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		ln := 0
-		for sc.Scan() {
-			ln++
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
-			}
-			var e Entry
-			if err := json.Unmarshal([]byte(line), &e); err != nil {
-				log.Printf("[ledger] 跳过损坏行 %s:%d: %v", de.Name(), ln, err)
-				continue
-			}
-			entries = append(entries, e)
-		}
-		if err := sc.Err(); err != nil {
-			f.Close()
-			return nil, err
-		}
-		if err := f.Close(); err != nil {
+		if err := loadFile(filepath.Join(dir, de.Name()), de.Name(), &entries); err != nil {
 			return nil, err
 		}
 	}
 	return entries, nil
+}
+
+// maxLineBytes 之上的行按超长行告警跳过。正常账本行 ~300B，这是对病态输入的容错：
+// 超限不中止 Load，只丢弃该行（内存有界，绝不整行读入）。
+const maxLineBytes = 1 << 20
+
+func loadFile(path, name string, out *[]Entry) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 64*1024)
+	ln := 0
+	for {
+		var line []byte
+		overflow := false
+		for {
+			chunk, err := r.ReadSlice('\n')
+			if !overflow {
+				if len(line)+len(chunk) > maxLineBytes {
+					overflow, line = true, nil // 超限：不再积攒，只继续排空到行尾
+				} else {
+					line = append(line, chunk...)
+				}
+			}
+			if err == bufio.ErrBufferFull {
+				continue // 行未终结，继续排空
+			}
+			ln++
+			trimmed := bytes.TrimSpace(line)
+			switch {
+			case overflow:
+				log.Printf("[ledger] 跳过超长行 %s:%d（>%d 字节）", name, ln, maxLineBytes)
+			case len(trimmed) == 0:
+				// 空行静默跳过（对齐 accounts.py read）
+			default:
+				var e Entry
+				if uerr := json.Unmarshal(trimmed, &e); uerr != nil {
+					log.Printf("[ledger] 跳过损坏行 %s:%d: %v", name, ln, uerr)
+				} else {
+					*out = append(*out, e)
+				}
+			}
+			if err == nil {
+				break // 本行已终结，读下一行
+			}
+			if errors.Is(err, io.EOF) {
+				return nil // 文件尾（含无换行的最后一行，已在上面积攒处理）
+			}
+			// 底层读错误无法再取得进展：放弃本文件但不拖垮整个 Load
+			log.Printf("[ledger] 读取中断 %s:%d: %v", name, ln, err)
+			return nil
+		}
+	}
 }
 
 // agg 是 Summarize 的内部聚合结构。
@@ -139,6 +175,8 @@ func Summarize(entries []Entry) []SessionSummary {
 	for _, e := range entries {
 		a := byLin[e.LineageID]
 		if a == nil {
+			// 空 lineage_id 聚合进 "" 键是有意容错：账本当前所有 kind 都带 lineage，
+			// 但缺省键也不丢数据（宁可在列表页看到一行空 lineage，也不静默丢弃）。
 			a = &agg{agentSeen: map[string]bool{}}
 			a.sum.LineageID = e.LineageID
 			a.sum.FirstTS = e.Ts

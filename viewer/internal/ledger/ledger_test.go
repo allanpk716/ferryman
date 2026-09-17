@@ -3,6 +3,7 @@ package ledger
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,18 +27,41 @@ func TestLoadSample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(sample): %v", err)
 	}
-	if len(entries) != 18 {
-		t.Fatalf("Load(sample) 条数 = %d, want 18", len(entries))
+	// len：18 行基础结构 + 1 行 inject（审查 Important 防回潮补入）
+	if len(entries) != 19 {
+		t.Fatalf("Load(sample) 条数 = %d, want 19", len(entries))
 	}
 
-	// kind 分布：3 个 lineage 各含 usage×3/2/1 + window/handoff/beat/block×1
-	wantDist := map[string]int{"usage": 6, "window": 3, "handoff": 3, "beat": 3, "block": 3}
+	// kind 分布：3 个 lineage 各含 usage×3/2/1 + window/handoff/beat/block×1，另 inject×1
+	wantDist := map[string]int{"usage": 6, "window": 3, "handoff": 3, "beat": 3, "block": 3, "inject": 1}
 	gotDist := map[string]int{}
 	for _, e := range entries {
 		gotDist[e.Kind]++
 	}
 	if !mapEqual(gotDist, wantDist) {
 		t.Fatalf("kind 分布 = %v, want %v", gotDist, wantDist)
+	}
+
+	// handoff/beat/inject 特有键必须能读出——防 json tag 再漏键静默丢数据
+	wantCacheRead := map[string]int64{"lin-alpha": 410, "lin-beta": 2510, "lin-gamma": 96}
+	for _, e := range entries {
+		switch e.Kind {
+		case "handoff":
+			if e.PriceVer != "v2026-09" {
+				t.Errorf("%s handoff PriceVer = %q, want v2026-09", e.LineageID, e.PriceVer)
+			}
+		case "beat":
+			if e.PriceVer != "v2026-09" {
+				t.Errorf("%s beat PriceVer = %q, want v2026-09", e.LineageID, e.PriceVer)
+			}
+			if e.CacheRead != wantCacheRead[e.LineageID] {
+				t.Errorf("%s beat CacheRead = %d, want %d", e.LineageID, e.CacheRead, wantCacheRead[e.LineageID])
+			}
+		case "inject":
+			if e.HandoffID != "ho-alpha-1" || e.Tokens != 999 {
+				t.Errorf("inject 行 HandoffID/Tokens = (%q, %d), want (ho-alpha-1, 999)", e.HandoffID, e.Tokens)
+			}
+		}
 	}
 
 	// 抽查一行：字段逐键落位（json tag 与 accounts.py 一致）
@@ -141,6 +165,29 @@ func TestSummarize(t *testing.T) {
 		if s.Project != "Ferryman" {
 			t.Errorf("%s Project = %q, want Ferryman", tc.lin, s.Project)
 		}
+	}
+}
+
+func TestLoadOverlongLine(t *testing.T) {
+	dir := t.TempDir()
+	var b strings.Builder
+	b.WriteString(`{"v":1,"kind":"block","ts":1,"lineage_id":"lin-ok"}` + "\n")
+	b.WriteString(`{"v":1,"kind":"block","ts":2,"lineage_id":"lin-fat","pad":"`) // 未闭合的超长行
+	b.WriteString(strings.Repeat("x", 2<<20))
+	b.WriteString(`"}` + "\n")
+	b.WriteString(`{"v":1,"kind":"block","ts":3,"lineage_id":"lin-ok2"}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "fat.jsonl"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load 不应因超长行报错: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("条数 = %d, want 2（超长行跳过、前后正常行保留）", len(entries))
+	}
+	if entries[0].LineageID != "lin-ok" || entries[1].LineageID != "lin-ok2" {
+		t.Fatalf("lineage = %q, %q, want lin-ok, lin-ok2", entries[0].LineageID, entries[1].LineageID)
 	}
 }
 
