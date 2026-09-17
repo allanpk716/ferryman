@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "（新增供应商后重跑；幂等、自动备份）")
     sub.add_parser("install-codex", help="把 Ferryman 钩子注进 ~/.codex/hooks.json 并开 "
                                           "[features] hooks = true（改后需 TUI /hooks 信任）")
+    sub.add_parser("doctor", help="一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性")
     args = parser.parse_args(argv)
 
     if args.cmd == "e0":
@@ -65,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
         from .install import install_codex
 
         return 0 if install_codex() >= 0 else 1
+    if args.cmd == "doctor":
+        from .doctor import run_doctor
+
+        return run_doctor()
     return 2
 
 

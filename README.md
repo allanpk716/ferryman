@@ -21,12 +21,18 @@
 
 ## 待办（按优先级）
 
-1. DeepSeek/GLM API key → E1 横评定默认路由
-2. `ferryman install-cc` 实装验证——检测到 CC Switch 时**自动**把钩子注进全部 claude 供应商快照（DESIGN §3，2026-09-17 T21 定案：切换=快照逐字写入，不在快照里的 hooks 会被抹）。新增供应商后重跑 `ferryman install-ccswitch`。
-3. claude-notify 接入（拦截时 Toast/Pushover）
-4. 稳定快照双读协议（DESIGN §6.13，现为单读 + covers_until）
-5. Codex 钩子收尾（就差 TUI `/hooks` 信任一次——exec 不派发钩子是上游 bug，见 docs/T23-CODEX-TRUST.md）
-6. `ferryman doctor` / 30 天归档清理（开机自启已由**钩子自举**取代：任意 agent 的钩子触发时探测 :7311，不在则拉起 `~/ferryman/start-daemon.cmd`，见 DESIGN §3）
+1. 真人全闭环验收（真实会话闲置→警告→交接→/clear→注入→续接；观察周自然覆盖）
+2. T26 观察周复盘（2026-09-17 起跑：observe/25min/35min/20k tokens，看误伤率）→ 达标切 enforce + Pushover 真机首拦
+3. DeepSeek/GLM API key → E1 横评定默认路由
+4. 30 天归档清理 / `ferryman status`·`stop`
+5. Pi 适配器（会话格式最友好：JSONL 首行带 cwd/session_id）→ OpenCode（SQLite 轮询 PoC）
+6. 多候选清单注入后清场（体验瑕疵）/ 健康信号细化
+
+## 已完成（近）
+
+- 钩子自举 + 唯一化（T35）：任意 agent 钩子触发即拉起 daemon，无需开机自启
+- Codex 全链路（T23/37）：schema 实测定案、install-codex、Orca CODEX_HOME 守望、子代理钩子接线
+- `ferryman doctor` 体检（T38）：钩子在位/脚本 BOM/控制字符/快照覆盖/daemon 活性
 
 ## 开发
 
@@ -38,4 +44,5 @@ uv run ferryman serve [--smoke]     # 守护进程（配置：~/ferryman/config.
 uv run ferryman install-cc          # 钩子安装（检测到 CC Switch 时自动注入供应商快照）
 uv run ferryman install-ccswitch    # 只注 CC Switch 快照（新增供应商后重跑；幂等自动备份）
 uv run ferryman install-codex       # Codex 钩子注入 + 开 [features] hooks = true（改后 TUI /hooks 信任）
+uv run ferryman doctor              # 一键体检：钩子/脚本/快照/daemon（静默失效类事故现形）
 ```
