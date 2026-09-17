@@ -1,27 +1,64 @@
 // ferryman/viewer——账本时间线查看器（T43）。
-// 本文件是最小骨架：仅解析 flags、监听并占住端口；真路由在 Task 3 接入。
+// 解析 flags → 组装路由（JSON API + 嵌入的静态页）→ 127.0.0.1 监听 → 打印 URL →
+// 自动开浏览器（可 --no-browser 关）→ Serve。
 package main
 
 import (
+	"embed"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
+
+	"ferryman/viewer/internal/server"
 )
+
+//go:embed web
+var webFS embed.FS
 
 func main() {
 	data := flag.String("data", "", "账本数据目录（默认 $FERRYMAN_DATA 或 ~/ferryman）")
 	port := flag.Int("port", 0, "监听端口（0=随机）")
+	noBrowser := flag.Bool("no-browser", false, "启动后不自动打开浏览器")
 	flag.Parse()
 	dir := resolveDataDir(*data)
+
+	mux := server.New(dir).Routes()
+	sub, err := fs.Sub(webFS, "web")
+	if err != nil {
+		log.Fatal(err)
+	}
+	mux.Handle("/", http.FileServer(http.FS(sub)))
+
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("时间线查看器: http://%s （数据目录 %s，Ctrl+C 退出）\n", ln.Addr(), dir)
-	log.Fatal(http.Serve(ln, http.NotFoundHandler())) // Task 3 换真路由
+	url := fmt.Sprintf("http://%s", ln.Addr())
+	fmt.Printf("时间线查看器: %s （数据目录 %s，Ctrl+C 退出）\n", url, dir)
+	if !*noBrowser {
+		openBrowser(url)
+	}
+	log.Fatal(http.Serve(ln, mux))
+}
+
+// openBrowser 按 GOOS 起系统默认浏览器；起不起来都不影响服务，错误忽略。
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
 }
 
 func resolveDataDir(flagVal string) string {
