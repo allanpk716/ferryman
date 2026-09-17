@@ -51,6 +51,14 @@ class NotifyCfg:
 
 
 @dataclass
+class HeartbeatCfg:
+    enabled: bool = False        # T41 仅预留：执行器未实装（设计 §0 授权边界）
+    ttl_s: float = 0.0           # 0 = 未实测/未配置（report 策略对比跳过）
+    ttl_measured_at: str = ""
+    ttl_source: str = ""
+
+
+@dataclass
 class Config:
     gate_cc: str = "observe"             # 验证期默认 observe（DESIGN §6.2）
     gate_codex: str = "off"              # E0b 后再议
@@ -58,6 +66,7 @@ class Config:
     watch: WatchCfg = field(default_factory=WatchCfg)
     server: ServerCfg = field(default_factory=ServerCfg)
     notify: NotifyCfg = field(default_factory=NotifyCfg)
+    heartbeat: HeartbeatCfg = field(default_factory=HeartbeatCfg)
     ferry_provider: str = ""              # 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
 
     @property
@@ -109,6 +118,13 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
                 pushover_user=str(n.get("pushover_user", "")),
                 toast=bool(n.get("toast", cfg.notify.toast)),
             )
+        if "heartbeat" in data:
+            hb = data["heartbeat"]
+            cfg.heartbeat = HeartbeatCfg(
+                enabled=bool(hb.get("enabled", False)),
+                ttl_s=float(hb.get("ttl_s", 0.0)),
+                ttl_measured_at=str(hb.get("ttl_measured_at", "")),
+                ttl_source=str(hb.get("ttl_source", "")))
         cfg.ferry_provider = str(data.get("ferry", {}).get("provider", cfg.ferry_provider))
     validate(cfg, relax_min_gap=relax_min_gap)
     return cfg

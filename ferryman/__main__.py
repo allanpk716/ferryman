@@ -31,6 +31,16 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("install-codex", help="把 Ferryman 钩子注进 ~/.codex/hooks.json 并开 "
                                           "[features] hooks = true（改后需 TUI /hooks 信任）")
     sub.add_parser("doctor", help="一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性")
+    acc_p = sub.add_parser("account", help="费用账本：流水查询与成效账")
+    acc_sub = acc_p.add_subparsers(dest="acct_cmd", required=True)
+    rep = acc_sub.add_parser("report", help="族系账单+净节省+策略对比（附复算附录）")
+    rep.add_argument("--since", help="起始日 YYYY-MM-DD（本地时区）")
+    rep.add_argument("--until", help="截止日 YYYY-MM-DD（本地时区）")
+    rep.add_argument("--project")
+    rep.add_argument("--session")
+    rep.add_argument("--kind", help="handoff|beat|block|inject|bypass|window")
+    rep.add_argument("--provider", help="block 侧经济价格表键（缺省=ferry provider）")
+    rep.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     if args.cmd == "e0":
@@ -71,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
         from .doctor import run_doctor
 
         return run_doctor()
+    if args.cmd == "account":
+        from . import report
+
+        return report.run(args)
     return 2
 
 
