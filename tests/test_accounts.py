@@ -10,12 +10,12 @@ SEP = time.mktime(time.strptime("2026-09-16 12:00:00", "%Y-%m-%d %H:%M:%S"))
 MID = time.mktime(time.strptime("2026-09-01 12:00:00", "%Y-%m-%d %H:%M:%S"))  # 落在 (AUG, SEP) 内，since/until 断言与运行日期解耦
 
 
-def rec_handoff(acc, ts=None, sid="s1", outcome="fresh"):
+def rec_handoff(acc, ts=None, sid="s1", outcome="fresh", **kw):
     return acc.record("handoff", ts=ts, agent="cc", session_id=sid,
                       lineage_id=f"L-{sid}", project="C:/proj",
                       provider="glm", model="glm-5.3",
                       price_ver="glm@2026-09-17", prompt_tokens=100,
-                      completion_tokens=50, outcome=outcome, wall_s=1.2)
+                      completion_tokens=50, outcome=outcome, wall_s=1.2, **kw)
 
 
 def test_record_and_read(tmp_path):
@@ -70,3 +70,20 @@ def test_filters(tmp_path):
     assert len(acc.read(since=SEP + 1)) == 0
     assert len(acc.read(until=AUG + 1)) == 0
     assert len(acc.read(lineage="L2")) == 1
+
+
+def test_reserved_fields_stamped_not_passable(tmp_path):
+    acc = Accounts(tmp_path)
+    with pytest.raises(ValueError, match="保留字段"):
+        rec_handoff(acc, v=2)
+    with pytest.raises(ValueError, match="保留字段"):
+        rec_handoff(acc, ts_iso="2020-01-01")
+
+
+def test_read_skips_corrupt_tail_line(tmp_path):
+    acc = Accounts(tmp_path)
+    rec_handoff(acc)
+    f = tmp_path / "accounts" / (time.strftime("%Y%m") + ".jsonl")
+    with open(f, "a", encoding="utf-8") as fh:      # 模拟崩溃撕裂的尾行
+        fh.write('{"v": 1, "kind": "handoff", TRUN')
+    assert len(acc.read()) == 1                      # 好行仍在，坏行被跳过

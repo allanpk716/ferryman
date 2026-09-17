@@ -47,6 +47,9 @@ class Accounts:
         missing = _KIND_FIELDS[kind] - set(fields)
         if missing:
             raise ValueError(f"{kind} 缺必填字段: {sorted(missing)}")
+        reserved = {"v", "ts_iso"} & set(fields)
+        if reserved:
+            raise ValueError(f"保留字段由模块盖章，不可传入: {sorted(reserved)}")
         ts = ts if ts is not None else time.time()
         entry = {"v": SCHEMA_V, "kind": kind, "ts": round(ts, 3),
                  "ts_iso": datetime.fromtimestamp(ts).astimezone()
@@ -67,10 +70,14 @@ class Accounts:
              lineage: str | None = None, kind: str | None = None) -> list[dict]:
         out: list[dict] = []
         for f in sorted(self.dir.glob("*.jsonl")):
-            for line in f.read_text(encoding="utf-8").splitlines():
+            for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
                 if not line.strip():
                     continue
-                e = json.loads(line)
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    print(f"[accounts] 跳过损坏行 {f.name}:{i}", flush=True)
+                    continue
                 if since is not None and e.get("ts", 0) < since:
                     continue
                 if until is not None and e.get("ts", 0) > until:
