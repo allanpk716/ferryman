@@ -26,7 +26,7 @@ from urllib.request import Request, urlopen
 
 from .accounts import Accounts
 from .ferry import INJECT_CLOSE, INJECT_OPEN
-from .ledger import Ledger, SessionState, now_s
+from .ledger import SUBAGENT_EVENT_LEAK_S, Ledger, SessionState, now_s
 from .store import Store
 
 DEGRADE_AFTER_BLOCKS = 3        # DESIGNS §6.10-6：连续兜底拦截 3 次 → 降级
@@ -100,8 +100,10 @@ class FerryDaemon:
         self.stats = GateStats()
         self.pending = PendingTable()
         # T41 等待窗口表：(agent, sid) → {"opened_ts": ...}。内存态，重启丢失可接受
-        # （同 PendingTable）——丢窗 = 该次等待不入账，宁缺毋错；泄漏兜底沿用台账
-        # 子代理计数 1h 规则（Stop 丢失则窗不闭、不记，不另设定时器）。
+        # （同 PendingTable）——丢窗 = 该次等待不入账，宁缺毋错。泄漏兜底（R10）：
+        # Stop 丢失致旧窗滞留时，下次 start 超过台账泄漏阈值（SUBAGENT_EVENT_LEAK_S）
+        # 即重锚新窗（不沿用旧窗，dur_s 不虚高跨泄漏间隙）；此后若无新 start，
+        # 滞留窗永不闭、不记。注释勿夸安全性：重锚只覆盖"泄漏后又来 start"的路径。
         self._windows: dict[tuple[str, str], dict] = {}
         self.started_at = started_at if started_at is not None else now_s()
 
@@ -303,8 +305,11 @@ class FerryDaemon:
             self.stats.subagent_events += 1
         # T41 等待窗口：首个子代理 start 开窗（嵌套不重复开）；计数归零闭窗
         key = (agent, session_id)
-        if count > 0 and key not in self._windows:
-            self._windows[key] = {"opened_ts": now_s()}
+        if count > 0:
+            w = self._windows.get(key)
+            if w is None or now_s() - w["opened_ts"] > SUBAGENT_EVENT_LEAK_S:
+                # 首开；或上一轮 Stop 丢失、泄漏超时后重锚（旧窗不沿用，防 dur_s 虚高跨泄漏间隙，R10）
+                self._windows[key] = {"opened_ts": now_s()}
         if count == 0 and key in self._windows:
             self._close_window(key, "subagents_done")
         return {"ok": True, "active": count > 0}

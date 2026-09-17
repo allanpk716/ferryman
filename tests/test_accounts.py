@@ -190,3 +190,15 @@ def test_window_closes_on_bypass_prompt(h):
     assert r["decision"] == "allow" and r["reason"] == "bypass"
     e = h.accounts.read(kind="window")[-1]
     assert e["session_id"] == "acct5" and e["close_reason"] == "prompt"
+
+
+def test_window_reanchors_after_leak_gap(h):
+    from ferryman.ledger import SUBAGENT_EVENT_LEAK_S, now_s
+    h.sub({"event": "start", "agent": "cc", "session_id": "acct6"})
+    # 模拟 Stop 丢失 + 泄漏超时后再次 start：旧窗不沿用（否则 dur_s 虚高跨越泄漏间隙）
+    h.daemon._windows[("cc", "acct6")] = {"opened_ts": now_s() - SUBAGENT_EVENT_LEAK_S - 60}
+    h.sub({"event": "start", "agent": "cc", "session_id": "acct6"})
+    h.sub({"event": "stop", "agent": "cc", "session_id": "acct6"})
+    h.sub({"event": "stop", "agent": "cc", "session_id": "acct6"})
+    e = [x for x in h.accounts.read(kind="window") if x["session_id"] == "acct6"][-1]
+    assert e["dur_s"] < SUBAGENT_EVENT_LEAK_S
