@@ -17,7 +17,18 @@ from .policy import NoCachePriceError, strategy_costs
 from .prices import PriceBook, load_prices
 
 SAVINGS_FORMULA = "v1"
+STRATEGY_FORMULA = "v1"       # 策略对比公式版本（与 SAVINGS_FORMULA 同源盖章，v1.1 待改）
 COMPACT_RATIO = 0.25          # 公式内常数（policy.strategy_costs 默认值同源）
+
+# 终审#4（最小修复，v1.1 延后）：策略对比已知口径缺陷——文本报表与 --json
+# 同源披露，best 列在 v1.1 落地前不得作为心跳授权依据。
+STRATEGY_CAVEATS = (
+    f"⚠ 口径披露（公式 {STRATEGY_FORMULA}）：none 列在 ≤TTL 时为差值口径（0）"
+    f"而 >TTL 时为绝对重付；beat 列未计入其隐式保温的 S×P_cache 读；"
+    f"expire_compact 未计压缩调用自身成本；⌈d/τ⌉ 在非整除时高估一跳。",
+    "以上使 best 列偏向 expire_compact——v1.1（统一差值基准+floor 跳数）落地前，"
+    "best 不得作为心跳授权依据。",
+)
 
 
 def _book_for(books: dict[str, PriceBook], key: str | None) -> PriceBook | None:
@@ -130,17 +141,21 @@ def strategy_table(window_entries: list[dict], books: dict[str, PriceBook],
             sc["best"] = min(("none", "beat", "expire", "expire_compact"),
                              key=lambda kk: sc[kk])
             rows.append(sc)
-    return {"rows": rows, "skipped": skipped}
+    return {"rows": rows, "skipped": skipped,
+            "formula": STRATEGY_FORMULA, "compact_ratio": COMPACT_RATIO}
 
 
 def _accounts_for(cfg) -> Accounts:
     return Accounts(cfg.data_dir)
 
 
-def _parse_date(s: str | None) -> float | None:
+def _parse_date(s: str | None, *, end_of_day: bool = False) -> float | None:
+    """YYYY-MM-DD → 本地时间戳。end_of_day=True 时取当日末（86399.99s）——
+    终审#3：--until 需含当日全天（月账主形态），--since 保持午夜。"""
     if not s:
         return None
-    return datetime.strptime(s, "%Y-%m-%d").timestamp()
+    ts = datetime.strptime(s, "%Y-%m-%d").timestamp()
+    return ts + 86399.99 if end_of_day else ts
 
 
 def render_text(s: dict, st: dict, books: dict[str, PriceBook],
@@ -150,7 +165,8 @@ def render_text(s: dict, st: dict, books: dict[str, PriceBook],
     if eb:
         unit = f"（单位：{eb.unit}）"
     L = ["# Ferryman 账本报表", "",
-         f"- 成效公式：{SAVINGS_FORMULA} · 策略常数 compact_ratio={COMPACT_RATIO}"
+         f"- 成效公式：{SAVINGS_FORMULA} · 策略公式：{STRATEGY_FORMULA}"
+         f"（常数 compact_ratio={COMPACT_RATIO}）"
          f" · 经济价格表：{econ_key or '（未指定）'}{unit}",
          f"- 过滤：{filters or '（无）'} · 生成：{time.strftime('%Y-%m-%d %H:%M')}", "",
          "## 按族系（lineage）", "",
@@ -175,6 +191,7 @@ def render_text(s: dict, st: dict, books: dict[str, PriceBook],
             L.append(f"| {r['dur_s']:.0f} | {r['prefix_tokens']} | {r['none']:.2f} "
                      f"| {r['beat']:.2f} | {r['expire']:.2f} "
                      f"| {r['expire_compact']:.2f} | {r['best']} |")
+        L += [f"- {c}" for c in STRATEGY_CAVEATS]   # 终审#4：口径披露（与 --json 同源）
     for skip in st["skipped"]:
         L.append(f"- 策略对比跳过：{skip}")
     L += ["", "## 复算附录", "",
@@ -194,7 +211,8 @@ def run(args) -> int:
     econ_key = getattr(args, "provider", None) or cfg.ferry_provider or None
     filters = {"since": args.since, "until": args.until, "project": args.project,
                "session": args.session, "kind": args.kind}
-    entries = acc.read(since=_parse_date(args.since), until=_parse_date(args.until),
+    entries = acc.read(since=_parse_date(args.since),
+                       until=_parse_date(args.until, end_of_day=True),
                        project=args.project, session=args.session, kind=args.kind)
     econ_book = _book_for(books, econ_key)
     s = savings_v1(entries, books, econ_book)
@@ -202,7 +220,9 @@ def run(args) -> int:
                         books, ttl_s=cfg.heartbeat.ttl_s, econ_key=econ_key)
     if getattr(args, "json", False):
         print(json.dumps({"savings": s, "strategy": st,
-                          "econ_provider": econ_key}, ensure_ascii=False, indent=2))
+                          "econ_provider": econ_key,
+                          "strategy_caveats": list(STRATEGY_CAVEATS)},
+                         ensure_ascii=False, indent=2))
     else:
         print(render_text(s, st, books, econ_key,
                           {kk: vv for kk, vv in filters.items() if vv}))

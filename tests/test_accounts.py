@@ -81,13 +81,16 @@ def test_reserved_fields_stamped_not_passable(tmp_path):
         rec_handoff(acc, ts_iso="2020-01-01")
 
 
-def test_read_skips_corrupt_tail_line(tmp_path):
+def test_read_skips_corrupt_tail_line(tmp_path, capsys):
     acc = Accounts(tmp_path)
     rec_handoff(acc)
     f = tmp_path / "accounts" / (time.strftime("%Y%m") + ".jsonl")
     with open(f, "a", encoding="utf-8") as fh:      # 模拟崩溃撕裂的尾行
         fh.write('{"v": 1, "kind": "handoff", TRUN')
     assert len(acc.read()) == 1                      # 好行仍在，坏行被跳过
+    captured = capsys.readouterr()
+    assert "跳过损坏行" in captured.err               # 终审：告警走 stderr——不污染 --json 的 stdout
+    assert captured.out == ""                        # stdout 保持机器可解析（无撕裂尾线）
 
 
 def test_ferry_completion_books_handoff(h):
@@ -101,6 +104,33 @@ def test_ferry_completion_books_handoff(h):
     assert e["provider"] == "fake"
     assert e["outcome"] in ("fresh", "skeleton", "failed")
     assert "content" not in e and "md" not in e        # 隐私不变量：无正文
+
+
+def test_failed_ferry_books_exactly_one_row(tmp_path, monkeypatch):
+    """终审：失败摆渡只记一行 outcome=failed——骨架产物不另记行（append-only 从零起账，
+    双行无法事后修复）。"""
+    from helpers import Harness
+
+    def exploding(path, provider, agent="cc"):
+        raise RuntimeError("provider down")
+
+    harness = Harness(tmp_path, monkeypatch, fake_ferry=exploding)
+    sid = "acct-fail1"
+    try:
+        write_session(harness.projects, sid, "C:/proj")
+        assert harness.wait_for(lambda: any(
+            e["session_id"] == sid and e["status"] == "skeleton"
+            for e in harness.store._index["handoffs"])), "骨架降级未发生"
+        assert harness.wait_for(lambda: any(
+            e["session_id"] == sid
+            for e in harness.accounts.read(kind="handoff"))), "失败行未入账"
+        time.sleep(0.5)                      # 留出潜在第二行落盘的窗口（RED 期双行必现）
+        rows = [e for e in harness.accounts.read(kind="handoff")
+                if e["session_id"] == sid]
+        assert len(rows) == 1, f"失败摆渡应只记一行，实记 {len(rows)} 行"
+        assert rows[0]["outcome"] == "failed"
+    finally:
+        harness.stop()
 
 
 def test_booking_failure_never_breaks_ferry(h, monkeypatch):

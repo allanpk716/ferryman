@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from datetime import datetime
@@ -76,7 +77,10 @@ class Accounts:
                 try:
                     e = json.loads(line)
                 except ValueError:
-                    print(f"[accounts] 跳过损坏行 {f.name}:{i}", flush=True)
+                    # 终审#1：告警走 stderr——read() 的调用方（report --json）
+                    # 把 stdout 当机器可解析载荷，告警混入会撕裂输出。
+                    print(f"[accounts] 跳过损坏行 {f.name}:{i}",
+                          file=sys.stderr, flush=True)
                     continue
                 if since is not None and e.get("ts", 0) < since:
                     continue

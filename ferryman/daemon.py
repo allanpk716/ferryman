@@ -199,9 +199,12 @@ class FerryWorker(threading.Thread):
                 raise result["error"]
         except Exception as e:  # noqa: BLE001 — 降级骨架-only
             print(f"[ferry] 降级骨架-only（{sid[:8]}）: {e}", flush=True)
-            self._book_handoff(item, agent, sid, {}, "failed")
-            self._save_skeleton(path, agent, sid, item.get("cwd", ""))
-            self._book_handoff(item, agent, sid, {}, "skeleton")
+            try:
+                self._save_skeleton(path, agent, sid, item.get("cwd", ""))
+            finally:
+                # 终审#2：失败路径只记一行 failed，且在骨架保存之后——
+                # 骨架产物不另记行（append-only 从零起账，双行无法事后修复）。
+                self._book_handoff(item, agent, sid, {}, "failed")
             return
         meta = result["meta"]
         self.store.save_handoff(
@@ -229,6 +232,8 @@ class FerryWorker(threading.Thread):
     def _book_handoff(self, item: dict, agent: str, sid: str,
                       meta: dict, outcome: str) -> None:
         """摆渡记账：usage 失败记 0（墙钟超时线程被弃，usage 不可得）。
+        失败路径一行 failed（骨架产物不另记行，骨架语义可由 outcome=failed
+        + 后续 block/inject 观察到）。
         记账永不弄断摆渡——任何异常吞为警告（骨架兜底不变量优先）。"""
         if self.accounts is None:
             return
