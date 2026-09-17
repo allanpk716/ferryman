@@ -244,6 +244,7 @@ from ferryman.accounts import Accounts
 
 AUG = time.mktime(time.strptime("2026-08-15 12:00:00", "%Y-%m-%d %H:%M:%S"))
 SEP = time.mktime(time.strptime("2026-09-16 12:00:00", "%Y-%m-%d %H:%M:%S"))
+MID = time.mktime(time.strptime("2026-09-01 12:00:00", "%Y-%m-%d %H:%M:%S"))  # 落在 (AUG, SEP) 内，since/until 断言与运行日期解耦
 
 
 def rec_handoff(acc, ts=None, sid="s1", outcome="fresh"):
@@ -296,8 +297,8 @@ def test_unknown_kind(tmp_path):
 
 def test_filters(tmp_path):
     acc = Accounts(tmp_path)
-    rec_handoff(acc, sid="s1")
-    acc.record("block", agent="cc", session_id="s2", lineage_id="L2",
+    rec_handoff(acc, sid="s1", ts=MID)
+    acc.record("block", ts=MID, agent="cc", session_id="s2", lineage_id="L2",
                project="C:/q", prefix_tokens=150_000, idle_s=2100)
     assert len(acc.read(kind="block")) == 1
     assert acc.read(kind="block")[0]["prefix_tokens"] == 150_000
