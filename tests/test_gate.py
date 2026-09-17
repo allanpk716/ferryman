@@ -81,6 +81,9 @@ def test_observe_mode_warns_not_blocks(env):
     _reg(led, "s1", "C:/p1.jsonl", str(tmp / "proj"), idle_s=BLOCK + 5)
     r = d.gate(_body("s1", "C:/p1.jsonl", str(tmp / "proj")))
     assert r["decision"] == "allow" and r["additional_context"]
+    # 2026-09-18 文案修复：observe 永不拦，不得再发"将被拦"空头支票
+    assert "只提醒不拦" in r["additional_context"]
+    assert "将被拦" not in r["additional_context"]
     assert enqueued == ["s1"]                    # observe 也触发摆渡补交接
 
 
@@ -146,6 +149,7 @@ def test_branch7_no_enqueue_below_min_ctx(env):
     _reg(led, "s3", "C:/p3.jsonl", proj, idle_s=BLOCK + 5, peak=MIN_CTX - 1)
     r = d.gate(_body("s3", "C:/p3.jsonl", proj))
     assert r["decision"] == "allow" and r["additional_context"]   # 仍警告+置 pending
+    assert "将被拦" in r["additional_context"]                    # enforce 下承诺为真
     assert enqueued == []                                         # 但小会话不入队
 
 

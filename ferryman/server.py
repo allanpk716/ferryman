@@ -158,7 +158,7 @@ class FerryDaemon:
                 if H is None and st.observed_active and st.peak_ctx >= th.min_ctx_tokens:
                     self.enqueue_ferry(st)
                 return {"decision": "allow",
-                        "additional_context": self._warn_ctx(idle, H)}
+                        "additional_context": self._warn_ctx(idle, H, will_block=False)}
             return {"decision": "allow"}
 
         # enforce：完整状态机
@@ -199,10 +199,15 @@ class FerryDaemon:
             self.enqueue_ferry(st)
         return {"decision": "allow", "additional_context": self._warn_ctx(idle, None)}
 
-    def _warn_ctx(self, idle: float, H: dict | None) -> str:
+    def _warn_ctx(self, idle: float, H: dict | None,
+                  *, will_block: bool = True) -> str:
+        # observe 永不拦——"将被拦"只在 enforce 成立（2026-09-18 文案缺陷修复：
+        # 两模式共用一句空头支票，用户按文案预期被拦却没拦）
         txt = (f"[Ferryman] 本会话已闲置 {idle / 60:.0f} 分钟，缓存大概率已失效，"
                f"继续使用将全量重付 input。"
-               + (f"交接文档: {H['path']}" if H else "交接生成中，下次提交将被拦。")
+               + (f"交接文档: {H['path']}" if H else
+                  ("交接生成中，下次提交将被拦。" if will_block
+                   else "交接生成中（observe 模式只提醒不拦；enforce 才会真拦）。"))
                + "建议 /clear 后开新会话（自动注入交接）。")
         return txt[:WARN_CONTEXT_CAP]
 
