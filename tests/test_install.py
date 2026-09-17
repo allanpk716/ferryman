@@ -58,7 +58,7 @@ def test_install_codex_merges_and_enables_feature(tmp_path):
     cfg.write_text("[features]\ngoals = true\n", encoding="utf-8")
 
     n = install_codex(hooks_path=hooks, config_path=cfg)
-    assert n == 2                                    # gate + restore 两条
+    assert n == 4                                    # gate + restore + subagent×2
 
     data = json.loads(hooks.read_text(encoding="utf-8"))
     ups = [e for e in data["hooks"]["UserPromptSubmit"]
@@ -67,6 +67,10 @@ def test_install_codex_merges_and_enables_feature(tmp_path):
     assert any("orca.cmd" in json.dumps(e) for e in data["hooks"]["Stop"])  # Orca 保留
     ss = [e for e in data["hooks"]["SessionStart"] if "ferryman" in json.dumps(e)]
     assert ss[0]["hooks"][0]["timeout"] == 10        # 自举等待预算
+    # 子代理生命周期（subagent 钩子 session_id = 父会话 id，官方文档）
+    for evt in ("SubagentStart", "SubagentStop"):
+        sub = [e for e in data["hooks"][evt] if "ferryman" in json.dumps(e)]
+        assert len(sub) == 1 and "ferryman-subagent-codex.ps1" in json.dumps(sub[0])
     # 无控制字符（\a→BEL / \f→FF 事故的回归防线）
     assert not any(b in hooks.read_bytes() for b in (b"\x07", b"\x0c"))
 

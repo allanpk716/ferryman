@@ -152,6 +152,15 @@ def install_codex(hooks_path: Path | None = None,
             "type": "command",
             "command": f'{ps} "{repo / "hooks" / "ferryman-restore-codex.ps1"}"',
             "timeout": 10}]}],
+        # 子代理生命周期（官方文档：subagent 钩子 session_id = 父会话 id → 纯计数）
+        "SubagentStart": [{"hooks": [{
+            "type": "command",
+            "command": f'{ps} "{repo / "hooks" / "ferryman-subagent-codex.ps1"}"',
+            "timeout": 3}]}],
+        "SubagentStop": [{"hooks": [{
+            "type": "command",
+            "command": f'{ps} "{repo / "hooks" / "ferryman-subagent-codex.ps1"}"',
+            "timeout": 3}]}],
     }
 
     if hooks_path.exists():

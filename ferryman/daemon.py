@@ -84,22 +84,25 @@ class Watcher(threading.Thread):
             self._maybe_enqueue(st)
 
     def _poll_codex(self) -> None:
+        """跨目录按 session_id 去重：~/.codex/sessions 与 Orca runtime 目录可能
+        互为副本（2026-09-17 实测同 uuid 两份文件）——主目录在前，路径稳定。"""
+        seen: set[str] = set()
         for cx_dir in self.cx_dirs:
             if not cx_dir.exists():
                 continue
-            self._poll_codex_dir(cx_dir)
-
-    def _poll_codex_dir(self, cx_dir: Path) -> None:
-        for p in cx_dir.glob("**/rollout-*.jsonl"):
-            try:
-                mtime, size = p.stat().st_mtime, p.stat().st_size
-            except OSError:
-                continue
-            # rollout 文件名 rollout-<ts>-<uuid>.jsonl → session_id 取 uuid 段
-            sid = p.stem.split("-")[-1] if "-" in p.stem else p.stem
-            st = self.ledger.touch("codex", sid, str(p), mtime=mtime, size=size,
-                                   daemon_started_at=self.started_at)
-            self._maybe_enqueue(st)
+            for p in cx_dir.glob("**/rollout-*.jsonl"):
+                try:
+                    mtime, size = p.stat().st_mtime, p.stat().st_size
+                except OSError:
+                    continue
+                # rollout 文件名 rollout-<ts>-<uuid>.jsonl → session_id 取 uuid 段
+                sid = p.stem.split("-")[-1] if "-" in p.stem else p.stem
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                st = self.ledger.touch("codex", sid, str(p), mtime=mtime, size=size,
+                                       daemon_started_at=self.started_at)
+                self._maybe_enqueue(st)
 
     def _maybe_enqueue(self, st) -> None:
         th = self.cfg.threshold_for(st.agent)

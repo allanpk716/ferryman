@@ -231,3 +231,26 @@ def test_t23_codex_restore_hook_failopen_daemon_down():
                 {"FERRYMAN_PORT": str(free_port()),
                  "FERRYMAN_TOKEN_FILE": "C:/nonexistent.token"})
     assert r.returncode == 0 and not r.stdout.strip()
+
+
+# ---------- T37 · Codex 子代理生命周期钩子 ----------
+
+def test_t37_codex_subagent_hook_roundtrip(h):
+    r = _run_ps("ferryman-subagent-codex.ps1",
+                {"session_id": "cxsub1", "hook_event_name": "SubagentStart"},
+                _gate_env(h))
+    assert r.returncode == 0
+    assert h.get("/stats")["subagents_active"] == 1
+    r = _run_ps("ferryman-subagent-codex.ps1",
+                {"session_id": "cxsub1", "hook_event_name": "SubagentStop"},
+                _gate_env(h))
+    assert r.returncode == 0
+    assert h.get("/stats")["subagents_active"] == 0
+    assert h.get("/stats")["subagent_events_total"] >= 2
+
+
+def test_t37_codex_subagent_hook_ignores_other_events(h):
+    r = _run_ps("ferryman-subagent-codex.ps1",
+                {"session_id": "cxsub2", "hook_event_name": "UserPromptSubmit"},
+                _gate_env(h))
+    assert r.returncode == 0 and not r.stdout.strip()

@@ -176,3 +176,24 @@ def test_watcher_polls_all_codex_dirs(tmp_path):
     w._poll_codex()
     ids = {st.session_id for st in led.all_sessions() if st.agent == "codex"}
     assert ids == {"aaa111", "bbb222"}
+
+
+def test_watcher_dedupes_same_sid_across_codex_dirs(tmp_path):
+    """~/.codex/sessions 与 Orca runtime 目录互为副本（2026-09-17 实测同 uuid 两份）
+    → 同 sid 只登记一次，路径取主目录（在前）。"""
+    led = Ledger()
+    w = Watcher.__new__(Watcher)
+    w.cfg, w.ledger, w.store = Config(), led, None
+    w.started_at = 0
+    w.cc_dir = tmp_path / "no-cc"
+    a, b = tmp_path / "main", tmp_path / "orca"
+    name = "rollout-2026-09-17T10-00-00-dup111.jsonl"
+    for d in (a, b):
+        f = d / "2026" / "09" / "17" / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("{}\n", encoding="utf-8")
+    w.cx_dirs = [a, b]
+    w._poll_codex()
+    st = [s for s in led.all_sessions() if s.agent == "codex"]
+    assert len(st) == 1 and st[0].session_id == "dup111"
+    assert st[0].transcript_path.startswith(str(a))     # 路径稳定取主目录
