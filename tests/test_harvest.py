@@ -164,3 +164,41 @@ def test_resume_survives_null_offset_row(tmp_path):
     hs = HarvestState(acc)                            # 不抛
     rows = hs.maybe_harvest(f, f.stat().st_size, agent="cc")
     assert len(rows) == 1 and rows[0]["offset"] == f.stat().st_size
+
+
+def _asst_mid(mid, ts="2026-09-18T05:00:00Z"):
+    return json.dumps({"type": "assistant", "timestamp": ts,
+                       "message": {"role": "assistant", "id": mid, "model": "glm-5.3",
+                                   "content": [{"type": "text", "text": "x"}],
+                                   "usage": {"input_tokens": 1, "cache_read_input_tokens": 2,
+                                             "cache_creation_input_tokens": 0,
+                                             "output_tokens": 3}}})
+
+
+def test_duplicate_message_id_suppressed_in_batch(tmp_path):
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    f.write_text(_asst_mid("m1") + "\n" + _asst_mid("m1", ts="2026-09-18T05:00:04Z") + "\n",
+                 encoding="utf-8")
+    rows = HarvestState(acc).maybe_harvest(f, f.stat().st_size, agent="cc")
+    assert len(rows) == 1 and "msg_id" not in rows[0]
+
+
+def test_duplicate_message_id_suppressed_across_batches(tmp_path):
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    f.write_text(_asst_mid("m1") + "\n", encoding="utf-8")
+    hs = HarvestState(acc)
+    assert len(hs.maybe_harvest(f, f.stat().st_size, agent="cc")) == 1
+    with open(f, "a", encoding="utf-8") as fh:      # 数秒后的重写
+        fh.write(_asst_mid("m1", ts="2026-09-18T05:00:09Z") + "\n")
+    assert hs.maybe_harvest(f, f.stat().st_size, agent="cc") == []
+
+
+def test_distinct_or_absent_ids_pass(tmp_path):
+    acc = Accounts(tmp_path)
+    f = tmp_path / "s1.jsonl"
+    f.write_text(_asst_mid("m1") + "\n" + _asst_mid("m2") + "\n" + _asst_line() + "\n",
+                 encoding="utf-8")                  # m2 不同 id；第三条无 id
+    rows = HarvestState(acc).maybe_harvest(f, f.stat().st_size, agent="cc")
+    assert len(rows) == 3

@@ -4,6 +4,7 @@
 - 增量：记住每文件已消费字节偏移，只解析新增的完整行（残行留待下轮）；
 - 断点：偏移随 usage 流水入账，daemon 重启后从账本恢复——账本即唯一状态；
   偏移先推进后返回，record() 中途失败时该批尾部行永久丢失（at-most-once，故障隔离语义）；
+  同 message.id 的重写行在内存中按首发去重（CC 会重复落同一条助手消息）；
 - 范围 v1：仅 CC 主会话（subagents 转录由守望 glob 层排除；Codex 挂后续）。
 """
 
@@ -72,6 +73,7 @@ def parse_usage_chunk(text: str, *, title: str = "",
                     cache_creation_tokens, output_tokens):
             continue            # 数字取不动的行整行跳过，不落数字错误的账
         rows.append({"ts": _ts_of(rec), "model": str(msg.get("model", "")),
+                     "msg_id": str(msg.get("id") or ""),
                      "input_tokens": input_tokens,
                      "cache_read_tokens": cache_read_tokens,
                      "cache_creation_tokens": cache_creation_tokens,
@@ -92,6 +94,7 @@ class HarvestState:
         self._offsets: dict[tuple[str, str], int] = {}
         self._titles: dict[tuple[str, str], str] = {}
         self._cwds: dict[tuple[str, str], str] = {}
+        self._msg_seen: dict[tuple[str, str], set[str]] = {}
         try:
             entries = accounts.read(kind="usage")
         except Exception:                    # 账本读失败 → 从零采（重复风险接受）
@@ -136,6 +139,16 @@ class HarvestState:
         chunk = raw[:end].decode("utf-8", errors="replace")
         rows, title, cwd = parse_usage_chunk(
             chunk, title=self._titles.get(key, ""), cwd=self._cwds.get(key, ""))
+        seen = self._msg_seen.setdefault(key, set())
+        out = []
+        for r in rows:
+            mid = r.pop("msg_id", "")
+            if mid and mid in seen:
+                continue                  # CC 重写同一条消息（同 id）——只记首发
+            if mid:
+                seen.add(mid)
+            out.append(r)
+        rows = out
         new_offset = offset + end
         for r in rows:
             r["title"] = title
