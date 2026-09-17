@@ -176,7 +176,7 @@ body {
 }
 #tl-wininfo {
   pointer-events: auto;
-  min-width: 230px;
+  min-width: 252px;
   padding: 8px 10px;
   background: rgba(17, 17, 17, 0.92);
   border: 1px solid #3a3a3a;
@@ -219,16 +219,146 @@ body {
   border-radius: 3px;
   font: inherit;
   font-size: 12px;
+  cursor: pointer;
 }
-#tl-wininfo .win-backtest:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+#tl-wininfo .win-backtest:hover { background: #245024; }
+
+/* 反跑参数表单（窗口信息卡内展开） */
+#tl-wininfo .bt-form {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #333;
 }
-#tl-wininfo .win-note {
+#tl-wininfo .bt-ro {
   color: #666;
   font-size: 11px;
-  margin-left: 6px;
+  margin-bottom: 4px;
 }
+#tl-wininfo .bt-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 8px;
+}
+#tl-wininfo .bt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+#tl-wininfo .bt-field span {
+  color: #888;
+  font-size: 10px;
+}
+#tl-wininfo .bt-field input {
+  width: 100%;
+  padding: 2px 5px;
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  color: #ddd;
+  font: inherit;
+  font-size: 12px;
+}
+#tl-wininfo .bt-field input:focus {
+  outline: none;
+  border-color: #4caf50;
+}
+#tl-wininfo .bt-hint {
+  color: #ff7b72;
+  font-size: 11px;
+  min-height: 14px;
+  margin-top: 2px;
+}
+#tl-wininfo .bt-go {
+  width: 100%;
+  margin-top: 2px;
+  padding: 3px 0;
+  background: #1d3a1d;
+  color: #7bc47b;
+  border: 1px solid #2f5c2f;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+#tl-wininfo .bt-go:hover { background: #245024; }
+#tl-wininfo .bt-go:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+/* 反跑结果卡（时序图下方） */
+#tl-bt-result {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #151515;
+  border: 1px solid #2a2a2a;
+  font-size: 12px;
+}
+#tl-bt-result .bt-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  color: #fff;
+  font-weight: 600;
+}
+#tl-bt-result .bt-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+#tl-bt-result .bt-close:hover { color: #fff; }
+#tl-bt-result .bt-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+#tl-bt-result .bt-label {
+  flex: none;
+  width: 84px;
+  color: #888;
+}
+#tl-bt-result .bt-track {
+  flex: 1;
+  height: 12px;
+  background: #1e1e1e;
+  border: 1px solid #262626;
+}
+#tl-bt-result .bt-fill { height: 100%; }
+#tl-bt-result .bt-fill-green { background: #4caf50; }
+#tl-bt-result .bt-fill-actual { background: #9e9e9e; }
+#tl-bt-result .bt-fill-red { background: #e57373; }
+#tl-bt-result .bt-val {
+  flex: none;
+  width: 118px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+#tl-bt-result .bt-dim { color: #666; }
+#tl-bt-result .bt-sub {
+  color: #666;
+  font-size: 11px;
+  margin: -2px 0 4px 92px;
+}
+#tl-bt-result .bt-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 6px;
+  color: #ccc;
+  font-variant-numeric: tabular-nums;
+}
+#tl-bt-result .bt-stat-k { color: #888; }
+#tl-bt-result .bt-note {
+  color: #666;
+  font-size: 11px;
+  margin-top: 4px;
+}
+#tl-bt-result .bt-error { color: #ff7b72; }
 
 /* 底部控制条 */
 #tl-ctrl {

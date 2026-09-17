@@ -116,6 +116,8 @@ func TestAPI(t *testing.T) {
 	noCache := strings.Replace(golden, `"p_cache":1.7`, `"p_cache":0`, 1)
 	noTTL := strings.Replace(golden, `"ttl_s":600`, `"ttl_s":0`, 1)
 	manual := strings.Replace(golden, `"max_wait_s":0`, `"max_wait_s":900`, 1)
+	trailing := golden + "{}"                                     // 合法 JSON 后跟第二条：尾随垃圾必须拒绝
+	oversize := `{"lineage":"` + strings.Repeat("a", 1<<20) + `"` // >1 MiB，MaxBytesReader 拒收
 
 	cases := []struct {
 		name   string
@@ -265,6 +267,30 @@ func TestAPI(t *testing.T) {
 			check: func(t *testing.T, body []byte) {
 				if decode(t, body)["ok"] != false {
 					t.Fatalf("坏请求体应返回 ok:false, body=%s", body)
+				}
+			},
+		},
+		{
+			name: "backtest 尾随垃圾 → 400", srv: ts, method: http.MethodPost, path: "/api/backtest", body: trailing, status: 400,
+			check: func(t *testing.T, body []byte) {
+				m := decode(t, body)
+				if m["ok"] != false {
+					t.Fatalf("尾随垃圾应返回 ok:false, body=%s", body)
+				}
+				if !strings.Contains(m["error"].(string), "多余内容") {
+					t.Fatalf("error = %v, want 含「多余内容」", m["error"])
+				}
+			},
+		},
+		{
+			name: "backtest 超 1MiB 请求体 → 400", srv: ts, method: http.MethodPost, path: "/api/backtest", body: oversize, status: 400,
+			check: func(t *testing.T, body []byte) {
+				m := decode(t, body)
+				if m["ok"] != false {
+					t.Fatalf("超限请求体应返回 ok:false, body=%s", body)
+				}
+				if !strings.Contains(m["error"].(string), "too large") {
+					t.Fatalf("error = %v, want 含 too large（MaxBytesReader 拒收）", m["error"])
 				}
 			},
 		},

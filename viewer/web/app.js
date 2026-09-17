@@ -66,6 +66,23 @@ function stopTlPlay() {
   }
 }
 
+// btSeq 反跑请求序号：与 navSeq 双守卫——切页（navSeq 变）弃响应，连点两次（btSeq 变）弃旧响应。
+var btSeq = 0;
+
+// BT_FIELDS 反跑表单可编辑参数：预填 GLM 口径（config [prices.glm] v2026-09-17 + 实测 TTL，
+// 见 docs/20260917_1630 实验报告 §4）。opened_ts/closed_ts/prefix_tokens 不进表单——
+// 随选中 window 行只读带出。
+var BT_FIELDS = [
+  { key: 'p_in', label: 'p_in 输入价', def: 6.9 },
+  { key: 'p_cache', label: 'p_cache 缓存读价', def: 1.7 },
+  { key: 'p_out', label: 'p_out 输出价', def: 24 },
+  { key: 'per', label: 'per 计价块', def: 10000 },
+  { key: 'ttl_s', label: 'ttl_s 实测TTL(秒)', def: 600 },
+  { key: 'safety', label: 'safety τ系数', def: 0.8 },
+  { key: 'beat_out_tokens', label: 'beat_out_tokens', def: 300 },
+  { key: 'max_wait_s', label: 'max_wait_s 0=auto', def: 0 },
+];
+
 // ---------- 列表页 ----------
 
 // renderList GET /api/sessions → 会话表格（后端已按最后活动倒序）。
@@ -157,11 +174,16 @@ function fmtDur(s) {
   return String(Math.round(s * 10) / 10);
 }
 
-// fmtCost 成本（美元）：<0.001 用科学计数防一串 0，其余 4 位截断。
+// fmtCost 成本（美元/积分同口径按价格表单位）：<0.001 用科学计数防一串 0，其余 4 位截断。
 function fmtCost(v) {
   if (!isFinite(v)) return '-';
   if (v !== 0 && Math.abs(v) < 0.001) return v.toExponential(2);
   return String(Math.round(v * 10000) / 10000);
+}
+
+// numOrDash 反跑结果数值兜底：非有限数显示 -（后端字段理论上恒为数，防畸形账本连带崩卡）。
+function numOrDash(v, suffix) {
+  return isFinite(v) ? fmtDur(v) + (suffix || '') : '-';
 }
 
 // nearestIdx 二分找 arr（升序）中离 v 最近的下标。
@@ -203,7 +225,8 @@ var TL_SCAFFOLD =
   '<input id="tl-cursor" type="range" aria-label="回放游标">' +
   '<label id="tl-ttl-label">TTL 存活 <input id="tl-ttl" type="number" min="0" step="60" value="600"> 秒</label>' +
   '<span id="tl-legend">绿=cache_read 红=input+creation 蓝=output</span>' +
-  '</div>';
+  '</div>' +
+  '<div id="tl-bt-result" hidden></div>';
 
 // tlNotice 时序页整页提示（空 lineage / 无数据 / 加载失败的兜底，绝不白屏）。
 // isErr 为真用红色错误样式。
@@ -346,6 +369,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   var tipTitle = tip.querySelector('.tip-title');
   var cumEl = document.getElementById('tl-cum');
   var wininfo = document.getElementById('tl-wininfo');
+  var btResult = document.getElementById('tl-bt-result');
   var slider = document.getElementById('tl-cursor');
   var ttlInput = document.getElementById('tl-ttl');
   var playBtn = document.getElementById('tl-play');
@@ -361,7 +385,28 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     parent.appendChild(svgEl('rect', { x: x, y: y, width: w, height: h, fill: color }));
   }
 
-  // ---- 窗口信息卡（右上角，点窗口带弹出）----
+  // ---- 窗口信息卡（右上角，点窗口带弹出；内嵌反跑参数表单）----
+
+  // windowBeatActual 该窗口"实际发生"线：账本 events 里 kind=beat 且 ts 落窗内的行，
+  // Σcost_actual。畸形行（ts/cost_actual 非数）兜底跳过不炸卡。
+  function windowBeatActual(win) {
+    var sum = 0, n = 0;
+    events.forEach(function (e) {
+      if (!e || e.kind !== 'beat' || !isFinite(e.ts)) return;
+      if (e.ts < win.opened_ts - 1e-6 || e.ts > win.closed_ts + 1e-6) return;
+      sum += isFinite(e.cost_actual) ? e.cost_actual : 0;
+      n++;
+    });
+    return { sum: sum, n: n };
+  }
+
+  // beatOffsets 模拟跳点（绝对时间戳）→ 相对 T0 的偏移串（>4 个截断加 …）。
+  function beatOffsets(beats, t0) {
+    var parts = beats.slice(0, 4).map(function (b) { return fmtDur(b - t0) + 's'; });
+    if (beats.length > 4) parts.push('…');
+    return parts.join('、');
+  }
+
   function fillWinInfo(win, wi) {
     wininfo.textContent = '';
     var head = document.createElement('div');
@@ -403,18 +448,231 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     btn.type = 'button';
     btn.className = 'win-backtest';
     btn.textContent = '反跑此窗口';
-    btn.disabled = true; // Task 6 接真逻辑，先占位
-    btn.setAttribute('title', '反跑仿真将在 Task 6 接入');
-    var note = document.createElement('span');
-    note.className = 'win-note';
-    note.textContent = '（Task 6 接入反跑）';
+    btn.setAttribute('title', '展开反跑参数表单（价格预填 GLM 口径）');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.addEventListener('click', function () {
+      var form = wininfo.querySelector('.bt-form');
+      if (!form) {
+        form = buildBtForm(win, wi);
+        wininfo.appendChild(form);
+      } else {
+        form.hidden = !form.hidden;
+      }
+      btn.setAttribute('aria-expanded', form.hidden ? 'false' : 'true');
+    });
     btnRow.appendChild(btn);
-    btnRow.appendChild(note);
     wininfo.appendChild(btnRow);
+  }
+
+  // buildBtForm 反跑参数表单：8 个可编辑参数（GLM 预填）+ 窗口三参只读带出行。
+  // 提交前逐字段校验为有限数，畸形输入不发请求、就地红字提示。
+  function buildBtForm(win, wi) {
+    var form = document.createElement('form');
+    form.className = 'bt-form';
+
+    var ro = document.createElement('div');
+    ro.className = 'bt-ro';
+    ro.textContent = '随窗口带出：prefix=' + fmtK(win.prefix_tokens || 0) +
+      ' · ' + fmtTS(win.opened_ts) + ' ~ ' + fmtTS(win.closed_ts);
+    form.appendChild(ro);
+
+    var grid = document.createElement('div');
+    grid.className = 'bt-grid';
+    var inputs = {};
+    BT_FIELDS.forEach(function (f) {
+      var cell = document.createElement('label');
+      cell.className = 'bt-field';
+      var cap = document.createElement('span');
+      cap.textContent = f.label;
+      var inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = 'any';
+      inp.value = String(f.def);
+      inp.setAttribute('aria-label', f.label);
+      inp.addEventListener('input', function () { hint.textContent = ''; });
+      inputs[f.key] = inp;
+      cell.appendChild(cap);
+      cell.appendChild(inp);
+      grid.appendChild(cell);
+    });
+    form.appendChild(grid);
+
+    var hint = document.createElement('div');
+    hint.className = 'bt-hint';
+    form.appendChild(hint);
+
+    var go = document.createElement('button');
+    go.type = 'submit';
+    go.className = 'bt-go';
+    go.textContent = '反跑（POST /api/backtest）';
+    form.appendChild(go);
+
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var params = {};
+      for (var i = 0; i < BT_FIELDS.length; i++) {
+        var f = BT_FIELDS[i];
+        var v = parseFloat(inputs[f.key].value);
+        if (!isFinite(v)) { // 畸形输入兜底：不发送，就地提示
+          hint.textContent = '参数 ' + f.key + ' 不是数字';
+          return;
+        }
+        params[f.key] = v;
+      }
+      runBacktest(win, wi, params, go);
+    });
+    return form;
+  }
+
+  // runBacktest POST /api/backtest。双守卫：navSeq 变 = 已切页；btSeq 变 = 用户连点，
+  // 旧响应一律丢弃，绝不覆盖新结果。期间按钮置灰防重复提交。
+  function runBacktest(win, wi, params, goBtn) {
+    var myBt = ++btSeq;
+    var seqAtGo = navSeq;
+    goBtn.disabled = true;
+    goBtn.textContent = '反跑中…';
+    fetchJSON('/api/backtest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineage: lineage,
+        opened_ts: win.opened_ts,
+        closed_ts: win.closed_ts,
+        prefix_tokens: win.prefix_tokens || 0,
+        params: params,
+      }),
+    }).then(function (data) {
+      goBtn.disabled = false;
+      goBtn.textContent = '反跑（POST /api/backtest）';
+      if (seqAtGo !== navSeq || myBt !== btSeq) return;
+      showBtResult(win, wi, data);
+    }).catch(function (e) {
+      goBtn.disabled = false;
+      goBtn.textContent = '反跑（POST /api/backtest）';
+      if (seqAtGo !== navSeq || myBt !== btSeq) return;
+      showBtError('反跑失败：' + e.message);
+    });
+  }
+
+  // showBtError 结果卡整卡错误态（网络失败 / 4xx 等）。
+  function showBtError(msg) {
+    btResult.textContent = '';
+    var err = document.createElement('div');
+    err.className = 'bt-error';
+    err.textContent = msg;
+    btResult.appendChild(err);
+    btResult.hidden = false;
+  }
+
+  // showBtResult 反跑结果卡：三线对比横条（若这样配 / 实际发生 / 什么都不做）+
+  // cap/τ/单跳/全款四推导数 + cap 语义注。ok:false → 红字拒绝文案。全部
+  // createElement/textContent 进 DOM，数值经 isFinite 兜底。
+  function showBtResult(win, wi, data) {
+    btResult.textContent = '';
+    var head = document.createElement('div');
+    head.className = 'bt-head';
+    var h = document.createElement('span');
+    h.textContent = '反跑结果 · 窗口 #' + (wi + 1) + '（' + fmtTS(win.opened_ts) + ' ~ ' + fmtTS(win.closed_ts) + '）';
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'bt-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', '关闭反跑结果卡');
+    close.addEventListener('click', function () { btResult.hidden = true; });
+    head.appendChild(h);
+    head.appendChild(close);
+    btResult.appendChild(head);
+
+    if (!data || data.ok !== true) { // 业务拒绝（p_cache 缺省 / ttl_s 非法）：红字文案
+      var err = document.createElement('div');
+      err.className = 'bt-error';
+      err.textContent = '反跑被拒绝：' + ((data && data.error) || '未知原因');
+      btResult.appendChild(err);
+      btResult.hidden = false;
+      return;
+    }
+
+    var r = data.result || {};
+    var beats = Array.isArray(data.beats) ? data.beats.filter(function (b) { return isFinite(b); }) : [];
+    var planned = isFinite(data.beats_cost) ? data.beats_cost : 0;
+    var nothing = isFinite(data.do_nothing_cost) ? data.do_nothing_cost : 0;
+    var act = windowBeatActual(win);
+    var maxV = Math.max(planned, act.n ? act.sum : 0, nothing);
+
+    // btLine 一条对比横条：val=null 显示灰"—（未启用）"。
+    function btLine(label, val, sub, fillCls) {
+      var line = document.createElement('div');
+      line.className = 'bt-line';
+      var lab = document.createElement('span');
+      lab.className = 'bt-label';
+      lab.textContent = label;
+      var track = document.createElement('div');
+      track.className = 'bt-track';
+      var fill = document.createElement('div');
+      fill.className = 'bt-fill ' + fillCls;
+      if (val != null && maxV > 0) fill.style.width = (val / maxV * 100) + '%';
+      track.appendChild(fill);
+      var v = document.createElement('span');
+      v.className = val == null ? 'bt-val bt-dim' : 'bt-val';
+      v.textContent = val == null ? '—（未启用）' : fmtCost(val) + ' 积分';
+      line.appendChild(lab);
+      line.appendChild(track);
+      line.appendChild(v);
+      btResult.appendChild(line);
+      if (sub) {
+        var subEl = document.createElement('div');
+        subEl.className = 'bt-sub';
+        subEl.textContent = sub;
+        btResult.appendChild(subEl);
+      }
+    }
+
+    btLine('若当时这样配', planned,
+      beats.length + ' 跳' + (beats.length ? ' @ T0+' + beatOffsets(beats, win.opened_ts) : '') +
+      ' · 共 ' + fmtCost(planned) + ' 积分',
+      'bt-fill-green');
+    if (act.n > 0) {
+      btLine('实际发生', act.sum, act.n + ' 跳真实 beat', 'bt-fill-actual');
+    } else {
+      btLine('实际发生', null, '', 'bt-fill-actual');
+    }
+    if (nothing > 0) {
+      btLine('什么都不做', nothing, '整窗超 TTL，过期一次全款', 'bt-fill-red');
+    } else {
+      btLine('什么都不做', 0, '存活无损', 'bt-fill-red');
+    }
+
+    var stats = document.createElement('div');
+    stats.className = 'bt-stats';
+    [
+      ['cap 上限', numOrDash(r.cap_s, 's')],
+      ['τ 间隔', numOrDash(r.tau_s, 's')],
+      ['单跳', isFinite(r.per_beat) ? fmtCost(r.per_beat) : '-'],
+      ['全款', isFinite(r.expire) ? fmtCost(r.expire) : '-'],
+    ].forEach(function (sd) {
+      var sp = document.createElement('span');
+      sp.className = 'bt-stat';
+      var k = document.createElement('span');
+      k.className = 'bt-stat-k';
+      k.textContent = sd[0] + ' ';
+      sp.appendChild(k);
+      sp.appendChild(document.createTextNode(sd[1]));
+      stats.appendChild(sp);
+    });
+    btResult.appendChild(stats);
+
+    if (data.note) {
+      var note = document.createElement('div');
+      note.className = 'bt-note';
+      note.textContent = data.note;
+      btResult.appendChild(note);
+    }
+    btResult.hidden = false;
   }
 
   function selectWindow(wi) {
     state.selected = state.selected === wi ? -1 : wi; // 同一带再点 = 取消选中
+    btResult.hidden = true; // 结果卡随窗口切换收起，避免旧窗口结果被误读
     if (state.selected >= 0) {
       fillWinInfo(windows[wi], wi);
       wininfo.hidden = false;

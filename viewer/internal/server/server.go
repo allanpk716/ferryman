@@ -6,6 +6,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -129,15 +130,27 @@ type backtestParams struct {
 	MaxWaitS      float64 `json:"max_wait_s"`
 }
 
+// maxBacktestBody 反跑请求体上限（1 MiB）：窗口参数级 JSON 远用不满，防病态大包耗内存。
+const maxBacktestBody = 1 << 20
+
 // handleBacktest POST /api/backtest → 反跑仿真。窗口与 prefix 由前端从 window 行带出。
 // policy.Derive 的参数错误（p_cache<=0、ttl_s<=0）是业务拒绝而非服务故障 → 200 + ok:false；
-// 只有请求体不合法才 400。
+// 只有请求体不合法才 400。请求体经 MaxBytesReader 限幅，且解码后不允许尾随垃圾
+// （两条 JSON、多余字符一律拒绝）。
 func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 	var req backtestReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBacktestBody))
+	if err := dec.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":    false,
 			"error": "请求体不是合法 JSON: " + err.Error(),
+		})
+		return
+	}
+	if _, err := dec.Token(); err != io.EOF { // 尾随垃圾拒绝：合法体此处必须恰好 EOF
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":    false,
+			"error": "请求体 JSON 后有多余内容",
 		})
 		return
 	}
