@@ -46,7 +46,7 @@ def test_t10_full_loop(h):
 # ---------- T11 skeleton 降级 ----------
 
 def test_t11_skeleton_on_ferry_failure(tmp_path, monkeypatch):
-    def exploding(path, provider):
+    def exploding(path, provider, agent="cc"):
         raise RuntimeError("provider down")
 
     harness = Harness(tmp_path, monkeypatch, fake_ferry=exploding)
@@ -69,7 +69,7 @@ def test_t11_skeleton_on_ferry_failure(tmp_path, monkeypatch):
 def test_t12_wall_clock_kill(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon_mod, "FERRY_WALL_TIMEOUT_S", 1.0)
 
-    def sleeping(path, provider):
+    def sleeping(path, provider, agent="cc"):
         time.sleep(30)
         return "never", {}
 

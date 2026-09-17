@@ -153,10 +153,19 @@ def handoff_markdown(title: str | None, inject: str, full: str, meta: dict) -> s
     )
 
 
-def ferry_session(path: Path, provider: Provider, timeout: float = 600.0) -> tuple[str, dict]:
-    """对单个会话执行摆渡，返回 (handoff_md, meta)。meta 含 L1/L2 模式与耗时。"""
+def ferry_session(path: Path, provider: Provider, timeout: float = 600.0,
+                  agent: str = "cc") -> tuple[str, dict]:
+    """对单个会话执行摆渡，返回 (handoff_md, meta)。meta 含 L1/L2 模式与耗时。
+
+    agent="codex" 走 rollout 提取（2026-09-17 11:17 事故：CC 提取器解析
+    rollout 得 0 正文，191k 会话产出"无实际开发活动"垃圾交接）。
+    """
     t0 = time.time()
-    facts, items, _turns = extract(path)
+    if agent == "codex":
+        from .codex_transcripts import extract_codex
+        facts, items = extract_codex(path)
+    else:
+        facts, items, _turns = extract(path)
     skeleton = facts.skeleton_text()
     material = material_text(facts, items)
     mat_tokens = token_estimate(material)

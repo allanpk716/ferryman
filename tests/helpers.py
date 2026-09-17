@@ -88,7 +88,7 @@ class Harness:
 
         self.daemon = FerryDaemon(cfg, self.ledger, self.store, enqueue)
 
-        def default_fake(path, provider):
+        def default_fake(path, provider, agent="cc"):
             md = ("[Ferryman 交接 · 会话 集成测试会话]\n\n<<<INJECT>>>\n注入层：干完了 fb.py\n"
                   "<<</INJECT>>\n\n# 全文\n干完了：fb.py\n")
             meta = {"title": "集成测试会话", "mode": "L1", "wall_s": 0.01,
