@@ -52,3 +52,14 @@ def test_parse_skips_malformed_and_bare_lines():
                                                             "content": "无用量"}}) + "\n")
     rows, _t, _c = parse_usage_chunk(chunk)
     assert len(rows) == 1            # 只有带 usage 的 assistant 出行
+
+
+def test_parse_skips_nondict_and_null_token_lines():
+    """病态行防御：数组行/message 为字符串/token 为 null——跳过不抛且不伤及好行（审查 Nit）。"""
+    chunk = ("[1, 2]\n"
+             + json.dumps({"type": "assistant", "message": "字符串消息"}) + "\n"
+             + json.dumps({"type": "assistant", "message": {"role": "assistant",
+                                                            "usage": {"input_tokens": None}}}) + "\n"
+             + _asst_line() + "\n")
+    rows, _t, _c = parse_usage_chunk(chunk)
+    assert len(rows) == 1 and rows[0]["output_tokens"] == 50

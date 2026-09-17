@@ -13,12 +13,21 @@ from datetime import datetime
 
 
 def _ts_of(rec: dict) -> float | None:
+    # 无时区的 timestamp 按本地时区解释（CC 转录恒带 Z，现实无影响）。
     ts = rec.get("timestamp")
     if not isinstance(ts, str):
         return None
     try:
         return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
     except ValueError:
+        return None
+
+
+def _int(v) -> int | None:
+    """宽松取整：null/字符串等取不动就 None，由调用方决定整行跳过（审查 Nit）。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
         return None
 
 
@@ -47,14 +56,22 @@ def parse_usage_chunk(text: str, *, title: str = "",
             cwd = str(rec["cwd"])
         if rec.get("type") != "assistant":
             continue
-        msg = rec.get("message") or {}
-        usage = msg.get("usage") or {}
-        if not usage:
+        msg = rec.get("message")
+        if not isinstance(msg, dict):
             continue
+        usage = msg.get("usage")
+        if not isinstance(usage, dict) or not usage:
+            continue
+        input_tokens = _int(usage.get("input_tokens", 0))
+        cache_read_tokens = _int(usage.get("cache_read_input_tokens", 0))
+        cache_creation_tokens = _int(usage.get("cache_creation_input_tokens", 0))
+        output_tokens = _int(usage.get("output_tokens", 0))
+        if None in (input_tokens, cache_read_tokens,
+                    cache_creation_tokens, output_tokens):
+            continue            # 数字取不动的行整行跳过，不落数字错误的账
         rows.append({"ts": _ts_of(rec), "model": str(msg.get("model", "")),
-                     "input_tokens": int(usage.get("input_tokens", 0)),
-                     "cache_read_tokens": int(usage.get("cache_read_input_tokens", 0)),
-                     "cache_creation_tokens":
-                         int(usage.get("cache_creation_input_tokens", 0)),
-                     "output_tokens": int(usage.get("output_tokens", 0))})
+                     "input_tokens": input_tokens,
+                     "cache_read_tokens": cache_read_tokens,
+                     "cache_creation_tokens": cache_creation_tokens,
+                     "output_tokens": output_tokens})
     return rows, title, cwd
