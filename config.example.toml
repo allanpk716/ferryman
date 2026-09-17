@@ -41,3 +41,15 @@ toast = true
 # codex_extra_dirs = []   # 额外 codex 会话目录；Orca 运行时目录
 #                         # (%APPDATA%\orca\codex-runtime-home\home\sessions) 存在时自动追加
 #                         # ——2026-09-17 真机抓包发现经 Orca 启动的 codex 写在那里
+
+[prices.glm]
+# 费用账本（T41）：GLM Coding Plan 积分系数（2026-09-17 实测口径，
+# 见 docs/20260917_1630_GLM缓存TTL实测与心跳保温可行性_实验报告.md §4）
+unit = "智谱积分"
+per = 10000                # 每万 token 计价
+
+[[prices.glm.versions]]
+effective_from = "2026-09-17"
+p_in = 6.9
+p_cache = 1.7              # 不写此键 = 无缓存价：策略计算器拒算、report 标注不可算
+p_out = 24
