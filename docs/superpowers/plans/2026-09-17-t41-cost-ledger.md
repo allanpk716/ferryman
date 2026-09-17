@@ -776,6 +776,8 @@ def test_restore_books_inject(h):
     e = h.accounts.read(kind="inject")[-1]
     assert e["session_id"] == "newsid"
     assert e["tokens"] > 0 and e["handoff_id"]
+    blk = h.accounts.read(kind="block")[-1]        # R9：inject 与 block 同谱系（Q7 因果链）
+    assert e["lineage_id"] == blk["lineage_id"]
 ```
 
 （文件头补 `from helpers import MIN_CTX, write_session`——`MIN_CTX` 已在 helpers 导出。）
@@ -801,20 +803,29 @@ def __init__(self, cfg, ledger, store, enqueue_ferry, accounts=None,
 
 ```python
     def _acct(self, kind: str, st: SessionState | None = None, *,
-              agent: str = "", session_id: str = "", **fields) -> None:
-        """记账薄封装：st 优先（lineage 用归一化 transcript 路径），无 st 用显式参数。"""
+              agent: str = "", session_id: str = "",
+              lineage_id: str | None = None, **fields) -> None:
+        """记账薄封装：st 优先（lineage 用归一化 transcript 路径），无 st 用显式参数。
+        lineage_id/project 可显式覆盖（inject 需按交接源会话解析谱系，R9）。"""
         if self.accounts is None:
             return
-        from .ledger import _norm_path
-        if st is not None:
-            agent, session_id = st.agent, st.session_id
-            lineage = _norm_path(st.transcript_path) if st.transcript_path else session_id
-            project = st.cwd or ""
-        else:
-            lineage = session_id      # 无台账线索：lineage 退化为 session 自身
-            project = ""
-        self.accounts.record(kind, agent=agent, session_id=session_id,
-                             lineage_id=lineage, project=project, **fields)
+        try:
+            from .ledger import _norm_path
+            if st is not None:
+                agent, session_id = st.agent, st.session_id
+                if lineage_id is None:
+                    lineage_id = _norm_path(st.transcript_path) if st.transcript_path else session_id
+                project = st.cwd or ""
+            else:
+                if lineage_id is None:
+                    lineage_id = session_id      # 无台账线索：lineage 退化为 session 自身
+                project = ""
+            if "project" in fields:
+                project = str(fields.pop("project"))
+            self.accounts.record(kind, agent=agent, session_id=session_id,
+                                 lineage_id=lineage_id, project=project, **fields)
+        except Exception as e:  # noqa: BLE001 — 记账永不弄断闸门
+            print(f"[account] {kind} 记账失败（忽略）: {e}", flush=True)
 ```
 
 gate() 各记账点：
@@ -838,13 +849,24 @@ gate() 各记账点：
             self._acct("block", st, prefix_tokens=st.peak_ctx, idle_s=round(idle, 1))
 ```
 
-restore() 单候选注入路径（`self.store.mark_injected(...)` 之前）加：
+restore() 单候选注入路径（`self.store.mark_injected(...)` 之前）加——谱系按交接**源**会话解析（Q7 因果链：inject 与 block 同谱系，R9）：
 
 ```python
         from .extract import token_estimate
-        self._acct("inject", self.ledger.get(agent, session_id),
-                   agent=agent, session_id=session_id,
+        from .ledger import _norm_path
+        st_src = self.ledger.get(agent, newest["session_id"])
+        _lin = (_norm_path(st_src.transcript_path)
+                if st_src and st_src.transcript_path else session_id)
+        self._acct("inject", None, agent=agent, session_id=session_id,
+                   lineage_id=_lin, project=(st_src.cwd or "" if st_src else ""),
                    tokens=token_estimate(ctx), handoff_id=newest["handoff_id"])
+```
+
+`ferryman/daemon.py` serve()（Task 4 已建 `accounts` 实例）——FerryDaemon 构造传参（R8，生产记账接线）：
+
+```python
+    daemon = FerryDaemon(cfg, ledger, store, enqueue, accounts=accounts,
+                         started_at=started_at)
 ```
 
 `tests/helpers.py`：`FerryDaemon(cfg, self.ledger, self.store, enqueue)` → `FerryDaemon(cfg, self.ledger, self.store, enqueue, accounts=self.accounts)`（Task 4 已建 `self.accounts`）。
