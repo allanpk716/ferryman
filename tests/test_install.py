@@ -15,7 +15,8 @@ def _orca_settings(tmp_path):
 
 def test_install_appends_keeps_orca_and_is_idempotent(tmp_path, capsys):
     p = _orca_settings(tmp_path)
-    install_cc(settings_path=p)
+    # 密闭性：显式指向不存在的 cc-switch.db，绝不碰本机真实 CC Switch 库
+    install_cc(settings_path=p, ccswitch_db=tmp_path / "no-ccswitch.db")
     data = json.loads(p.read_text(encoding="utf-8"))
 
     ups = data["hooks"]["UserPromptSubmit"]

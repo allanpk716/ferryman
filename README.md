@@ -22,7 +22,7 @@
 ## 待办（按优先级）
 
 1. DeepSeek/GLM API key → E1 横评定默认路由
-2. `ferryman install-cc` 实装验证 + **CC Switch 模板同步**（DESIGN §3 地雷，人工步骤）
+2. `ferryman install-cc` 实装验证——检测到 CC Switch 时**自动**把钩子注进全部 claude 供应商快照（DESIGN §3，2026-09-17 T21 定案：切换=快照逐字写入，不在快照里的 hooks 会被抹）。新增供应商后重跑 `ferryman install-ccswitch`。
 3. claude-notify 接入（拦截时 Toast/Pushover）
 4. 稳定快照双读协议（DESIGN §6.13，现为单读 + covers_until）
 5. Codex 钩子（E0b 数据积累后 observe → enforce）
@@ -35,5 +35,6 @@ uv run ferryman e0                  # E0a：全量 TTL 曲线
 uv run ferryman eval-set            # E1：构建评测集
 uv run ferryman eval --provider local [--regrade]
 uv run ferryman serve [--smoke]     # 守护进程（配置：~/ferryman/config.toml 或 FERRYMAN_CONFIG）
-uv run ferryman install-cc          # 钩子安装（含 CC Switch 同步提示）
+uv run ferryman install-cc          # 钩子安装（检测到 CC Switch 时自动注入供应商快照）
+uv run ferryman install-ccswitch    # 只注 CC Switch 快照（新增供应商后重跑；幂等自动备份）
 ```

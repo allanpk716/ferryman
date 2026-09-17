@@ -23,7 +23,10 @@ def main(argv: list[str] | None = None) -> int:
     serve_p = sub.add_parser("serve", help="启动守护进程（守望+摆渡+闸门+归还）")
     serve_p.add_argument("--smoke", action="store_true",
                          help="放宽阈值差≥120s 校验（秒级阈值冒烟用）")
-    sub.add_parser("install-cc", help="把 Ferryman 钩子追加进 ~/.claude/settings.json")
+    sub.add_parser("install-cc", help="把 Ferryman 钩子追加进 ~/.claude/settings.json"
+                                     "（检测到 CC Switch 时自动注入供应商快照）")
+    sub.add_parser("install-ccswitch", help="把 Ferryman 钩子注进 CC Switch 全部 claude 供应商快照"
+                                            "（新增供应商后重跑；幂等、自动备份）")
     args = parser.parse_args(argv)
 
     if args.cmd == "e0":
@@ -51,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
         from .install import install_cc
 
         return install_cc()
+    if args.cmd == "install-ccswitch":
+        from .install import inject_ccswitch
+
+        n = inject_ccswitch()
+        return 0 if n >= 0 else 1
     return 2
 
 
