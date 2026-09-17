@@ -15,7 +15,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("e0b", help="E0b：Codex 缓存 TTL 实测，出 reports/e0b-codex.md")
     sub.add_parser("eval-set", help="E1：构建评测集（分层抽样+注入样本+问答基准）")
     eval_p = sub.add_parser("eval", help="E1：跑候选模型评测（三层标准+耗时）")
-    eval_p.add_argument("--provider", default="local", help="provider 名（见 config.example.toml）")
+    eval_p.add_argument("--provider", required=True,
+                        help="provider 名（~/ferryman/config.toml 的 [providers.X]，见 config.example.toml）")
     eval_p.add_argument("--limit", type=int, default=None, help="只跑前 N 个会话（冒烟用）")
     eval_p.add_argument("--no-qa", action="store_true", help="跳过③端到端续接")
     eval_p.add_argument("--regrade", action="store_true",

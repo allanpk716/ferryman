@@ -81,6 +81,18 @@ def test_daemon_probe(tmp_path):
     assert ok_up and "ok" in msg_up
 
 
+def test_ferry_provider_check():
+    from ferryman.doctor import check_ferry_provider
+    from ferryman.ferry import Provider
+    ok, msg = check_ferry_provider("", {})                       # 未配置
+    assert not ok and "未配置" in msg
+    ok, msg = check_ferry_provider("mine", {})                   # 名字无定义
+    assert not ok and "未在" in msg
+    ok, msg = check_ferry_provider(
+        "mine", {"mine": Provider(name="mine", base_url="http://x", model="m")})
+    assert ok, msg
+
+
 def test_launcher(tmp_path):
     ok, msg = check_launcher(tmp_path / "no.cmd", repo=None)
     assert not ok

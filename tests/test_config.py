@@ -16,6 +16,11 @@ def test_defaults_pass():
     validate(_cfg())
 
 
+def test_ferry_provider_defaults_to_unconfigured():
+    # T39 去硬编码：默认未配置（曾默认 "local" 指向作者内网网关）
+    assert Config().ferry_provider == ""
+
+
 def test_equal_thresholds_rejected():
     c = _cfg(thresholds=ThresholdCfg(summarize_s=100, block_s=100))
     with pytest.raises(ValueError, match="严格小于"):

@@ -1,11 +1,12 @@
 # Ferryman 配置样例 —— 复制到 ~/ferryman/config.toml 并填入真实凭据。
-# 真实配置在仓库外，永不入库。未配置时仅内置 local 默认项可用。
+# 真实配置在仓库外，永不入库。代码不内置任何默认 provider：
+# 未配置 [ferry] provider 时摆渡将降级为骨架交接（worker 警告，doctor 提示）。
 
 [providers.local]
-# 本机 4090x2 gateway（实测：LAN/Tailscale 可达，暂无鉴权，229K 窗口）
-base_url = "http://<你的本地推理网关>:[REDACTED-PORT]/v1"
-model = "[REDACTED-MODEL]"
-window = 229376
+# 自建 OpenAI 兼容网关示例（vLLM / SGLang / ollama 等）——地址按你的实际环境填
+base_url = "http://<你的推理网关地址>:<端口>/v1"
+model = "<你的模型名>"
+window = 131072
 # api_key = ""
 
 [providers.deepseek]
@@ -21,6 +22,10 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
 model = "glm-5.3-flash"
 window = 1048576
 # api_key = "..."
+
+[ferry]
+# 摆渡用 provider —— 必须对应上面某个 [providers.X] 的名字；不配则摆渡降级骨架
+provider = "deepseek"
 
 [notify]
 # 拦截通知（T25）：block 时 Pushover（手机）+ Windows Toast（桌面），文案带交接路径。

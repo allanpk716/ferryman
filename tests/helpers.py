@@ -67,6 +67,7 @@ class Harness:
                              cc_projects_dir=str(self.projects),
                              codex_sessions_dir=str(tmp_path / "no-codex"))
         cfg.server = ServerCfg(port=self.port, data_dir=str(tmp_path / "data"))
+        cfg.ferry_provider = "fake"            # T39 去内置默认后，测试密闭：注入假 provider
         self.cfg = cfg
         self.token = ensure_token(Path(cfg.data_dir))
         self.ledger = Ledger()
@@ -96,6 +97,11 @@ class Harness:
             return md, meta
 
         monkeypatch.setattr(daemon_mod, "ferry_session", fake_ferry or default_fake)
+        from ferryman.ferry import Provider
+        monkeypatch.setattr(daemon_mod, "load_providers",
+                            lambda: {"fake": Provider(name="fake",
+                                                      base_url="http://127.0.0.1:9/v1",
+                                                      model="fake")})
         self.server = make_server(self.daemon, self.port, self.token)
         self.watcher = Watcher(cfg, self.ledger, self.store, enqueue, self.started_at)
         self.worker = FerryWorker(cfg, self.store, self.tasks)

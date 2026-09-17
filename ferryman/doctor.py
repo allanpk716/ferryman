@@ -132,6 +132,16 @@ def check_daemon(probe, pid_file: Path) -> tuple[bool, str]:
     return True, f"daemon 活着{extra}{alert}"
 
 
+def check_ferry_provider(name: str, providers: dict) -> tuple[bool, str]:
+    """摆渡 provider 已配置且在 [providers.*] 有定义（T39 去内置默认后的新静默失效点）。"""
+    if not name:
+        return False, ("[ferry] provider 未配置——摆渡永远降级骨架"
+                       "（复制 config.example.toml 到 ~/ferryman/config.toml）")
+    if name not in providers:
+        return False, f"[ferry] provider '{name}' 未在 [providers.*] 定义"
+    return True, f"摆渡 provider '{name}' 在位"
+
+
 def check_launcher(path: Path, repo: Path | None = None) -> tuple[bool, str]:
     """点火脚本在位且其 python 路径有效（钩子自举的地基）。"""
     repo = repo or _repo()
@@ -153,6 +163,13 @@ def run_doctor() -> int:
     results.append(check_cc_hooks(home / ".claude" / "settings.json", repo=repo))
     results.append(check_launcher(data_dir / LAUNCHER_NAME, repo=repo))
     results.append(check_ccswitch())
+    try:
+        from . import config as config_mod
+        from .ferry import load_config as load_providers
+        cfg = config_mod.load()
+        results.append(check_ferry_provider(cfg.ferry_provider, load_providers()))
+    except Exception as e:  # noqa: BLE001 — 配置坏要让 doctor 报出来而非崩
+        results.append((False, f"摆渡配置加载失败: {e}"))
 
     scripts = [repo / "hooks" / n for n in (
         "ferryman-gate.ps1", "ferryman-restore.ps1", "ferryman-subagent.ps1",

@@ -1,6 +1,6 @@
 """T10-T15, T31 · 集成测试：全链路 / skeleton 降级 / 墙钟强杀 / 队列背压 / 懒富化 / 鉴权健康 / 悬空 tool_use 推迟。
 
-全离线：摆渡模型用 monkeypatch 假件替代（不连 4090x2、不出网）。
+全离线：摆渡模型用 monkeypatch 假件替代（不连真实推理网关、不出网）。
 """
 
 import queue
@@ -183,6 +183,23 @@ def test_t31_dangling_defers_enqueue(tmp_path):
             watcher._maybe_enqueue(st)
     assert "calm-2" in enqueued
     assert "dangle-1" not in enqueued                            # 运行中 → 每轮都推迟
+
+
+# ---------- T39 provider 未配置：醒目警告（不再依赖内置默认） ----------
+
+def test_t39_unconfigured_provider_warns(tmp_path, monkeypatch, capsys):
+    from ferryman.store import Store
+    monkeypatch.setattr(daemon_mod, "load_providers", lambda: {})
+    cfg = Config()
+    cfg.ferry_provider = ""                              # 未配置
+    daemon_mod.FerryWorker(cfg, Store(tmp_path / "d"), queue.Queue())
+    out = capsys.readouterr().out
+    assert "未配置" in out and "config.toml" in out
+
+    cfg2 = Config()
+    cfg2.ferry_provider = "ghost"                        # 配了名字但无定义
+    daemon_mod.FerryWorker(cfg2, Store(tmp_path / "d"), queue.Queue())
+    assert "ghost" in capsys.readouterr().out
 
 
 # ---------- T15 鉴权与健康 ----------

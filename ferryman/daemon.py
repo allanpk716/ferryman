@@ -152,6 +152,13 @@ class FerryWorker(threading.Thread):
         self.cfg, self.store, self.tasks = cfg, store, tasks
         self.providers = load_providers()
         self._stop = threading.Event()
+        if not cfg.ferry_provider:
+            print("[ferry] ⚠ [ferry] provider 未配置——摆渡将全部降级为骨架交接"
+                  "（复制 config.example.toml 到 ~/ferryman/config.toml 并设置 provider）",
+                  flush=True)
+        elif cfg.ferry_provider not in self.providers:
+            print(f"[ferry] ⚠ provider '{cfg.ferry_provider}' 未在 [providers.*] 定义"
+                  f"——摆渡将全部降级为骨架交接", flush=True)
 
     def stop(self) -> None:
         self._stop.set()

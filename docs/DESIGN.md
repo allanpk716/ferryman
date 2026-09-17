@@ -22,7 +22,7 @@
 - 实测：`ai-title` 行存在（可作交接命名）但**无 timestamp 字段** → 闲置判定用文件 mtime。
 - 现有 hooks 全挂 Orca 的 claude-hook.cmd，本项目追加共存；⚠ CC Switch 切换供应商会覆盖 `~/.claude/settings.json`。**机制实测（2026-09-17，T21）**：切换 = 把该供应商在 `~/.cc-switch/cc-switch.db`（SQLite，`providers.settings_config`）里的**快照逐字写入** settings.json——`common_config_claude`（通用配置）**不参与**切换时合并（只在你手动"应用"时进快照）；Live 代理模式下应用还会不定期重写。**修复**：把 ferryman 四钩子直接注进全部 claude 供应商快照（含未来新增供应商需重注；`cc-switch.db` 改前备份）。附带伤害：这类重写会抹掉**不在快照里的一切**——Orca 钩子同样会灭。
 - 通知（T25，2026-09-16 落地）：daemon 自持 `notify.py`（不耦合插件路径）——block 时异步双通道：Pushover（手机）+ Win10 WinRT Toast（桌面），文案带交接路径；`[notify] enabled` 默认 false，凭据复用 claude-notify 的环境变量 `PUSHOVER_TOKEN/PUSHOVER_USER`（HKCU 用户级持久，config 可覆盖）；通道任何故障只吞不抛，绝不影响 gate 决策。
-- 主力机（daemon，Windows）GPU 仅 RTX 3060；本地模型在 4090x2（双 4090D 49GB）：Qwen3.8-27B，SGLang 双副本（general:18000/long:18001）+ router + gateway `0.0.0.0:[REDACTED-PORT]`（OpenAI 兼容，nginx+APIKey）。**传输要求**：跨机仅走内网或 Tailscale（禁公网明文）；gateway 绑定面/TLS 为 `ferryman doctor` 部署检查项。
+- 摆渡模型经作者自建 OpenAI 兼容推理网关——地址/模型/窗口一律经 `~/ferryman/config.toml` 配置（仓库外，永不入库；T39 起代码不内置任何默认 provider，未配置时摆渡降级骨架并由 doctor 提示）。**传输要求**：跨机仅走内网或 Tailscale（禁公网明文）；gateway 绑定面/TLS 为 `ferryman doctor` 部署检查项。
 
 ## 4. 架构与安全
 
@@ -95,7 +95,7 @@ Python 3.12+（uv）守护进程，绑定 127.0.0.1:7311：
 
 - **E0a（CC/GLM）**：全量 1644 会话间隔×命中率曲线（30-60min 细分 + 时间分层检测路由切换）→ 定 CC/GLM 拦截终值；附带实测 CC resume 的 session_id/新文件行为（校准 lineage）。
 - **E0b（Codex）**：317 个 rollout 的 token_usage 同样统计（OpenAI 30m TTL 先验）+ 订阅计费语义核查（官方文档）→ Codex gate_mode 是否升级；此前 off。
-- **E1 摆渡评测**：分层抽 8 个真实会话；三层标准（零幻觉硬校验 / LLM-judge / 端到端续接）；必含注入样本；必测 L1/L2 实际耗时（校准 SLA）；候选 = Qwen3.8-27B 双副本 + DeepSeek V4.1 Flash 双档 + GLM-5.3-Flash + 主力参照；基建 = `ferryman eval`。
+- **E1 摆渡评测**：分层抽 8 个真实会话；三层标准（零幻觉硬校验 / LLM-judge / 端到端续接）；必含注入样本；必测 L1/L2 实际耗时（校准 SLA）；候选 = 本地自建网关 + DeepSeek V4.1 Flash 双档 + GLM-5.3-Flash + 主力参照；基建 = `ferryman eval`。
   - **local 候选实测（2026-09-16，eval/out/local/RESULT.md）**：9 会话全跑通；③ 端到端续接 15/15 机判全过；注入样本通过（模型行为 = 拒绝执行 + 引用记录，注入层无标记）；① 零幻觉 0 例凭空捏造（5 个改写类标旗已逐条裁定：同族补全/相对截断/token 合并/组合推断）；L1 9-78s、L2 217-252s（SLA 校准见 §4）。**结论：本地候选可用**；待 DeepSeek/GLM 凭据补齐后横评定默认路由。
 
 ## 8. 明确延期

@@ -6,8 +6,8 @@
   + 全文（≤8K）；
 - 防注入素材声明在 system prompt 第一段（DESIGN §6.4 防注入三层之 i）。
 
-Provider 配置：~/ferryman/config.toml（参考 config.example.toml；文件不存在时
-仅内置 local 默认项——本机 4090x2 gateway，OpenAI 兼容，无鉴权）。
+Provider 配置：~/ferryman/config.toml（参考 config.example.toml）。
+不内置任何默认 provider——未配置时摆渡降级为骨架交接（worker 启动警告，doctor 提示）。
 """
 
 from __future__ import annotations
@@ -62,20 +62,11 @@ class Provider:
     window: int = 131072
 
 
-DEFAULT_PROVIDERS: dict[str, Provider] = {
-    # 本机 4090x2 gateway（实测 2026-09-16：LAN/Tailscale 可达、无鉴权、229K 窗口）
-    "local": Provider(
-        name="local", base_url="http://[REDACTED]/v1",
-        model="[REDACTED-MODEL]", window=229376,
-    ),
-}
-
-
 def load_config(path: Path | None = None) -> dict[str, Provider]:
-    """读 ~/ferryman/config.toml 覆盖/扩充内置默认；无配置文件则仅用内置项。"""
+    """读 ~/ferryman/config.toml；无配置文件则无任何 provider（摆渡降级骨架）。"""
     import tomllib
 
-    providers = dict(DEFAULT_PROVIDERS)
+    providers: dict[str, Provider] = {}
     cfg_path = path or (Path.home() / "ferryman" / "config.toml")
     if cfg_path.exists():
         data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))

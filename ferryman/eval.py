@@ -113,12 +113,17 @@ def qa_run(provider: Provider, handoff_full: str, questions: list[dict],
     return results
 
 
-def run(provider_name: str = "local", limit: int | None = None,
+def run(provider_name: str, limit: int | None = None,
         with_qa: bool = True, with_inject: bool = True, regrade: bool = False) -> int:
     repo = Path(__file__).resolve().parent.parent
+    providers = load_config()
+    if provider_name not in providers:
+        print(f"provider '{provider_name}' 未在 [providers.*] 定义"
+              f"（编辑 ~/ferryman/config.toml，参考 config.example.toml）")
+        return 2
+    provider = providers[provider_name]
     set_dir, out_dir = repo / "eval" / "set", repo / "eval" / "out" / provider_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    provider = load_config()[provider_name]
     manifest = json.loads((set_dir / "manifest.json").read_text(encoding="utf-8"))
     qa_index = {e["id"]: e for e in
                 json.loads((set_dir / "qa.json").read_text(encoding="utf-8"))}

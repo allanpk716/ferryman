@@ -58,7 +58,7 @@ class Config:
     watch: WatchCfg = field(default_factory=WatchCfg)
     server: ServerCfg = field(default_factory=ServerCfg)
     notify: NotifyCfg = field(default_factory=NotifyCfg)
-    ferry_provider: str = "local"
+    ferry_provider: str = ""              # 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
 
     @property
     def data_dir(self) -> Path:
