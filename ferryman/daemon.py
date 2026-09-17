@@ -26,6 +26,24 @@ from .transcripts import has_dangling_tool_use
 FERRY_WALL_TIMEOUT_S = 480       # 墙钟总时限 8min（DESIGN §4）
 
 
+def codex_watch_dirs(watch_cfg, home: Path | None = None) -> list[Path]:
+    """codex 会话目录清单：主目录（默认 ~/.codex/sessions）+ 配置额外目录 +
+    Orca 运行时目录（存在时自动追加）。
+
+    2026-09-17 真机抓包发现：经 Orca 启动的 codex 把 CODEX_HOME 重定向到
+    %APPDATA%\\orca\\codex-runtime-home\\home\\sessions——不扫则这些会话 gate
+    能收到（钩子直报）但永远不被守望/摆渡。
+    """
+    home = home or Path.home()
+    primary = watch_cfg.codex_sessions_dir or str(home / ".codex" / "sessions")
+    dirs = [Path(primary)] + [Path(d) for d in watch_cfg.codex_extra_dirs]
+    orca = (home / "AppData" / "Roaming" / "orca"
+            / "codex-runtime-home" / "home" / "sessions")
+    if orca.exists() and orca not in dirs:
+        dirs.append(orca)
+    return dirs
+
+
 class Watcher(threading.Thread):
     """mtime 轮询：登记台账 + 对达总结阈值的活跃会话懒富化并入队摆渡。"""
 
@@ -37,8 +55,8 @@ class Watcher(threading.Thread):
         self.started_at = started_at
         self._stop = threading.Event()
         cc_dir = cfg.watch.cc_projects_dir or str(Path.home() / ".claude" / "projects")
-        cx_dir = cfg.watch.codex_sessions_dir or str(Path.home() / ".codex" / "sessions")
-        self.cc_dir, self.cx_dir = Path(cc_dir), Path(cx_dir)
+        self.cc_dir = Path(cc_dir)
+        self.cx_dirs = codex_watch_dirs(cfg.watch, home=None)
 
     def run(self) -> None:
         while not self._stop.wait(self.cfg.watch.poll_interval_s):
@@ -66,9 +84,13 @@ class Watcher(threading.Thread):
             self._maybe_enqueue(st)
 
     def _poll_codex(self) -> None:
-        if not self.cx_dir.exists():
-            return
-        for p in self.cx_dir.glob("**/rollout-*.jsonl"):
+        for cx_dir in self.cx_dirs:
+            if not cx_dir.exists():
+                continue
+            self._poll_codex_dir(cx_dir)
+
+    def _poll_codex_dir(self, cx_dir: Path) -> None:
+        for p in cx_dir.glob("**/rollout-*.jsonl"):
             try:
                 mtime, size = p.stat().st_mtime, p.stat().st_size
             except OSError:

@@ -14,7 +14,7 @@ import urllib.request
 
 import pytest
 
-from ferryman.config import Config, ThresholdCfg
+from ferryman.config import Config, ThresholdCfg, WatchCfg
 from ferryman.daemon import Watcher
 from ferryman.ledger import Ledger, now_s
 from helpers import write_session
@@ -69,7 +69,7 @@ def test_watcher_skips_subagent_transcript_paths(tmp_path):
     w = Watcher.__new__(Watcher)
     w.cfg, w.ledger, w.store = Config(), led, None
     w.started_at = 0
-    w.cc_dir, w.cx_dir = projects, tmp_path / "no-codex"
+    w.cc_dir, w.cx_dirs = projects, [tmp_path / "no-codex"]
     w._poll_cc()
 
     ids = {st.session_id for st in led.all_sessions()}
@@ -137,3 +137,42 @@ def test_subagent_endpoint_auth_and_validation(h):
     with pytest.raises(urllib.error.HTTPError) as ei:
         _post(h, {"agent": "cc", "session_id": "ep-2", "event": "boom"})
     assert ei.value.code == 400
+
+
+# ---------- 守望：多 codex 会话目录（Orca CODEX_HOME 重定向，2026-09-17 实测） ----------
+
+def test_codex_watch_dirs_auto_detects_orca_runtime(tmp_path):
+    """Orca 运行时目录存在时自动追加（经 Orca 启动的 codex rollout 写在那里）。"""
+    from ferryman.config import WatchCfg
+    from ferryman.daemon import codex_watch_dirs
+    cfg = WatchCfg(codex_sessions_dir=str(tmp_path / "main"))
+
+    assert codex_watch_dirs(cfg, home=tmp_path) == [tmp_path / "main"]  # 无 orca → 只有一个
+
+    orca = tmp_path / "AppData" / "Roaming" / "orca" / "codex-runtime-home" / "home" / "sessions"
+    orca.mkdir(parents=True)
+    dirs = codex_watch_dirs(cfg, home=tmp_path)
+    assert dirs == [tmp_path / "main", orca]
+
+    cfg2 = WatchCfg(codex_sessions_dir="", codex_extra_dirs=[str(tmp_path / "x")])
+    assert codex_watch_dirs(cfg2, home=tmp_path) == [tmp_path / ".codex" / "sessions",
+                                                     tmp_path / "x", orca]
+
+
+def test_watcher_polls_all_codex_dirs(tmp_path):
+    """两个目录里的 rollout 都要登记（Orca 会话不再漏摆渡）。"""
+    cfg = Config()
+    cfg.watch = WatchCfg(codex_sessions_dir=str(tmp_path / "a"))
+    led = Ledger()
+    w = Watcher.__new__(Watcher)
+    w.cfg, w.ledger, w.store = cfg, led, None
+    w.started_at = 0
+    w.cc_dir = tmp_path / "no-cc"
+    w.cx_dirs = [tmp_path / "a", tmp_path / "orca-home"]
+    for d, sid in ((w.cx_dirs[0], "aaa111"), (w.cx_dirs[1], "bbb222")):
+        f = d / "2026" / "09" / "17" / f"rollout-2026-09-17T10-00-00-{sid}.jsonl"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('{"type":"session_meta","payload":{"cwd":"C:/x"}}\n', encoding="utf-8")
+    w._poll_codex()
+    ids = {st.session_id for st in led.all_sessions() if st.agent == "codex"}
+    assert ids == {"aaa111", "bbb222"}

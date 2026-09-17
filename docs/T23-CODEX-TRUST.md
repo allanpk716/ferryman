@@ -35,11 +35,19 @@
 - install-codex 在真机落盘：orca 8 + ferryman 2、无控制字符、旗标恰好 1 次（幂等）
 - `codex exec -s read-only` ×4：确认钩子生命周期打印与 exec 不派发行为
 
-## 剩余唯一一步（你）
+## 剩余唯一一步（你）——已完成 ✅（2026-09-17 10:26）
 
-1. 打开 Codex TUI → `/hooks` → 信任 ferryman 两条（orca 的一并信任；hooks.json 每次变更后都要重新信任——**信任锚是命令行哈希**，改脚本不用重新信任）
-2. 随便发一条消息，然后告诉我——我读 `~/ferryman/hook-debug/ferryman-*-codex.jsonl`
-   做最终 schema 比对（预期完全命中，若字段名有出入当场改回落链）
+TUI 信任 + 发送 "hi" 完成。真实 payload 比对结果：
+
+- **schema 全命中**：`session_id` / `transcript_path`（真实字段名，回落链第二级）/
+  `cwd` / `prompt` / `hook_event_name` / `source:"startup"`；另有 `turn_id`、`model`、
+  `permission_mode` 扩展字段（不影响映射）。
+- daemon `/stats` 出现 `codex: 2` 真实 gate 调用——**TUI 全链路正式通车**。
+- **新发现并已修**：经 Orca 启动的 codex 把 CODEX_HOME 重定向到
+  `%APPDATA%\orca\codex-runtime-home\home\sessions`（真实 transcript_path 即在此）——
+  守望新增多目录支持（`codex_extra_dirs` 配置 + Orca 目录自动发现），否则这些会话
+  gate 能收到但永远不被摆渡。已重启生效。
+- 抓包标记与含 prompt 内容的抓包文件已清理（隐私）。
 
 ## 验收（TEST_PLAN T23 原标准，TUI 信任后）
 

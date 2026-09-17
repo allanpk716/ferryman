@@ -31,3 +31,8 @@ pushover = true
 toast = true
 # pushover_token = ""
 # pushover_user = ""
+
+#[watch]
+# codex_extra_dirs = []   # 额外 codex 会话目录；Orca 运行时目录
+#                         # (%APPDATA%\orca\codex-runtime-home\home\sessions) 存在时自动追加
+#                         # ——2026-09-17 真机抓包发现经 Orca 启动的 codex 写在那里

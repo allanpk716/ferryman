@@ -22,6 +22,10 @@ class WatchCfg:
     poll_interval_s: float = 3.0
     cc_projects_dir: str = ""            # 空 = ~/.claude/projects（测试可指临时目录）
     codex_sessions_dir: str = ""         # 空 = ~/.codex/sessions
+    # 额外 codex 会话目录（2026-09-17 实测发现：经 Orca 启动的 codex 把 CODEX_HOME
+    # 重定向到 %APPDATA%\orca\codex-runtime-home\home\sessions——不扫则这些会话
+    # gate 能收到但永远不被摆渡）。Orca 目录存在时自动追加，无需配置。
+    codex_extra_dirs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +92,7 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
                 poll_interval_s=float(w.get("poll_interval_s", cfg.watch.poll_interval_s)),
                 cc_projects_dir=str(w.get("cc_projects_dir", "")),
                 codex_sessions_dir=str(w.get("codex_sessions_dir", "")),
+                codex_extra_dirs=[str(d) for d in w.get("codex_extra_dirs", [])],
             )
         if "server" in data:
             s = data["server"]
