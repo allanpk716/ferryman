@@ -68,6 +68,7 @@
 | T28 | P1 | 并行/多 worktree 归还 | 同目录多会话同时被拦 → /clear 后多候选清单体验；A/B 交接是否会错配（清单应可见可纠正） |
 | T29 | P2 | 4090x2 gateway 加固回归 | 加 key/TLS 后 `providers.local` 连通性与 E1 结果不回归 |
 | T30 | P2 | 极端路径 | 30 天后归档清理正确；daemon 连跑 7 天内存平稳（无 fd/句柄泄漏）；机器睡眠唤醒后闲置判定仍正确 |
+| T35 | P0（已完成 2026-09-17） | **钩子自举 + 唯一化**：杀掉 daemon → 模拟 SessionStart 钩子 → daemon 自动拉起且注入正常；第二次 serve → "已在运行"退出 0；Windows 双绑定回归用例；gate 快路径 ≤1s（真机 718ms）；30× 压测 401 路径零 10053（body 未读即关连接的 RST 缺陷已修） |
 
 ---
 
@@ -85,4 +86,4 @@
 
 ## 6. 已知不在本计划内（延期项）
 
-开机自启与断电恢复（T30 部分覆盖）、Pi/dsh 适配器、LiteLLM 代理兜底——见 DESIGN §8。
+断电恢复（T30 部分覆盖；开机自启已由钩子自举取代，DESIGN §3）、OpenCode 适配器（SQLite 轮询，待 PoC）、LiteLLM 代理兜底——见 DESIGN §8。Pi 适配器已提上日程（会话格式对摆渡人最友好：JSONL 首行带 cwd/session_id，hooks/extensions 机制齐备）。

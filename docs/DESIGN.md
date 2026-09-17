@@ -41,6 +41,7 @@ Python 3.12+（uv）守护进程，绑定 127.0.0.1:7311：
 - **配置校验（拒启）**：按 Agent 分组校验 `summarize_threshold < block_threshold` 且 `block_threshold − summarize_threshold ≥ 2min`（独立硬约束，不依赖 SLA 定义）。
 - **摆渡 SLA**：L0 ≤ 2min；L1 模型调用 90s（E1 实测：490K 材料 78s 已贴上限——材料 >400K 建议直接走 L2，或将 L1 超时上调至 120s）；L2 每块 120s（实测 27-55s/块）；墙钟总时限 8min（实测 L2 总 217-252s，余量 3×）。超时即降级骨架（保证不变量不因模型慢/挂而破）。
 - 钩子侧极薄（PowerShell：读 token + POST /gate，故障即放行）；逻辑全在 daemon（Codex 哈希信任要求配置静态）。
+- **钩子自举 + 唯一化（T35，2026-09-17）**：不做开机自启——**任意 agent 的任意钩子触发时**先探测 :7311（TCP，250ms 上限），不在则隐藏窗口拉起 `~/ferryman/start-daemon.cmd`（`install-cc` 生成的点火脚本，绝对 venv python + 输出重定向到 `serve.{out,err}.log`，进程独立于钩子存活）。等待预算按钩子分级：restore 2.5s（注入最怕缺席，钩子超时已放宽至 10s）、gate 0.4s（新会话本就无需拦截，POST 失败即放行）、subagent 0（fire-and-forget）。**唯一化**三层：① Windows 上禁用 `allow_reuse_address`（socketserver 默认 =1，Windows 的 SO_REUSEADDR 语义允许两进程绑同端口、连接归属未定义——排他性地基）；② serve() 绑定失败 → `/stats`+token 探测：健康实例 → "已在运行"退出 0（钩子并发点火 / 手动+自动竞争都收敛到单实例），非本程序占端口 → 退出 1；③ 绑定成功写 `daemon.pid`，退出清理。另修 HTTP 层缺陷：401/404 响应前未读光 POST body 就关连接 → Windows 发 RST（客户端 10053 连接中断而非状态码）——body 一律先读后答。
 
 ## 5. 拦截/注入配方
 

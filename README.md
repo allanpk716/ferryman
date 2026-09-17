@@ -26,7 +26,7 @@
 3. claude-notify 接入（拦截时 Toast/Pushover）
 4. 稳定快照双读协议（DESIGN §6.13，现为单读 + covers_until）
 5. Codex 钩子（E0b 数据积累后 observe → enforce）
-6. `ferryman doctor` / 开机自启 / 30 天归档清理
+6. `ferryman doctor` / 30 天归档清理（开机自启已由**钩子自举**取代：任意 agent 的钩子触发时探测 :7311，不在则拉起 `~/ferryman/start-daemon.cmd`，见 DESIGN §3）
 
 ## 开发
 

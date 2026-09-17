@@ -7,6 +7,9 @@ try {
         [Console]::InputEncoding = [System.Text.Encoding]::UTF8
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     } catch {}
+    # 自举：daemon 不在则拉起并等就绪（注入最怕 daemon 缺席，值得等 2.5s；
+    # 钩子超时已放宽到 10s，见 install.py）
+    . "$PSScriptRoot\ferryman-ensure.ps1"; Ensure-Ferryman -WaitMs 2500
     $raw = [Console]::In.ReadToEnd()
     $j = $raw | ConvertFrom-Json
     if ($j.source -and ($j.source -ne 'clear') -and ($j.source -ne 'startup')) { exit 0 }

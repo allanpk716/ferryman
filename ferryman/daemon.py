@@ -8,15 +8,18 @@ DESIGN §4：
 
 from __future__ import annotations
 
+import json
+import os
 import queue
 import threading
+import time
 from pathlib import Path
 
 from . import config as config_mod
 from .config import Config
 from .ferry import ferry_session, load_config as load_providers
 from .ledger import Ledger, now_s
-from .server import FerryDaemon, ensure_token, make_server
+from .server import FerryDaemon, already_running, ensure_token, make_server
 from .store import Store
 from .transcripts import has_dangling_tool_use
 
@@ -200,7 +203,21 @@ def serve(relax_min_gap: bool = False) -> int:
 
     started_at = now_s()
     daemon = FerryDaemon(cfg, ledger, store, enqueue, started_at)
-    server = make_server(daemon, cfg.server.port, token)
+    try:
+        server = make_server(daemon, cfg.server.port, token)
+    except OSError:
+        # 唯一化（钩子自举的并发兜底）：绑定失败 = 端口已有监听者
+        if already_running(cfg.server.port, token):
+            print(f"[ferryman] 守护进程已在 127.0.0.1:{cfg.server.port} 运行，"
+                  f"本次启动跳过（唯一化）", flush=True)
+            return 0
+        print(f"[ferryman] 端口 {cfg.server.port} 被非 Ferryman 进程占用，启动失败", flush=True)
+        return 1
+    pid_file = cfg.data_dir / "daemon.pid"
+    pid_file.write_text(json.dumps(
+        {"pid": os.getpid(), "port": cfg.server.port,
+         "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False),
+        encoding="utf-8")
 
     watcher = Watcher(cfg, ledger, store, enqueue, started_at)
     worker = FerryWorker(cfg, store, tasks)
@@ -218,4 +235,5 @@ def serve(relax_min_gap: bool = False) -> int:
         server.shutdown()
         watcher.stop()
         worker.stop()
+        pid_file.unlink(missing_ok=True)
     return 0

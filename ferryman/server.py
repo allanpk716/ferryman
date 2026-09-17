@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import json
 import secrets
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 from .ferry import INJECT_CLOSE, INJECT_OPEN
 from .ledger import Ledger, SessionState, now_s
@@ -271,7 +274,39 @@ def ensure_token(data_dir: Path) -> str:
     return token_file.read_text(encoding="utf-8").strip()
 
 
-def make_server(daemon: FerryDaemon, port: int, token: str) -> ThreadingHTTPServer:
+class DaemonLike(Protocol):
+    """HTTP 层依赖的最小面（FerryDaemon 结构满足；测试替身也满足）。"""
+
+    def gate(self, body: dict) -> dict: ...
+    def subagent(self, body: dict) -> dict: ...
+    def restore(self, agent: str, cwd: str, session_id: str) -> dict: ...
+    def health(self) -> dict: ...
+
+
+def already_running(port: int, token: str, timeout: float = 2.0) -> bool:
+    """端口上是否有一个健康的**本程序**实例（/stats + Bearer 通过）。
+
+    serve() 绑定失败时用它区分"唯一化跳过"与"端口被他人占用"。
+    """
+    req = Request(f"http://127.0.0.1:{port}/stats",
+                  headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except OSError:                     # URLError/HTTPError(401 等)/连接拒绝
+        return False
+
+
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    """唯一化地基：Windows 的 SO_REUSEADDR 语义允许两个进程绑同一端口
+    （连接归属未定义），故 Windows 必须禁用；POSIX 保持默认（TIME_WAIT 重绑），
+    Linux 上 SO_REUSEADDR 本就不允许双活监听，排他性不受影响。"""
+    if sys.platform == "win32":
+        allow_reuse_address = False
+    daemon_threads = True
+
+
+def make_server(daemon: DaemonLike, port: int, token: str) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def _authed(self) -> bool:
             got = self.headers.get("Authorization", "")
@@ -291,14 +326,17 @@ def make_server(daemon: FerryDaemon, port: int, token: str) -> ThreadingHTTPServ
             self.wfile.write(data)
 
         def do_POST(self):  # noqa: N802
+            # 先读光 body 再回话：401/404 路径若留未读数据就关连接，
+            # Windows 会发 RST 而非 FIN → 客户端读到 10053 连接中断而非状态码
+            length = int(self.headers.get("Content-Length") or 0)
+            body_raw = self.rfile.read(length) if length else b""
             if self.path not in ("/gate", "/subagent"):
                 self._json(404, {"error": "not found"})
                 return
             if not self._authed():
                 return
             try:
-                length = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                body = json.loads(body_raw.decode("utf-8"))
                 if self.path == "/gate":
                     self._json(200, daemon.gate(body))
                 else:
@@ -324,6 +362,5 @@ def make_server(daemon: FerryDaemon, port: int, token: str) -> ThreadingHTTPServ
         def log_message(self, format, *args):  # noqa: A002 — 基类签名；静默默认访问日志
             pass
 
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    srv.daemon_threads = True
+    srv = _ExclusiveHTTPServer(("127.0.0.1", port), Handler)
     return srv

@@ -12,12 +12,48 @@ settings.json——不在快照里的键（hooks）每次切换 / Live 模式重
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import time
 from pathlib import Path
 
 CCSWITCH_DB = Path.home() / ".cc-switch" / "cc-switch.db"
+LAUNCHER_NAME = "start-daemon.cmd"
+
+
+def ensure_launcher(data_dir: Path | None = None, repo: Path | None = None) -> Path:
+    """生成守护进程点火脚本 ~/ferryman/start-daemon.cmd（钩子自举用，DESIGN §3）。
+
+    思路：不做开机自启——任意 agent 的任意钩子（gate/restore/subagent/codex）
+    POST 前探测 :7311，不在则隐藏窗口拉起本脚本（含绝对 venv python 路径，
+    输出重定向到 serve.{out,err}.log，进程独立于钩子存活）。
+    """
+    data_dir = data_dir or (Path.home() / "ferryman")
+    repo = repo or Path(__file__).resolve().parent.parent
+    data_dir.mkdir(parents=True, exist_ok=True)
+    py = repo / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    win = os.name == "nt"
+    if py.exists():
+        start = f'"{py}" -m ferryman serve'
+    else:
+        start = f'uv --directory "{repo}" run ferryman serve'
+    if win:
+        body = (f'@echo off\r\n'
+                f'rem Ferryman 守护进程点火脚本（install-cc 自动生成，勿手改）\r\n'
+                f'cd /d "{repo}"\r\n'
+                f'{start} >> "%USERPROFILE%\\ferryman\\serve.out.log"'
+                f' 2>> "%USERPROFILE%\\ferryman\\serve.err.log"\r\n')
+    else:
+        body = (f'#!/bin/sh\n'
+                f'# Ferryman 守护进程点火脚本（install-cc 自动生成，勿手改）\n'
+                f'cd "{repo}"\n'
+                f'{start} >> "$HOME/ferryman/serve.out.log"'
+                f' 2>> "$HOME/ferryman/serve.err.log"\n')
+    launcher = data_dir / LAUNCHER_NAME
+    launcher.write_text(body, encoding="utf-8")
+    print(f"[ensure] 点火脚本就绪: {launcher}（钩子自举 = agent 启动会话即拉起 daemon）")
+    return launcher
 
 
 def _ferry_hook_entries(repo: Path) -> dict[str, list[dict]]:
@@ -28,11 +64,12 @@ def _ferry_hook_entries(repo: Path) -> dict[str, list[dict]]:
             "type": "command",
             "command": f'{ps} "{repo / "hooks" / "ferryman-gate.ps1"}"',
             "timeout": 3}]}],
-        # SessionStart 仅 clear|startup 注入（resume/compact 不注入，DESIGN §5）
+        # SessionStart 仅 clear|startup 注入（resume/compact 不注入，DESIGN §5）；
+        # 超时 10s：钩子内含 daemon 自举（最坏 ~2.5s 等就绪）+ POST
         "SessionStart": [{"matcher": "clear|startup", "hooks": [{
             "type": "command",
             "command": f'{ps} "{repo / "hooks" / "ferryman-restore.ps1"}"',
-            "timeout": 3}]}],
+            "timeout": 10}]}],
         # T32：子代理生命周期（CC ≥2.1.273；旧版本不触发事件 → T31 悬空检测兜底）
         "SubagentStart": [{"hooks": [{
             "type": "command",
@@ -46,8 +83,10 @@ def _ferry_hook_entries(repo: Path) -> dict[str, list[dict]]:
 
 
 def install_cc(settings_path: Path | None = None,
-               ccswitch_db: Path | None = None) -> int:
+               ccswitch_db: Path | None = None,
+               data_dir: Path | None = None) -> int:
     repo = Path(__file__).resolve().parent.parent
+    ensure_launcher(data_dir=data_dir, repo=repo)          # 钩子自举点火脚本（唯一化前提）
     settings_path = settings_path or (Path.home() / ".claude" / "settings.json")
     if not settings_path.exists():
         settings_path.write_text("{}", encoding="utf-8")
@@ -114,12 +153,13 @@ def inject_ccswitch(db_path: Path | None = None) -> int:
         ).fetchall()
         for pid, name, raw in rows:
             try:
-                cfg = json.loads(raw)
+                cfg: dict = json.loads(raw)
                 if not isinstance(cfg, dict):
                     cfg = {}
             except ValueError:
                 cfg = {}
-            old: dict = cfg.get("hooks") if isinstance(cfg.get("hooks"), dict) else {}
+            hooks_cfg = cfg.get("hooks")
+            old: dict = hooks_cfg if isinstance(hooks_cfg, dict) else {}
             merged: dict[str, list] = {}
             for evt in set(old) | set(entries):
                 kept = [e for e in old.get(evt, [])

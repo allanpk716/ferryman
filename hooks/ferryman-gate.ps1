@@ -2,6 +2,8 @@
 # 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 7311）；
 #               FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
 if ($env:FERRYMAN_DISABLE -eq '1') { exit 0 }
+# 自举：daemon 不在则拉起（gate 只等 400ms——新会话本就无需拦截，POST 失败即放行）
+. "$PSScriptRoot\ferryman-ensure.ps1"; Ensure-Ferryman -WaitMs 400
 $ErrorActionPreference = 'Stop'
 try {
     try {

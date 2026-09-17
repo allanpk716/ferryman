@@ -3,6 +3,8 @@
 # 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 7311）；
 #               FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
 if ($env:FERRYMAN_DISABLE -eq '1') { exit 0 }
+# 自举：拉起不等就绪（fire-and-forget，下次事件自然上报）
+. "$PSScriptRoot\ferryman-ensure.ps1"; Ensure-Ferryman -WaitMs 0
 $ErrorActionPreference = 'Stop'
 try {
     try {
