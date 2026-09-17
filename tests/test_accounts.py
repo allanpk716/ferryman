@@ -155,3 +155,5 @@ def test_restore_books_inject(h):
     e = h.accounts.read(kind="inject")[-1]
     assert e["session_id"] == "newsid"
     assert e["tokens"] > 0 and e["handoff_id"]
+    blk = h.accounts.read(kind="block")[-1]        # R9：inject 与 block 同谱系（Q7 因果链）
+    assert e["lineage_id"] == blk["lineage_id"]

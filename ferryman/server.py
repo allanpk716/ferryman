@@ -206,21 +206,27 @@ class FerryDaemon:
             daemon=True, name="ferryman-notify").start()
 
     def _acct(self, kind: str, st: SessionState | None = None, *,
-              agent: str = "", session_id: str = "", **fields) -> None:
-        """记账薄封装：st 优先（lineage 用归一化 transcript 路径），无 st 用显式参数。"""
+              agent: str = "", session_id: str = "",
+              lineage_id: str | None = None, **fields) -> None:
+        """记账薄封装：st 优先（lineage 用归一化 transcript 路径），无 st 用显式参数。
+        lineage_id/project 可显式覆盖（inject 需按交接源会话解析谱系，R9）。"""
         if self.accounts is None:
             return
         try:
             from .ledger import _norm_path
             if st is not None:
                 agent, session_id = st.agent, st.session_id
-                lineage = _norm_path(st.transcript_path) if st.transcript_path else session_id
+                if lineage_id is None:
+                    lineage_id = _norm_path(st.transcript_path) if st.transcript_path else session_id
                 project = st.cwd or ""
             else:
-                lineage = session_id      # 无台账线索：lineage 退化为 session 自身
+                if lineage_id is None:
+                    lineage_id = session_id      # 无台账线索：lineage 退化为 session 自身
                 project = ""
+            if "project" in fields:
+                project = str(fields.pop("project"))
             self.accounts.record(kind, agent=agent, session_id=session_id,
-                                 lineage_id=lineage, project=project, **fields)
+                                 lineage_id=lineage_id, project=project, **fields)
         except Exception as e:  # noqa: BLE001 — 记账永不弄断闸门（与 _book_handoff 同纪律）
             print(f"[account] {kind} 记账失败（忽略，闸门不受影响）: {e}", flush=True)
 
@@ -248,8 +254,12 @@ class FerryDaemon:
                + (f"\n\n用户被拦时的原话（待续 prompt）：{pending}" if pending else "")
                + f"\n\n完整交接文档: {newest['path']}（需要更多细节时读取）")
         from .extract import token_estimate
-        self._acct("inject", self.ledger.get(agent, session_id),
-                   agent=agent, session_id=session_id,
+        from .ledger import _norm_path
+        st_src = self.ledger.get(agent, newest["session_id"])
+        _lin = (_norm_path(st_src.transcript_path)
+                if st_src and st_src.transcript_path else session_id)
+        self._acct("inject", None, agent=agent, session_id=session_id,
+                   lineage_id=_lin, project=(st_src.cwd or "" if st_src else ""),
                    tokens=token_estimate(ctx), handoff_id=newest["handoff_id"])
         self.store.mark_injected(newest["handoff_id"], session_id)
         return {"context": ctx[:6000]}
