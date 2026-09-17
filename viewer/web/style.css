@@ -1,0 +1,90 @@
+/* Ferryman T43 查看器——暗色紧凑风。无外部资源（无 CDN/字体/图标，离线铁律）。 */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #111;
+  color: #ddd;
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* 顶部固定工具条：左标题，右数据目录说明 */
+#toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #111;
+  border-bottom: 1px solid #2a2a2a;
+}
+#toolbar-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+#toolbar-note {
+  font-size: 12px;
+  color: #888;
+  text-align: right;
+}
+
+#app { padding: 10px 16px 24px; }
+
+.loading, .error { padding: 16px 0; color: #888; }
+.error { color: #ff7b72; }
+
+/* 会话表格 */
+#session-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+#session-table th,
+#session-table td {
+  padding: 5px 10px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid #222;
+}
+#session-table th {
+  font-size: 12px;
+  font-weight: 600;
+  color: #999;
+  border-bottom: 1px solid #333;
+}
+/* 斑马纹（偶数行）；行 hover 高亮声明在后，覆盖斑马纹 */
+#session-table tbody tr:nth-child(even) { background: #1a1a1a; }
+#session-table tbody tr[data-lineage] { cursor: pointer; }
+#session-table tbody tr[data-lineage]:hover { background: #222; }
+
+/* 标题当链接色，超长省略 */
+#session-table td.cell-title {
+  color: #6fb3ff;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#session-table td.cell-project {
+  color: #aaa;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 数字列右对齐 + 等宽数字，便于纵向比对 */
+#session-table th.num,
+#session-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#session-table td.empty {
+  text-align: center;
+  color: #666;
+  padding: 24px 0;
+}
