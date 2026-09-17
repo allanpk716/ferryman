@@ -4,6 +4,7 @@ import time
 import pytest
 
 from ferryman.accounts import Accounts
+from helpers import write_session
 
 AUG = time.mktime(time.strptime("2026-08-15 12:00:00", "%Y-%m-%d %H:%M:%S"))
 SEP = time.mktime(time.strptime("2026-09-16 12:00:00", "%Y-%m-%d %H:%M:%S"))
@@ -87,3 +88,16 @@ def test_read_skips_corrupt_tail_line(tmp_path):
     with open(f, "a", encoding="utf-8") as fh:      # 模拟崩溃撕裂的尾行
         fh.write('{"v": 1, "kind": "handoff", TRUN')
     assert len(acc.read()) == 1                      # 好行仍在，坏行被跳过
+
+
+def test_ferry_completion_books_handoff(h):
+    """端到端：合成会话达总结阈值 → fake 摆渡 → 账本出现 handoff 流水。"""
+    write_session(h.projects, "acct1", "C:/proj")
+    assert h.wait_for(lambda: any(e["kind"] == "handoff"
+                                  for e in h.accounts.read()))
+    e = h.accounts.read(kind="handoff")[0]
+    assert e["session_id"] == "acct1"
+    assert e["lineage_id"].endswith("acct1.jsonl")     # lineage = 归一化 transcript 路径
+    assert e["provider"] == "fake"
+    assert e["outcome"] in ("fresh", "skeleton", "failed")
+    assert "content" not in e and "md" not in e        # 隐私不变量：无正文

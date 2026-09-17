@@ -16,9 +16,11 @@ import time
 from pathlib import Path
 
 from . import config as config_mod
+from .accounts import Accounts
 from .config import Config
 from .ferry import ferry_session, load_config as load_providers
 from .ledger import Ledger, now_s
+from .prices import load_prices, price_tag
 from .server import FerryDaemon, already_running, ensure_token, make_server
 from .store import Store
 from .transcripts import has_dangling_tool_use
@@ -147,9 +149,11 @@ class Watcher(threading.Thread):
 class FerryWorker(threading.Thread):
     """并发 1 的摆渡工人：成功 → fresh；异常/超时 → 骨架-only（不变量保底）。"""
 
-    def __init__(self, cfg: Config, store: Store, tasks: "queue.Queue"):
+    def __init__(self, cfg: Config, store: Store, tasks: "queue.Queue",
+                 accounts: Accounts | None = None):
         super().__init__(daemon=True, name="ferryman-ferry")
         self.cfg, self.store, self.tasks = cfg, store, tasks
+        self.accounts = accounts    # None = 不记账（旧调用/测试零改动）
         self.providers = load_providers()
         self._stop = threading.Event()
         if not cfg.ferry_provider:
@@ -195,13 +199,16 @@ class FerryWorker(threading.Thread):
                 raise result["error"]
         except Exception as e:  # noqa: BLE001 — 降级骨架-only
             print(f"[ferry] 降级骨架-only（{sid[:8]}）: {e}", flush=True)
+            self._book_handoff(item, agent, sid, {}, "failed")
             self._save_skeleton(path, agent, sid, item.get("cwd", ""))
+            self._book_handoff(item, agent, sid, {}, "skeleton")
             return
         meta = result["meta"]
         self.store.save_handoff(
             session_id=sid, agent=agent, cwd=item.get("cwd", ""), title=meta.get("title"),
             covers_until_iso=meta.get("covers_until_iso"), status="fresh",
             handoff_md=result["md"])
+        self._book_handoff(item, agent, sid, meta, "fresh")
         print(f"[ferry] {agent}/{sid[:8]} {meta.get('mode')} {meta.get('wall_s')}s "
               f"-> handoff", flush=True)
 
@@ -219,6 +226,29 @@ class FerryWorker(threading.Thread):
             session_id=sid, agent=agent, cwd=cwd or facts.cwd or "", title=facts.title,
             covers_until_iso=facts.last_ts, status="skeleton", handoff_md=md)
 
+    def _book_handoff(self, item: dict, agent: str, sid: str,
+                      meta: dict, outcome: str) -> None:
+        """摆渡记账：usage 失败记 0（墙钟超时线程被弃，usage 不可得）。"""
+        if self.accounts is None:
+            return
+        from .ledger import _norm_path
+        books = load_prices()
+        provider = self.cfg.ferry_provider
+        price_ver = None
+        book = books.get(provider)
+        if book is not None:
+            pv = book.at(time.time())
+            price_ver = price_tag(provider, pv) if pv else None
+        usage = meta.get("usage") or {}
+        self.accounts.record(
+            "handoff", agent=agent, session_id=sid,
+            lineage_id=_norm_path(item["transcript_path"]),
+            project=item.get("cwd", ""), provider=provider,
+            model=str(meta.get("model", "")), price_ver=price_ver,
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+            outcome=outcome, wall_s=float(meta.get("wall_s", 0.0)))
+
 
 def serve(relax_min_gap: bool = False) -> int:
     cfg = config_mod.load(relax_min_gap=relax_min_gap)
@@ -226,6 +256,7 @@ def serve(relax_min_gap: bool = False) -> int:
     token = ensure_token(cfg.data_dir)
     ledger = Ledger()
     store = Store(cfg.data_dir)
+    accounts = Accounts(cfg.data_dir)
     tasks: queue.Queue = queue.Queue(maxsize=10)
 
     def enqueue(st) -> bool:
@@ -257,7 +288,7 @@ def serve(relax_min_gap: bool = False) -> int:
         encoding="utf-8")
 
     watcher = Watcher(cfg, ledger, store, enqueue, started_at)
-    worker = FerryWorker(cfg, store, tasks)
+    worker = FerryWorker(cfg, store, tasks, accounts)
     watcher.start()
     worker.start()
     print(f"[ferryman] serve: 127.0.0.1:{cfg.server.port} · gate cc={cfg.gate_cc} "

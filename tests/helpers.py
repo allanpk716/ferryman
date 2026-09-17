@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import ferryman.daemon as daemon_mod
+from ferryman.accounts import Accounts
 from ferryman.config import Config, ServerCfg, ThresholdCfg, WatchCfg
 from ferryman.daemon import FerryWorker, Watcher
 from ferryman.ledger import Ledger, now_s
@@ -72,6 +73,7 @@ class Harness:
         self.token = ensure_token(Path(cfg.data_dir))
         self.ledger = Ledger()
         self.store = Store(Path(cfg.data_dir))
+        self.accounts = Accounts(Path(cfg.data_dir))
         self.tasks: queue.Queue = queue.Queue(maxsize=1)
         self.enqueued_ok: list[str] = []
         self.started_at = now_s()
@@ -104,7 +106,8 @@ class Harness:
                                                       model="fake")})
         self.server = make_server(self.daemon, self.port, self.token)
         self.watcher = Watcher(cfg, self.ledger, self.store, enqueue, self.started_at)
-        self.worker = FerryWorker(cfg, self.store, self.tasks)
+        self.worker = FerryWorker(cfg, self.store, self.tasks,
+                                  accounts=self.accounts)
         threading.Thread(target=self.server.serve_forever,
                          kwargs={"poll_interval": 0.2}, daemon=True).start()
         self.watcher.start()
