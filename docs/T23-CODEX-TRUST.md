@@ -1,54 +1,54 @@
-# T23 · Codex 钩子信任指引（晨间操作手册）
+# T23 · Codex 钩子验收（2026-09-17 自主验收定案）
 
-> 夜间（2026-09-16）已备好一切代码侧工作：脚本、hooks.json、daemon cwd 提取修复、88 用例全绿。
-> 剩下只有需要你亲手做的两步（TUI 信任 + 真机校准）。
+> 我（Claude）自己启动 codex exec 做了全链路验收。结论：**代码侧全部就绪并实机验证**，
+> 剩余唯一一步（TUI 信任 + 发一条消息）只能你来——原因见下。
 
-## 已就绪
+## 验收中发现并已修复的三个真实缺陷
 
-| 项 | 位置 |
-|---|---|
-| gate 钩子脚本 | `hooks/ferryman-gate-codex.ps1`（防御式字段映射 + fail-open + DEBUG 抓包） |
-| restore 钩子脚本 | `hooks/ferryman-restore-codex.ps1`（source=clear/startup 才注入） |
-| Codex 钩子注册 | `~/.codex/hooks.json`（仅 Ferryman 两条；写前备份 `hooks.json.pre-ferryman`） |
-| daemon 侧修复 | codex `_enrich` 现从 rollout `session_meta` 首行提取 cwd——此前恒空导致 codex gate 永远无法 block（生产 bug，已修） |
-| 测试 | `tests/test_hooks.py` T23 段 4 例真跑（block JSON 契约 / fail-open / source 过滤） |
+| # | 缺陷 | 修复 |
+|---|---|---|
+| 1 | **`[features] hooks = true` 旗标缺失**——Codex 钩子默认关闭，不开旗标则 hooks.json 被静默忽略（此前钩子"从没生效"的头号根因） | config.toml 已开；`install-codex` 自动确保 |
+| 2 | **控制字符事故**——手工写入把路径 `\a`（agent）/`\f`（ferryman）写成 BEL(0x07)/FF(0x0C)：hooks.json 指向不存在路径、两个 codex 脚本 token 路径非法 → 全部 fail-open 静默死亡 | 已清洗；全部经 `json.dumps`/heredoc 重写；install-codex 测试含控制字符回归 |
+| 3 | **additionalContext 用了 CC 的 hookSpecificOutput 包装**——Codex 契约是顶层字段 | gate-codex.ps1 已改顶层 additionalContext |
 
-## 你的两步
+## 实测定案的事实
 
-### ① TUI 信任（必须最先做）
+- **stdin schema**（官方文档校准，防御式映射全部命中）：`session_id`、`transcript_path`
+  （= rollout 路径，可为 null）、`cwd`、`prompt`、`hook_event_name`、`model`；SessionStart
+  另有 `source` ∈ startup|resume|clear|compact（脚本内过滤，等价于 matcher）。
+- **响应契约**：`decision:"block"` + `reason` 拦截；顶层 `additionalContext` 注入警告。
+- **`codex exec` 不派发钩子是上游已知 bug**（openai/codex#26452 → #26383，0.137–0.153
+  未修，含 `--dangerously-bypass-hook-trust` 也不派发）——自动化验收到此为止，
+  **TUI 主线路径不受影响**（Orca 即经此路径工作）。
+- Codex 净化钩子环境变量 → 抓包改**标记文件开关**：`~/ferryman/hook-debug/ON` 存在时
+  两个 codex 钨子把 payload 写到同目录 `ferryman-*-codex.jsonl`（**当前已开着**，校准
+  完可删 ON）。
+- Codex 0.153 有 SubagentStart/SubagentStop 事件（Orca 全套即证）——T32 子代理计数
+  将来接 Codex 只需一个上报脚本，daemon `/subagent` 端点已就绪。
+- Orca 的 Codex 全套钩子已按你 CC 侧"一并注入"的决策合并回 hooks.json（orca 8 +
+  ferryman 2 共存，实机验证）。
 
-Codex 哈希信任 = **配置静态**：信任后不要再改 `hooks.json`，改了就要重新信任。
+## 已实机验证（我做的部分）
 
-1. 打开 Codex TUI，输入 `/hooks`
-2. 信任 `ferryman-gate-codex.ps1` 与 `ferryman-restore-codex.ps1` 两条
+- 手动调用 gate-codex.ps1：payload 抓包 ✓、POST /gate ✓、daemon /stats 出现
+  `codex: 1` gate 调用 ✓（FF 修复后全链路通）
+- install-codex 在真机落盘：orca 8 + ferryman 2、无控制字符、旗标恰好 1 次（幂等）
+- `codex exec -s read-only` ×4：确认钩子生命周期打印与 exec 不派发行为
 
-### ② 真机校准 stdin schema（一次性）
+## 剩余唯一一步（你）
 
-脚本目前是防御式多字段回落（`rollout_path`/`transcript_path`/`path`、session_id 缺席时从文件名推导）。
-信任后跑一次真实会话并抓包确认：
+1. 打开 Codex TUI → `/hooks` → 信任 ferryman 两条（orca 的一并信任；hooks.json 每次变更后都要重新信任——**信任锚是命令行哈希**，改脚本不用重新信任）
+2. 随便发一条消息，然后告诉我——我读 `~/ferryman/hook-debug/ferryman-*-codex.jsonl`
+   做最终 schema 比对（预期完全命中，若字段名有出入当场改回落链）
 
-```powershell
-# PowerShell 会话里：
-$env:FERRYMAN_HOOK_DEBUG = "$HOME\ferryman\codex-hook-debug.log"
-# 然后在 Codex 里随便发一条消息，再看：
-Get-Content "$HOME\ferryman\codex-hook-debug.log"
+## 验收（TEST_PLAN T23 原标准，TUI 信任后）
+
+`~/ferryman/config.toml` 的 `codex_mode` 临时切 `"observe"` → 跑一个 Codex 会话闲置
+→ 发消息 → 比对被拦 turn 前后 rollout 零新增、观察警告注入（顶层 additionalContext）。
+完成后按 E0b 数据决定 observe/enforce。
+
+## 运维命令
+
+```bash
+uv run ferryman install-codex   # 注入/修复 hooks.json + 确保旗标（幂等、备份）
 ```
-
-若真实字段名与回落不符（例如叫 `rollout` 或 `thread_path`），把实际名字加进
-`ferryman-gate-codex.ps1` 的回落链即可（改脚本不用重新信任——信任锚是 hooks.json 里的命令行）。
-
-### ③ 验收（TEST_PLAN T23 原标准）
-
-把 `~/ferryman/config.toml` 的 `codex_mode` 临时切 `"observe"` → 跑一个 Codex 会话闲置 5 分钟 →
-发消息触发 → 比对被拦 turn 前后 rollout 文件**零新增**、被拦 turn 零 token。
-完成后切回 `"off"`（E0b 数据积累后再上 enforce）。
-
-## 顺带决策：Orca 的 Codex 钩子
-
-`~/.codex/hooks.json.bak` 里有 Orca 全套（SessionStart/UserPromptSubmit/PreToolUse/
-PermissionRequest/PostToolUse/Stop/SubagentStart/SubagentStop → codex-hook.cmd）——
-当前文件在我动手前就已被清空（`{"hooks":{}}`），**不知是你主动清的还是工具误伤**，故未擅自恢复。
-若要恢复：把 .bak 里的各事件条目合并进 hooks.json（Ferryman 条目保留），再重新走一遍 /hooks 信任。
-
-另：这证明 **Codex 0.153 也有 SubagentStart/Stop 事件**——T32 的子代理计数将来接 Codex 时，
-加一个 codex 版上报脚本即可（daemon 侧 `/subagent` 端点已就绪，agent 字段已支持）。

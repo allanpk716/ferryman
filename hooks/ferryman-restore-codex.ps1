@@ -12,14 +12,19 @@ try {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     } catch {}
     $raw = [Console]::In.ReadToEnd()
-    if ($env:FERRYMAN_HOOK_DEBUG) {
-        try { Add-Content -Path $env:FERRYMAN_HOOK_DEBUG -Value $raw -Encoding utf8 } catch {}
+    # 抓包：env 直传（手测）或标记文件 ON 存在（Codex 净化钩子 env，exec/TUI 里只能靠文件开关）
+    $dbg = $env:FERRYMAN_HOOK_DEBUG
+    if (-not $dbg -and (Test-Path (Join-Path $env:USERPROFILE 'ferryman\hook-debug\ON'))) {
+        $dbg = Join-Path $env:USERPROFILE 'ferryman\hook-debug\ferryman-restore-codex.jsonl'
+    }
+    if ($dbg) {
+        try { Add-Content -Path $dbg -Value $raw -Encoding utf8 } catch {}
     }
     $j = $raw | ConvertFrom-Json
     if ($j.source -and ($j.source -ne 'clear') -and ($j.source -ne 'startup')) { exit 0 }
     $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 7311 }
     $tokenFile = if ($env:FERRYMAN_TOKEN_FILE) { $env:FERRYMAN_TOKEN_FILE }
-                 else { "$env:USERPROFILEerryman\daemon.token" }
+                 else { "$env:USERPROFILE\ferryman\daemon.token" }
     $token = (Get-Content $tokenFile -Raw -ErrorAction Stop).Trim()
     $cwd = [uri]::EscapeDataString([string]$j.cwd)
     $sid = [uri]::EscapeDataString([string]$j.session_id)

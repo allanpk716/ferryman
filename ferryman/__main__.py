@@ -27,6 +27,8 @@ def main(argv: list[str] | None = None) -> int:
                                      "（检测到 CC Switch 时自动注入供应商快照）")
     sub.add_parser("install-ccswitch", help="把 Ferryman 钩子注进 CC Switch 全部 claude 供应商快照"
                                             "（新增供应商后重跑；幂等、自动备份）")
+    sub.add_parser("install-codex", help="把 Ferryman 钩子注进 ~/.codex/hooks.json 并开 "
+                                          "[features] hooks = true（改后需 TUI /hooks 信任）")
     args = parser.parse_args(argv)
 
     if args.cmd == "e0":
@@ -59,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
 
         n = inject_ccswitch()
         return 0 if n >= 0 else 1
+    if args.cmd == "install-codex":
+        from .install import install_codex
+
+        return 0 if install_codex() >= 0 else 1
     return 2
 
 

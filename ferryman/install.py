@@ -20,6 +20,8 @@ from pathlib import Path
 
 CCSWITCH_DB = Path.home() / ".cc-switch" / "cc-switch.db"
 LAUNCHER_NAME = "start-daemon.cmd"
+CODEX_HOOKS = Path.home() / ".codex" / "hooks.json"
+CODEX_CONFIG = Path.home() / ".codex" / "config.toml"
 
 
 def ensure_launcher(data_dir: Path | None = None, repo: Path | None = None) -> Path:
@@ -123,6 +125,69 @@ def install_cc(settings_path: Path | None = None,
             print(f"# {evt}")
             print(json.dumps(entry, ensure_ascii=False, indent=2))
     return 0
+
+
+def install_codex(hooks_path: Path | None = None,
+                  config_path: Path | None = None) -> int:
+    """把 Ferryman 两条钩子注进 ~/.codex/hooks.json 并开 [features] hooks = true。
+
+    2026-09-17 实测定案（T23）：
+    - Codex 钩子**默认关闭**，config.toml 必须开 `hooks = true`——不开则 hooks.json
+      被静默忽略（此前一直没生效的根因之一）；
+    - 必须用 json.dumps 写盘：手工写入把路径里的 \\a / \\f 写成 BEL/FF 控制字符，
+      钩子指向不存在路径且 fail-open 静默（已修过的真实事故，测试含控制字符回归）；
+    - 响应契约与 CC 认同构但 additionalContext 是顶层字段（非 hookSpecificOutput 包装）。
+    """
+    hooks_path = hooks_path or CODEX_HOOKS
+    config_path = config_path or CODEX_CONFIG
+    repo = Path(__file__).resolve().parent.parent
+    ps = 'powershell -NoProfile -ExecutionPolicy Bypass -File'
+    entries = {
+        "UserPromptSubmit": [{"hooks": [{
+            "type": "command",
+            "command": f'{ps} "{repo / "hooks" / "ferryman-gate-codex.ps1"}"',
+            "timeout": 3}]}],
+        # 超时 10s：含 daemon 自举等待预算（同 CC restore）
+        "SessionStart": [{"hooks": [{
+            "type": "command",
+            "command": f'{ps} "{repo / "hooks" / "ferryman-restore-codex.ps1"}"',
+            "timeout": 10}]}],
+    }
+
+    if hooks_path.exists():
+        backup = hooks_path.with_name(
+            f"hooks.json.bak-ferryman-{time.strftime('%Y%m%d_%H%M%S')}")
+        shutil.copy2(hooks_path, backup)
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    else:
+        data = {}
+    hooks: dict = data.setdefault("hooks", {})
+    for evt, new in entries.items():
+        lst = hooks.setdefault(evt, [])
+        if isinstance(lst, list):
+            hooks[evt] = [e for e in lst
+                          if "ferryman" not in json.dumps(e, ensure_ascii=False)] + new
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    hooks_path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+
+    # 功能旗标：[features] hooks = true（幂等；无 [features] 段则追加）
+    toml = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    if not any(line.strip().replace(" ", "").startswith("hooks=true")
+               for line in toml.splitlines()):
+        if "[features]" in toml:
+            toml = toml.replace("[features]", "[features]\nhooks = true", 1)
+        else:
+            toml = toml.rstrip("\n") + "\n\n[features]\nhooks = true\n"
+        if config_path.exists():
+            shutil.copy2(config_path, config_path.with_name(
+                f"{config_path.name}.bak-ferryman-{time.strftime('%Y%m%d_%H%M%S')}"))
+        config_path.write_text(toml, encoding="utf-8")
+
+    print(f"已注入 Codex 钩子到 {hooks_path}（Orca 等既有条目保留；注意 hooks.json "
+          f"变更后需在 TUI /hooks 重新信任）")
+    print(f"功能旗标 [features] hooks = true 已确保开启（{config_path}）")
+    return len(entries)
 
 
 def inject_ccswitch(db_path: Path | None = None) -> int:

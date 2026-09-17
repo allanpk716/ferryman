@@ -1,4 +1,7 @@
 ﻿# Ferryman 闸门钩子（Codex UserPromptSubmit，T23 准备）—— 任何故障一律放行（DESIGN §4 fail-open）
+# stdin schema 已按官方文档校准（2026-09-17 实测定案）：session_id / transcript_path（rollout
+# 路径，可为 null）/ cwd / prompt / hook_event_name / model；SessionStart 另有 source
+# （startup|resume|clear|compact）。响应契约：decision:block+reason、顶层 additionalContext。
 # 防御式字段映射：Codex 钩子 stdin schema 未经信任流实测，session_id / rollout_path /
 # transcript_path 多字段回落（晨间 /hooks 信任后用 FERRYMAN_HOOK_DEBUG 抓真实 payload 校准）。
 # 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 7311）；
@@ -14,10 +17,15 @@ try {
     } catch {}
     $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 7311 }
     $tokenFile = if ($env:FERRYMAN_TOKEN_FILE) { $env:FERRYMAN_TOKEN_FILE }
-                 else { "$env:USERPROFILEerryman\daemon.token" }
+                 else { "$env:USERPROFILE\ferryman\daemon.token" }
     $raw = [Console]::In.ReadToEnd()
-    if ($env:FERRYMAN_HOOK_DEBUG) {
-        try { Add-Content -Path $env:FERRYMAN_HOOK_DEBUG -Value $raw -Encoding utf8 } catch {}
+    # 抓包：env 直传（手测）或标记文件 ON 存在（Codex 净化钩子 env，exec/TUI 里只能靠文件开关）
+    $dbg = $env:FERRYMAN_HOOK_DEBUG
+    if (-not $dbg -and (Test-Path (Join-Path $env:USERPROFILE 'ferryman\hook-debug\ON'))) {
+        $dbg = Join-Path $env:USERPROFILE 'ferryman\hook-debug\ferryman-gate-codex.jsonl'
+    }
+    if ($dbg) {
+        try { Add-Content -Path $dbg -Value $raw -Encoding utf8 } catch {}
     }
     $j = $raw | ConvertFrom-Json
     # 字段回落：rollout_path → transcript_path → path
@@ -51,12 +59,9 @@ try {
         exit 0
     }
     if ($resp.additional_context) {
-        $out = @{
-            hookSpecificOutput = @{
-                hookEventName     = 'UserPromptSubmit'
-                additionalContext = $resp.additional_context
-            }
-        } | ConvertTo-Json -Compress -Depth 5
+        # Codex 契约（官方文档）：顶层 additionalContext 字段（CC 的 hookSpecificOutput
+        # 包装是 Claude 专属，Codex 不认）；纯文本 stdout 亦可，但 JSON 字段最明确
+        $out = @{ additionalContext = $resp.additional_context } | ConvertTo-Json -Compress
         [Console]::Out.Write($out)
     }
     exit 0

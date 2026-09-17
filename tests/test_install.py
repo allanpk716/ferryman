@@ -44,3 +44,43 @@ def test_install_appends_keeps_orca_and_is_idempotent(tmp_path, capsys):
 
     # 备份存在（同秒内两次安装会覆盖同名备份，故只断言 ≥1）
     assert len(list(tmp_path.glob("settings.json.bak-ferryman-*"))) >= 1
+
+
+# ---------- T36 · install-codex：hooks.json 注入 + 功能旗标 ----------
+
+def test_install_codex_merges_and_enables_feature(tmp_path):
+    from ferryman.install import install_codex
+    hooks = tmp_path / "hooks.json"
+    hooks.write_text(json.dumps({"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": "orca.cmd", "timeout": 10}]}]}},
+        ensure_ascii=False), encoding="utf-8")
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[features]\ngoals = true\n", encoding="utf-8")
+
+    n = install_codex(hooks_path=hooks, config_path=cfg)
+    assert n == 2                                    # gate + restore 两条
+
+    data = json.loads(hooks.read_text(encoding="utf-8"))
+    ups = [e for e in data["hooks"]["UserPromptSubmit"]
+           if "ferryman" in json.dumps(e)]
+    assert len(ups) == 1 and "ferryman-gate-codex.ps1" in json.dumps(ups[0])
+    assert any("orca.cmd" in json.dumps(e) for e in data["hooks"]["Stop"])  # Orca 保留
+    ss = [e for e in data["hooks"]["SessionStart"] if "ferryman" in json.dumps(e)]
+    assert ss[0]["hooks"][0]["timeout"] == 10        # 自举等待预算
+    # 无控制字符（\a→BEL / \f→FF 事故的回归防线）
+    assert not any(b in hooks.read_bytes() for b in (b"\x07", b"\x0c"))
+
+    toml = cfg.read_text(encoding="utf-8")
+    assert "hooks = true" in toml                    # 钩子默认关，必须开旗标
+
+
+def test_install_codex_idempotent_and_creates_missing(tmp_path):
+    from ferryman.install import install_codex
+    hooks = tmp_path / "hooks.json"                  # 不存在 → 创建
+    cfg = tmp_path / "config.toml"                   # 无 [features] 段 → 追加
+    install_codex(hooks_path=hooks, config_path=cfg)
+    install_codex(hooks_path=hooks, config_path=cfg)  # 幂等
+    data = json.loads(hooks.read_text(encoding="utf-8"))
+    assert sum("ferryman" in json.dumps(e)
+               for e in data["hooks"]["UserPromptSubmit"]) == 1
+    assert cfg.read_text(encoding="utf-8").count("hooks = true") == 1
