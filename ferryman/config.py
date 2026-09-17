@@ -34,6 +34,7 @@ class ThresholdCfg:
     summarize_s: float = 25 * 60
     block_s: float = 35 * 60             # E0a 实测拐点+5min（reports/e0a-cc-glm.md）
     min_ctx_tokens: int = 20_000
+    cache_warn_s: float = 720.0        # 12min：缓存死线纯提醒（信息条，不拦不触发摆渡；0=关）
 
 
 @dataclass
@@ -95,6 +96,7 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
                 summarize_s=float(t.get("summarize_s", cfg.thresholds.summarize_s)),
                 block_s=float(t.get("block_s", cfg.thresholds.block_s)),
                 min_ctx_tokens=int(t.get("min_ctx_tokens", cfg.thresholds.min_ctx_tokens)),
+                cache_warn_s=float(t.get("cache_warn_s", cfg.thresholds.cache_warn_s)),
             )
         if "watch" in data:
             w = data["watch"]

@@ -37,6 +37,9 @@ toast = true
 # pushover_token = ""
 # pushover_user = ""
 
+#[thresholds]
+# cache_warn_s = 720    # 闲置12分钟的纯提醒：缓存已死、本条全价（0=关）
+
 #[watch]
 # codex_extra_dirs = []   # 额外 codex 会话目录；Orca 运行时目录
 #                         # (%APPDATA%\orca\codex-runtime-home\home\sessions) 存在时自动追加

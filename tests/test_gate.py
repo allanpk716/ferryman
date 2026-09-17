@@ -177,3 +177,49 @@ def test_pending_ttl_24h(env):
     key = ("cc", "s9")
     d.pending.t[key]["set_at"] = time.time() - 25 * 3600
     assert d.pending.get(key) is None
+
+
+# ---- T44b：缓存死线纯提醒（12min 信息条；不拦、不摆渡、0=关）----
+
+def test_cache_info_at_15min(env):
+    """闲置 12–35min 区间：纯提醒信息条——含"全价计费/无需操作"，非"交接生成中"。"""
+    d, led, _, enqueued, _ = env
+    d.cfg.thresholds = ThresholdCfg()            # 真实默认：warn 720s / block 2100s
+    _reg(led, "s5", "C:/p5.jsonl", "C:/proj", idle_s=900)
+    r = d.gate(_body("s5", "C:/p5.jsonl", "C:/proj"))
+    assert r["decision"] == "allow"
+    assert "全价计费" in r["additional_context"]
+    assert "无需操作" in r["additional_context"]
+    assert "交接生成中" not in r["additional_context"]
+    assert enqueued == []                        # 纯提醒：不触发摆渡
+    d.cfg.gate_cc = "observe"                    # observe 放行路径同样带信息条
+    r2 = d.gate(_body("s5", "C:/p5.jsonl", "C:/proj"))
+    assert r2["decision"] == "allow" and "全价计费" in r2["additional_context"]
+
+
+def test_no_info_below_12min(env):
+    d, led, *_ = env
+    d.cfg.thresholds = ThresholdCfg()
+    _reg(led, "s6", "C:/p6.jsonl", "C:/proj", idle_s=400)
+    r = d.gate(_body("s6", "C:/p6.jsonl", "C:/proj"))
+    assert r == {"decision": "allow"}            # 未到死线：无 additional_context
+
+
+def test_no_info_at_block_window(env):
+    """≥block 窗口走既有警告而非信息条——"建议 /clear" vs "无需操作"互斥可辨。"""
+    d, led, *_ = env
+    d.cfg.gate_cc = "observe"
+    _reg(led, "s7", "C:/p7.jsonl", "C:/proj", idle_s=BLOCK + 5)
+    r = d.gate(_body("s7", "C:/p7.jsonl", "C:/proj"))
+    assert r["decision"] == "allow" and r["additional_context"]
+    assert "闲置" in r["additional_context"]              # 既有警告
+    assert "建议 /clear" in r["additional_context"]
+    assert "无需操作" not in r["additional_context"]      # 非信息条专属文案
+
+
+def test_cache_info_disabled(env):
+    d, led, *_ = env
+    d.cfg.thresholds = ThresholdCfg(cache_warn_s=0)
+    _reg(led, "s8", "C:/p8.jsonl", "C:/proj", idle_s=900)
+    r = d.gate(_body("s8", "C:/p8.jsonl", "C:/proj"))
+    assert r == {"decision": "allow"}            # 0=关：无 additional_context

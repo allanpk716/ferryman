@@ -159,11 +159,13 @@ class FerryDaemon:
                     self.enqueue_ferry(st)
                 return {"decision": "allow",
                         "additional_context": self._warn_ctx(idle, H, will_block=False)}
-            return {"decision": "allow"}
+            info = self._cache_info_ctx(idle, th)
+            return {"decision": "allow", **({"additional_context": info} if info else {})}
 
         # enforce：完整状态机
         if not in_window:
-            return {"decision": "allow"}
+            info = self._cache_info_ctx(idle, th)
+            return {"decision": "allow", **({"additional_context": info} if info else {})}
         H = self.store.valid_handoff(agent, cwd, st.last_write)
         if H is not None:                                   # 分支 5
             self.pending.clear(key)
@@ -210,6 +212,15 @@ class FerryDaemon:
                    else "交接生成中（observe 模式只提醒不拦；enforce 才会真拦）。"))
                + "建议 /clear 后开新会话（自动注入交接）。")
         return txt[:WARN_CONTEXT_CAP]
+
+    def _cache_info_ctx(self, idle: float, th) -> str | None:
+        """T44b 缓存死线纯提醒：只报信息，不拦、不触发摆渡、不置 pending。"""
+        w = th.cache_warn_s
+        if not w or not (w <= idle < th.block_s):
+            return None
+        return (f"[Ferryman] 提示：本会话已闲置 {idle / 60:.0f} 分钟，缓存大概率已失效——"
+                f"这条消息的前缀将按全价计费（一次性差额）。无需操作；"
+                f"闲置满 {th.block_s / 60:.0f} 分钟后会有交接备好，届时可换新会话。")
 
     def _notify_block(self, st: SessionState, H: dict, idle: float) -> None:
         print(f"[gate] BLOCK {st.agent}/{st.session_id[:8]} idle={idle / 60:.0f}m "
