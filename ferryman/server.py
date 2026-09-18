@@ -28,6 +28,7 @@ from .accounts import Accounts
 from .ferry import INJECT_CLOSE, INJECT_OPEN
 from .ledger import SUBAGENT_EVENT_LEAK_S, Ledger, SessionState, now_s
 from .store import Store
+from .transcripts import has_dangling_tool_use
 
 DEGRADE_AFTER_BLOCKS = 3        # DESIGNS §6.10-6：连续兜底拦截 3 次 → 降级
 PENDING_TTL_S = 24 * 3600
@@ -141,6 +142,18 @@ class FerryDaemon:
         if mode == "off":
             return {"decision": "allow", "reason": "mode-off"}
 
+        # 2.5 机器等机器豁免（缺口A，rev2 规格 docs/superpowers/specs/
+        #     20260918-antfeedinglog子代理等待场景-consensus.rev2.md）：
+        #     子代理在飞 或 jsonl 尾部悬空 tool_use → 放行本次输入，不警告/不拦截/
+        #     不入队摆渡/不动 pending（含 observe 模式的警告与入队路径）。
+        #     与三泳道裁决对齐：机器等机器不归闸门；摆渡路径同款检查见 daemon.py:123-125。
+        if self._machine_waiting(agent, st.session_id, st):
+            return {"decision": "allow", "reason": "machine-waiting",
+                    "additional_context": (
+                        "[Ferryman] 检测到会话仍有未完成的工具调用/子代理，已放行本次输入"
+                        "（不承诺生效时机）。若确认已卡死：Esc 中断后重发，"
+                        "或以「强续」开头强制继续。")}
+
         th = self.cfg.threshold_for(agent)
         idle = now_s() - st.last_write
         key = (agent, st.session_id)
@@ -197,9 +210,10 @@ class FerryDaemon:
             self._acct("block", st, prefix_tokens=st.peak_ctx, idle_s=round(idle, 1))
             self.store.save_pending_prompt(st.session_id, prompt)
             return {"decision": "block",
-                    "reason": (f"交接仍在生成（第 {n} 次拦截）；你刚输入的内容已保存。\n"
-                               f"稍等约 1 分钟后重发这句（按 ↑ 键可取回），届时会给完整的换会话指引；"
-                               f"等不及就以「强续」开头重发强制继续（原话须自己带上）。"),
+                    "reason": (f"此会话闲置超时被拦（第 {n} 次）；你刚输入的内容已保存、不会丢。\n"
+                               f"继续干活：每次以「强续」开头发消息（每一条都会放行，无需数次数，"
+                               f"内容须自己带上）；或 /clear 换会话（若交接已生成会自动注入"
+                               f"交接与你的原话）。"),
                     "suppressOriginalPrompt": True}
         # 分支 7：警告一次 + 置 pending + 触发摆渡
         self.pending.set(key)
@@ -207,6 +221,27 @@ class FerryDaemon:
         if st.observed_active and st.peak_ctx >= th.min_ctx_tokens:
             self.enqueue_ferry(st)
         return {"decision": "allow", "additional_context": self._warn_ctx(idle, None)}
+
+    def _machine_waiting(self, agent: str, session_id: str, st: SessionState | None) -> bool:
+        """缺口A：机器等机器判定——子代理计数>0 或 jsonl 尾部悬空 tool_use。
+
+        两道 OR 互为兜底：守护重启丢内存计数→悬空道兜底；泄漏期已过计数清零
+        而 tool_result 仍缺→悬空道兜底。上界分道（rev2 如实声明）：计数道 1h
+        泄漏保护（ledger.py:28）；悬空道无时间上界、有内容量上界——尾部 256KB
+        滑窗（transcripts.py:73），悬空事件被后续内容顶出窗口即失效。
+        任何异常按 False（宁可走正常闸门路径，不误豁免）。"""
+        try:
+            if self.ledger.subagent_active(agent, session_id):
+                return True
+        except Exception:  # noqa: BLE001 — 豁免判定异常不影响闸门主路径
+            pass
+        path = st.transcript_path if st is not None else ""
+        if not path:
+            return False
+        try:
+            return has_dangling_tool_use(Path(path))
+        except Exception:  # noqa: BLE001 — 同上；transcripts 内部已吞 OSError，双保险
+            return False
 
     def _warn_ctx(self, idle: float, H: dict | None,
                   *, will_block: bool = True) -> str:
