@@ -56,15 +56,13 @@ def send_toast(title: str, message: str, *, timeout: float = 5.0) -> bool:
         return False
 
 
-def notify_block(handoff_path: str, agent: str, session_id: str, cfg) -> None:
-    """拦截发生：双通道通知（文案带交接路径）。绝不抛出。"""
+def notify_alert(title: str, message: str, *, cfg) -> None:
+    """T51 通用告警（问询守望熔断等）：双通道 best-effort，只发元信息文案。
+    同步发送、绝不抛出；是否异步由调用方决定（与 _notify_block 同纪律）。"""
     try:
         n = cfg.notify
         if not n.enabled:
             return
-        title = "Ferryman 拦截"
-        message = (f"会话 {session_id[:8]} 闲置被拦，交接已生成：\n{handoff_path}\n"
-                   "新会话发任意字即可取回上下文。")
         if n.pushover:
             token = n.pushover_token or os.environ.get("PUSHOVER_TOKEN", "")
             user = n.pushover_user or os.environ.get("PUSHOVER_USER", "")
@@ -74,3 +72,10 @@ def notify_block(handoff_path: str, agent: str, session_id: str, cfg) -> None:
             send_toast(title, message)
     except Exception as e:  # noqa: BLE001 — 双保险（通道内部已吞，这里兜组装层）
         print(f"[notify] 通知失败（忽略）: {e}", flush=True)
+
+
+def notify_block(handoff_path: str, agent: str, session_id: str, cfg) -> None:
+    """拦截发生：双通道通知（文案带交接路径）。绝不抛出。"""
+    message = (f"会话 {session_id[:8]} 闲置被拦，交接已生成：\n{handoff_path}\n"
+               "新会话发任意字即可取回上下文。")
+    notify_alert("Ferryman 拦截", message, cfg=cfg)

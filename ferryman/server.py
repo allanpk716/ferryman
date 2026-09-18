@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 from .accounts import Accounts
 from .ferry import INJECT_CLOSE, INJECT_OPEN
 from .ledger import SUBAGENT_EVENT_LEAK_S, Ledger, SessionState, now_s
+from .qwatch import correlate_miss_signals
 from .store import Store
 from .transcripts import has_async_launch, has_dangling_tool_use
 
@@ -44,6 +45,7 @@ PARK_EXPIRE_S = 3600
 # 0.2-3.2min），此宽限是时序反转时的廉价保险；真 async 若 90s 内完成，其窗口
 # 数据本就边际。
 ACK_GRACE_S = 90
+QWATCH_MISS_SCAN_S = 86400.0    # 票06 漏检关联扫描窗：24h（覆盖 30min 回看＋复活间隙）
 
 
 class GateStats:
@@ -102,7 +104,8 @@ class FerryDaemon:
 
     def __init__(self, cfg, ledger: Ledger, store: Store, enqueue_ferry,
                  accounts: Accounts | None = None,
-                 started_at: float | None = None) -> None:
+                 started_at: float | None = None,
+                 qwatch_stats=None) -> None:
         self.cfg = cfg
         self.ledger = ledger
         self.store = store
@@ -110,6 +113,9 @@ class FerryDaemon:
         self.accounts = accounts             # None = 不记账（旧测试零改动）
         self.stats = GateStats()
         self.pending = PendingTable()
+        # T51 票04 问询守望计数器（Watcher 写、health() 读；None = 未接线，
+        # health 报全零占位——旧调用零改动）。
+        self.qwatch_stats = qwatch_stats
         # T41/T48 等待窗口表：(agent, sid) → {"opened_ts", "stop_ts", "saw_async"}。
         # stop_ts 非 None = 停车挂起（async 真身仍在跑）；saw_async = 本窗曾异步
         # 启动（锁存，防交错派发丢窗）。内存态，重启丢失可接受（同 PendingTable）
@@ -528,18 +534,108 @@ class FerryDaemon:
                         except Exception as e:  # noqa: BLE001 — 旧窗闭账失败不弄断钩子（丢行可接受）
                             print(f"[window] 重锚旧停车窗闭账失败（丢弃）: {e}",
                                   flush=True)
-                    w = {"opened_ts": now_s(), "stop_ts": None, "saw_async": False}
-                    self._windows[key] = w
+                    # T51 两窗互斥（先开者赢）check-then-act 临界区（票03 移植）：
+                    # 首开与重锚共用此点——新窗落表与等答复窗复验同在台账锁内
+                    # 完成，与守望开等答复窗的临界区（daemon._maybe_qwatch）互为
+                    # 对侧握手，任一后到者必看见先到者的窗，毫秒级双窗并存窗口
+                    # 归零。等答复窗开着 → 不开停车窗（等答复窗只由新写入关窗，
+                    # start/stop 不动它；互斥双向承重——丢了它 gate 豁免会与
+                    # 摆渡推迟＋心跳叠加）。锁序铁律：_wlock 外层 → ledger.lock
+                    # 内层（gate/note_usage/window_wait 等既有路径同序；守望侧
+                    # 临界区持台账锁时只做无锁探测 parking_open，反向嵌套即死锁）。
+                    w = None
+                    with self.ledger.lock:
+                        if not self._qwatch_open(agent, session_id):
+                            w = {"opened_ts": now_s(), "stop_ts": None,
+                                 "saw_async": False}
+                            self._windows[key] = w
                 elif w.get("stop_ts") is not None:
                     w["stop_ts"] = None             # 停车窗又来 start：续窗（再派/嵌套）
                 # T48（附录#7）：start 时尾判 async 亦置锁存——覆盖"sync start
                 # 先于 async stop"的重叠序（停车判定只在计数归零时跑，届时尾部
                 # 最后派发已是 sync，唯有此处置位才不丢 async 等待）。
-                if not w.get("saw_async"):
+                # T51：互斥挡开时无窗可锁存（w=None），跳过。
+                if w is not None and not w.get("saw_async"):
                     self._latch_async_if_tail(agent, session_id, w)
             elif count == 0 and key in self._windows:
                 self._park_or_close(key, agent, session_id)
         return {"ok": True, "active": count > 0}
+
+    def parking_open(self, agent: str, session_id: str) -> bool:
+        """T51 两窗互斥探测（守望开等答复窗前调用）：停车窗是否"有效开着"。
+
+        委托 T48 窗口状态的无副作用版（merge 改造，勿调 window_wait——它带
+        懒过期闭窗记账副作用，且不得在台账锁内触发）：活跃窗按计数道泄漏口径
+        （SUBAGENT_EVENT_LEAK_S）判；停车窗按停表过期口径（PARK_EXPIRE_S）判
+        ——与 window_wait 的豁免口径一致，过期旧窗视同已闭（不闭账，留给
+        window_wait/重锚的正规路径如实收口）。
+        ★ 无锁读（dict.get + 字段读，GIL 原子）：本探测会在守望开窗临界区内
+        于台账锁下被调用，若此处再取 _wlock，将与 server.subagent 的
+        _wlock→ledger.lock 锁序反向嵌套（AB-BA 死锁）；互斥的权威握手在两侧
+        开窗点的台账锁内完成（subagent 落新窗在台账锁内复验等答复窗后），此读
+        只是同临界区内的一致视图。任何异常按未开（False），绝不影响守望主路径。"""
+        try:
+            w = self._windows.get((agent, session_id))
+            if w is None:
+                return False
+            if w.get("stop_ts") is None:
+                return now_s() - w["opened_ts"] <= SUBAGENT_EVENT_LEAK_S
+            return now_s() - w["stop_ts"] <= PARK_EXPIRE_S
+        except Exception:  # noqa: BLE001 — 探测故障不得影响守望
+            return False
+
+    def _qwatch_open(self, agent: str, session_id: str) -> bool:
+        """T51 等答复窗口是否开着（台账窗口字段）。异常按未开。"""
+        try:
+            st = self.ledger.get(agent, session_id)
+            return st is not None and st.qwatch_opened_ts is not None
+        except Exception:  # noqa: BLE001 — 同上
+            return False
+
+    def _qwatch_miss_signals(self) -> int:
+        """票06 漏检关联计数：全量重付的闲置复活请求 × 此前 30 分钟内末条疑似
+        提问命中且其间无真跳保温（口径见 qwatch.correlate_miss_signals）。
+        /stats 拉取时扫近 24h 账本行现算（无内存态，重启不丢口径）；只出计数
+        （隐私铁律）；任何故障按 0——旁路信号绝不影响 /stats 主路径。"""
+        if self.accounts is None:
+            return 0
+        try:
+            return correlate_miss_signals(
+                self.accounts.read(since=now_s() - QWATCH_MISS_SCAN_S))
+        except Exception as e:  # noqa: BLE001 — 账本读失败按无信号
+            print(f"[stats] 漏检关联计数失败（按 0）: {e}", flush=True)
+            return 0
+
+    def qwatch_stop(self) -> dict:
+        """一键停（T51 票04）：mode 置 off＋取消全部在飞计划与未关窗口。
+
+        关窗而非只清计划：窗口还连着摆渡推迟与死线（_qwatch_deadline），
+        停守望必须连摆渡侧一并松开。只动内存（台账锁内清字段，关窗事件
+        锁外落账 close_reason=stop——四类事件口径完整）；重启后仍以配置
+        文件的 mode 为准（运行时开关不落盘）。"""
+        self.cfg.question_watch.mode = "off"
+        cancelled = 0
+        stopped: list[tuple[SessionState, float, int]] = []
+        with self.ledger.lock:
+            for st in self.ledger.all_sessions():
+                if st.qwatch_opened_ts is None and not st.qwatch_plan:
+                    continue
+                if st.qwatch_opened_ts is not None:
+                    stopped.append((st, st.qwatch_opened_ts, st.qwatch_beats_fired))
+                st.qwatch_opened_ts = None
+                st.qwatch_beats_fired = 0
+                st.qwatch_plan = []
+                st.qwatch_snapshot = None
+                cancelled += 1
+        for st, opened_ts, fired in stopped:    # 锁外落账（记账读盘不持台账锁）
+            closed = now_s()
+            self._acct("qwatch_close", st, opened_ts=round(opened_ts, 3),
+                       closed_ts=round(closed, 3),
+                       dur_s=round(max(0.0, closed - opened_ts), 1),
+                       beats_fired=fired, close_reason="stop")
+        print(f"[qwatch] 一键停：mode→off，已取消 {cancelled} 个会话的窗口/计划",
+              flush=True)
+        return {"ok": True, "mode": "off", "cancelled": cancelled}
 
     def health(self) -> dict:
         now = now_s()
@@ -551,6 +647,18 @@ class FerryDaemon:
         in_grace = now - self.started_at < HEALTH_GRACE_S
         alert = (not in_grace) and (now - last_write < 3600) \
             and (total == 0 or now - last_call > 3600)
+        # T51 票04：问询守望计数器（命中/开窗/跳数/四道 outcome/累计实收花费/
+        # 当前 mode）。mode 读配置活值——熔断降级与一键停改的是同一处。
+        if self.qwatch_stats is not None:
+            qwatch = self.qwatch_stats.snapshot()
+        else:
+            qwatch = {"hits": 0, "windows_opened": 0, "beats_fired": 0,
+                      "beats_by_outcome": {"hit": 0, "miss": 0,
+                                           "error": 0, "observe": 0},
+                      "cost_actual": 0.0}
+        # 票06：漏检关联计数（账本近 24h 行现算，粗粒度 observe 期信号）
+        qwatch["miss_signals"] = self._qwatch_miss_signals()
+        qwatch["mode"] = self.cfg.question_watch.mode
         return {
             "gate_calls_total": total,
             "gate_calls_by_agent": dict(self.stats.by_agent),
@@ -561,6 +669,7 @@ class FerryDaemon:
             "health_alert": alert,
             "health_msg": ("疑似钩子失效：1h 内有会话写入但 gate 零调用"
                            if alert else ("启动宽限中" if in_grace else "ok")),
+            "qwatch": qwatch,
         }
 
 
@@ -581,6 +690,7 @@ class DaemonLike(Protocol):
 
     def gate(self, body: dict) -> dict: ...
     def subagent(self, body: dict) -> dict: ...
+    def qwatch_stop(self) -> dict: ...
     def restore(self, agent: str, cwd: str, session_id: str) -> dict: ...
     def health(self) -> dict: ...
 
@@ -632,12 +742,15 @@ def make_server(daemon: DaemonLike, port: int, token: str) -> ThreadingHTTPServe
             # Windows 会发 RST 而非 FIN → 客户端读到 10053 连接中断而非状态码
             length = int(self.headers.get("Content-Length") or 0)
             body_raw = self.rfile.read(length) if length else b""
-            if self.path not in ("/gate", "/subagent"):
+            if self.path not in ("/gate", "/subagent", "/qwatch_stop"):
                 self._json(404, {"error": "not found"})
                 return
             if not self._authed():
                 return
             try:
+                if self.path == "/qwatch_stop":    # T51 票04 一键停：无请求体
+                    self._json(200, daemon.qwatch_stop())
+                    return
                 body = json.loads(body_raw.decode("utf-8"))
                 if self.path == "/gate":
                     self._json(200, daemon.gate(body))

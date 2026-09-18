@@ -21,13 +21,24 @@ _KIND_FIELDS: dict[str, set[str]] = {
     # 摆渡的每次模型调用（含分块/重试/失败）
     "handoff": {"provider", "model", "price_ver", "prompt_tokens",
                 "completion_tokens", "outcome", "wall_s"},
-    # 心跳——T41 仅占坑（执行器未授权，无生产者）
+    # 心跳（T41 占坑，T51 票03 起有生产者）：三态 outcome ∈ hit|miss|error
+    # + observe（演练跳未真发）。T41 的 hit 布尔被三态取代（当时无生产者）。
     "beat": {"provider", "model", "price_ver", "prefix_tokens", "cache_read",
-             "hit", "cost_pred", "cost_actual"},
+             "outcome", "cost_pred", "cost_actual"},
     "block": {"prefix_tokens", "idle_s"},
     "inject": {"tokens", "handoff_id"},
     "bypass": {"prefix_tokens"},
     "window": {"opened_ts", "closed_ts", "dur_s", "prefix_tokens", "close_reason"},
+    # 问询守望事件（T51 票04，spec 决策 8）：命中/开窗/关窗走本通道（每跳
+    # 复用上方 beat 科目）。命中行带复核证据形态（unit_count＋breakdown 三桶
+    # ＋转录绝对路径；session_id/命中时间是公共字段）——只记元数据与计数，
+    # 消息正文永不入账（隐私铁律，测试 test_hit_event_privacy_no_message_body
+    # 守着）。
+    "qwatch_hit": {"unit_count", "marker_lines", "qmark_lines",
+                   "numbered_lines", "transcript_path"},
+    "qwatch_open": {"unit_count", "prefix_tokens"},
+    "qwatch_close": {"opened_ts", "closed_ts", "dur_s", "beats_fired",
+                     "close_reason"},
     # 逐次请求的用量遥测（设计 §3.7；会话文件 30 天清理后的审计地基）
     "usage": {"model", "title", "input_tokens", "cache_read_tokens",
               "cache_creation_tokens", "output_tokens", "offset"},

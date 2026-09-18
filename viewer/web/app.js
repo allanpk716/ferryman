@@ -305,13 +305,14 @@ function deriveReqs(requests) {
   return rs;
 }
 
-// deriveZones 断缓存区：覆盖源 = 请求 ∪ 心跳（beat 也续命）；相邻覆盖源间隔 > TTL
+// deriveZones 断缓存区：覆盖源 = 请求 ∪ 心跳（beat 也续命；observe 演练跳未真发
+// 不算覆盖——T51 票04）；相邻覆盖源间隔 > TTL
 // 且下一个是请求（不是 beat——beat 已把缓存焐热，无重付）→ 一段死亡区。
 // 损失估算 = 下一条请求的新输入 × (全价 − 缓存价)。TTL 变更后须重算。
 function deriveZones(reqs, events, ttl) {
   var cov = [];
   reqs.forEach(function (r) { cov.push({ ts: r.ts, req: r }); });
-  events.forEach(function (e) { if (e.kind === 'beat') cov.push({ ts: e.ts, beat: true }); });
+  events.forEach(function (e) { if (e.kind === 'beat' && e.outcome !== 'observe') cov.push({ ts: e.ts, beat: true }); });
   cov.sort(function (a, b) { return a.ts - b.ts; });
   var zones = [];
   for (var i = 1; i < cov.length; i++) {
@@ -473,6 +474,10 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       ['与上一条间隔', r.idx > 0 ? fmtDur(gapPrev) + (r.repaid ? '（缓存已断）' : gapPrev > state.ttl * 0.8 ? '（接近 TTL）' : '（缓存存活）') : '-'],
     ], '本条 ' + fmtCost(r.cTot) + ' 积分 · 累计 ' + fmtCost(r.cum) + ' 积分' + (r.repaid ? ' · ↯ 本条全额重付' : ''), r.repaid);
   }
+  // beatOutcomeLabel 心跳三态＋演练（T51 票04：账目 hit 布尔已改 outcome 三态）
+  function beatOutcomeLabel(o) {
+    return { hit: '命中', miss: 'MISS', error: 'ERROR', observe: '演练（未真发）' }[o] || (o || '-');
+  }
   function tipEv(e) {
     if (e.kind === 'handoff') {
       tipFill('⚑ 交接文档', null, [
@@ -492,9 +497,14 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       ], '以「强续」开头强制放行，不计拦截次数');
     } else if (e.kind === 'beat') {
       tipFill('● 心跳', null, [
-        ['时间', fmtTS(e.ts, true)], ['命中', e.hit ? '是' : '否'],
+        ['时间', fmtTS(e.ts, true)], ['结果', beatOutcomeLabel(e.outcome)],
         ['实收缓存读', fmtK(e.cache_read || 0)],
       ], '预测成本 ' + fmtCost(e.cost_pred) + ' / 实际 ' + fmtCost(e.cost_actual) + ' 积分');
+    } else if (e.kind === 'qwatch_hit') {
+      tipFill('◎ 问询命中', null, [
+        ['时间', fmtTS(e.ts, true)], ['问题单元', String(e.unit_count || 0)],
+        ['标记/问号/编号行', (e.marker_lines || 0) + ' / ' + (e.qmark_lines || 0) + ' / ' + (e.numbered_lines || 0)],
+      ], 'AI 末条被判定为提问潮（等答复窗口的心跳保温由此触发）');
     } else {
       tipFill(e.kind || '未知事件', null, [['时间', fmtTS(e.ts, true)]]);
     }
@@ -588,7 +598,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   // 事件图例五件套：[kind, 符号, 颜色(与图上标记一致), 名字, 人话解释]。
   // 配合 renderLegend 的计数：0 次灰暗——一眼分清"没发生过"和"画丢了"。
   var EVLEG = [
-    ['beat', '●', '#4caf50', '心跳', '保活心跳——执行器未实装，恒为 0'],
+    ['beat', '●', '#4caf50', '心跳', '保活心跳——问询守望逐跳落账（空心圈=observe 演练跳）'],
     ['handoff', '⚑', '#ffb74d', '交接', '会话闲置后自动生成交接文档'],
     ['block', '✕', '#e57373', '拦截', '闲置超时，输入被闸门拦下（原话已保管）'],
     ['inject', '↑', '#4dd0e1', '注入', '/clear 后新会话开场自动带入交接'],
@@ -818,7 +828,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       }
     } else if (sel.type === 'ev') {
       var e = events[sel.i];
-      var names = { handoff: '⚑ 交接文档', block: '✕ 输入被拦截', inject: '↑ 注入交接', bypass: '◯ 强续放行', beat: '● 心跳' };
+      var names = { handoff: '⚑ 交接文档', block: '✕ 输入被拦截', inject: '↑ 注入交接', bypass: '◯ 强续放行', beat: '● 心跳', qwatch_hit: '◎ 问询命中', qwatch_open: '◎ 等答复开窗', qwatch_close: '◎ 等答复关窗' };
       ht.textContent = names[e.kind] || e.kind;
       detail.appendChild(dRow('时间', fmtTS(e.ts, true)));
       if (e.kind === 'handoff') {
@@ -835,9 +845,15 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
         detail.appendChild(dRow('前缀', fmtK(e.prefix_tokens || 0)));
         detail.appendChild(dNote('以「强续」开头强制放行，不计拦截次数'));
       } else if (e.kind === 'beat') {
-        detail.appendChild(dRow('命中', e.hit ? '是' : '否'));
+        detail.appendChild(dRow('结果', beatOutcomeLabel(e.outcome)));
         detail.appendChild(dRow('实收缓存读', fmtK(e.cache_read || 0)));
         detail.appendChild(dNote('预测 ' + fmtCost(e.cost_pred) + ' / 实际 ' + fmtCost(e.cost_actual) + ' 积分'));
+      } else if (e.kind === 'qwatch_hit') {
+        detail.appendChild(dRow('问题单元', String(e.unit_count || 0)));
+        detail.appendChild(dRow('标记/问号/编号行',
+          (e.marker_lines || 0) + ' / ' + (e.qmark_lines || 0) + ' / ' + (e.numbered_lines || 0)));
+        if (e.transcript_path) detail.appendChild(dRow('转录', e.transcript_path));
+        detail.appendChild(dNote('AI 末条被判定为提问潮——命中清单供人工复核（只记计数与路径，不含消息正文）'));
       }
     } else if (sel.type === 'win') {
       renderWinDetail(ht, sel.i);
@@ -1459,7 +1475,10 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       if (!inView(e.ts) || !past(e.ts)) return;
       var x = xOf(e.ts), g;
       if (e.kind === 'beat') {
-        g = svgEl('circle', { cx: x, cy: EV_Y, r: 4, fill: '#4caf50', cursor: 'pointer' });
+        // observe 演练跳空心圈（未真发，样式区分——T51 票04）
+        g = e.outcome === 'observe'
+          ? svgEl('circle', { cx: x, cy: EV_Y, r: 4, fill: 'none', stroke: '#4caf50', 'stroke-width': '1.5', cursor: 'pointer' })
+          : svgEl('circle', { cx: x, cy: EV_Y, r: 4, fill: '#4caf50', cursor: 'pointer' });
       } else if (e.kind === 'handoff') {
         g = svgEl('g', { cursor: 'pointer' }); // 向下小旗：杆 + 倒三角旗面
         g.appendChild(svgEl('line', { x1: x, y1: EV_Y - 10, x2: x, y2: EV_Y + 8, stroke: '#ffb74d', 'stroke-width': '1.5' }));

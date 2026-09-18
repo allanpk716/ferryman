@@ -65,3 +65,12 @@ enabled = false
 # ttl_s = 600
 # ttl_measured_at = "2026-09-17"
 # ttl_source = "docs/20260917_1630_GLM缓存TTL实测与心跳保温可行性_实验报告.md"
+
+#[question_watch]
+# 问询守望（T51）：提问潮会话的等答复窗口＋缓存保温心跳，默认 off。
+# mode = "off"                  # off | observe | enforce（三态永不自动升级）
+# min_questions = 5             # 提问潮阈值：末条 assistant 问题单元数 ≥ 此值命中
+# beat_interval_s = 420         # 心跳间隔：0.7×GLM 实测 TTL 600s
+# max_beats = 2                 # 每窗最多心跳跳数
+# ferry_deadline_lead_s = 480   # 摆渡死线提前量：下限夹取 60s；
+#                               # summarize_s + lead > block_s 拒绝启动

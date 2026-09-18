@@ -108,8 +108,8 @@ func TestBeatGoldenFromPolicy(t *testing.T) {
 		t.Fatalf("lin-a beat 数 = %d, want 2", len(hits))
 	}
 	for i, b := range hits {
-		if !b.Hit || b.CacheRead != 150000 {
-			t.Fatalf("lin-a beat[%d] hit/cache_read = (%v, %d), want (true, 150000)", i, b.Hit, b.CacheRead)
+		if b.Outcome != "hit" || b.CacheRead != 150000 {
+			t.Fatalf("lin-a beat[%d] outcome/cache_read = (%q, %d), want (hit, 150000)", i, b.Outcome, b.CacheRead)
 		}
 		if b.CostPred != r15.PerBeat || b.CostActual != r15.PerBeat {
 			t.Fatalf("lin-a beat[%d] 成本 = (%v, %v), want 均为 PerBeat %v", i, b.CostPred, b.CostActual, r15.PerBeat)
@@ -128,8 +128,8 @@ func TestBeatGoldenFromPolicy(t *testing.T) {
 		t.Fatalf("lin-c beat 数 = %d, want 1（miss 后停跳）", len(miss))
 	}
 	m := miss[0]
-	if m.Hit || m.CacheRead != 0 {
-		t.Fatalf("lin-c beat hit/cache_read = (%v, %d), want (false, 0)", m.Hit, m.CacheRead)
+	if m.Outcome != "miss" || m.CacheRead != 0 {
+		t.Fatalf("lin-c beat outcome/cache_read = (%q, %d), want (miss, 0)", m.Outcome, m.CacheRead)
 	}
 	if m.CostActual != r90.Expire {
 		t.Fatalf("miss cost_actual = %v, want Expire %v（miss 本身=一次全价重付）", m.CostActual, r90.Expire)
@@ -200,7 +200,7 @@ func TestWriteRoundTrip(t *testing.T) {
 // 全等：多一个字段真实账本会拒收（演示数据不能撒谎），少一个则丢必填。
 var whitelist = map[string][]string{
 	"handoff": {"provider", "model", "price_ver", "prompt_tokens", "completion_tokens", "outcome", "wall_s"},
-	"beat":    {"provider", "model", "price_ver", "prefix_tokens", "cache_read", "hit", "cost_pred", "cost_actual"},
+	"beat":    {"provider", "model", "price_ver", "prefix_tokens", "cache_read", "outcome", "cost_pred", "cost_actual"},
 	"block":   {"prefix_tokens", "idle_s"},
 	"inject":  {"tokens", "handoff_id"},
 	"bypass":  {"prefix_tokens"},

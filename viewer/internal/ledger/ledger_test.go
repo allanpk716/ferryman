@@ -27,13 +27,15 @@ func TestLoadSample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(sample): %v", err)
 	}
-	// len：18 行基础结构 + 1 行 inject（审查 Important 防回潮补入）
-	if len(entries) != 19 {
-		t.Fatalf("Load(sample) 条数 = %d, want 19", len(entries))
+	// len：18 行基础结构 + 1 行 inject（审查 Important 防回潮补入）+ 1 行 beat
+	// observe 样例（T51 票04 补注：outcome 形态样例行）
+	if len(entries) != 20 {
+		t.Fatalf("Load(sample) 条数 = %d, want 20", len(entries))
 	}
 
-	// kind 分布：3 个 lineage 各含 usage×3/2/1 + window/handoff/beat/block×1，另 inject×1
-	wantDist := map[string]int{"usage": 6, "window": 3, "handoff": 3, "beat": 3, "block": 3, "inject": 1}
+	// kind 分布：3 个 lineage 各含 usage×3/2/1 + window/handoff/beat/block×1，
+	// 另 inject×1、beat observe 样例×1
+	wantDist := map[string]int{"usage": 6, "window": 3, "handoff": 3, "beat": 4, "block": 3, "inject": 1}
 	gotDist := map[string]int{}
 	for _, e := range entries {
 		gotDist[e.Kind]++
@@ -42,8 +44,19 @@ func TestLoadSample(t *testing.T) {
 		t.Fatalf("kind 分布 = %v, want %v", gotDist, wantDist)
 	}
 
-	// handoff/beat/inject 特有键必须能读出——防 json tag 再漏键静默丢数据
-	wantCacheRead := map[string]int64{"lin-alpha": 410, "lin-beta": 2510, "lin-gamma": 96}
+	// handoff/beat/inject 特有键必须能读出——防 json tag 再漏键静默丢数据。
+	// beat 行按 ts 序给 outcome/cache_read 期望（T51 票04：hit 布尔改 outcome
+	// 三态+observe，四种形态在夹具各现一例）。
+	wantOutcome := map[string][]string{
+		"lin-alpha": {"hit"},
+		"lin-beta":  {"miss"},
+		"lin-gamma": {"error", "observe"},
+	}
+	wantCacheRead := map[string][]int64{
+		"lin-alpha": {410},
+		"lin-beta":  {2510},
+		"lin-gamma": {96, 0},
+	}
 	for _, e := range entries {
 		switch e.Kind {
 		case "handoff":
@@ -51,15 +64,33 @@ func TestLoadSample(t *testing.T) {
 				t.Errorf("%s handoff PriceVer = %q, want v2026-09", e.LineageID, e.PriceVer)
 			}
 		case "beat":
-			if e.PriceVer != "v2026-09" {
+			if e.PriceVer != "v2026-09" && e.Outcome != "observe" {
 				t.Errorf("%s beat PriceVer = %q, want v2026-09", e.LineageID, e.PriceVer)
-			}
-			if e.CacheRead != wantCacheRead[e.LineageID] {
-				t.Errorf("%s beat CacheRead = %d, want %d", e.LineageID, e.CacheRead, wantCacheRead[e.LineageID])
 			}
 		case "inject":
 			if e.HandoffID != "ho-alpha-1" || e.Tokens != 999 {
 				t.Errorf("inject 行 HandoffID/Tokens = (%q, %d), want (ho-alpha-1, 999)", e.HandoffID, e.Tokens)
+			}
+		}
+	}
+	// beat outcome/cache_read 逐行核对（文件序=ts 序，按 lineage 聚集后比对）
+	gotBeat := map[string][]Entry{}
+	for _, e := range entries {
+		if e.Kind == "beat" {
+			gotBeat[e.LineageID] = append(gotBeat[e.LineageID], e)
+		}
+	}
+	for lin, want := range wantOutcome {
+		got := gotBeat[lin]
+		if len(got) != len(want) {
+			t.Fatalf("%s beat 行数 = %d, want %d", lin, len(got), len(want))
+		}
+		for i, e := range got {
+			if e.Outcome != want[i] {
+				t.Errorf("%s beat[%d] Outcome = %q, want %q", lin, i, e.Outcome, want[i])
+			}
+			if e.CacheRead != wantCacheRead[lin][i] {
+				t.Errorf("%s beat[%d] CacheRead = %d, want %d", lin, i, e.CacheRead, wantCacheRead[lin][i])
 			}
 		}
 	}
@@ -158,9 +189,11 @@ func TestSummarize(t *testing.T) {
 		if s.Requests != tc.requests {
 			t.Errorf("%s Requests = %d, want %d", tc.lin, s.Requests, tc.requests)
 		}
-		if s.Windows != 1 || s.Beats != 1 || s.Handoffs != 1 || s.Blocks != 1 {
-			t.Errorf("%s 计数 = (win %d, beat %d, handoff %d, block %d), want 全 1",
-				tc.lin, s.Windows, s.Beats, s.Handoffs, s.Blocks)
+		// gamma 多一行 beat observe 样例（T51 票04）→ 2 跳
+		wantBeats := map[string]int{"lin-alpha": 1, "lin-beta": 1, "lin-gamma": 2}[tc.lin]
+		if s.Windows != 1 || s.Beats != wantBeats || s.Handoffs != 1 || s.Blocks != 1 {
+			t.Errorf("%s 计数 = (win %d, beat %d, handoff %d, block %d), want (1, %d, 1, 1)",
+				tc.lin, s.Windows, s.Beats, s.Handoffs, s.Blocks, wantBeats)
 		}
 		if s.Project != "Ferryman" {
 			t.Errorf("%s Project = %q, want Ferryman", tc.lin, s.Project)
