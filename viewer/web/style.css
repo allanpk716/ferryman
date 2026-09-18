@@ -263,6 +263,26 @@ body {
   flex-wrap: wrap;
 }
 .tl-lg .lg-ev span { cursor: help; }
+/* 事件图例项：符号用图上真实颜色，计数跟在名字后；0 次=灰暗（"没发生"≠"画丢了"） */
+.tl-lg .lg-ev .ev-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #aaa;
+}
+.tl-lg .lg-ev .ev-item.ev-zero { opacity: 0.38; }
+.tl-lg .lg-ev .ev-sym {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1;
+}
+/* 断缓存 chip 小样：与图上斜纹区同款（纯 CSS 渐变，无外部资源） */
+.tl-lg .chip .sw-dead {
+  background: repeating-linear-gradient(45deg,
+    rgba(229, 115, 115, 0.42) 0 2px, rgba(229, 115, 115, 0.08) 2px 6px);
+}
+.tl-lg .chip.chip-dead:not(.off) { border-color: #6b3a3a; }
 
 /* ---------- 详情面板（点柱/事件/窗口/断缓存区填充） ---------- */
 #tl-detail {

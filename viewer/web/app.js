@@ -585,13 +585,14 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     { key: 'red', color: '#e57373', name: '新输入+建缓存', human: '新进模型的内容，全价', price: '6.9/万' },
     { key: 'out', color: '#64b5f6', name: '模型输出', human: '模型生成的回复，最贵', price: '24/万' },
   ];
+  // 事件图例五件套：[kind, 符号, 颜色(与图上标记一致), 名字, 人话解释]。
+  // 配合 renderLegend 的计数：0 次灰暗——一眼分清"没发生过"和"画丢了"。
   var EVLEG = [
-    ['● 心跳', '保活心跳（未实装）'],
-    ['⚑ 交接', '生成交接文档'],
-    ['✕ 拦截', '闲置超时输入被拦'],
-    ['↑ 注入', '新会话开场带入交接'],
-    ['◯ 强续', '「强续」开头强制放行'],
-    ['斜纹区', '缓存死亡区（间隔>TTL）'],
+    ['beat', '●', '#4caf50', '心跳', '保活心跳——执行器未实装，恒为 0'],
+    ['handoff', '⚑', '#ffb74d', '交接', '会话闲置后自动生成交接文档'],
+    ['block', '✕', '#e57373', '拦截', '闲置超时，输入被闸门拦下（原话已保管）'],
+    ['inject', '↑', '#4dd0e1', '注入', '/clear 后新会话开场自动带入交接'],
+    ['bypass', '◯', '#aaa', '强续', '以「强续」开头强制放行'],
   ];
 
   function renderLegend() {
@@ -631,6 +632,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       var v = parseFloat(ttlInput.value);
       state.ttl = isFinite(v) && v > 0 ? v : 0;
       recomputeZones();
+      renderLegend(); // 断缓存 chip 计数/损失随 TTL 重算
       renderCards();
       draw();
     });
@@ -656,13 +658,59 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     });
     lgEl.appendChild(segCtl);
 
-    // 事件图例（悬停看解释）
+    // 断缓存 chip：斜纹小样与图上同款；计数与多付损失随 TTL 重算；可点循环跳断点
+    var zn = state.zones.length;
+    var zChip = document.createElement('span');
+    zChip.className = 'chip chip-dead' + (zn ? '' : ' off');
+    var zSw = document.createElement('i');
+    zSw.className = 'sw sw-dead';
+    zChip.appendChild(zSw);
+    zChip.appendChild(document.createTextNode('断缓存' + (zn ? ' ×' + zn : ' 0')));
+    if (zn) {
+      var zp = document.createElement('span');
+      zp.className = 'price';
+      zp.textContent = '多付≈' + fmtCost(state.zones.reduce(function (s, z) { return s + z.loss; }, 0)) + ' 积分';
+      zChip.appendChild(zp);
+    }
+    zChip.title = '斜纹区=相邻请求间隔超过 TTL，缓存死亡，下一条请求的新输入全价重付' +
+      (zn ? '。点击循环跳到每个断点现场' : '——本会话全程未断，图上没有斜纹区');
+    if (zn) zChip.addEventListener('click', jumpDead);
+    lgEl.appendChild(zChip);
+
+    // 事件图例：符号颜色=图上标记色；计数=本会话真实发生次数（0=灰暗）；
+    // 有事件的种类可点，循环跳到每次发生现场并选中。
     var evs = document.createElement('span');
     evs.className = 'lg-ev';
     EVLEG.forEach(function (e) {
+      var idxs = [];
+      events.forEach(function (ev, i) { if (ev.kind === e[0]) idxs.push(i); });
       var s = document.createElement('span');
-      s.textContent = e[0];
-      s.title = e[1];
+      s.className = 'ev-item' + (idxs.length ? '' : ' ev-zero');
+      var sym = document.createElement('i');
+      sym.className = 'ev-sym';
+      sym.style.color = e[2];
+      sym.textContent = e[1];
+      s.appendChild(sym);
+      s.appendChild(document.createTextNode(e[3] + ' ×' + idxs.length));
+      s.title = e[4] + (idxs.length
+        ? '——标记在图顶部事件行，点击跳到现场'
+        : '——本会话没发生过，图上不会有标记');
+      if (idxs.length) {
+        var hop = 0;
+        s.style.cursor = 'pointer';
+        s.addEventListener('click', function () {
+          var ei = idxs[hop++ % idxs.length];
+          var t = events[ei].ts;
+          var span = Math.max(600, (state.full1 - state.full0) * 0.1);
+          state.t0 = t - span / 2;
+          state.t1 = t + span / 2;
+          clampView();
+          state.sel = { type: 'ev', i: ei }; // 直选不 toggle：循环跳转逐次定位
+          btResult.hidden = true;
+          renderDetail();
+          draw();
+        });
+      }
       evs.appendChild(s);
     });
     lgEl.appendChild(evs);
@@ -1252,8 +1300,8 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       id: 'dead', width: '8', height: '8', patternUnits: 'userSpaceOnUse',
       patternTransform: 'rotate(45)',
     });
-    pat.appendChild(svgEl('rect', { width: '8', height: '8', fill: 'rgba(229,115,115,0.05)' }));
-    pat.appendChild(svgEl('line', { x1: 0, y1: 0, x2: 0, y2: 8, stroke: 'rgba(229,115,115,0.30)', 'stroke-width': '2' }));
+    pat.appendChild(svgEl('rect', { width: '8', height: '8', fill: 'rgba(229,115,115,0.07)' }));
+    pat.appendChild(svgEl('line', { x1: 0, y1: 0, x2: 0, y2: 8, stroke: 'rgba(229,115,115,0.38)', 'stroke-width': '2' }));
     defs.appendChild(pat);
     svg.appendChild(defs);
 
@@ -1288,6 +1336,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       var rect = svgEl('rect', {
         x: x1, y: YTOP - 6, width: x2 - x1, height: YBOT - YTOP + 6,
         fill: 'url(#dead)', cursor: 'pointer',
+        stroke: 'rgba(229,115,115,0.55)', 'stroke-width': '0.8',
       });
       if (state.sel && state.sel.type === 'zone' && state.sel.i === zi) {
         rect.setAttribute('stroke', '#e57373');
@@ -1300,6 +1349,14 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
         var lab = svgEl('text', { x: (x1 + x2) / 2, y: YTOP + 10, 'text-anchor': 'middle', 'font-size': '10.5', fill: '#d99', 'pointer-events': 'none' });
         lab.textContent = '缓存断 ' + fmtDur(z.gap - state.ttl) + ' · 多付≈' + fmtCost(z.loss) + '积分';
         gDead.appendChild(lab);
+      } else {
+        // 窄区放不下整句：中央一个大「断」字占位（区内没有柱，不遮数据）
+        var tag = svgEl('text', {
+          x: (x1 + x2) / 2, y: (YTOP + YBOT) / 2 + 4, 'text-anchor': 'middle',
+          'font-size': '11', 'font-weight': 'bold', fill: '#e57373', 'pointer-events': 'none',
+        });
+        tag.textContent = '断';
+        gDead.appendChild(tag);
       }
     });
     svg.appendChild(gDead);
@@ -1354,6 +1411,14 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       seg(yG, YBOT - yG, '#4caf50');
       seg(yR, yG - yR, '#e57373');
       seg(yB, yR - yB, '#64b5f6');
+      // 重付柱红描边整柱：比 ↯ 更显眼——"这根=缓存死过，上下文全价重交了一遍"
+      if (r.repaid) {
+        var ry = Math.min(yB - 1.5, YBOT - 7);
+        g.appendChild(svgEl('rect', {
+          x: xs[i] - w / 2 - 1.5, y: ry, width: w + 3, height: YBOT - ry,
+          fill: 'none', stroke: '#e57373', 'stroke-width': '1.5', 'pointer-events': 'none',
+        }));
+      }
       if (state.sel && state.sel.type === 'req' && state.sel.i === r.idx) {
         g.appendChild(svgEl('rect', {
           x: xs[i] - w / 2 - 2, y: yB - 2, width: w + 4,
@@ -1425,9 +1490,17 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     });
     svg.appendChild(gEv);
 
-    // 事件行基线与标注
+    // 事件行基线与标注：左缘小标说明这行是干嘛的；空行就地说明"没有"而非"画丢了"
     var evBase = svgEl('line', { x1: X0, y1: EV_Y + 12, x2: X1, y2: EV_Y + 12, stroke: '#222' });
     svg.appendChild(evBase);
+    var evLab = svgEl('text', { x: X0 - 6, y: EV_Y + 3, 'text-anchor': 'end', 'font-size': '10', fill: '#666', 'pointer-events': 'none' });
+    evLab.textContent = '事件';
+    svg.appendChild(evLab);
+    if (!events.length) {
+      var noEv = svgEl('text', { x: X0 + 8, y: EV_Y + 4, 'font-size': '10.5', fill: '#555', 'pointer-events': 'none' });
+      noEv.textContent = '本会话无事件——心跳未实装；交接/拦截/注入/强续只在闸门触发时才有';
+      svg.appendChild(noEv);
+    }
 
     // 回放游标竖线（在可视窗内才画）
     if (state.cursor >= state.t0 && state.cursor <= state.t1) {
