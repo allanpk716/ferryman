@@ -346,7 +346,7 @@ func (d *Daemon) NoteGatePrompt(agent, sessionID string) {
 // close_reason=stop——四类事件口径完整；锁内只有内存操作，记账读盘不持台账
 // 锁）；重启后仍以配置文件的 mode 为准（运行时开关不落盘）。
 func (d *Daemon) QWatchStop() map[string]any {
-	d.Cfg.QuestionWatch.Mode = "off"
+	d.SetQWatchModeOff() // 骑手（票13 评审 Minor C）：mode 写经 cfgMu 护栏
 	cancelled := 0
 	type stopEnt struct {
 		st       *ledger.SessionState

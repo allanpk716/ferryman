@@ -3,7 +3,8 @@ package accounts
 // 规格：tests/test_accounts.py 19 例 1:1（前 9 例为 accounts 单元行为，本文件
 // 直接转绿；后 10 例为 e2e——Python Harness 起全链 daemon（gate/window/worker），
 // 归票 13/14/17：4 个窗口例已由票13 回填转绿于本目录外部测试包
-// window_e2e_test.go，余 6 例 t.Skip 占位保清点，随归属票装配后转绿）。
+// window_e2e_test.go；3 个 gate/restore 例已由票14 转绿于 gate_e2e_test.go，
+// 余 3 例（票17）t.Skip 占位保清点，随归属票装配后转绿）。
 // 另加 2 例验收专测：落盘行键序（票面验收#2）与 Record 并发安全（票面验收#3）。
 
 import (
@@ -377,17 +378,10 @@ func TestBookingFailureNeverBreaksFerry(t *testing.T) {
 	t.Skip("e2e→票17：记账抛异常（坏价格表）时摆渡照常产出交接、worker 线程不死——骨架兜底不变量优先；Python: test_accounts.py::test_booking_failure_never_breaks_ferry")
 }
 
-func TestBlockBooksEntry(t *testing.T) {
-	t.Skip("e2e→票14：enforce 拦截记 block 行（session_id/prefix_tokens 尽力而为/idle_s>0）；Python: test_accounts.py::test_block_books_entry")
-}
-
-func TestBypassBooksEntry(t *testing.T) {
-	t.Skip("e2e→票14：强续 bypass 记 bypass 行；Python: test_accounts.py::test_bypass_books_entry")
-}
-
-func TestRestoreBooksInject(t *testing.T) {
-	t.Skip("e2e→票14：归还记 inject 行（session_id=newsid/tokens>0/handoff_id/inject 与 block 同谱系 lineage_id——R9 Q7 因果链）；Python: test_accounts.py::test_restore_books_inject")
-}
+// 票14 回填注：3 个 gate/restore e2e（test_block_books_entry /
+// test_bypass_books_entry / test_restore_books_inject）已转绿——落在本目录
+// 外部测试包 gate_e2e_test.go（window_e2e_test.go 装配器同款扩 Gate/Restore
+// 通道；内部测试包引 daemon 会成环）。
 
 // 票13 回填注：4 个窗口 e2e（test_window_books_on_subagent_cycle /
 // test_window_closes_on_prompt / test_window_closes_on_bypass_prompt /

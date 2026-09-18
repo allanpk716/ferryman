@@ -224,8 +224,7 @@ func TestNotifyBlockMissingPushoverCredentialsSkipsPush(t *testing.T) {
 }
 
 // ---------- 集成：gate block → 异步通知 ----------
-
-func TestGateBlockFiresNotificationAsync(t *testing.T) {
-	t.Skip("e2e：gate block → 异步 notify_block 需 daemon 全链 harness（Python " +
-		"Harness 起 gate/watcher），归票 14/21 装配后转绿（accounts_test.go 同惯例占位保清点）")
-}
+//
+// 票14 回填注：test_gate_block_fires_notification_async 已转绿——daemon→notify
+// 生产依赖方向不可被内部测试包引用（成环），落在本目录外部测试包
+// gate_async_e2e_test.go（Daemon.NotifyBlock seam + 最小装配器）。

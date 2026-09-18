@@ -157,6 +157,16 @@ type Daemon struct {
 	Pending      *PendingTable
 	QWatchStats  *beat.QWatchStats // nil = 未接线
 
+	// cfgMu 骑手（票13 评审 Minor C）：question_watch.mode 运行时活值的并发
+	// 护栏——QWatchStop 写（一键停）与 Health/守望读之间的读写串行化。独立小
+	// 锁，临界区只有字段读写，不嵌套其他锁（无锁序约束）。
+	cfgMu sync.Mutex
+
+	// NotifyBlock 通知 seam（T25 异步道）：gate block 分支起 goroutine 调用；
+	// nil 回落 notify.NotifyBlock（gate.go）。测试注入录制替身（Python
+	// monkeypatch notify_mod.notify_block 同位）。
+	NotifyBlock func(handoffPath, agent, sessionID string, cfg *config.Config)
+
 	// windowsMu：C6 外层锁。窗口表被 HTTP 线程（gate/subagent）与守望线程
 	// （note_usage/window_wait，票03 接线）双头读写，本锁串行化；"先记后
 	// pop"的原子性靠它（并发 close 被串行化，不可能双记）。锁序铁律与
