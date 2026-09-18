@@ -9,6 +9,8 @@
 - [ ] **成功路径装配测试**（附录#11 补强）：恒成功 ferryFunc（httptest 假 provider 形状）跑一单——fresh 交接落盘、账本 handoff 行 outcome=fresh 字段齐全、ValidHandoff 命中
 - [ ] serve 横幅中文逐字；pid JSON {pid,port,started_at}
 
+**追加验收（票 11 评审转来）**：Worker 的任务 goroutine 必须包 recover（对齐 Python `except Exception——单任务失败不炸工人`，daemon.py:516-522）：store/账本落盘 panic（盘满、Windows 杀毒/索引器短暂锁文件）只记日志并弃该任务，守护进程不得死。
+
 **Blocked by**：15, 16, 11
 
 **追加验收（票 04 占位回填）**：test_accounts.py 的 3 个摆渡记账 e2e 占位在本票转绿——test_ferry_completion_books_handoff / test_failed_ferry_books_exactly_one_row / test_booking_failure_never_breaks_ferry（Go 占位见 internal/accounts/accounts_test.go 的 t.Skip，含 Python 断言要点）。
