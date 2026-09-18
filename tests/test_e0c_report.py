@@ -219,6 +219,31 @@ def test_report_q3_pairs_and_residuals(tmp_path):
     assert "无样本" not in text
 
 
+def test_report_q3_running_session_pair_annotated(tmp_path):
+    """配对 agent 属于在跑会话 → 备注列标"在跑会话快照";终值会话配对不标。"""
+    recon = _recon_dict()
+    recon["entries"].append(
+        {"ts": T2, "agentId": "c", "agentType": "general",
+         "self_reported_tokens": 120, "source": "task-notification"})
+    text = _render(_mk_projects(tmp_path), recon=recon)
+    # c 在 SID_B(在跑会话):自报 120,文件 in+out = 1 响应 × (100+20) = 120,
+    # 残差 0(+0.0%),四列合计 4,420 仅参考;备注列标"在跑会话快照"
+    assert "| `c` | general | 120 | 4,420 | 120 | 0 | +0.0% | 在跑会话快照 |" in text
+    # a 在 SID_A(终值会话)→ 备注列留空;全文只此一处标注
+    assert "| `a` | general | 370 | 13,260 | 360 | 10 | +2.7% | |" in text
+    assert text.count("在跑会话快照") == 1
+
+
+def test_report_q3_mechanism_note_after_residual_note(tmp_path):
+    """Q3 固定注记(残差口径)后追加机制注记一行(终局评审裁定,措辞照抄)。"""
+    from ferryman.e0c import Q3_MECHANISM_NOTE
+    text = _render(_mk_projects(tmp_path), recon=_recon_dict())
+    q3 = text.split("## Q3 · 与 CLI 自报数对账", 1)[1].split("## Q4", 1)[0]
+    assert Q3_MECHANISM_NOTE in q3          # 该句在 Q3 节内出现
+    # 顺序:固定口径注记在前,机制注记紧随其后
+    assert q3.index("残差口径=in+out") < q3.index(Q3_MECHANISM_NOTE)
+
+
 def test_report_q3_no_recon_says_no_sample(tmp_path):
     text = _render(_mk_projects(tmp_path), recon=None)
     assert "无样本" in text

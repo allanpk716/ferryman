@@ -9,7 +9,6 @@
 - 空文件/无 assistant 行 → 全零账目 + 无长尾,不抛异常。
 """
 
-import io
 import json
 from pathlib import Path
 

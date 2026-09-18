@@ -761,6 +761,13 @@ FEEDBACK_COUPLE_NOTE = (
     "**回传耦合注记(固定)**:子代理结果回传主会话后,以 input/cache_read 形式再计入"
     "主会话后续请求——“子代理占比”结构性偏低、主会话偏高,占比只作方向参考。")
 
+# Q3 机制注记一行(终局评审裁定,措辞照抄):自报值语义疑为"结束时上下文规模",
+# 与文件侧"逐请求累计"是不同的量,残差因此必然放大,判据一不能经手记通道认证。
+Q3_MECHANISM_NOTE = (
+    "机制注记(终局评审抽查 4 例验证):自报值与末次请求 context 规模(input+cache_read)"
+    "吻合 0.5%~3%,疑为“结束时上下文规模”语义,与文件侧“逐请求累计”"
+    "是不同的量;长 agent 残差因此必然放大,判据一不能经手记通道认证。")
+
 _STATE_CN = {"done": "完成", "interrupted": "中断",
              "empty": "空文件", "running": "在跑(非终值)"}
 
@@ -912,24 +919,26 @@ def _q3_pairs(accounts: list[SessionAccount], recon: dict | None):
     """手记条目按 agentId 与扫描到的子代理配对。
 
     返回 (matched, unmatched):matched = (entry, AgentRow, 自报量, 文件四列合计,
-    文件 in+out, 残差);unmatched = entry(扫描未见该 agentId)。
+    文件 in+out, 残差, 所属会话在跑);unmatched = entry(扫描未见该 agentId)。
     残差口径 = in+out(评审 R2 裁定:CLI 自报数语义 ≈ 去重 in+out;cache_read
     占体量 90%+,四列口径会得出 -363%~-3590% 的假残差,故只并列展示作参考)。
     自报量缺/坏按 0(残差如实为 −in+out,残差率记 n/a)。
+    所属会话在跑 → 备注列标"在跑会话快照"(数字是扫描瞬间快照,只会偏小)。
     """
     if recon is None:
         return [], []
-    agent_map: dict[str, AgentRow] = {}
+    agent_map: dict[str, tuple[AgentRow, bool]] = {}
     for acc in accounts:
         for r in acc.agents.agents:
-            agent_map.setdefault(r.agentId, r)
-    matched: list[tuple[dict, AgentRow, int, int, int, int]] = []
+            agent_map.setdefault(r.agentId, (r, acc.running))
+    matched: list[tuple[dict, AgentRow, int, int, int, int, bool]] = []
     unmatched: list[dict] = []
     for e in recon["entries"]:
-        r = agent_map.get(e.get("agentId"))
-        if r is None:
+        pair = agent_map.get(e.get("agentId"))
+        if pair is None:
             unmatched.append(e)
             continue
+        r, running = pair
         try:
             reported = int(e.get("self_reported_tokens") or 0)
         except (TypeError, ValueError):
@@ -937,7 +946,8 @@ def _q3_pairs(accounts: list[SessionAccount], recon: dict | None):
         cols = _cols_of(r.self_acc)
         four_sum = sum(cols)
         inout_sum = cols.input_tokens + cols.output_tokens
-        matched.append((e, r, reported, four_sum, inout_sum, reported - inout_sum))
+        matched.append((e, r, reported, four_sum, inout_sum,
+                        reported - inout_sum, running))
     return matched, unmatched
 
 
@@ -1051,19 +1061,21 @@ def render_report(accounts: list[SessionAccount],
             if len(entries) < 10:
                 L.append(f"- 注:样本 {len(entries)} 条,不足 10,以下仅供参考。")
             L.append("- 残差口径=in+out(与 CLI 自报语义对齐;四列口径另列仅作参考)。")
+            L.append(f"- {Q3_MECHANISM_NOTE}")
             L.append("")
             L.append("| agentId | 类型 | 自报总量 | 文件四列合计(参考) | 文件 in+out "
                      "| 残差(in+out) | 残差率 | 备注 |")
             L.append("|---|---|---:|---:|---:|---:|---:|---|")
             matched, unmatched = _q3_pairs(accounts, recon)
-            for e, r, reported, four_sum, inout_sum, residual in matched:
+            for e, r, reported, four_sum, inout_sum, residual, running in matched:
                 atype = (e.get("agentType") if isinstance(e.get("agentType"), str)
                          else None) or r.agentType or "未知"
                 rate = ("n/a" if reported <= 0
                         else f"{residual / reported * 100:+.1f}%")
+                note = (" 在跑会话快照" if running else "")
                 L.append(f"| `{r.agentId}` | {atype} | {fmt_int(reported)} | "
                          f"{fmt_int(four_sum)} | {fmt_int(inout_sum)} | "
-                         f"{fmt_int(residual)} | {rate} | |")
+                         f"{fmt_int(residual)} | {rate} |{note} |")
             for e in unmatched:
                 atype = e.get("agentType") if isinstance(e.get("agentType"), str) else "未知"
                 reported = e.get("self_reported_tokens")
@@ -1147,7 +1159,7 @@ def _render_suggestion(accounts: list[SessionAccount], finals: list[SessionAccou
     """定型建议:只给判据与本机实测锚点,不替维护者做决定。"""
     matched, _unmatched = _q3_pairs(accounts, recon)
     rates = []
-    for _e, _r, reported, _four, _inout, residual in matched:
+    for _e, _r, reported, _four, _inout, residual, _running in matched:
         if reported > 0:
             rates.append(abs(residual) / reported)
     if rates:
