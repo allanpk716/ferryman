@@ -113,14 +113,28 @@ body {
   white-space: nowrap;
 }
 
-#tl-wrap { position: relative; }
+/* wrap 是 .tl-chart 的 flex 项目（svg 的父容器）；svg 在其中 width:100% */
+#tl-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 图区布局：左 SVG（缩放/平移光标），右详情面板 */
+.tl-chart {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
 #tl-svg {
   display: block;
   width: 100%;
   height: auto;
   background: #151515;
   border: 1px solid #2a2a2a;
+  cursor: grab;
 }
+#tl-svg.dragging { cursor: grabbing; }
 
 /* 柱悬停明细浮层：跟随鼠标，绝不接收指针事件（不挡图） */
 #tl-tooltip {
@@ -135,7 +149,7 @@ body {
   font-size: 12px;
   color: #ddd;
 }
-#tl-tooltip .tip-time { color: #888; font-variant-numeric: tabular-nums; }
+#tl-tooltip .tip-time { color: #ddd; font-weight: 600; font-variant-numeric: tabular-nums; }
 #tl-tooltip .tip-model { color: #64b5f6; margin-bottom: 3px; }
 #tl-tooltip .tip-row {
   display: flex;
@@ -144,53 +158,131 @@ body {
   font-variant-numeric: tabular-nums;
 }
 #tl-tooltip .tip-row span:first-child { color: #888; }
-#tl-tooltip .tip-title {
+#tl-tooltip .tip-cost {
   margin-top: 3px;
-  color: #999;
-  max-width: 300px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 右上角：实时累计 + 窗口信息卡（容器不挡图，卡片自身恢复指针事件） */
-#tl-side {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 4;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-  pointer-events: none;
-}
-#tl-cum {
-  pointer-events: auto;
-  padding: 3px 8px;
-  background: rgba(17, 17, 17, 0.85);
-  border: 1px solid #333;
-  font-size: 12px;
-  color: #bbb;
+  padding-top: 3px;
+  border-top: 1px solid #3a3a3a;
+  color: #ffd54f;
   font-variant-numeric: tabular-nums;
 }
-#tl-wininfo {
-  pointer-events: auto;
-  min-width: 252px;
-  padding: 8px 10px;
-  background: rgba(17, 17, 17, 0.92);
-  border: 1px solid #3a3a3a;
+#tl-tooltip .tip-cost.tip-warn { color: #ff8a80; }
+
+/* ---------- 统计卡行（会话级汇总：请求/花费/命中率/断缓存） ---------- */
+.tl-cards {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+}
+.tl-cards .card {
+  flex: 1;
+  min-width: 118px;
+  padding: 6px 12px 7px;
+  background: #151515;
+  border: 1px solid #262626;
+  border-radius: 6px;
+}
+.tl-cards .card.clickable { cursor: pointer; }
+.tl-cards .card.clickable:hover { border-color: #64b5f6; }
+.tl-cards .card .k { font-size: 11px; color: #888; }
+.tl-cards .card .v { font-size: 16px; color: #fff; font-weight: 600; margin: 1px 0; }
+.tl-cards .card .v.good { color: #7bc47b; }
+.tl-cards .card .v.bad { color: #e57373; }
+.tl-cards .card .s { font-size: 10.5px; color: #777; }
+
+/* ---------- 图例行：科目 chips + TTL + 视图切换 + 事件图例 ---------- */
+.tl-lg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  background: #151515;
+  border: 1px solid #222;
+  border-radius: 6px;
+}
+.tl-lg .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 1px solid #333;
+  border-radius: 20px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: #ccc;
+  background: #1a1a1a;
+}
+.tl-lg .chip:hover { border-color: #666; }
+.tl-lg .chip.off { opacity: 0.4; text-decoration: line-through; }
+.tl-lg .chip .sw {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.tl-lg .chip .price { color: #777; font-size: 11px; }
+.tl-lg .chip input {
+  width: 56px;
+  padding: 1px 5px;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #ddd;
+  font: inherit;
   font-size: 12px;
 }
-#tl-wininfo .win-head {
+.tl-lg .segview {
+  display: inline-flex;
+  margin-left: auto;
+  border: 1px solid #333;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.tl-lg .segview button {
+  background: #1a1a1a;
+  color: #999;
+  border: 0;
+  padding: 3px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.tl-lg .segview button.on {
+  background: #64b5f6;
+  color: #04121f;
+  font-weight: 600;
+}
+.tl-lg .lg-ev {
+  display: inline-flex;
+  gap: 10px;
+  color: #888;
+  font-size: 11.5px;
+  flex-wrap: wrap;
+}
+.tl-lg .lg-ev span { cursor: help; }
+
+/* ---------- 详情面板（点柱/事件/窗口/断缓存区填充） ---------- */
+#tl-detail {
+  width: 300px;
+  flex-shrink: 0;
+  padding: 8px 10px;
+  background: #151515;
+  border: 1px solid #262626;
+  border-radius: 6px;
+  font-size: 12px;
+}
+#tl-detail .d-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 4px;
+  margin-bottom: 5px;
   color: #fff;
   font-weight: 600;
 }
-#tl-wininfo .win-close {
+#tl-detail .d-close {
   background: none;
   border: none;
   color: #888;
@@ -199,19 +291,34 @@ body {
   padding: 0 2px;
   cursor: pointer;
 }
-#tl-wininfo .win-close:hover { color: #fff; }
-#tl-wininfo .win-row {
+#tl-detail .d-close:hover { color: #fff; }
+#tl-detail .d-row {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
-}
-#tl-wininfo .win-k { color: #888; }
-#tl-wininfo .win-v {
-  color: #ccc;
+  gap: 12px;
+  padding: 2px 0;
   font-variant-numeric: tabular-nums;
 }
-#tl-wininfo .win-btns { margin-top: 6px; }
-#tl-wininfo .win-backtest {
+#tl-detail .d-row span:first-child { color: #888; }
+#tl-detail .d-sec {
+  margin-top: 7px;
+  padding-top: 5px;
+  border-top: 1px dashed #2e2e2e;
+}
+#tl-detail .d-sec-t { color: #888; font-size: 11px; margin-bottom: 2px; }
+#tl-detail .d-sw {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+  margin-right: 5px;
+}
+#tl-detail .d-note { margin-top: 6px; color: #999; }
+#tl-detail .d-note.d-warn { color: #e57373; }
+#tl-detail .d-note.d-good { color: #7bc47b; }
+#tl-detail .d-hint { color: #666; }
+#tl-detail .d-btns { margin-top: 6px; }
+#tl-detail .win-backtest {
   padding: 2px 10px;
   background: #1d3a1d;
   color: #7bc47b;
@@ -221,39 +328,39 @@ body {
   font-size: 12px;
   cursor: pointer;
 }
-#tl-wininfo .win-backtest:hover { background: #245024; }
+#tl-detail .win-backtest:hover { background: #245024; }
 
 /* 反跑参数表单（窗口信息卡内展开；保活计划卡复用同一套 bt-* 结构） */
-#tl-wininfo .bt-form,
+#tl-detail .bt-form,
 .plan-card .bt-form {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px dashed #333;
 }
-#tl-wininfo .bt-ro,
+#tl-detail .bt-ro,
 .plan-card .bt-ro {
   color: #666;
   font-size: 11px;
   margin-bottom: 4px;
 }
-#tl-wininfo .bt-grid,
+#tl-detail .bt-grid,
 .plan-card .bt-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px 8px;
 }
-#tl-wininfo .bt-field,
+#tl-detail .bt-field,
 .plan-card .bt-field {
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
-#tl-wininfo .bt-field span,
+#tl-detail .bt-field span,
 .plan-card .bt-field span {
   color: #888;
   font-size: 10px;
 }
-#tl-wininfo .bt-field input,
+#tl-detail .bt-field input,
 .plan-card .bt-field input {
   width: 100%;
   padding: 2px 5px;
@@ -263,19 +370,19 @@ body {
   font: inherit;
   font-size: 12px;
 }
-#tl-wininfo .bt-field input:focus,
+#tl-detail .bt-field input:focus,
 .plan-card .bt-field input:focus {
   outline: none;
   border-color: #4caf50;
 }
-#tl-wininfo .bt-hint,
+#tl-detail .bt-hint,
 .plan-card .bt-hint {
   color: #ff7b72;
   font-size: 11px;
   min-height: 14px;
   margin-top: 2px;
 }
-#tl-wininfo .bt-go,
+#tl-detail .bt-go,
 .plan-card .bt-go {
   width: 100%;
   margin-top: 2px;
@@ -288,9 +395,9 @@ body {
   font-size: 12px;
   cursor: pointer;
 }
-#tl-wininfo .bt-go:hover,
+#tl-detail .bt-go:hover,
 .plan-card .bt-go:hover { background: #245024; }
-#tl-wininfo .bt-go:disabled,
+#tl-detail .bt-go:disabled,
 .plan-card .bt-go:disabled {
   opacity: 0.55;
   cursor: wait;
@@ -443,22 +550,13 @@ body {
   min-width: 160px;
   accent-color: #4caf50;
 }
-#tl-ttl-label {
-  color: #888;
+#tl-cum {
+  color: #999;
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-#tl-ttl {
-  width: 74px;
-  margin: 0 4px;
-  padding: 2px 6px;
-  background: #1a1a1a;
-  border: 1px solid #3a3a3a;
-  color: #ddd;
-  font: inherit;
-  font-size: 12px;
-}
-#tl-legend {
+#tl-ctrl-hint {
   margin-left: auto;
   color: #666;
   font-size: 12px;

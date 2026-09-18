@@ -1,6 +1,6 @@
-// Ferryman T43 查看器前端——原生 JS，无框架无构建无外部资源（离线铁律）。
+// Ferryman 查看器前端——原生 JS，无框架无构建无外部资源（离线铁律）。
 // hash 路由：#/ = 会话列表；#/t/<lineage> = 单会话时序图（SVG 手绘）。
-// DOM 纪律：时序页账本数据一律 createElement(SVG 用 createElementNS)/textContent/setAttribute
+// DOM 纪律：账本数据一律 createElement(SVG 用 createElementNS)/textContent/setAttribute
 // 进 DOM，不拼 innerHTML（唯一例外：零插值的静态骨架串）。
 'use strict';
 
@@ -13,19 +13,36 @@ function esc(s) {
   });
 }
 
-// fmtTS unix 秒 → 本地 MM-dd HH:mm；0 或非法值显示 -。
-function fmtTS(ts) {
+// fmtTS unix 秒 → 本地 MM-dd HH:mm（withSec 追加 :ss）；0 或非法值显示 -。
+function fmtTS(ts, withSec) {
   if (!ts) return '-';
   var d = new Date(ts * 1000);
   if (isNaN(d.getTime())) return '-';
   function p(n) { return String(n).padStart(2, '0'); }
-  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  var s = p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  return withSec ? s + ':' + p(d.getSeconds()) : s;
 }
 
 // fmtK token 数：>=1w 用 x.xw（1.2w=12000），否则千分位。
 function fmtK(n) {
   if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + 'w';
-  return n.toLocaleString('en-US');
+  return Math.round(n).toLocaleString('en-US');
+}
+
+// fmtCost 成本（积分）：<0.001 用科学计数防一串 0；≥100 取整，否则 1 位小数。
+function fmtCost(v) {
+  if (!isFinite(v)) return '-';
+  if (v !== 0 && Math.abs(v) < 0.001) return v.toExponential(2);
+  if (Math.abs(v) >= 100) return Math.round(v).toLocaleString('en-US');
+  return String(Math.round(v * 10) / 10);
+}
+
+// fmtDur 秒 → 人话时长（X 秒 / X 分 Y 秒 / X 时 Y 分）。
+function fmtDur(s) {
+  s = Math.round(s);
+  if (s < 60) return s + ' 秒';
+  if (s < 3600) return Math.floor(s / 60) + ' 分 ' + (s % 60 ? s % 60 + ' 秒' : '').trim();
+  return Math.floor(s / 3600) + ' 时 ' + Math.round((s % 3600) / 60) + ' 分';
 }
 
 // fetchJSON fetch + JSON 解析；网络错误、非 JSON 体、非 2xx（优先带后端 error 字段）一律抛错。
@@ -83,6 +100,11 @@ var BT_FIELDS = [
   { key: 'max_wait_s', label: 'max_wait_s 0=auto', def: 0 },
 ];
 
+// PRICES 时序页积分估算口径：与 config.toml [prices.glm] v2026-09-17 一致
+//（p_in 6.9 / p_cache 1.7 / p_out 24，每 1w token，单位 智谱积分）。账本 99% 为
+// glm-5.x，单一口径成立；个别非 glm 模型行在明细里标注"价目未配，按 GLM 估"。
+var PIN = 6.9, PC = 1.7, PO = 24, PER = 10000;
+
 // ---------- 列表页 ----------
 
 // renderList GET /api/sessions → 会话表格（后端已按最后活动倒序）。
@@ -139,7 +161,7 @@ async function renderList() {
   });
 }
 
-// ---------- 时序页（Task 5） ----------
+// ---------- 时序页 ----------
 
 var SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -152,13 +174,6 @@ function svgEl(tag, attrs) {
   return el;
 }
 
-// svgTitleEl 挂 SVG 原生悬停提示（<title> 子元素；textContent 写入，不走 markup）。
-function svgTitleEl(parent, text) {
-  var t = svgEl('title');
-  t.textContent = text;
-  parent.appendChild(t);
-}
-
 // niceCeil yMax 阶梯向上取整：10^k × {1,2,3,5}。brief 示例 260k→300k 决定阶梯含 3
 //（若按 {1,2,5} 则 260k→500k，与示例矛盾，从示例）。
 function niceCeil(v) {
@@ -169,36 +184,13 @@ function niceCeil(v) {
   return step * base;
 }
 
-// fmtDur 秒：最多 1 位小数，整数不带尾零。
-function fmtDur(s) {
-  return String(Math.round(s * 10) / 10);
-}
-
-// fmtCost 成本（美元/积分同口径按价格表单位）：<0.001 用科学计数防一串 0，其余 4 位截断。
-function fmtCost(v) {
-  if (!isFinite(v)) return '-';
-  if (v !== 0 && Math.abs(v) < 0.001) return v.toExponential(2);
-  return String(Math.round(v * 10000) / 10000);
-}
-
 // numOrDash 反跑结果数值兜底：非有限数显示 -（后端字段理论上恒为数，防畸形账本连带崩卡）。
 function numOrDash(v, suffix) {
-  return isFinite(v) ? fmtDur(v) + (suffix || '') : '-';
-}
-
-// nearestIdx 二分找 arr（升序）中离 v 最近的下标。
-function nearestIdx(arr, v) {
-  if (!arr.length) return -1;
-  var lo = 0, hi = arr.length - 1;
-  while (lo < hi) {
-    var mid = (lo + hi) >> 1;
-    if (arr[mid] < v) lo = mid + 1; else hi = mid;
-  }
-  if (lo > 0 && Math.abs(arr[lo - 1] - v) <= Math.abs(arr[lo] - v)) return lo - 1;
-  return lo;
+  return isFinite(v) ? String(Math.round(v * 10) / 10) + (suffix || '') : '-';
 }
 
 // 时序页静态骨架：零数据插值（账本数据全部经 createElement/textContent/setAttribute 进 DOM）。
+// 布局：页头 → 保活计划卡 → 统计卡行 → 图例行 → 图区（SVG+详情面板）→ 控制条 → 反跑结果卡。
 var TL_SCAFFOLD =
   '<div id="tl-head">' +
   '<a href="#/">← 返回会话列表</a>' +
@@ -208,27 +200,25 @@ var TL_SCAFFOLD =
   '<summary>保活计划（策略计算器）</summary>' +
   '<div id="plan-body"></div>' +
   '</details>' +
+  '<div id="tl-cards" class="tl-cards"></div>' +
+  '<div id="tl-lg" class="tl-lg"></div>' +
+  '<div class="tl-chart">' +
   '<div id="tl-wrap">' +
-  '<svg id="tl-svg" viewBox="0 0 1200 520" preserveAspectRatio="xMidYMid meet" role="img" aria-label="单会话 token 时序图"></svg>' +
-  '<div id="tl-side">' +
-  '<div id="tl-cum"></div>' +
-  '<div id="tl-wininfo" hidden></div>' +
-  '</div>' +
+  '<svg id="tl-svg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="单会话 token 时序图"></svg>' +
   '<div id="tl-tooltip" hidden>' +
   '<div class="tip-time"></div>' +
   '<div class="tip-model"></div>' +
-  '<div class="tip-row"><span>input</span><span class="v-in"></span></div>' +
-  '<div class="tip-row"><span>cache_read</span><span class="v-cr"></span></div>' +
-  '<div class="tip-row"><span>creation</span><span class="v-cc"></span></div>' +
-  '<div class="tip-row"><span>output</span><span class="v-out"></span></div>' +
-  '<div class="tip-title"></div>' +
+  '<div class="tip-rows"></div>' +
+  '<div class="tip-cost"></div>' +
   '</div>' +
+  '</div>' +
+  '<div id="tl-detail"></div>' +
   '</div>' +
   '<div id="tl-ctrl">' +
-  '<button id="tl-play" type="button" title="回放播放/暂停">▶</button>' +
+  '<button id="tl-play" type="button" title="回放播放/暂停" aria-label="回放播放/暂停">▶</button>' +
   '<input id="tl-cursor" type="range" aria-label="回放游标">' +
-  '<label id="tl-ttl-label">TTL 存活 <input id="tl-ttl" type="number" min="0" step="60" value="600"> 秒</label>' +
-  '<span id="tl-legend">绿=cache_read 红=input+creation 蓝=output</span>' +
+  '<span id="tl-cum"></span>' +
+  '<span id="tl-ctrl-hint">滚轮缩放 · 拖拽平移 · 双击复位 · 点柱/事件/窗口/斜纹区看详情</span>' +
   '</div>' +
   '<div id="tl-bt-result" hidden></div>';
 
@@ -289,79 +279,105 @@ async function renderTimeline(lineage) {
   buildTimelinePage(app, lineage, requests, events, windows);
 }
 
-// buildTimelinePage 搭骨架 → 算标尺/柱几何 → 挂交互 → draw()。
-// 坐标系（brief 固定）：viewBox 0 0 1200 520；事件行 y=12..36；TTL 阴影带 y=40..58；
-// 主图 y=60..460；x 轴刻度 y=470..490；x 绘图区 40..1160。
+// deriveReqs 每条 usage 派生花费字段（GLM 口径）与累计；并给行编全局下标 idx。
+function deriveReqs(requests) {
+  var rs = requests.map(function (r) {
+    var cr = r.cache_read_tokens || 0;
+    var red = (r.input_tokens || 0) + (r.cache_creation_tokens || 0);
+    var out = r.output_tokens || 0;
+    return {
+      ts: r.ts, m: r.model || '', t: r.title || '',
+      in: r.input_tokens || 0, cr: cr,
+      cc: r.cache_creation_tokens || 0, out: out,
+      red: red,
+      cCr: cr * PC / PER, cRed: red * PIN / PER, cOut: out * PO / PER,
+      tokTot: cr + red + out,
+    };
+  });
+  var cum = 0;
+  rs.forEach(function (r, i) {
+    r.idx = i;
+    r.cTot = r.cCr + r.cRed + r.cOut;
+    r.repaid = false;
+    cum += r.cTot;
+    r.cum = cum;
+  });
+  return rs;
+}
+
+// deriveZones 断缓存区：覆盖源 = 请求 ∪ 心跳（beat 也续命）；相邻覆盖源间隔 > TTL
+// 且下一个是请求（不是 beat——beat 已把缓存焐热，无重付）→ 一段死亡区。
+// 损失估算 = 下一条请求的新输入 × (全价 − 缓存价)。TTL 变更后须重算。
+function deriveZones(reqs, events, ttl) {
+  var cov = [];
+  reqs.forEach(function (r) { cov.push({ ts: r.ts, req: r }); });
+  events.forEach(function (e) { if (e.kind === 'beat') cov.push({ ts: e.ts, beat: true }); });
+  cov.sort(function (a, b) { return a.ts - b.ts; });
+  var zones = [];
+  for (var i = 1; i < cov.length; i++) {
+    var gap = cov[i].ts - cov[i - 1].ts;
+    if (gap > ttl && cov[i].req) {
+      var nx = cov[i].req;
+      zones.push({
+        from: cov[i - 1].ts + ttl, to: cov[i].ts, gap: gap,
+        reqIdx: nx.idx, loss: nx.in * (PIN - PC) / PER,
+      });
+      nx.repaid = true;
+    }
+  }
+  return zones;
+}
+
+// 图区几何（viewBox 0 0 1200 560）：事件行 y=24 基线；TTL 存活带 y=46..62；
+// 柱区 y=78..470；x 轴刻度 470 以下；绘图区 x 46..1160。
+var X0 = 46, X1 = 1160, YTOP = 78, YBOT = 470, BAND_Y = 46, BAND_H = 16, EV_Y = 24;
+
+// buildTimelinePage 搭骨架 → 派生数据 → 统计卡/图例/详情面板 → 挂交互 → draw()。
 function buildTimelinePage(app, lineage, requests, events, windows) {
   app.innerHTML = TL_SCAFFOLD;
 
+  var reqs = deriveReqs(requests);
+
   // 页头标题：usage 行最后一个非空 title，缺省 lineage 前 24 字符；悬停显全量 lineage
   var title = '';
-  requests.forEach(function (r) { if (r.title) title = r.title; });
+  reqs.forEach(function (r) { if (r.t) title = r.t; });
   var titleEl = document.getElementById('tl-title');
   titleEl.textContent = title || lineage.slice(0, 24);
   titleEl.title = lineage;
 
-  // 保活计划卡（策略计算器）：独立于图区状态，只依赖 requests 与 lineage
-  buildPlanCard(requests);
+  // ---- 可变状态 ----
+  var state = {
+    ttl: 600,      // TTL 存活秒数（图例行输入可改，改后断缓存区重算）
+    view: 'token', // 'token' | 'cost' 柱高口径
+    seg: { cr: true, red: true, out: true }, // 图例科目开关
+    t0: 0, t1: 0,           // 当前可视时间窗（缩放/平移改变）
+    full0: 0, full1: 0,     // 全时间范围（复位用）
+    cursor: 0,              // 回放游标（缺省拉满 = 显示全部）
+    sel: null,              // 选中 {type:'req'|'ev'|'win'|'zone', i}
+    zones: [],              // 断缓存区（随 TTL 重算）
+  };
 
-  // ---- 时间标尺：全部元素（柱/事件/窗口两端）的 min/max，两侧各扩 3% ----
+  // 时间轴全范围：全部元素 min/max，两侧各扩 3%
   var tMin = Infinity, tMax = -Infinity;
   function eat(ts) {
     if (!isFinite(ts)) return;
     if (ts < tMin) tMin = ts;
     if (ts > tMax) tMax = ts;
   }
-  requests.forEach(function (r) { eat(r.ts); });
+  reqs.forEach(function (r) { eat(r.ts); });
   events.forEach(function (e) { eat(e.ts); });
   windows.forEach(function (w) { eat(w.opened_ts); eat(w.closed_ts); });
-  if (!isFinite(tMin)) { tMin = 0; tMax = 1; } // 前面已挡全空，保险
+  if (!isFinite(tMin)) { tMin = 0; tMax = 1; }
   var rawRange = tMax - tMin;
-  if (rawRange <= 0) { tMin -= 30; tMax += 30; rawRange = 60; } // 单点时间：前后各让 30s
-  tMin -= rawRange * 0.03;
-  tMax += rawRange * 0.03;
+  if (rawRange <= 0) { tMin -= 30; tMax += 30; rawRange = 60; }
+  state.full0 = tMin - rawRange * 0.03;
+  state.full1 = tMax + rawRange * 0.03;
+  state.t0 = state.full0;
+  state.t1 = state.full1;
+  state.cursor = state.full1;
+  recomputeZones();
 
-  // ---- token 标尺：柱分段合计的最大值 → 1/2/3/5 阶梯 ----
-  var yMax = 0;
-  requests.forEach(function (r) {
-    var tot = r.input_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.output_tokens;
-    if (tot > yMax) yMax = tot;
-  });
-  yMax = niceCeil(yMax);
-
-  // ---- 可变状态（draw() 按它全量重绘 SVG）----
-  var state = {
-    tMin: tMin,
-    tMax: tMax,
-    yMax: yMax,
-    ttl: 600,     // TTL 存活阴影（控制条输入框可改，缺省 600s）
-    cursor: tMax, // 回放游标：缺省拉满 = 显示全部
-    selected: -1, // 选中的窗口下标（-1 = 无）
-  };
-  function xOf(ts) {
-    return 40 + (ts - state.tMin) / (state.tMax - state.tMin) * 1120;
-  }
-  function yOf(v) {
-    return 460 - v / state.yMax * 390;
-  }
-
-  // 柱几何只依赖时间分布，加载时算一次：
-  // 宽 = max(2px, 相邻柱间距 60%)；封顶 20px（孤立柱按字面会算出几百 px 宽，视觉失效）
-  var xs = requests.map(function (r) { return xOf(r.ts); });
-  state.bars = requests.map(function (_, i) {
-    var gapL = i > 0 ? xs[i] - xs[i - 1] : Infinity;
-    var gapR = i < xs.length - 1 ? xs[i + 1] - xs[i] : Infinity;
-    var sp = Math.min(gapL, gapR);
-    if (!isFinite(sp)) sp = 24; // 仅一根柱
-    var w = Math.max(2, sp * 0.6);
-    if (w > 20) w = 20;
-    return { x: xs[i], w: w };
-  });
-  // TTL 刷新源 = request + beat
-  state.refreshes = [];
-  requests.forEach(function (r) { state.refreshes.push(r.ts); });
-  events.forEach(function (e) { if (e.kind === 'beat') state.refreshes.push(e.ts); });
-  state.refreshes.sort(function (a, b) { return a - b; });
+  function recomputeZones() { state.zones = deriveZones(reqs, events, state.ttl); }
 
   // ---- 元素引用 ----
   var svg = document.getElementById('tl-svg');
@@ -369,30 +385,465 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   var tip = document.getElementById('tl-tooltip');
   var tipTime = tip.querySelector('.tip-time');
   var tipModel = tip.querySelector('.tip-model');
-  var tipIn = tip.querySelector('.v-in');
-  var tipCr = tip.querySelector('.v-cr');
-  var tipCc = tip.querySelector('.v-cc');
-  var tipOut = tip.querySelector('.v-out');
-  var tipTitle = tip.querySelector('.tip-title');
+  var tipRows = tip.querySelector('.tip-rows');
+  var tipCost = tip.querySelector('.tip-cost');
   var cumEl = document.getElementById('tl-cum');
-  var wininfo = document.getElementById('tl-wininfo');
+  var cardsEl = document.getElementById('tl-cards');
+  var lgEl = document.getElementById('tl-lg');
+  var detail = document.getElementById('tl-detail');
   var btResult = document.getElementById('tl-bt-result');
   var slider = document.getElementById('tl-cursor');
-  var ttlInput = document.getElementById('tl-ttl');
   var playBtn = document.getElementById('tl-play');
 
-  slider.min = String(state.tMin);
-  slider.max = String(state.tMax);
-  slider.step = String((state.tMax - state.tMin) / 500);
+  slider.min = String(state.full0);
+  slider.max = String(state.full1);
+  slider.step = String((state.full1 - state.full0) / 500);
   slider.value = String(state.cursor);
 
-  // seg 追加一段矩形（h<=0 跳过）
-  function seg(parent, x, y, w, h, color) {
-    if (h <= 0) return;
-    parent.appendChild(svgEl('rect', { x: x, y: y, width: w, height: h, fill: color }));
+  // 保活计划卡（策略计算器）：独立于图区状态，只依赖 requests 与 lineage
+  buildPlanCard(requests);
+
+  // ---- 坐标 ----
+  function xOf(ts) {
+    return X0 + (ts - state.t0) / (state.t1 - state.t0) * (X1 - X0);
+  }
+  function clampView() {
+    var full = state.full1 - state.full0;
+    var span = state.t1 - state.t0;
+    if (span < 30) {
+      var mid = (state.t0 + state.t1) / 2;
+      state.t0 = mid - 15; state.t1 = mid + 15;
+    }
+    if (state.t1 - state.t0 > full) { state.t0 = state.full0; state.t1 = state.full1; }
+    if (state.t0 < state.full0) { state.t1 += state.full0 - state.t0; state.t0 = state.full0; }
+    if (state.t1 > state.full1) { state.t0 -= state.t1 - state.full1; state.t1 = state.full1; }
+  }
+  function yMax() {
+    var mx = 0;
+    reqs.forEach(function (r) {
+      var v = state.view === 'cost' ? r.cTot : r.tokTot;
+      if (v > mx) mx = v;
+    });
+    return niceCeil(mx);
   }
 
-  // ---- 窗口信息卡（右上角，点窗口带弹出；内嵌反跑参数表单）----
+  // ---- tooltip：DOM 构建（不拼 HTML 串） ----
+  function tipRow(k, v) {
+    var d = document.createElement('div');
+    d.className = 'tip-row';
+    var a = document.createElement('span'); a.textContent = k;
+    var b = document.createElement('span'); b.textContent = v;
+    d.appendChild(a); d.appendChild(b);
+    tipRows.appendChild(d);
+  }
+  function tipFill(title, model, rows, cost, costWarn) {
+    tipTime.textContent = title;
+    tipModel.textContent = model || '';
+    tipModel.hidden = !model;
+    tipRows.textContent = '';
+    rows.forEach(function (r) { tipRow(r[0], r[1]); });
+    tipCost.textContent = cost || '';
+    tipCost.hidden = !cost;
+    tipCost.className = costWarn ? 'tip-cost tip-warn' : 'tip-cost';
+  }
+  function attachTip(target, fillFn) {
+    target.addEventListener('mousemove', function (ev) {
+      fillFn();
+      tip.hidden = false;
+      var wr = wrap.getBoundingClientRect();
+      if (!wr.width) return;
+      var left = ev.clientX - wr.left + 14;
+      var top = ev.clientY - wr.top + 12;
+      if (left + tip.offsetWidth > wr.width - 6) left = ev.clientX - wr.left - tip.offsetWidth - 14;
+      if (top + tip.offsetHeight > wr.height - 6) top = ev.clientY - wr.top - tip.offsetHeight - 12;
+      tip.style.left = Math.max(0, left) + 'px';
+      tip.style.top = Math.max(0, top) + 'px';
+    });
+    target.addEventListener('mouseleave', function () { tip.hidden = true; });
+  }
+
+  // 各类 tooltip 内容
+  function tipReq(r) {
+    var m = r.m && !/glm/i.test(r.m) ? r.m + '（价目未配，按 GLM 估）' : r.m;
+    var gapPrev = r.idx > 0 ? r.ts - reqs[r.idx - 1].ts : 0;
+    tipFill('请求 #' + (r.idx + 1) + ' · ' + fmtTS(r.ts, true), m, [
+      ['缓存读(绿)', fmtK(r.cr) + ' → ' + fmtCost(r.cCr) + ' 积分'],
+      ['新输入+建缓存(红)', fmtK(r.red) + ' → ' + fmtCost(r.cRed) + ' 积分'],
+      ['输出(蓝)', fmtK(r.out) + ' → ' + fmtCost(r.cOut) + ' 积分'],
+      ['与上一条间隔', r.idx > 0 ? fmtDur(gapPrev) + (r.repaid ? '（缓存已断）' : gapPrev > state.ttl * 0.8 ? '（接近 TTL）' : '（缓存存活）') : '-'],
+    ], '本条 ' + fmtCost(r.cTot) + ' 积分 · 累计 ' + fmtCost(r.cum) + ' 积分' + (r.repaid ? ' · ↯ 本条全额重付' : ''), r.repaid);
+  }
+  function tipEv(e) {
+    if (e.kind === 'handoff') {
+      tipFill('⚑ 交接文档', null, [
+        ['时间', fmtTS(e.ts, true)], ['生成方', e.provider || '-'], ['状态', e.outcome || '-'],
+      ], '会话闲置后自动生成的交接稿，/clear 后新会话开场自动收到');
+    } else if (e.kind === 'block') {
+      tipFill('✕ 输入被拦截', null, [
+        ['时间', fmtTS(e.ts, true)], ['已闲置', fmtDur(e.idle_s || 0)],
+      ], '闸门拦下这条输入：原话已保管，/clear 开新会话自动带回（交接+原话）；或以「强续」开头强制继续', true);
+    } else if (e.kind === 'inject') {
+      tipFill('↑ 注入交接', null, [
+        ['时间', fmtTS(e.ts, true)], ['tokens', fmtK(e.tokens || 0)],
+      ], '新会话开场自动带入交接文档');
+    } else if (e.kind === 'bypass') {
+      tipFill('◯ 强续放行', null, [
+        ['时间', fmtTS(e.ts, true)], ['前缀', fmtK(e.prefix_tokens || 0)],
+      ], '以「强续」开头强制放行，不计拦截次数');
+    } else if (e.kind === 'beat') {
+      tipFill('● 心跳', null, [
+        ['时间', fmtTS(e.ts, true)], ['命中', e.hit ? '是' : '否'],
+        ['实收缓存读', fmtK(e.cache_read || 0)],
+      ], '预测成本 ' + fmtCost(e.cost_pred) + ' / 实际 ' + fmtCost(e.cost_actual) + ' 积分');
+    } else {
+      tipFill(e.kind || '未知事件', null, [['时间', fmtTS(e.ts, true)]]);
+    }
+  }
+  function tipWin(w, wi) {
+    tipFill('子代理等待窗口 #' + (wi + 1), null, [
+      ['等待', fmtDur(w.dur_s)],
+      ['结束原因', w.close_reason || '?'],
+      ['当时前缀', fmtK(w.prefix_tokens || 0)],
+    ], w.dur_s > state.ttl
+      ? '超过 TTL：等待期间缓存已死，恢复要全款重付 ≈ ' + fmtCost((w.prefix_tokens || 0) * PIN / PER) + ' 积分'
+      : '在 TTL 内：缓存存活，零损失', w.dur_s > state.ttl);
+  }
+  function tipZone(z) {
+    var nx = reqs[z.reqIdx];
+    tipFill('断缓存区', null, [
+      ['时段', fmtTS(z.from) + ' ~ ' + fmtTS(z.to)],
+      ['断了', fmtDur(z.gap - state.ttl)],
+      ['下一条请求', '#' + (z.reqIdx + 1) + ' · 新输入 ' + fmtK(nx.in)],
+    ], '这部分从 1.7 涨回 6.9 全价，多付约 ' + fmtCost(z.loss) + ' 积分（估算）', true);
+  }
+
+  // ---- 统计卡行 ----
+  function mkCard(k, v, s, opt) {
+    opt = opt || {};
+    var d = document.createElement('div');
+    d.className = 'card' + (opt.click ? ' clickable' : '');
+    var ke = document.createElement('div'); ke.className = 'k'; ke.textContent = k;
+    var ve = document.createElement('div');
+    ve.className = 'v' + (opt.cls ? ' ' + opt.cls : '');
+    ve.textContent = v;
+    var se = document.createElement('div'); se.className = 's'; se.textContent = s;
+    d.appendChild(ke); d.appendChild(ve); d.appendChild(se);
+    if (opt.title) d.title = opt.title;
+    if (opt.click) d.addEventListener('click', opt.click);
+    return d;
+  }
+
+  function sums() {
+    var n = reqs.length, tIn = 0, tCr = 0, tCc = 0, tOut = 0, cost = 0;
+    reqs.forEach(function (r) {
+      tIn += r.in; tCr += r.cr; tCc += r.cc; tOut += r.out; cost += r.cTot;
+    });
+    return {
+      n: n, tokens: tIn + tCr + tCc + tOut, cost: cost,
+      hitRate: tCr / Math.max(1, tIn + tCr + tCc),
+      deadN: state.zones.length,
+      deadLoss: state.zones.reduce(function (s, z) { return s + z.loss; }, 0),
+      saved: tCr * (PIN - PC) / PER,
+      t0: n ? reqs[0].ts : 0, t1: n ? reqs[n - 1].ts : 0,
+    };
+  }
+
+  var deadHop = 0;
+  function jumpDead() {
+    if (!state.zones.length) return;
+    var z = state.zones[deadHop++ % state.zones.length];
+    var mid = (z.from + z.to) / 2;
+    var span = Math.max(600, (z.to - z.from) * 3);
+    state.t0 = mid - span / 2;
+    state.t1 = mid + span / 2;
+    clampView();
+    pick({ type: 'zone', i: state.zones.indexOf(z) });
+  }
+
+  function renderCards() {
+    var m = sums();
+    cardsEl.textContent = '';
+    cardsEl.appendChild(mkCard('请求数', String(m.n), fmtTS(m.t0) + ' ~ ' + fmtTS(m.t1)));
+    cardsEl.appendChild(mkCard('总 tokens', fmtK(m.tokens),
+      '输入+缓存读+建缓存+输出'));
+    cardsEl.appendChild(mkCard('总花费', fmtCost(m.cost) + ' 积分', '按 GLM 价目估算'));
+    cardsEl.appendChild(mkCard('缓存命中率', (m.hitRate * 100).toFixed(1) + '%',
+      '命中=走 1.7 的便宜价', { cls: 'good', title: '缓存读 tokens ÷ 输入侧总 tokens（新输入+缓存读+建缓存）' }));
+    cardsEl.appendChild(mkCard('缓存净省', fmtCost(m.saved) + ' 积分',
+      '读缓存比全价省下的钱', { cls: 'good', title: '缓存读 tokens × (6.9 − 1.7) ÷ 1万' }));
+    cardsEl.appendChild(mkCard('断缓存次数', String(m.deadN),
+      m.deadN ? '多付约 ' + fmtCost(m.deadLoss) + ' 积分' : '全程未断', {
+        cls: m.deadN ? 'bad' : 'good',
+        click: m.deadN ? jumpDead : null,
+        title: '相邻请求间隔超过 TTL 即缓存死亡，下一条新输入从 1.7 涨回 6.9。点击依次跳到每个断点。',
+      }));
+  }
+
+  // ---- 图例行：科目 chips + TTL 输入 + 视图切换 + 事件图例 ----
+  var SEGS = [
+    { key: 'cr', color: '#4caf50', name: '缓存读', human: '旧内容便宜价读回', price: '1.7/万' },
+    { key: 'red', color: '#e57373', name: '新输入+建缓存', human: '新进模型的内容，全价', price: '6.9/万' },
+    { key: 'out', color: '#64b5f6', name: '模型输出', human: '模型生成的回复，最贵', price: '24/万' },
+  ];
+  var EVLEG = [
+    ['● 心跳', '保活心跳（未实装）'],
+    ['⚑ 交接', '生成交接文档'],
+    ['✕ 拦截', '闲置超时输入被拦'],
+    ['↑ 注入', '新会话开场带入交接'],
+    ['◯ 强续', '「强续」开头强制放行'],
+    ['斜纹区', '缓存死亡区（间隔>TTL）'],
+  ];
+
+  function renderLegend() {
+    lgEl.textContent = '';
+    SEGS.forEach(function (sg) {
+      var c = document.createElement('span');
+      c.className = 'chip' + (state.seg[sg.key] ? '' : ' off');
+      var sw = document.createElement('i');
+      sw.className = 'sw';
+      sw.style.background = sg.color;
+      c.appendChild(sw);
+      c.appendChild(document.createTextNode(sg.name));
+      var pr = document.createElement('span');
+      pr.className = 'price';
+      pr.textContent = sg.human + ' · ' + sg.price;
+      c.appendChild(pr);
+      c.title = '点击在图上隐藏/显示「' + sg.name + '」段';
+      c.addEventListener('click', function () {
+        state.seg[sg.key] = !state.seg[sg.key];
+        renderLegend();
+        draw();
+      });
+      lgEl.appendChild(c);
+    });
+
+    // TTL 输入：改后存活带与断缓存区重算（统计卡同步）
+    var ttlLabel = document.createElement('label');
+    ttlLabel.className = 'chip';
+    ttlLabel.appendChild(document.createTextNode('TTL '));
+    var ttlInput = document.createElement('input');
+    ttlInput.type = 'number';
+    ttlInput.min = '0';
+    ttlInput.step = '60';
+    ttlInput.value = String(state.ttl);
+    ttlInput.setAttribute('aria-label', 'TTL 缓存存活秒数');
+    ttlInput.addEventListener('change', function () {
+      var v = parseFloat(ttlInput.value);
+      state.ttl = isFinite(v) && v > 0 ? v : 0;
+      recomputeZones();
+      renderCards();
+      draw();
+    });
+    ttlLabel.appendChild(ttlInput);
+    ttlLabel.appendChild(document.createTextNode(' 秒'));
+    ttlLabel.title = '缓存存活时长（实测 600 秒）；改它，存活带与断缓存区重算';
+    lgEl.appendChild(ttlLabel);
+
+    // 视图切换：token 量 / 积分
+    var segCtl = document.createElement('span');
+    segCtl.className = 'segview';
+    [['token', '按 token 量'], ['cost', '按积分(钱)']].forEach(function (kv) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = state.view === kv[0] ? 'on' : '';
+      b.textContent = kv[1];
+      b.addEventListener('click', function () {
+        state.view = kv[0];
+        renderLegend();
+        draw();
+      });
+      segCtl.appendChild(b);
+    });
+    lgEl.appendChild(segCtl);
+
+    // 事件图例（悬停看解释）
+    var evs = document.createElement('span');
+    evs.className = 'lg-ev';
+    EVLEG.forEach(function (e) {
+      var s = document.createElement('span');
+      s.textContent = e[0];
+      s.title = e[1];
+      evs.appendChild(s);
+    });
+    lgEl.appendChild(evs);
+  }
+
+  // ---- 选中与详情面板 ----
+  function pick(sel) {
+    state.sel = state.sel && sel && state.sel.type === sel.type && state.sel.i === sel.i
+      ? null : sel; // 再点同一个 = 取消
+    btResult.hidden = true; // 反跑结果随选择切换收起，避免旧结果被误读
+    renderDetail();
+    draw();
+  }
+
+  function dRow(k, v) {
+    var d = document.createElement('div');
+    d.className = 'd-row';
+    var a = document.createElement('span'); a.textContent = k;
+    var b = document.createElement('span'); b.textContent = v;
+    d.appendChild(a); d.appendChild(b);
+    return d;
+  }
+  function dSec(titleText) {
+    var d = document.createElement('div');
+    d.className = 'd-sec';
+    var t = document.createElement('div');
+    t.className = 'd-sec-t';
+    t.textContent = titleText;
+    d.appendChild(t);
+    return d;
+  }
+  function dSw(color) {
+    var i = document.createElement('i');
+    i.className = 'd-sw';
+    i.style.background = color;
+    return i;
+  }
+  function dNote(text, cls) {
+    var d = document.createElement('div');
+    d.className = 'd-note' + (cls ? ' ' + cls : '');
+    d.textContent = text;
+    return d;
+  }
+
+  function renderDetail() {
+    detail.textContent = '';
+    if (!state.sel) {
+      var h = document.createElement('div');
+      h.className = 'd-hint';
+      h.textContent = '点图上任意柱子 / 事件标记 / 等待窗口带 / 斜纹断缓存区，这里显示详情。';
+      detail.appendChild(h);
+      return;
+    }
+    var head = document.createElement('div');
+    head.className = 'd-head';
+    var ht = document.createElement('span');
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'd-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', '关闭详情');
+    close.addEventListener('click', function () { pick(null); });
+    head.appendChild(ht);
+    head.appendChild(close);
+    detail.appendChild(head);
+    var sel = state.sel;
+
+    if (sel.type === 'req') {
+      var r = reqs[sel.i];
+      ht.textContent = '请求 #' + (sel.i + 1);
+      detail.appendChild(dRow('时间', fmtTS(r.ts, true)));
+      if (r.m) detail.appendChild(dRow('模型', r.m));
+      if (sel.i > 0) {
+        var gap = r.ts - reqs[sel.i - 1].ts;
+        detail.appendChild(dRow('与上一条间隔', fmtDur(gap) +
+          (r.repaid ? '（缓存已断 ↯）' : gap > state.ttl * 0.8 ? '（接近 TTL）' : '（缓存存活）')));
+      }
+      var sec = dSec('tokens 与花费（GLM 价）');
+      [
+        ['#4caf50', '缓存读', fmtK(r.cr), r.cCr],
+        ['#e57373', '新输入+建缓存', fmtK(r.red), r.cRed],
+        ['#64b5f6', '模型输出', fmtK(r.out), r.cOut],
+      ].forEach(function (q) {
+        var d = document.createElement('div');
+        d.className = 'd-row';
+        var a = document.createElement('span');
+        a.appendChild(dSw(q[0]));
+        a.appendChild(document.createTextNode(q[1]));
+        var b = document.createElement('span');
+        b.textContent = q[2] + ' · ' + fmtCost(q[3]) + ' 积分';
+        d.appendChild(a); d.appendChild(b);
+        sec.appendChild(d);
+      });
+      detail.appendChild(sec);
+      var tot = dSec('合计');
+      tot.appendChild(dRow('本条花费', fmtCost(r.cTot) + ' 积分'));
+      tot.appendChild(dRow('累计花费', fmtCost(r.cum) + ' 积分（' + (sel.i + 1) + '/' + reqs.length + ' 条）'));
+      detail.appendChild(tot);
+      if (r.repaid) {
+        detail.appendChild(dNote('↯ 缓存已断：新输入按 6.9 全价，多付约 ' +
+          fmtCost(r.in * (PIN - PC) / PER) + ' 积分', 'd-warn'));
+      }
+      if (r.m && !/glm/i.test(r.m)) {
+        detail.appendChild(dNote('模型 ' + r.m + ' 价目未配，花费按 GLM 口径估算'));
+      }
+    } else if (sel.type === 'ev') {
+      var e = events[sel.i];
+      var names = { handoff: '⚑ 交接文档', block: '✕ 输入被拦截', inject: '↑ 注入交接', bypass: '◯ 强续放行', beat: '● 心跳' };
+      ht.textContent = names[e.kind] || e.kind;
+      detail.appendChild(dRow('时间', fmtTS(e.ts, true)));
+      if (e.kind === 'handoff') {
+        detail.appendChild(dRow('生成方', e.provider || '-'));
+        detail.appendChild(dRow('状态', e.outcome || '-'));
+        detail.appendChild(dNote('会话闲置后自动生成的交接稿，/clear 后的新会话开场自动收到'));
+      } else if (e.kind === 'block') {
+        detail.appendChild(dRow('已闲置', fmtDur(e.idle_s || 0)));
+        detail.appendChild(dNote('闸门拦下这条输入：原话已保管，/clear 开新会话自动带回（交接+原话）；或以「强续」开头强制继续本会话'));
+      } else if (e.kind === 'inject') {
+        detail.appendChild(dRow('tokens', fmtK(e.tokens || 0)));
+        detail.appendChild(dNote('新会话开场自动带入交接文档'));
+      } else if (e.kind === 'bypass') {
+        detail.appendChild(dRow('前缀', fmtK(e.prefix_tokens || 0)));
+        detail.appendChild(dNote('以「强续」开头强制放行，不计拦截次数'));
+      } else if (e.kind === 'beat') {
+        detail.appendChild(dRow('命中', e.hit ? '是' : '否'));
+        detail.appendChild(dRow('实收缓存读', fmtK(e.cache_read || 0)));
+        detail.appendChild(dNote('预测 ' + fmtCost(e.cost_pred) + ' / 实际 ' + fmtCost(e.cost_actual) + ' 积分'));
+      }
+    } else if (sel.type === 'win') {
+      renderWinDetail(ht, sel.i);
+    } else if (sel.type === 'zone') {
+      var z = state.zones[sel.i];
+      ht.textContent = '断缓存区';
+      detail.appendChild(dRow('时段', fmtTS(z.from) + ' ~ ' + fmtTS(z.to)));
+      detail.appendChild(dRow('断缓存时长', fmtDur(z.gap - state.ttl)));
+      var nx = reqs[z.reqIdx];
+      detail.appendChild(dRow('下一条请求', '#' + (z.reqIdx + 1) + ' · ' + fmtTS(nx.ts, true)));
+      detail.appendChild(dRow('其新输入', fmtK(nx.in) + ' tokens'));
+      detail.appendChild(dNote('这部分从缓存价 1.7 涨回全价 6.9，多付约 ' + fmtCost(z.loss) +
+        ' 积分（估算）。该条全款总额 ≈ ' + fmtCost(nx.cTot) + ' 积分。', 'd-warn'));
+    }
+  }
+
+  // renderWinDetail 窗口详情：基础行 + TTL 判读 + 反跑表单入口（buildBtForm 挂本面板内）。
+  function renderWinDetail(ht, wi) {
+    var w = windows[wi];
+    ht.textContent = '子代理等待窗口 #' + (wi + 1);
+    detail.appendChild(dRow('开始', fmtTS(w.opened_ts, true)));
+    detail.appendChild(dRow('结束', fmtTS(w.closed_ts, true)));
+    detail.appendChild(dRow('等待时长', fmtDur(w.dur_s)));
+    detail.appendChild(dRow('当时前缀', fmtK(w.prefix_tokens || 0) + ' tokens'));
+    detail.appendChild(dRow('结束原因', w.close_reason || '-'));
+    if (w.dur_s > state.ttl) {
+      detail.appendChild(dNote('超过 TTL：等待期间缓存已死，恢复要全款重付 ≈ ' +
+        fmtCost((w.prefix_tokens || 0) * PIN / PER) + ' 积分（这正是心跳想救的场景）', 'd-warn'));
+    } else {
+      detail.appendChild(dNote('在 TTL 内：缓存存活，零损失，无需任何干预', 'd-good'));
+    }
+    var btnRow = document.createElement('div');
+    btnRow.className = 'd-btns';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'win-backtest';
+    btn.textContent = '反跑此窗口';
+    btn.title = '展开反跑参数表单（价格预填 GLM 口径）';
+    btn.setAttribute('aria-expanded', 'false');
+    btn.addEventListener('click', function () {
+      var form = detail.querySelector('.bt-form');
+      if (!form) {
+        form = buildBtForm(w, wi);
+        detail.appendChild(form);
+      } else {
+        form.hidden = !form.hidden;
+      }
+      btn.setAttribute('aria-expanded', form.hidden ? 'false' : 'true');
+    });
+    btnRow.appendChild(btn);
+    detail.appendChild(btnRow);
+  }
+
+  // ---- 反跑（POST /api/backtest）----
 
   // windowBeatActual 该窗口"实际发生"线：账本 events 里 kind=beat 且 ts 落窗内的行，
   // Σcost_actual。畸形行（ts/cost_actual 非数）兜底跳过不炸卡。
@@ -409,66 +860,9 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
 
   // beatOffsets 模拟跳点（绝对时间戳）→ 相对 T0 的偏移串（>4 个截断加 …）。
   function beatOffsets(beats, t0) {
-    var parts = beats.slice(0, 4).map(function (b) { return fmtDur(b - t0) + 's'; });
+    var parts = beats.slice(0, 4).map(function (b) { return String(Math.round((b - t0) * 10) / 10) + 's'; });
     if (beats.length > 4) parts.push('…');
     return parts.join('、');
-  }
-
-  function fillWinInfo(win, wi) {
-    wininfo.textContent = '';
-    var head = document.createElement('div');
-    head.className = 'win-head';
-    var h = document.createElement('span');
-    h.textContent = '窗口 #' + (wi + 1) + ' / ' + windows.length;
-    var close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'win-close';
-    close.textContent = '×';
-    close.setAttribute('aria-label', '关闭窗口信息卡');
-    close.addEventListener('click', function () { selectWindow(wi); }); // 再点一次取消选中
-    head.appendChild(h);
-    head.appendChild(close);
-    wininfo.appendChild(head);
-
-    function row(k, v) {
-      var d = document.createElement('div');
-      d.className = 'win-row';
-      var kEl = document.createElement('span');
-      kEl.className = 'win-k';
-      kEl.textContent = k;
-      var vEl = document.createElement('span');
-      vEl.className = 'win-v';
-      vEl.textContent = v;
-      d.appendChild(kEl);
-      d.appendChild(vEl);
-      wininfo.appendChild(d);
-    }
-    row('打开', fmtTS(win.opened_ts));
-    row('关闭', fmtTS(win.closed_ts));
-    row('时长', fmtDur(win.dur_s) + 's');
-    row('前缀 tokens', fmtK(win.prefix_tokens || 0));
-    row('关闭原因', win.close_reason || '-');
-
-    var btnRow = document.createElement('div');
-    btnRow.className = 'win-btns';
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'win-backtest';
-    btn.textContent = '反跑此窗口';
-    btn.setAttribute('title', '展开反跑参数表单（价格预填 GLM 口径）');
-    btn.setAttribute('aria-expanded', 'false');
-    btn.addEventListener('click', function () {
-      var form = wininfo.querySelector('.bt-form');
-      if (!form) {
-        form = buildBtForm(win, wi);
-        wininfo.appendChild(form);
-      } else {
-        form.hidden = !form.hidden;
-      }
-      btn.setAttribute('aria-expanded', form.hidden ? 'false' : 'true');
-    });
-    btnRow.appendChild(btn);
-    wininfo.appendChild(btnRow);
   }
 
   // buildBtForm 反跑参数表单：8 个可编辑参数（GLM 预填）+ 窗口三参只读带出行。
@@ -821,13 +1215,13 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
         ' · 全程上限 ' + (isFinite(data.beats_cost) ? fmtCost(data.beats_cost) : '-') + ' 积分' +
         ' · 放任过期（全款重付）' + (isFinite(r.expire) ? fmtCost(r.expire) : '-') + ' 积分');
       if (beats.length) { // 跳点：相对 T0 的偏移，>4 个截断加 …
-        var parts = beats.slice(0, 4).map(function (b) { return '+' + fmtDur(b) + 's'; });
+        var parts = beats.slice(0, 4).map(function (b) { return '+' + String(Math.round(b * 10) / 10) + 's'; });
         if (beats.length > 4) parts.push('…');
         planRow('plan-sub', '跳点：' + parts.join('、'));
       }
       planRow('plan-rule',
-        '实测 TTL ' + fmtDur(ttl) + 's 三区：≤' + fmtDur(ttl) + 's 必活 / ' +
-        fmtDur(ttl) + '~1800s 看驱逐脸色 / ≥1800s 必死（死线 1800s=实测口径，必活线随 TTL 配置移动）');
+        '实测 TTL ' + String(Math.round(ttl * 10) / 10) + 's 三区：≤' + String(Math.round(ttl * 10) / 10) + 's 必活 / ' +
+        String(Math.round(ttl * 10) / 10) + '~1800s 看驱逐脸色 / ≥1800s 必死（死线 1800s=实测口径，必活线随 TTL 配置移动）');
       planRow('plan-rule',
         '触发：子代理在飞＋主会话闲置满 τ＋四道预检（全局开关/窗口开/无新写入/前缀≥30k）→ 体外重放刷新缓存，不写会话文件');
       planRow('plan-rule',
@@ -844,194 +1238,296 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     body.appendChild(resultBox);
   }
 
-  function selectWindow(wi) {
-    state.selected = state.selected === wi ? -1 : wi; // 同一带再点 = 取消选中
-    btResult.hidden = true; // 结果卡随窗口切换收起，避免旧窗口结果被误读
-    if (state.selected >= 0) {
-      fillWinInfo(windows[wi], wi);
-      wininfo.hidden = false;
-    } else {
-      wininfo.hidden = true;
-    }
-    draw();
-  }
-
-  // ---- 主重绘：每次全量重建 SVG 子节点（窗口/TTL/柱/事件/游标/轴/累计）----
+  // ---- 主重绘：每次全量重建 SVG 子节点（断缓存区/窗口/TTL 带/柱/事件/游标/轴）----
   function draw() {
     svg.textContent = '';
+    var ym = yMax();
+    function yOf(v) { return YBOT - v / ym * (YBOT - YTOP); }
+    function inView(ts) { return ts >= state.t0 && ts <= state.t1; }
+    function past(ts) { return ts <= state.cursor; }
 
-    // 窗口竖带（背景层，可点击选中；标签不挡点击）
-    var gWin = svgEl('g');
-    windows.forEach(function (win, wi) {
-      var x1 = xOf(win.opened_ts);
-      var x2 = xOf(win.closed_ts);
-      if (x2 < x1) { var tmp = x1; x1 = x2; x2 = tmp; }
-      var w = Math.max(x2 - x1, 1);
-      var attrs = { x: x1, y: 60, width: w, height: 400, fill: 'rgba(255,255,255,0.06)' };
-      if (wi === state.selected) {
-        attrs.stroke = '#64b5f6';
-        attrs['stroke-width'] = '1.5';
+    // defs：断缓存斜纹图案
+    var defs = svgEl('defs');
+    var pat = svgEl('pattern', {
+      id: 'dead', width: '8', height: '8', patternUnits: 'userSpaceOnUse',
+      patternTransform: 'rotate(45)',
+    });
+    pat.appendChild(svgEl('rect', { width: '8', height: '8', fill: 'rgba(229,115,115,0.05)' }));
+    pat.appendChild(svgEl('line', { x1: 0, y1: 0, x2: 0, y2: 8, stroke: 'rgba(229,115,115,0.30)', 'stroke-width': '2' }));
+    defs.appendChild(pat);
+    svg.appendChild(defs);
+
+    // TTL 存活带：请求∪心跳各续 ttl 秒（游标左侧才画；ttl<=0 不画）
+    var gBand = svgEl('g', { 'pointer-events': 'none' });
+    if (state.ttl > 0) {
+      var bandNote = false;
+      function bandRect(ts) {
+        if (!past(ts) || ts > state.t1 || ts + state.ttl < state.t0) return;
+        var x1 = Math.max(xOf(ts), X0), x2 = Math.min(xOf(ts + state.ttl), X1);
+        if (x2 <= x1) return;
+        gBand.appendChild(svgEl('rect', { x: x1, y: BAND_Y, width: x2 - x1, height: BAND_H, fill: 'rgba(76,175,80,0.22)' }));
+        bandNote = true;
       }
-      var rect = svgEl('rect', attrs);
-      rect.setAttribute('cursor', 'pointer');
-      svgTitleEl(rect, '窗口：等待 ' + fmtDur(win.dur_s) + 's（' + (win.close_reason || '未知原因') + '）——点击查看参数');
-      rect.addEventListener('click', function () { selectWindow(wi); });
-      gWin.appendChild(rect);
-      var label = svgEl('text', {
-        x: x1 + w / 2, y: 72, 'text-anchor': 'middle',
-        'font-size': '10', fill: '#999', 'pointer-events': 'none',
+      reqs.forEach(function (r) { bandRect(r.ts); });
+      events.forEach(function (e) { if (e.kind === 'beat') bandRect(e.ts); });
+      if (bandNote) {
+        var bandLab = svgEl('text', { x: X0 + 4, y: BAND_Y + BAND_H - 4, 'font-size': '10', fill: '#7fa97f' });
+        bandLab.textContent = '绿带=缓存存活（每条请求续 ' + state.ttl + ' 秒）';
+        gBand.appendChild(bandLab);
+      }
+    }
+    svg.appendChild(gBand);
+
+    // 断缓存区（斜纹全高，可点可选）
+    var gDead = svgEl('g');
+    state.zones.forEach(function (z, zi) {
+      if (z.to > state.cursor || z.to < state.t0 || z.from > state.t1) return;
+      var x1 = Math.max(xOf(Math.max(z.from, state.t0)), X0);
+      var x2 = Math.min(xOf(Math.min(z.to, state.t1)), X1);
+      if (x2 - x1 < 1) return;
+      var rect = svgEl('rect', {
+        x: x1, y: YTOP - 6, width: x2 - x1, height: YBOT - YTOP + 6,
+        fill: 'url(#dead)', cursor: 'pointer',
       });
-      label.textContent = '等待 ' + fmtDur(win.dur_s) + 's（' + (win.close_reason || '?') + '）';
-      gWin.appendChild(label);
+      if (state.sel && state.sel.type === 'zone' && state.sel.i === zi) {
+        rect.setAttribute('stroke', '#e57373');
+        rect.setAttribute('stroke-dasharray', '4 3');
+      }
+      attachTip(rect, function () { tipZone(z); });
+      rect.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'zone', i: zi }); });
+      gDead.appendChild(rect);
+      if (x2 - x1 > 90) {
+        var lab = svgEl('text', { x: (x1 + x2) / 2, y: YTOP + 10, 'text-anchor': 'middle', 'font-size': '10.5', fill: '#d99', 'pointer-events': 'none' });
+        lab.textContent = '缓存断 ' + fmtDur(z.gap - state.ttl) + ' · 多付≈' + fmtCost(z.loss) + '积分';
+        gDead.appendChild(lab);
+      }
+    });
+    svg.appendChild(gDead);
+
+    // 等待窗口带（子代理在飞，可点选中）
+    var gWin = svgEl('g');
+    windows.forEach(function (w, wi) {
+      if (w.closed_ts < state.t0 || w.opened_ts > state.t1) return;
+      var x1 = Math.max(xOf(w.opened_ts), X0);
+      var x2 = Math.min(xOf(w.closed_ts), X1);
+      if (x2 - x1 < 0.5) return;
+      var rect = svgEl('rect', {
+        x: x1, y: YTOP - 6, width: Math.max(x2 - x1, 1), height: YBOT - YTOP + 6,
+        fill: 'rgba(100,181,246,0.07)', cursor: 'pointer',
+      });
+      if (state.sel && state.sel.type === 'win' && state.sel.i === wi) {
+        rect.setAttribute('stroke', '#64b5f6');
+        rect.setAttribute('stroke-width', '1.5');
+      }
+      attachTip(rect, function () { tipWin(w, wi); });
+      rect.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'win', i: wi }); });
+      gWin.appendChild(rect);
+      if (x2 - x1 > 60) {
+        var lab = svgEl('text', { x: (x1 + x2) / 2, y: YTOP + 24, 'text-anchor': 'middle', 'font-size': '10', fill: '#7aa', 'pointer-events': 'none' });
+        lab.textContent = '等子代理 ' + fmtDur(w.dur_s);
+        gWin.appendChild(lab);
+      }
     });
     svg.appendChild(gWin);
 
-    // TTL 存活阴影：每个 request+beat 一条 y=40..58 横条，重叠自然加深；
-    // 游标左侧才画；TTL<=0 或非法时不画
-    var gSh = svgEl('g', { 'pointer-events': 'none' });
-    state.refreshes.forEach(function (ts) {
-      if (ts > state.cursor) return;
-      var x1 = xOf(ts);
-      var x2 = xOf(ts + state.ttl);
-      if (x2 <= x1) return;
-      if (x2 > 1160) x2 = 1160; // 右缘裁进绘图区
-      gSh.appendChild(svgEl('rect', { x: x1, y: 40, width: x2 - x1, height: 18, fill: 'rgba(76,175,80,0.10)' }));
-    });
-    svg.appendChild(gSh);
+    // token 柱：三段堆叠自底向上 绿 cache_read / 红 input+creation / 蓝 output。
+    // 柱宽随可视间距现算；每柱带透明命中矩形（细柱也点得到）。
+    var visible = reqs.filter(function (r) { return inView(r.ts) && past(r.ts); });
+    var xs = visible.map(function (r) { return xOf(r.ts); });
+    var gBars = svgEl('g');
+    visible.forEach(function (r, i) {
+      var gapL = i > 0 ? xs[i] - xs[i - 1] : Infinity;
+      var gapR = i < xs.length - 1 ? xs[i + 1] - xs[i] : Infinity;
+      var sp = Math.min(gapL, gapR);
+      if (!isFinite(sp)) sp = 24;
+      var w = Math.min(Math.max(2, sp * 0.6), 18);
 
-    // token 柱：三段堆叠自底向上 绿 cache_read / 红 input+creation / 蓝 output
-    var gBars = svgEl('g', { 'pointer-events': 'none' }); // 悬停明细由 svg 级 mousemove 统一接管
-    requests.forEach(function (r, i) {
-      if (r.ts > state.cursor) return;
-      var b = state.bars[i];
-      var x = b.x - b.w / 2;
-      var cr = r.cache_read_tokens;
-      var red = r.input_tokens + r.cache_creation_tokens;
-      var out = r.output_tokens;
-      var yG = yOf(cr), yR = yOf(cr + red), yB = yOf(cr + red + out);
-      seg(gBars, x, yG, b.w, 460 - yG, '#4caf50');
-      seg(gBars, x, yR, b.w, yG - yR, '#e57373');
-      seg(gBars, x, yB, b.w, yR - yB, '#64b5f6');
+      var vCr = state.seg.cr ? (state.view === 'cost' ? r.cCr : r.cr) : 0;
+      var vRed = state.seg.red ? (state.view === 'cost' ? r.cRed : r.red) : 0;
+      var vOut = state.seg.out ? (state.view === 'cost' ? r.cOut : r.out) : 0;
+      var yG = yOf(vCr), yR = yOf(vCr + vRed), yB = yOf(vCr + vRed + vOut);
+
+      var g = svgEl('g', { cursor: 'pointer' });
+      function seg(y, h, color) {
+        if (h > 0.5) g.appendChild(svgEl('rect', { x: xs[i] - w / 2, y: y, width: w, height: h, fill: color }));
+      }
+      seg(yG, YBOT - yG, '#4caf50');
+      seg(yR, yG - yR, '#e57373');
+      seg(yB, yR - yB, '#64b5f6');
+      if (state.sel && state.sel.type === 'req' && state.sel.i === r.idx) {
+        g.appendChild(svgEl('rect', {
+          x: xs[i] - w / 2 - 2, y: yB - 2, width: w + 4,
+          height: YBOT - yB + 2, fill: 'none', stroke: '#fff', 'stroke-width': '1.5',
+        }));
+      }
+      var hit = svgEl('rect', {
+        x: xs[i] - Math.max(w, 10) / 2, y: YTOP - 6,
+        width: Math.max(w, 10), height: YBOT - YTOP + 6, fill: 'transparent',
+      });
+      g.appendChild(hit);
+      attachTip(g, function () { tipReq(r); });
+      g.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'req', i: r.idx }); });
+      gBars.appendChild(g);
+
+      // 断缓存后的第一根柱：↯ 角标（可点可悬停）
+      if (r.repaid) {
+        var zap = svgEl('text', {
+          x: xs[i], y: yB - 6, 'text-anchor': 'middle', 'font-size': '12',
+          fill: '#e57373', cursor: 'pointer',
+        });
+        zap.textContent = '↯';
+        attachTip(zap, function () {
+          tipFill('↯ 全额重付', null, [
+            ['与上一条间隔', '超过 TTL，缓存已死'],
+            ['本条新输入', fmtK(r.in) + ' 按 6.9 全价'],
+          ], '多付约 ' + fmtCost(r.in * (PIN - PC) / PER) + ' 积分（估算）', true);
+        });
+        zap.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'req', i: r.idx }); });
+        gBars.appendChild(zap);
+      }
     });
     svg.appendChild(gBars);
 
-    // 事件行 y=24 基线，符号按 kind；悬停用 SVG <title>
+    // 事件行 y=24 基线，符号按 kind；带透明命中圈（小符号也点得到）
     var gEv = svgEl('g');
-    events.forEach(function (e) {
-      if (e.ts > state.cursor) return;
-      var x = xOf(e.ts);
-      var g;
-      switch (e.kind) {
-        case 'beat':
-          g = svgEl('circle', { cx: x, cy: 24, r: 4, fill: '#4caf50' });
-          svgTitleEl(g, 'beat 命中=' + e.hit + ' 实收=' + (e.cache_read || 0) + ' 预测成本=' + fmtCost(e.cost_pred));
-          break;
-        case 'handoff':
-          g = svgEl('g'); // 向下小旗：杆 + 倒三角旗面
-          g.appendChild(svgEl('line', { x1: x, y1: 14, x2: x, y2: 32, stroke: '#ffb74d', 'stroke-width': '1.5' }));
-          g.appendChild(svgEl('polygon', {
-            points: x + ',14 ' + (x + 9) + ',14 ' + (x + 4.5) + ',21',
-            fill: '#ffb74d',
-          }));
-          svgTitleEl(g, 'handoff ' + (e.provider || '?') + ' ' + (e.outcome || ''));
-          break;
-        case 'block':
-          g = svgEl('g', { stroke: '#e57373', 'stroke-width': '2' }); // 红叉
-          g.appendChild(svgEl('line', { x1: x - 4, y1: 20, x2: x + 4, y2: 28 }));
-          g.appendChild(svgEl('line', { x1: x - 4, y1: 28, x2: x + 4, y2: 20 }));
-          svgTitleEl(g, 'block 空闲=' + fmtDur(e.idle_s || 0) + 's');
-          break;
-        case 'inject':
-          g = svgEl('g', { stroke: '#4dd0e1', 'stroke-width': '2', fill: 'none' }); // 上箭头
-          g.appendChild(svgEl('line', { x1: x, y1: 30, x2: x, y2: 18 }));
-          g.appendChild(svgEl('polyline', { points: (x - 4) + ',22 ' + x + ',17 ' + (x + 4) + ',22' }));
-          svgTitleEl(g, 'inject tokens=' + (e.tokens || 0) + ' handoff=' + (e.handoff_id || '-'));
-          break;
-        case 'bypass':
-          g = svgEl('circle', { cx: x, cy: 24, r: 4, fill: 'none', stroke: '#888', 'stroke-width': '1.5' }); // 灰空心点
-          svgTitleEl(g, 'bypass 前缀=' + (e.prefix_tokens || 0));
-          break;
-        default:
-          g = svgEl('circle', { cx: x, cy: 24, r: 3, fill: '#666' }); // 未知 kind 容错
-          svgTitleEl(g, e.kind || '未知事件');
+    events.forEach(function (e, ei) {
+      if (!inView(e.ts) || !past(e.ts)) return;
+      var x = xOf(e.ts), g;
+      if (e.kind === 'beat') {
+        g = svgEl('circle', { cx: x, cy: EV_Y, r: 4, fill: '#4caf50', cursor: 'pointer' });
+      } else if (e.kind === 'handoff') {
+        g = svgEl('g', { cursor: 'pointer' }); // 向下小旗：杆 + 倒三角旗面
+        g.appendChild(svgEl('line', { x1: x, y1: EV_Y - 10, x2: x, y2: EV_Y + 8, stroke: '#ffb74d', 'stroke-width': '1.5' }));
+        g.appendChild(svgEl('polygon', {
+          points: x + ',' + (EV_Y - 10) + ' ' + (x + 9) + ',' + (EV_Y - 10) + ' ' + (x + 4.5) + ',' + (EV_Y - 3),
+          fill: '#ffb74d',
+        }));
+      } else if (e.kind === 'block') {
+        g = svgEl('g', { cursor: 'pointer', stroke: '#e57373', 'stroke-width': '2' }); // 红叉
+        g.appendChild(svgEl('line', { x1: x - 4, y1: EV_Y - 4, x2: x + 4, y2: EV_Y + 4 }));
+        g.appendChild(svgEl('line', { x1: x - 4, y1: EV_Y + 4, x2: x + 4, y2: EV_Y - 4 }));
+      } else if (e.kind === 'inject') {
+        g = svgEl('g', { cursor: 'pointer', stroke: '#4dd0e1', 'stroke-width': '2', fill: 'none' }); // 上箭头
+        g.appendChild(svgEl('line', { x1: x, y1: EV_Y + 8, x2: x, y2: EV_Y - 4 }));
+        g.appendChild(svgEl('polyline', { points: (x - 4) + ',' + EV_Y + ' ' + x + ',' + (EV_Y - 5) + ' ' + (x + 4) + ',' + EV_Y }));
+      } else if (e.kind === 'bypass') {
+        g = svgEl('circle', { cx: x, cy: EV_Y, r: 4, fill: 'none', stroke: '#888', 'stroke-width': '1.5', cursor: 'pointer' });
+      } else {
+        g = svgEl('circle', { cx: x, cy: EV_Y, r: 3, fill: '#666', cursor: 'pointer' }); // 未知 kind 容错
       }
+      g.appendChild(svgEl('circle', { cx: x, cy: EV_Y, r: 10, fill: 'transparent' }));
+      if (state.sel && state.sel.type === 'ev' && state.sel.i === ei) {
+        g.appendChild(svgEl('circle', { cx: x, cy: EV_Y, r: 7, fill: 'none', stroke: '#fff', 'stroke-width': '1.2' }));
+      }
+      attachTip(g, function () { tipEv(e); });
+      g.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'ev', i: ei }); });
       gEv.appendChild(g);
     });
     svg.appendChild(gEv);
 
-    // 回放游标竖线
-    var cx = xOf(state.cursor);
-    svg.appendChild(svgEl('line', {
-      x1: cx, y1: 12, x2: cx, y2: 460,
-      stroke: 'rgba(255,255,255,0.25)', 'stroke-width': '1',
-    }));
+    // 事件行基线与标注
+    var evBase = svgEl('line', { x1: X0, y1: EV_Y + 12, x2: X1, y2: EV_Y + 12, stroke: '#222' });
+    svg.appendChild(evBase);
 
-    // x 轴：基线 + 6 等分 7 刻度，标签 MM-dd HH:mm
+    // 回放游标竖线（在可视窗内才画）
+    if (state.cursor >= state.t0 && state.cursor <= state.t1) {
+      svg.appendChild(svgEl('line', {
+        x1: xOf(state.cursor), y1: 12, x2: xOf(state.cursor), y2: YBOT,
+        stroke: 'rgba(255,255,255,0.25)', 'stroke-width': '1',
+      }));
+    }
+
+    // y 轴网格 + 刻度（token / 积分 两口径）
+    var gGrid = svgEl('g', { 'pointer-events': 'none' });
+    for (var gi = 0; gi <= 4; gi++) {
+      var v = ym * gi / 4, gy = yOf(v);
+      gGrid.appendChild(svgEl('line', { x1: X0, y1: gy, x2: X1, y2: gy, stroke: '#222' }));
+      var gl = svgEl('text', { x: X0 - 6, y: gy + 4, 'text-anchor': 'end', 'font-size': '10.5', fill: '#888' });
+      gl.textContent = state.view === 'cost' ? fmtCost(v) : (v >= 10000 ? fmtK(v) : String(Math.round(v)));
+      gGrid.appendChild(gl);
+    }
+    var yUnit = svgEl('text', { x: X0 - 6, y: YTOP - 14, 'text-anchor': 'end', 'font-size': '10.5', fill: '#666' });
+    yUnit.textContent = state.view === 'cost' ? '积分' : 'tokens';
+    gGrid.appendChild(yUnit);
+    svg.appendChild(gGrid);
+
+    // x 轴：基线 + 6 等分 7 刻度（短跨度带秒）
     var gAx = svgEl('g', { 'pointer-events': 'none' });
-    gAx.appendChild(svgEl('line', { x1: 40, y1: 460, x2: 1160, y2: 460, stroke: '#333' }));
-    gAx.appendChild(svgEl('line', { x1: 40, y1: 36, x2: 1160, y2: 36, stroke: '#222' }));
-    for (var i = 0; i <= 6; i++) {
-      var ts = state.tMin + (state.tMax - state.tMin) * i / 6;
-      var tx = xOf(ts);
-      gAx.appendChild(svgEl('line', { x1: tx, y1: 460, x2: tx, y2: 466, stroke: '#444' }));
-      var lab = svgEl('text', { x: tx, y: 482, 'text-anchor': 'middle', 'font-size': '11', fill: '#888' });
-      lab.textContent = fmtTS(ts);
-      gAx.appendChild(lab);
+    gAx.appendChild(svgEl('line', { x1: X0, y1: YBOT, x2: X1, y2: YBOT, stroke: '#333' }));
+    var span = state.t1 - state.t0;
+    for (var ai = 0; ai <= 6; ai++) {
+      var ts = state.t0 + span * ai / 6, tx = xOf(ts);
+      gAx.appendChild(svgEl('line', { x1: tx, y1: YBOT, x2: tx, y2: YBOT + 6, stroke: '#444' }));
+      var al = svgEl('text', { x: tx, y: YBOT + 18, 'text-anchor': 'middle', 'font-size': '10.5', fill: '#888' });
+      al.textContent = span > 6 * 3600 ? fmtTS(ts) : fmtTS(ts, span < 900);
+      gAx.appendChild(al);
     }
     svg.appendChild(gAx);
 
-    // 右上角实时累计（游标左侧）
+    // 控制条累计（游标左侧）
     var cnt = 0, sum = 0;
-    requests.forEach(function (r) {
-      if (r.ts > state.cursor) return;
+    reqs.forEach(function (r) {
+      if (!past(r.ts)) return;
       cnt++;
-      sum += r.input_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.output_tokens;
+      sum += r.tokTot;
     });
-    cumEl.textContent = '已看 ' + cnt + ' / ' + requests.length + ' 次请求 · tokens 合计 ' + fmtK(sum);
-    cumEl.setAttribute('title', 'tokens 合计 = input + cache_read + cache_creation + output');
+    cumEl.textContent = '已看 ' + cnt + ' / ' + reqs.length + ' 次请求 · tokens ' + fmtK(sum) +
+      (state.t1 - state.t0 < state.full1 - state.full0 - 1 ? ' · 已缩放' : '');
   }
 
-  // ---- 柱悬停明细：svg 级 mousemove + 二分最近柱（2px 细柱也有足够命中宽度）----
-  function hideTip() { tip.hidden = true; }
-  svg.addEventListener('mousemove', function (ev) {
+  // ---- 缩放 / 平移 / 拖点区分 ----
+  var drag = null, moved = false;
+  svg.addEventListener('mousedown', function (ev) {
+    drag = { x: ev.clientX, t0: state.t0, t1: state.t1 };
+    moved = false;
+  });
+  window.addEventListener('mousemove', function (ev) {
+    if (!drag) return;
+    var dx = ev.clientX - drag.x;
+    if (Math.abs(dx) > 3) {
+      moved = true;
+      svg.classList.add('dragging');
+      var wr = wrap.getBoundingClientRect();
+      if (!wr.width) return;
+      var span = state.t1 - state.t0;
+      var dt = dx / wr.width * (1200 / (X1 - X0)) * span;
+      state.t0 = drag.t0 - dt;
+      state.t1 = drag.t1 - dt;
+      clampView();
+      draw();
+    }
+  });
+  window.addEventListener('mouseup', function () {
+    drag = null;
+    svg.classList.remove('dragging');
+    if (moved) setTimeout(function () { moved = false; }, 0); // click 在 mouseup 后同步触发，仍读到 moved=true
+  });
+  svg.addEventListener('click', function () {
+    if (moved) return;              // 拖拽后的松开不算点击
+    if (!state.sel) return;
+    pick(null);                     // 点空白处取消选择
+  });
+  svg.addEventListener('wheel', function (ev) {
+    ev.preventDefault();
     var wr = wrap.getBoundingClientRect();
     if (!wr.width) return;
-    var sx = (ev.clientX - wr.left) * (1200 / wr.width);
-    var i = nearestIdx(xs, sx);
-    if (i < 0) { hideTip(); return; }
-    var r = requests[i];
-    if (r.ts > state.cursor) { hideTip(); return; }
-    var half = Math.max(state.bars[i].w, 8) / 2 + 3;
-    if (Math.abs(xs[i] - sx) > half) { hideTip(); return; }
-    tipTime.textContent = fmtTS(r.ts);
-    tipModel.textContent = r.model || '-';
-    tipIn.textContent = fmtK(r.input_tokens);
-    tipCr.textContent = fmtK(r.cache_read_tokens);
-    tipCc.textContent = fmtK(r.cache_creation_tokens);
-    tipOut.textContent = fmtK(r.output_tokens);
-    tipTitle.textContent = r.title || '';
-    tipTitle.hidden = !r.title;
-    tip.hidden = false;
-    var left = ev.clientX - wr.left + 14;
-    var top = ev.clientY - wr.top + 12;
-    var tw = tip.offsetWidth, th = tip.offsetHeight;
-    if (left + tw > wr.width - 6) left = ev.clientX - wr.left - tw - 14; // 右缘翻转
-    if (top + th > wr.height - 6) top = ev.clientY - wr.top - th - 12;   // 下缘翻转
-    if (left < 0) left = 0;
-    if (top < 0) top = 0;
-    tip.style.left = left + 'px';
-    tip.style.top = top + 'px';
+    var mx = (ev.clientX - wr.left) / wr.width * 1200; // viewBox x
+    var f = ev.deltaY > 0 ? 1.25 : 0.8;
+    var tAt = state.t0 + (mx - X0) / (X1 - X0) * (state.t1 - state.t0);
+    state.t0 = tAt - (tAt - state.t0) * f;
+    state.t1 = tAt + (state.t1 - tAt) * f;
+    clampView();
+    draw();
+  }, { passive: false });
+  svg.addEventListener('dblclick', function () {
+    state.t0 = state.full0;
+    state.t1 = state.full1;
+    draw();
   });
-  svg.addEventListener('mouseleave', hideTip);
 
   // ---- 控制条交互 ----
   slider.addEventListener('input', function () {
     state.cursor = parseFloat(slider.value);
-    draw();
-  });
-  ttlInput.addEventListener('input', function () {
-    var v = parseFloat(ttlInput.value);
-    state.ttl = isFinite(v) && v > 0 ? v : 0; // 非法/0 → 不画阴影
     draw();
   });
   playBtn.addEventListener('click', function () {
@@ -1041,13 +1537,13 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       return;
     }
     playBtn.textContent = '⏸';
-    var seqAtPlay = navSeq; // 捕获当前导航序号；切页后 tick 自毁（buildTimelinePage 无 seq 形参，直接读全局）
-    var stepv = (state.tMax - state.tMin) / 500 * 2; // 每 tick 2 步，全程约 4s
+    var seqAtPlay = navSeq; // 捕获当前导航序号；切页后 tick 自毁
+    var stepv = (state.full1 - state.full0) / 500 * 2; // 每 tick 2 步，全程约 4s
     tlPlayTimer = setInterval(function () {
       if (seqAtPlay !== navSeq) { stopTlPlay(); return; } // 已切页：定时器自毁
       var c = state.cursor + stepv;
-      if (c >= state.tMax) {
-        c = state.tMax;
+      if (c >= state.full1) {
+        c = state.full1;
         stopTlPlay();
         playBtn.textContent = '▶';
       }
@@ -1057,6 +1553,9 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     }, 16);
   });
 
+  renderCards();
+  renderLegend();
+  renderDetail();
   draw();
 }
 
