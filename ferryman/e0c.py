@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -162,10 +161,6 @@ AgentState = Literal["done", "interrupted", "empty", "running"]
 # mtime 距扫描时点小于该秒数 → 在跑(非终值,覆盖终态推断);经验值,可 monkeypatch
 RUNNING_WINDOW_SECONDS = 300
 
-# 缺 meta 时从转录内容嗅探 spawn toolUseId 的兜底手段:找 "toolUseId":"<id>" 字样。
-# 真实磁盘是否在子代理转录里落这个引用待实测验证;嗅不到就留在未知桶,绝不硬猜。
-_TOOLUSE_SNIFF = re.compile(r'"toolUseId"\s*:\s*"([^"\s]{6,})"')
-
 
 @dataclass(frozen=True)
 class AgentRow:
@@ -221,7 +216,6 @@ class _Scan:
     first_ts: str | None
     last_ts: str | None
     tool_use_ids: tuple[str, ...]  # 本转录发出的 tool_use 块 id(本转录是这些子代理的"父")
-    sniffed_tool_use_id: str | None  # 转录内容嗅探到的 spawn toolUseId(缺 meta 时的恢复手段)
     read_failed: bool = False
 
 
@@ -249,16 +243,17 @@ def _mtime(path: Path) -> float | None:
 
 
 def _scan_transcript(path: Path) -> _Scan:
-    """读一个子代理转录:账目(复用聚合器)+ 终态推断 + 首末时间戳 + tool_use 块 id + 嗅探。
+    """读一个子代理转录:账目(复用聚合器)+ 终态推断 + 首末时间戳 + tool_use 块 id。
 
     全程防御:读不了按空账;坏行按"非 assistant"参与终态推断(末行坏 → 中断)。
-    终态(spec):无任何非空内容 → 空;末条非空行是 assistant 且末响应组 stop=end_turn
-    → 完成;其余 → 中断。"在跑"由调用方按 mtime 叠加覆盖。
+    终态(spec):无任何非空内容 → 空;最后一条非 attachment 的非空行是 assistant
+    且末响应组 stop=end_turn → 完成;其余 → 中断。attachment 行(SubagentStop
+    等钩子收尾)只是钩子产物,不作终态判据,但其时间戳照记。"在跑"由调用方按 mtime 叠加。
     """
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return _Scan(UsageAccount(), "empty", None, None, (), None, read_failed=True)
+        return _Scan(UsageAccount(), "empty", None, None, (), read_failed=True)
     account = aggregate_usage(io.StringIO(text))
     first_ts: str | None = None
     last_ts: str | None = None
@@ -282,8 +277,8 @@ def _scan_transcript(path: Path) -> _Scan:
                 if first_ts is None:
                     first_ts = ts
                 last_ts = ts
-        is_assistant = isinstance(d, dict) and d.get("type") == "assistant"
-        if is_assistant:
+        row_type = d.get("type") if isinstance(d, dict) else None
+        if row_type == "assistant":
             msg = d.get("message")
             mid = msg.get("id") if isinstance(msg, dict) else None
             if isinstance(mid, str) and mid:
@@ -297,7 +292,9 @@ def _scan_transcript(path: Path) -> _Scan:
                         bid = block.get("id")
                         if isinstance(bid, str) and bid:
                             tool_ids.append(bid)
-        last_is_assistant = is_assistant
+            last_is_assistant = True
+        elif row_type != "attachment":  # 钩子行跳过,不改变终态判据
+            last_is_assistant = False
 
     if not saw_content:
         state: AgentState = "empty"
@@ -306,9 +303,7 @@ def _scan_transcript(path: Path) -> _Scan:
         state = "done" if stops and stops[0] == "end_turn" else "interrupted"
     else:
         state = "interrupted"
-    sniffed = _TOOLUSE_SNIFF.search(text)
-    return _Scan(account, state, first_ts, last_ts, tuple(tool_ids),
-                 sniffed.group(1) if sniffed else None)
+    return _Scan(account, state, first_ts, last_ts, tuple(tool_ids))
 
 
 def assemble_agents(session_dir: Path | str, *, now: float | None = None) -> AgentLedger:
@@ -387,10 +382,11 @@ def assemble_agents(session_dir: Path | str, *, now: float | None = None) -> Age
         sc = scans.get(aid)
         if sc is not None:  # 有转录(配对或缺 meta)
             acc, first_ts, last_ts = sc.account, sc.first_ts, sc.last_ts
-            tid = meta_tid or sc.sniffed_tool_use_id
+            tid = meta_tid
             no_transcript = False
             if md is None and aid not in meta_failed:
-                longtail.append(f"agent {aid}:有转录无 meta,入未知桶(类型/深度未知)")
+                longtail.append(f"agent {aid}:有转录无 meta,入未知桶"
+                                f"(类型/深度未知,父子不可恢复)")
             mtime = _mtime(transcripts[aid])
             if mtime is not None and (scan_ts - mtime) < RUNNING_WINDOW_SECONDS:
                 state: AgentState | None = "running"  # 在跑(非终值),覆盖终态推断

@@ -3,7 +3,7 @@
 合成会话目录 fixture 单测,覆盖票 02 验收标准:
 - 正常配对样本:四列/响应数/行级模型分布正确,meta 字段透传;
 - 缺 meta → 未知桶(agentType/depth 未知),不进 direct/total 分桶;
-  转录内容可恢复 toolUseId 时父子关系恢复;
+  内容里的 toolUseId 杂音不恢复父子(不硬猜),长尾注明不可恢复;
 - 有 meta 无转录 → spawn 计数 +1、token 记 0、标"无转录";
 - direct/total 双口径计数(含 depth=2 样本、未知深度排除);
 - 终态四分类:完成(end_turn)/中断/空文件/在跑(mtime 窗口,now 参数注入);
@@ -126,42 +126,34 @@ def test_paired_agent_four_columns_and_meta_fields(tmp_path):
     assert led.longtail == []
 
 
-# ---- 缺 meta:未知桶 + 父子恢复 ---------------------------------------------------
+# ---- 缺 meta:未知桶,不硬猜父子 ---------------------------------------------------
 
 
-def test_missing_meta_unknown_bucket_with_parent_recovery(tmp_path):
-    """缺 meta → 未知桶(agentType/depth 未知,不进 direct/total);
-    转录内容带 toolUseId 时经父转录 tool_use 块恢复父子,token 照入。"""
+def test_missing_meta_unknown_bucket_noise_does_not_rescue(tmp_path):
+    """缺 meta → 老实留未知桶:即使转录内容里出现 toolUseId 字样的杂音,
+    也不据此恢复父子(真实磁盘无此形状),token 照入、长尾注明父子不可恢复。"""
     s = _mk_session(tmp_path)
-    sub = s / "subagents"
-    # 父 P(depth 1):转录里发出 tool_use 块 toolu_kid(即 spawn 了 C)
-    _wtr(sub, "p", [
-        _arow("mp1", ts=T1, stop="end_turn"),
-        _arow("mp2", ts=T2, stop="tool_use", content_blocks=[_tool_use_block("toolu_kid")]),
-    ])
-    _wmeta(sub, "p", spawnDepth=1, toolUseId="toolu_p")
-    # 子 C:无 meta,转录首行带 toolUseId 引用 → 可恢复
-    _wtr(sub, "c", [
-        _urow(T0, toolUseId="toolu_kid"),
+    _wtr(s / "subagents", "c", [
+        {"type": "user", "timestamp": T0,
+         "message": {"role": "user", "content": '请处理 toolUseId 为 "toolu_kid" 的任务'}},
         _arow("mc1", ts=T1, stop="end_turn"),
     ])
 
     led = assemble_agents(s, now=time.time() + RUNNING_WINDOW_SECONDS * 10)
     c = _row(led, "c")
     assert c.agentType is None and c.spawnDepth is None
-    assert c.toolUseId == "toolu_kid"          # 从转录内容恢复
-    assert c.parent_agentId == "p"             # 父子关系恢复
-    assert _four(c.self_acc) == (100, 20, 300, 4000)  # token 照入总账
+    assert c.toolUseId is None and c.parent_agentId is None  # 杂音不恢复父子
+    assert _four(c.self_acc) == (100, 20, 300, 4000)          # token 照入总账
     assert c.state == "done"
-    assert _row(led, "p").parent_agentId is None  # 父在主转录,子代理层看不到
     # 未知深度不进 direct/total 分桶,但占 spawn/转录计数
-    assert led.transcript_files == 2 and led.spawn_events == 2
-    assert led.direct_spawns == 1 and led.total_spawns == 1
-    assert len(led.longtail) == 1 and "c" in led.longtail[0]
+    assert led.transcript_files == 1 and led.spawn_events == 1
+    assert led.direct_spawns == 0 and led.total_spawns == 0
+    assert len(led.longtail) == 1
+    assert "c" in led.longtail[0] and "不可恢复" in led.longtail[0]
 
 
-def test_missing_meta_without_sniff_stays_orphan(tmp_path):
-    """缺 meta 且转录内容无可恢复 toolUseId → 孤儿:未知桶、无父,计数照占。"""
+def test_missing_meta_stays_orphan(tmp_path):
+    """缺 meta → 孤儿:未知桶、无父,计数照占。"""
     s = _mk_session(tmp_path)
     _wtr(s / "subagents", "orphan", [_arow("m1", stop="end_turn")])
 
@@ -291,6 +283,23 @@ def test_state_done_requires_end_turn_at_tail(tmp_path):
     _wmeta(sub, "x")
     led = assemble_agents(s, now=time.time() + RUNNING_WINDOW_SECONDS * 10)
     assert _row(led, "x").state == "interrupted"
+
+
+def test_trailing_attachment_row_skipped_in_state(tmp_path):
+    """收尾 attachment 钩子行(SubagentStop)不作终态判据:
+    end_turn 后跟 attachment → 完成;tool_use 后跟 attachment → 仍中断。"""
+    s = _mk_session(tmp_path)
+    sub = s / "subagents"
+    _hook_row = {"type": "attachment", "timestamp": T2,
+                 "attachment": {"type": "hook", "hook": "SubagentStop"}}
+    _wtr(sub, "ha", [_arow("m1", ts=T1, stop="end_turn"), _hook_row])
+    _wmeta(sub, "ha")
+    _wtr(sub, "hi", [_arow("m1", ts=T1, stop="tool_use"), _hook_row])
+    _wmeta(sub, "hi")
+
+    led = assemble_agents(s, now=time.time() + RUNNING_WINDOW_SECONDS * 10)
+    assert _row(led, "ha").state == "done"
+    assert _row(led, "hi").state == "interrupted"
 
 
 def test_running_with_default_now(tmp_path):
