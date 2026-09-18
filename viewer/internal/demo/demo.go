@@ -32,7 +32,7 @@ const (
 	project      = "C:/WorkSpace/agent/Ferryman"
 	handoffProv  = "local"
 	handoffModel = "qwen3.8-27b-sglang-general"
-	closeReason  = "subagents-done"
+	closeReason  = "subagents_done"
 	tsLayout     = "2006-01-02T15:04:05-0700"
 )
 

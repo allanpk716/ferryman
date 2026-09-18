@@ -269,7 +269,32 @@ class FerryDaemon:
         self._acct("window", st, agent=agent, session_id=sid,
                    opened_ts=round(w["opened_ts"], 3), closed_ts=round(closed, 3),
                    dur_s=round(closed - w["opened_ts"], 1),
-                   prefix_tokens=(st.peak_ctx if st else 0), close_reason=reason)
+                   prefix_tokens=self._window_prefix(st, sid, w["opened_ts"]),
+                   close_reason=reason)
+
+    def _window_prefix(self, st: SessionState | None, sid: str,
+                       opened_ts: float) -> int:
+        """T46 窗口前缀懒富化：peak_ctx 优先（摆渡提取富化过，行为不变）；
+        缺位时从账本 usage 实报值回落——开窗前（ts <= opened_ts）该会话最后一条的
+        input+cache_read+cache_creation（API 实报的完整请求输入，比提取器估算准）；
+        开窗前的行一条都没有（时钟毛刺）则退取该会话任意最后一条，再无则 0。
+        任何异常吞成 0——窗口行绝不因富化失败而丢。"""
+        if st is not None and st.peak_ctx:
+            return st.peak_ctx
+        if self.accounts is None:
+            return 0
+        try:
+            rows = self.accounts.read(kind="usage", session=sid)
+            pool = [r for r in rows if r.get("ts", 0) <= opened_ts] or rows
+            if not pool:
+                return 0
+            latest = sorted(pool, key=lambda r: r.get("ts", 0))[-1]  # 稳定序：同 ts 取后写入
+            return int(latest.get("input_tokens", 0)
+                       + latest.get("cache_read_tokens", 0)
+                       + latest.get("cache_creation_tokens", 0))
+        except Exception as e:  # noqa: BLE001 — 记账富化永不弄断闭窗（与 _acct 同纪律）
+            print(f"[account] window 前缀回落失败（记 0）: {e}", flush=True)
+            return 0
 
     # ---------- 归还 ----------
 
