@@ -2,7 +2,8 @@ package accounts
 
 // 规格：tests/test_accounts.py 19 例 1:1（前 9 例为 accounts 单元行为，本文件
 // 直接转绿；后 10 例为 e2e——Python Harness 起全链 daemon（gate/window/worker），
-// 归票 13/14/17，此处落 t.Skip 占位保清点，随归属票装配后转绿）。
+// 归票 13/14/17：4 个窗口例已由票13 回填转绿于本目录外部测试包
+// window_e2e_test.go，余 6 例 t.Skip 占位保清点，随归属票装配后转绿）。
 // 另加 2 例验收专测：落盘行键序（票面验收#2）与 Record 并发安全（票面验收#3）。
 
 import (
@@ -388,18 +389,8 @@ func TestRestoreBooksInject(t *testing.T) {
 	t.Skip("e2e→票14：归还记 inject 行（session_id=newsid/tokens>0/handoff_id/inject 与 block 同谱系 lineage_id——R9 Q7 因果链）；Python: test_accounts.py::test_restore_books_inject")
 }
 
-func TestWindowBooksOnSubagentCycle(t *testing.T) {
-	t.Skip("e2e→票13：子代理起停计数归零闭窗记 window 行（dur_s>=0/close_reason=subagents_done/四字段齐）；Python: test_accounts.py::test_window_books_on_subagent_cycle")
-}
-
-func TestWindowClosesOnPrompt(t *testing.T) {
-	t.Skip("e2e→票13：主会话来 prompt 闭窗 close_reason=prompt，窗已闭后 stop 不再产生第二条；Python: test_accounts.py::test_window_closes_on_prompt")
-}
-
-func TestWindowClosesOnBypassPrompt(t *testing.T) {
-	t.Skip("e2e→票13：R1 强续 bypass 亦是主会话恢复写入——等待窗同样闭窗（钩子须在 bypass 分支之前）；Python: test_accounts.py::test_window_closes_on_bypass_prompt")
-}
-
-func TestWindowReanchorsAfterLeakGap(t *testing.T) {
-	t.Skip("e2e→票13：Stop 丢失+泄漏超时后再 start：旧窗不沿用重锚（dur_s 不跨泄漏间隙虚高）；Python: test_accounts.py::test_window_reanchors_after_leak_gap")
-}
+// 票13 回填注：4 个窗口 e2e（test_window_books_on_subagent_cycle /
+// test_window_closes_on_prompt / test_window_closes_on_bypass_prompt /
+// test_window_reanchors_after_leak_gap）已转绿——因 daemon→accounts 依赖方向
+// 不可被内部测试包引用，落在本目录外部测试包 window_e2e_test.go（最小装配器：
+// 临时目录 Accounts+Ledger+Daemon，直驱 Subagent/NoteGatePrompt）。

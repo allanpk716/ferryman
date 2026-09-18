@@ -176,6 +176,13 @@ func (l *Ledger) GetByPath(path string) *SessionState {
 func (l *Ledger) AllSessions() []*SessionState {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.AllSessionsLocked()
+}
+
+// AllSessionsLocked AllSessions 的无锁内方法——仅供已持 l.Mu() 的临界区
+// （daemon QWatchStop 的台账锁内清窗等）调用；不经临界区的调用方一律走
+// 自带锁的 AllSessions。锁内只有内存操作（spec「并发模型」纪律）。
+func (l *Ledger) AllSessionsLocked() []*SessionState {
 	out := make([]*SessionState, 0, len(l.byKey))
 	for _, st := range l.byKey {
 		out = append(out, st)
