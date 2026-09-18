@@ -50,12 +50,15 @@ class Watcher(threading.Thread):
     """mtime 轮询：登记台账 + 对达总结阈值的活跃会话懒富化并入队摆渡。"""
 
     def __init__(self, cfg: Config, ledger: Ledger, store: Store,
-                 enqueue, started_at: float, accounts=None):
+                 enqueue, started_at: float, accounts=None,
+                 ferry_daemon: FerryDaemon | None = None):
         super().__init__(daemon=True, name="ferryman-watch")
         self.cfg, self.ledger, self.store = cfg, ledger, store
         self.enqueue = enqueue
         self.started_at = started_at
         self.accounts = accounts          # None = 不采集（旧调用/测试零改动）
+        self.ferry_daemon = ferry_daemon  # T48 票03：停车窗判定 + usage 行喂入闭窗
+                                          # （None = 不接线，旧调用/测试零改动）
         self.harvest = None
         if accounts is not None and cfg.watch.harvest_usage:
             from .harvest import HarvestState
@@ -124,6 +127,10 @@ class Watcher(threading.Thread):
             return                      # T32：子代理运行中（钩子计数，内存判定）→ 推迟，不置 handed_off
         if st.agent == "cc" and has_dangling_tool_use(Path(st.transcript_path)):
             return                      # 悬空 tool_use：工具/子代理仍在跑，本轮推迟（不置 handed_off，下轮重查）
+        fd = getattr(self, "ferry_daemon", None)   # __new__ 裸构造的旧测试无此属性 → 视同无接线
+        if fd is not None and fd.window_wait(st.agent, st.session_id):
+            return                      # T48 票03：异步等待停车未过期 → 推迟，不置 handed_off
+                                        # （20260918 12:20/14:15 误摆渡案回归）
         self._enrich(st)                # 懒富化：标题/峰值（每版本一次读盘）
         if st.peak_ctx < th.min_ctx_tokens:
             st.handed_off_at = st.last_write   # 过小会话：标记已处理防反复读盘
@@ -170,6 +177,12 @@ class Watcher(threading.Thread):
                     cache_read_tokens=r["cache_read_tokens"],
                     cache_creation_tokens=r["cache_creation_tokens"],
                     output_tokens=r["output_tokens"], offset=r["offset"])
+            # T48 票03：新 usage 行的最大 ts 喂给停车状态机——主会话恢复调用
+            # 的闭窗判据（note_usage 保证不抛；agent 取会话自身，不硬编码 cc；
+            # getattr 同上，裸构造旧测试视同无接线）。
+            fd = getattr(self, "ferry_daemon", None)
+            if fd is not None:
+                fd.note_usage(st.agent, st.session_id, max(r["ts"] for r in rows))
         except Exception as e:  # noqa: BLE001 — 采集故障只警告
             print(f"[harvest] 用量采集失败（忽略继续）: {path.name}: {e}",
                   flush=True)
@@ -326,7 +339,8 @@ def serve(relax_min_gap: bool = False) -> int:
          "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False),
         encoding="utf-8")
 
-    watcher = Watcher(cfg, ledger, store, enqueue, started_at, accounts)
+    watcher = Watcher(cfg, ledger, store, enqueue, started_at, accounts,
+                      ferry_daemon=daemon)
     worker = FerryWorker(cfg, store, tasks, accounts)
     watcher.start()
     worker.start()

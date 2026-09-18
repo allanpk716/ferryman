@@ -694,3 +694,68 @@ def test_prompt_still_closes_open_window(wenv):
     d.gate(_body(sid, str(p), "C:/proj"))
     rows = _window_rows(acc, sid)
     assert len(rows) == 1 and rows[0]["close_reason"] == "prompt"
+
+
+# ---- T48 票03：守望接线（摆渡推迟吃停车窗信号 + usage 行喂入闭窗） ----
+# 设计参照：docs/superpowers/plans/2026-09-18-t48-async-wait-signal.rev1.md Task 3
+# + 附录 #7（agent 用 st.agent 不硬编码）；20260918 12:20/14:15 误摆渡案回归锁。
+
+
+def test_parked_window_defers_ferry_and_resumes_after_close(wenv):
+    """回归锁（20260918 12:20/14:15 误摆渡案）：停车窗期间 _maybe_enqueue 不入队
+    （推迟且不置 handed_off）；恢复调用闭窗后同一会话恢复入队。"""
+    from ferryman.daemon import Watcher
+    d, led, acc, tmp = wenv
+    sid = "wf1"
+    _write_session(led, tmp, sid, _async_blocks())
+    cfg = Config()
+    cfg.thresholds = ThresholdCfg(summarize_s=10, block_s=30, min_ctx_tokens=100)
+    calls: list[str] = []
+    w = Watcher(cfg, led, None, lambda st: (calls.append(st.session_id), True)[1],
+                started_at=0, accounts=None, ferry_daemon=d)
+    st = led.get("cc", sid)
+    st.observed_active = True
+    st.last_write = time.time() - 999          # 闲置远超 summarize 线
+    st.enriched_write = st.last_write          # 预置已富化：_enrich 会用转录重算
+    st.peak_ctx = 150000                       #   peak（无 usage 的转录算 0），与本用例无关
+    _start_stop(d, sid)                        # 开窗 + 停车
+    w._maybe_enqueue(st)
+    assert calls == []                         # 停车窗 → 推迟摆渡
+    assert st.handed_off_at == 0               # 推迟不置 handed_off（下轮重查）
+    d.note_usage("cc", sid, ts=time.time() + 200)   # 恢复调用 → 窗闭
+    w._maybe_enqueue(st)
+    assert calls == [sid]                      # 窗闭后照常摆渡
+
+
+def test_harvest_usage_feeds_note_usage_max_ts(wenv):
+    """票03③：_harvest_usage 落完 usage 行后把新行最大 ts 喂 note_usage
+    （agent 取会话自身，不硬编码）——停车窗靠守望采集感知主会话恢复调用。"""
+    from datetime import datetime, timezone
+
+    from ferryman.daemon import Watcher
+    d, led, acc, tmp = wenv
+    sid = "hu1"
+    blocks = [
+        {"type": "assistant", "timestamp": "2026-09-18T12:00:01Z", "cwd": "C:/proj",
+         "message": {"role": "assistant", "content": [{"type": "text", "text": "一"}],
+                     "usage": {"input_tokens": 100, "cache_read_input_tokens": 5000,
+                               "cache_creation_input_tokens": 0, "output_tokens": 1}}},
+        {"type": "assistant", "timestamp": "2026-09-18T12:00:02Z",
+         "message": {"role": "assistant", "content": [{"type": "text", "text": "二"}],
+                     "usage": {"input_tokens": 200, "cache_read_input_tokens": 6000,
+                               "cache_creation_input_tokens": 0, "output_tokens": 1}}},
+    ]
+    p = _write_session(led, tmp, sid, blocks)
+    cfg = Config()
+    cfg.thresholds = ThresholdCfg(summarize_s=10, block_s=30, min_ctx_tokens=100)
+    fed: list[tuple] = []
+
+    class RecDaemon:                           # 只录 note_usage 喂入的参数
+        def note_usage(self, agent, sid_, ts):
+            fed.append((agent, sid_, ts))
+
+    w = Watcher(cfg, led, None, lambda st: True, started_at=0,
+                accounts=acc, ferry_daemon=RecDaemon())
+    w._harvest_usage(p, p.stat().st_size, led.get("cc", sid))
+    exp = datetime(2026, 9, 18, 12, 0, 2, tzinfo=timezone.utc).timestamp()
+    assert fed == [("cc", sid, pytest.approx(exp))]   # 喂的是最大 ts（第二行），非首行
