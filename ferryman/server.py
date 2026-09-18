@@ -175,11 +175,16 @@ class FerryDaemon:
             self.store.mark_blocked(H["handoff_id"])
             self._notify_block(st, H, idle)
             return {"decision": "block",
-                    "reason": (f"此会话已闲置 {idle / 60:.0f} 分钟，缓存已失效；交接已生成: {H['path']}\n"
-                               f"① /clear ② 开新会话 ③ 随便发一个字（如「继续」）——"
-                               f"交接与你这句输入会自动注入，新会话第一句就会告诉你干到哪、接下来干嘛。\n"
-                               f"（不愿换会话：以「强续」开头发消息强制继续；"
-                               f"你的原话与交接会随注入自动带回，无需记忆）"),
+                    "reason": (f"此会话已闲置 {idle / 60:.0f} 分钟，缓存已失效；"
+                               f"你刚输入的内容没有发出去，已原样保存、不会丢。\n"
+                               f"接下来这样做（约 10 秒）：\n"
+                               f"  1. 输入 /clear 清空上下文（或另开一个新会话，效果相同）\n"
+                               f"  2. 新会话开场会自动收到两样东西：干到哪的交接 + 你刚这句原话"
+                               f"（所以不用重新打字）\n"
+                               f"  3. 随便发一个字（如「继续」）——它会接着你刚那句继续干\n"
+                               f"不想换会话：以「强续」开头重发你的内容，本会话强制继续"
+                               f"（注意：原话只随 /clear 自动带回，强续必须自己带上）。\n"
+                               f"交接文档: {H['path']}"),
                     "suppressOriginalPrompt": True,
                     "handoff_path": H["path"]}
         if p is not None:                                   # 分支 6
@@ -192,8 +197,9 @@ class FerryDaemon:
             self._acct("block", st, prefix_tokens=st.peak_ctx, idle_s=round(idle, 1))
             self.store.save_pending_prompt(st.session_id, prompt)
             return {"decision": "block",
-                    "reason": (f"交接仍未就绪（第 {n} 次）；稍候重试，或以「强续」开头强制继续，"
-                               f"或 /clear 开新会话。"),
+                    "reason": (f"交接仍在生成（第 {n} 次拦截）；你刚输入的内容已保存。\n"
+                               f"稍等约 1 分钟后重发这句（按 ↑ 键可取回），届时会给完整的换会话指引；"
+                               f"等不及就以「强续」开头重发强制继续（原话须自己带上）。"),
                     "suppressOriginalPrompt": True}
         # 分支 7：警告一次 + 置 pending + 触发摆渡
         self.pending.set(key)
