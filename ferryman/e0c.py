@@ -22,6 +22,13 @@ max mtime 的在跑标记(子代理运行期间主文件无中间写入,只看�
 族系合计行复用台账 lineage 规则(同 transcript_path 换 session_id → 同链),
 恒标"识别未验证"。
 
+报告层(编排 + 渲染,Implementation Decisions 5/6/7):scan_projects 扫描
+projects 根下全部主转录(跳过 subagents/,--limit 限制项目目录数);load_recon
+读对账手记 jsonl({ts, agentId, agentType, self_reported_tokens, source});
+render_report 为纯函数,把会话账 + 族系行 + 手记折成中文报告(Q1 逐会话明细 /
+Q2 占比与分布[含回传耦合固定注记] / Q3 对账 / Q4 长尾清单 + 定型建议判据);
+run 为 CLI 入口(ferryman e0c,注册见 __main__.py)。
+
 行内格式属 CC 内部实现、版本间会变:缺字段/坏值一律防御处理,绝不向调用方抛错。
 """
 
@@ -32,7 +39,9 @@ import io
 import json
 import os
 import time
+from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import Literal, TextIO
 
@@ -741,3 +750,444 @@ def lineage_rows(sessions: list[SessionAccount],
         rows.append(LineageRow(session_ids=[s.session_id for s in grp], total=total))
     rows.sort(key=lambda r: r.session_ids[0])
     return rows
+
+
+# ============================================================================
+# 报告层:扫描编排 + 手记解析 + 渲染纯函数 + CLI(spec Implementation Decisions 5/6/7)
+# ============================================================================
+
+# 固定文案(spec Decision 7,评审定为必现注记):头部 + Q2 各出现一次
+FEEDBACK_COUPLE_NOTE = (
+    "**回传耦合注记(固定)**:子代理结果回传主会话后,以 input/cache_read 形式再计入"
+    "主会话后续请求——“子代理占比”结构性偏低、主会话偏高,占比只作方向参考。")
+
+_STATE_CN = {"done": "完成", "interrupted": "中断",
+             "empty": "空文件", "running": "在跑(非终值)"}
+
+# 长尾明细单会话最多列出的原始行数(真实数据长尾可能上百,报告要能读)
+_LONGTAIL_DETAIL_CAP = 40
+
+
+def fmt_int(x: int) -> str:
+    """千分位整数(报告统一口径)。"""
+    return f"{x:,}"
+
+
+def _pct(num: float, den: float) -> str:
+    return "n/a" if den == 0 else f"{num / den * 100:.1f}%"
+
+
+def _four_cells(c: UsageColumns) -> list[str]:
+    return [fmt_int(c.input_tokens), fmt_int(c.output_tokens),
+            fmt_int(c.cache_creation), fmt_int(c.cache_read)]
+
+
+def scan_projects(projects_dir: Path | str, *,
+                  now: float | None = None, limit: int | None = None) -> list[SessionAccount]:
+    """扫描 projects 根下全部主转录,逐个 aggregate_session。
+
+    主转录判据:*.jsonl 且路径里没有 subagents/ 分量(真实布局
+    <projects>/<项目slug>/<会话id>.jsonl,子代理在 <会话id>/subagents/ 下)。
+    limit 限制**项目目录数**(=主转录所在目录,冒烟用),按路径排序取前 N。
+    目录不存在 → 空表(防御式);now 透传 aggregate_session 保证可复现。
+    """
+    root = Path(projects_dir)
+    if not root.is_dir():
+        return []
+    files = [p for p in sorted(root.rglob("*.jsonl"))
+             if "subagents" not in p.parts]
+    if limit is not None:
+        proj_dirs = sorted({p.parent for p in files}, key=str)[:max(0, limit)]
+        allowed = set(proj_dirs)
+        files = [p for p in files if p.parent in allowed]
+    return [aggregate_session(p, now=now) for p in files]
+
+
+def load_recon(path: Path | str) -> dict | None:
+    """读对账手记 jsonl(spec Decision 5 通道)。
+
+    返回 {path, entries, bad_lines}:entries 只收 agentId 为非空字符串的行;
+    坏 JSON 行 / 缺 agentId 行计入 bad_lines 如实上报。文件读不到 → None
+    (报告层写"无样本")。
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    entries: list[dict] = []
+    bad = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            bad += 1
+            continue
+        if isinstance(d, dict) and isinstance(d.get("agentId"), str) and d["agentId"]:
+            entries.append(d)
+        else:
+            bad += 1
+    return {"path": str(path), "entries": entries, "bad_lines": bad}
+
+
+def _render_session_rows(L: list[str], acc: SessionAccount) -> None:
+    """一个会话的明细表:主会话行 + 各子代理行(self/subtree、类型、深度、模型、终态)。"""
+    L.append(f"### 会话 `{acc.session_id}`")
+    L.append("")
+    L.append(f"- 主转录:`{acc.path}`")
+    L.append("")
+    L.append("| 行 | 类型 | 深度 | 模型 | 终态 | 响应 | input | output | 缓存写 | 缓存读 "
+             "| subtree(input/output/缓存写/缓存读) |")
+    L.append("|---|---|---|---|---|---:|---:|---:|---:|---:|---|")
+    m = acc.main
+    served = [k for k in m.by_model if k != "unknown"]
+    main_model = served[0] if len(served) == 1 else ("混合" if served else "—")
+    cells = ["主会话", "—", "—", main_model,
+             "在跑(非终值)" if acc.running else "终值",
+             fmt_int(m.responses), *_four_cells(_cols_of(m)), "—"]
+    L.append("| " + " | ".join(cells) + " |")
+    for r in acc.agents.agents:
+        state = "无转录" if r.no_transcript else _STATE_CN.get(r.state, "—")
+        st = acc.subtree.get(r.agentId)
+        st_s = "—" if st is None else " / ".join(fmt_int(v) for v in st)
+        cells = [f"`{r.agentId}`", r.agentType or "未知",
+                 "未知" if r.spawnDepth is None else str(r.spawnDepth),
+                 r.requested_model or "未知", state,
+                 fmt_int(r.self_acc.responses), *_four_cells(_cols_of(r.self_acc)), st_s]
+        L.append("| " + " | ".join(cells) + " |")
+    L.append("")
+    t = acc.total
+    L.append(f"- 会话总账(主 + Σ 子 self,含嵌套不双计):input {fmt_int(t.input_tokens)} / "
+             f"output {fmt_int(t.output_tokens)} / 缓存写 {fmt_int(t.cache_creation)} / "
+             f"缓存读 {fmt_int(t.cache_read)}")
+    for c in acc.cross_checks:
+        L.append(f"- 交叉校验:{c}")
+    L.append("")
+
+
+def _q2_sums(finals: list[SessionAccount]):
+    """终值会话的 Q2 汇总:主/子合计、按类型/深度/模型分布(模型用行级 by_model)。"""
+    main_sum = UsageColumns()
+    agents_sum = UsageColumns()
+    by_type: dict[str, UsageColumns] = {}
+    n_type: Counter = Counter()
+    by_depth: dict[str, UsageColumns] = {}
+    n_depth: Counter = Counter()
+    by_model: dict[str, UsageColumns] = {}
+    n_rows = 0
+    for acc in finals:
+        for mdl, c in acc.main.by_model.items():
+            by_model[mdl] = _add_cols(by_model.get(mdl, UsageColumns()), c)
+        main_sum = _add_cols(main_sum, _cols_of(acc.main))
+        for r in acc.agents.agents:
+            c = _cols_of(r.self_acc)
+            agents_sum = _add_cols(agents_sum, c)
+            n_rows += 1
+            tk = r.agentType or "未知"
+            by_type[tk] = _add_cols(by_type.get(tk, UsageColumns()), c)
+            n_type[tk] += 1
+            dk = "未知" if r.spawnDepth is None else str(r.spawnDepth)
+            by_depth[dk] = _add_cols(by_depth.get(dk, UsageColumns()), c)
+            n_depth[dk] += 1
+            for mdl, mc in r.self_acc.by_model.items():
+                by_model[mdl] = _add_cols(by_model.get(mdl, UsageColumns()), mc)
+    return (main_sum, agents_sum, by_type, n_type, by_depth, n_depth,
+            by_model, n_rows)
+
+
+def _dist_table(rows: list[tuple[str, int, UsageColumns]]) -> list[str]:
+    """分布小表:| 分组 | 行数 | 四列 |。"""
+    L = ["| 分组 | 行数 | input | output | 缓存写 | 缓存读 |",
+         "|---|---:|---:|---:|---:|---:|"]
+    L += [f"| {name} | {n} | {' | '.join(_four_cells(c))} |" for name, n, c in rows]
+    return L
+
+
+def _depth_sort_key(name: str):
+    return (1, 0) if name == "未知" else (0, int(name))
+
+
+def _q3_pairs(accounts: list[SessionAccount], recon: dict | None):
+    """手记条目按 agentId 与扫描到的子代理配对。
+
+    返回 (matched, unmatched):matched = (entry, AgentRow, 自报量, 文件四列合计,
+    残差);unmatched = entry(扫描未见该 agentId)。文件侧口径 = self 四列加总;
+    自报量缺/坏按 0(残差如实为 −文件合计,残差率记 n/a)。
+    """
+    if recon is None:
+        return [], []
+    agent_map: dict[str, AgentRow] = {}
+    for acc in accounts:
+        for r in acc.agents.agents:
+            agent_map.setdefault(r.agentId, r)
+    matched: list[tuple[dict, AgentRow, int, int, int]] = []
+    unmatched: list[dict] = []
+    for e in recon["entries"]:
+        r = agent_map.get(e.get("agentId"))
+        if r is None:
+            unmatched.append(e)
+            continue
+        try:
+            reported = int(e.get("self_reported_tokens") or 0)
+        except (TypeError, ValueError):
+            reported = 0
+        file_sum = sum(_cols_of(r.self_acc))
+        matched.append((e, r, reported, file_sum, reported - file_sum))
+    return matched, unmatched
+
+
+def render_report(accounts: list[SessionAccount],
+                  lineages: list[LineageRow],
+                  recon: dict | None,
+                  meta: dict) -> str:
+    """把会话账 + 族系行 + 对账手记渲染成中文报告(纯函数,不碰 IO)。
+
+    accounts:scan_projects 的输出;lineages:lineage_rows 的输出;
+    recon:load_recon 的输出({path, entries, bad_lines})或 None(无手记 → Q3"无样本");
+    meta:{generated_at, projects_dir, limit}。
+    """
+    finals = [a for a in accounts if not a.running]
+    runnings = [a for a in accounts if a.running]
+    L: list[str] = []
+
+    # -- 头部 + 方法注记 ---------------------------------------------------------
+    L.append("# E0c · Claude Code 子代理 token 记账实验报告")
+    L.append("")
+    L.append(f"- 生成:{meta.get('generated_at', '')}(工具:`ferryman e0c`)")
+    L.append(f"- 数据:{len(accounts)} 个会话(终值 {len(finals)},在跑 {len(runnings)}),"
+             f"扫描根:{meta.get('projects_dir', '~/.claude/projects')}")
+    if meta.get("limit") is not None:
+        L.append(f"- 冒烟限制:只扫前 {meta['limit']} 个项目目录(样本有限,数字不作全量结论)")
+    L.append("- 口径:四列 = input / output / cache_creation / cache_read(官方 usage 字段);"
+             "**四列按 message.id 去重**(同一 id 拆多行只计一次,优先取带 stop_reason 的行);"
+             "**responses = 计入账目的干净组数**(组内冲突组 / 全零占位组只进长尾,不占 responses)")
+    L.append(f"- {FEEDBACK_COUPLE_NOTE}")
+    L.append("")
+
+    # -- Q1 逐会话明细账 ----------------------------------------------------------
+    L.append("## Q1 · 逐会话明细账")
+    L.append("")
+    if not finals:
+        L.append("(无终值会话)")
+        L.append("")
+    for acc in finals:
+        _render_session_rows(L, acc)
+    if lineages:
+        L.append("### 族系合计(识别未验证)")
+        L.append("")
+        L.append("| 链上会话 | input | output | 缓存写 | 缓存读 | 识别依据 |")
+        L.append("|---|---:|---:|---:|---:|---|")
+        for row in lineages:
+            ids = ", ".join(f"`{s}`" for s in row.session_ids)
+            L.append(f"| {ids} | {' | '.join(_four_cells(row.total))} | {row.basis} |")
+        L.append("")
+
+    # -- 在跑会话(非终值,单独成节) ---------------------------------------------
+    if runnings:
+        L.append("## 在跑会话(非终值,不进终值汇总)")
+        L.append("")
+        L.append("以下会话扫描时仍在活跃写入(mtime 距扫描 <5 分钟),账目不进 Q2 占比与"
+                 "族系合计;行内数字是扫描瞬间的快照,只会偏小。")
+        L.append("")
+        for acc in runnings:
+            _render_session_rows(L, acc)
+
+    # -- Q2 占比与分布(仅终值会话) ----------------------------------------------
+    L.append("## Q2 · 子代理占比与分布(仅终值会话)")
+    L.append("")
+    if not finals:
+        L.append("(无终值会话,无占比数据)")
+        L.append("")
+    else:
+        (main_sum, agents_sum, by_type, n_type, by_depth, n_depth,
+         by_model, _n_rows) = _q2_sums(finals)
+        total_sum = _add_cols(main_sum, agents_sum)
+        L.append("| 口径 | input | output | 缓存写 | 缓存读 |")
+        L.append("|---|---:|---:|---:|---:|")
+        L.append(f"| 主会话合计 | {' | '.join(_four_cells(main_sum))} |")
+        L.append(f"| 子代理合计(self) | {' | '.join(_four_cells(agents_sum))} |")
+        L.append(f"| 总账 | {' | '.join(_four_cells(total_sum))} |")
+        shares = [_pct(a, t) for a, t in zip(agents_sum, total_sum,
+                                             strict=True)]
+        L.append(f"| 子代理占比 | {' | '.join(shares)} |")
+        L.append("")
+        L.append(FEEDBACK_COUPLE_NOTE)
+        L.append("")
+        L.append("### 按类型(agentType,未知桶单列)")
+        L.append("")
+        L += _dist_table([(k, n_type[k], by_type[k]) for k in sorted(by_type)])
+        L.append("")
+        L.append("### 按深度(spawnDepth,未知桶单列)")
+        L.append("")
+        L += _dist_table([(k, n_depth[k], by_depth[k])
+                          for k in sorted(by_depth, key=_depth_sort_key)])
+        L.append("")
+        L.append("### 按模型(行级 message.model,与 meta 请求别名无关)")
+        L.append("")
+        L.append("| 模型 | input | output | 缓存写 | 缓存读 |")
+        L.append("|---|---:|---:|---:|---:|")
+        L += [f"| {m} | {' | '.join(_four_cells(by_model[m]))} |"
+              for m in sorted(by_model)]
+        L.append("")
+
+    # -- Q3 对账 ------------------------------------------------------------------
+    L.append("## Q3 · 与 CLI 自报数对账")
+    L.append("")
+    if recon is None:
+        L.append("无样本(未提供对账手记 jsonl)。")
+        L.append("")
+    else:
+        entries = recon["entries"]
+        L.append(f"- 手记:`{recon['path']}`(有效 {len(entries)} 条,"
+                 f"坏行 {recon['bad_lines']} 条)")
+        if not entries:
+            L.append("- 无样本(手记文件为空)。")
+        else:
+            if len(entries) < 10:
+                L.append(f"- 注:样本 {len(entries)} 条,不足 10,以下仅供参考。")
+            L.append("")
+            L.append("| agentId | 类型 | 自报总量 | 文件四列合计 | 残差 | 残差率 | 备注 |")
+            L.append("|---|---|---:|---:|---:|---:|---|")
+            matched, unmatched = _q3_pairs(accounts, recon)
+            for e, r, reported, file_sum, residual in matched:
+                atype = (e.get("agentType") if isinstance(e.get("agentType"), str)
+                         else None) or r.agentType or "未知"
+                rate = ("n/a" if reported <= 0
+                        else f"{residual / reported * 100:+.1f}%")
+                L.append(f"| `{r.agentId}` | {atype} | {fmt_int(reported)} | "
+                         f"{fmt_int(file_sum)} | {fmt_int(residual)} | {rate} | |")
+            for e in unmatched:
+                atype = e.get("agentType") if isinstance(e.get("agentType"), str) else "未知"
+                reported = e.get("self_reported_tokens")
+                rep_s = fmt_int(int(reported)) if isinstance(reported, int) else "—"
+                L.append(f"| `{e.get('agentId')}` | {atype} | {rep_s} | — | — | — |"
+                         f" 扫描未见该 agentId(在跑/窗口外/他机) |")
+        L.append("")
+
+    # -- Q4 长尾清单 ---------------------------------------------------------------
+    L += _render_q4(accounts, finals, runnings)
+
+    # -- 定型建议(附判据,不附决定) ----------------------------------------------
+    L += _render_suggestion(accounts, finals, recon)
+
+    return "\n".join(L) + "\n"
+
+
+def _render_q4(accounts: list[SessionAccount], finals: list[SessionAccount],
+               runnings: list[SessionAccount]) -> list[str]:
+    """Q4 长尾清单:类别分布表 + 原始明细(逐会话封顶)。"""
+    n_agents = sum(len(a.agents.agents) for a in accounts)
+    n_sessions = len(accounts)
+    n_transcripts = sum(1 + a.agents.transcript_files for a in accounts)
+    states = Counter(r.state for a in accounts for r in a.agents.agents)
+    no_transcript = sum(1 for a in accounts for r in a.agents.agents
+                        if r.no_transcript)
+    unknown_bucket = sum(1 for a in accounts for r in a.agents.agents
+                         if r.agentType is None and not r.no_transcript)
+    parse_lines = [ln for a in accounts for ln in
+                   [*a.main.longtail,
+                    *(x for r in a.agents.agents for x in r.self_acc.longtail)]]
+    c_no_id = sum(1 for x in parse_lines if "缺 message.id" in x)
+    c_bad = sum(1 for x in parse_lines
+                if "JSON 解析失败" in x or "JSON 行不是对象" in x)
+    c_conflict = sum(1 for x in parse_lines if "互不一致" in x)
+    c_zero = sum(1 for x in parse_lines if "全零占位组" in x)
+    c_oow = sum(1 for a in accounts for x in a.longtail if "扫描窗口外" in x)
+
+    L = ["## Q4 · 长尾清单(分布与占比)", "",
+         "异常与边界样本的分布;占比分母按行类别标注(子代理行 / 会话 / 转录文件)。", "",
+         "| 类别 | 数量 | 分母 | 占比 |", "|---|---:|---:|---:|"]
+    rows = [
+        ("中断(子代理终态)", states.get("interrupted", 0), n_agents, "子代理行"),
+        ("空文件(子代理终态)", states.get("empty", 0), n_agents, "子代理行"),
+        ("在跑(子代理,非终值)", states.get("running", 0), n_agents, "子代理行"),
+        ("在跑会话(整场非终值)", len(runnings), n_sessions, "会话"),
+        ("有 meta 无转录(不成对)", no_transcript, n_agents, "子代理行"),
+        ("有转录无 meta(未知桶,不成对)", unknown_bucket, n_agents, "子代理行"),
+        ("无 message.id 行", c_no_id, n_transcripts, "转录文件"),
+        ("坏行/半行 JSON", c_bad, n_transcripts, "转录文件"),
+        ("组内非零 usage 冲突", c_conflict, n_transcripts, "转录文件"),
+        ("全零占位组", c_zero, n_transcripts, "转录文件"),
+        ("扫描窗口外新增文件", c_oow, n_sessions, "会话"),
+    ]
+    L += [f"| {name} | {n} | {den}({what}) | {_pct(n, den)} |"
+          for name, n, den, what in rows]
+    L.append("")
+    L.append(f"### 长尾明细(原始行,每会话最多 {_LONGTAIL_DETAIL_CAP} 条)")
+    L.append("")
+    any_detail = False
+    for acc in accounts:
+        lines = [*acc.longtail, *acc.agents.longtail, *acc.main.longtail]
+        lines += [f"agent {r.agentId}:{x}" for r in acc.agents.agents
+                  for x in r.self_acc.longtail]
+        if not lines:
+            continue
+        any_detail = True
+        L.append(f"- `{acc.session_id}`:")
+        for x in lines[:_LONGTAIL_DETAIL_CAP]:
+            L.append(f"  - {x}")
+        if len(lines) > _LONGTAIL_DETAIL_CAP:
+            L.append(f"  - …(另 {len(lines) - _LONGTAIL_DETAIL_CAP} 条略)")
+    if not any_detail:
+        L.append("(无长尾明细)")
+    L.append("")
+    return L
+
+
+def _render_suggestion(accounts: list[SessionAccount], finals: list[SessionAccount],
+                       recon: dict | None) -> list[str]:
+    """定型建议:只给判据与本机实测锚点,不替维护者做决定。"""
+    matched, _unmatched = _q3_pairs(accounts, recon)
+    rates = []
+    for _e, _r, reported, _file_sum, residual in matched:
+        if reported > 0:
+            rates.append(abs(residual) / reported)
+    if rates:
+        r_max = max(rates)
+        rate_line = (f"本机实测:残差率最大 {r_max * 100:.1f}%"
+                     f"(n={len(rates)}{' ,样本不足 10' if len(rates) < 10 else ''})。")
+    else:
+        rate_line = "本机实测:无对账样本,判据一暂无法评估。"
+    spawns = sum(a.agents.spawn_events for a in finals)
+    avg_line = (f"{spawns / len(finals):.1f}" if finals else "n/a")
+    return [
+        "## 定型建议(附判据,不附决定)",
+        "",
+        "是否把记账做成正式功能由维护者决定,本报告只给判据与本机锚点:",
+        "",
+        f"- 判据一(口径可信):Q3 残差率多数 ≤5% 且无 >10% 离群 → 文件四列口径可作记账"
+        f"权威;出现 >10% 离群先解释再议(spec 已知 ~2% 残差未解释,见 Q3)。{rate_line}",
+        f"- 判据二(功能价值):若子代理占比可观(参考:output 列 ≥20%)且会话平均 spawn "
+        f"数不小(本机实测:终值会话平均 {avg_line} 次/会话,计 {spawns:,} 次),"
+        f"记账入正式功能才有信息收益;两值都低则留实验记录即可。",
+        "- 判据三(防御边界):Q4 中不成对 / 在跑 / 扫描窗口外的实际占比,决定记账功能"
+        "至少要带的三类防御(缺 meta 未知桶、在跑排除、末尾重枚举);占比越高,防御越不能省。",
+        "",
+    ]
+
+
+def run(projects: str | None = None, out: str | None = None,
+        recon: str | None = None, limit: int | None = None) -> int:
+    """`ferryman e0c` 入口:扫描 → 族系 → 手记 → 渲染 → 落盘(UTF-8)。
+
+    projects 缺省 ~/.claude/projects;out 缺省 reports/e0c-cc-subagent-tokens.md
+    (相对仓库根,与 e0/e0b 同惯例);recon 为对账手记 jsonl 路径(可选,缺则
+    Q3 记"无样本");limit 限制项目目录数(真实数据冒烟用)。
+    """
+    projects_dir = Path(projects) if projects else Path.home() / ".claude" / "projects"
+    out_path = (Path(out) if out else
+                Path(__file__).resolve().parent.parent / "reports"
+                / "e0c-cc-subagent-tokens.md")
+    accounts = scan_projects(projects_dir, limit=limit)
+    lineages = lineage_rows(accounts, projects_dir)
+    recon_info = load_recon(recon) if recon else None
+    meta = {"generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "projects_dir": str(projects_dir), "limit": limit}
+    text = render_report(accounts, lineages, recon_info, meta)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text, encoding="utf-8")
+    n_running = sum(1 for a in accounts if a.running)
+    print(f"e0c done sessions={len(accounts)} running={n_running} out={out_path}")
+    return 0
+

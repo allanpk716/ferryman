@@ -13,6 +13,16 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("e0", help="E0a：CC/GLM 缓存 TTL 全量实测，出 reports/e0a-cc-glm.md")
     sub.add_parser("e0b", help="E0b：Codex 缓存 TTL 实测，出 reports/e0b-codex.md")
+    e0c_p = sub.add_parser("e0c", help="E0c：CC 子代理 token 记账实验，"
+                                       "出 reports/e0c-cc-subagent-tokens.md")
+    e0c_p.add_argument("--projects", default=None,
+                       help="会话根目录（默认 ~/.claude/projects）")
+    e0c_p.add_argument("--out", default=None,
+                       help="报告输出路径（默认 reports/e0c-cc-subagent-tokens.md）")
+    e0c_p.add_argument("--recon", default=None,
+                       help="对账手记 jsonl 路径（可选；缺省 Q3 记“无样本”）")
+    e0c_p.add_argument("--limit", type=int, default=None,
+                       help="只扫前 N 个项目目录（真实数据冒烟用）")
     sub.add_parser("eval-set", help="E1：构建评测集（分层抽样+注入样本+问答基准）")
     eval_p = sub.add_parser("eval", help="E1：跑候选模型评测（三层标准+耗时）")
     eval_p.add_argument("--provider", required=True,
@@ -41,6 +51,10 @@ def main(argv: list[str] | None = None) -> int:
         from .e0b import run
 
         return run()
+    if args.cmd == "e0c":
+        from .e0c import run as e0c_run
+
+        return e0c_run(args.projects, args.out, args.recon, args.limit)
     if args.cmd == "eval-set":
         from .eval_set import run
 
