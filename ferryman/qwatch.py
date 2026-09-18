@@ -20,9 +20,15 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .beat import OUT_OBSERVE
+
 ASK_USER_QUESTION = "AskUserQuestion"   # 该工具悬空＝正在等用户作答，恰是靶场景
 DEFAULT_MIN_QUESTIONS = 5               # 提问潮阈值下限（spec 决策 9：min_questions）
 TAIL_BYTES = 262_144
+
+# 漏检观测（票06，spec xcheck 附录第 10 条——observe 期粗粒度信号）口径常数：
+MISS_IDLE_S = 600.0        # 复活闲置门槛：GLM 实测 TTL 口径（spec D4 ~10 分钟）
+MISS_LOOKBACK_S = 1800.0   # 命中回看窗：此前 30 分钟内的末条疑似提问与复活关联
 
 _MARKER_RE = re.compile(r"\*\*Q\s?\d+", re.IGNORECASE)   # **Q1** / **Q 2** 形态
 # 编号/列表行：1. 2、 3) 以及 - * • · 起头（**Qn** 粗体行由标记桶先行接住）
@@ -150,3 +156,53 @@ def detect(path: Path, min_questions: int = DEFAULT_MIN_QUESTIONS,
     body = _CODE_FENCE_RE.sub("", "\n".join(texts[last_text_key]))
     bd = _classify(body)
     return Verdict(bd.total >= min_questions, bd.total, bd, aq_dangling)
+
+
+def correlate_miss_signals(rows: list[dict], *,
+                           idle_s: float = MISS_IDLE_S,
+                           lookback_s: float = MISS_LOOKBACK_S) -> int:
+    """漏检关联计数（票06，observe 期粗粒度信号）：对账本行做纯计数关联。
+
+    一次"全量重付的闲置复活请求"（usage 行：cache_read_tokens == 0，且与该
+    会话上一条 usage 行间隔 ≥ idle_s——首条无前驱不算复活）若此前 lookback_s
+    内该会话有过"末条疑似提问"命中（qwatch_hit 事件）、且最近一次命中与其
+    之间无任何真跳保温（beat 行 outcome ≠ observe——observe 演练未真发、
+    不保温），计一次漏检信号：守望看见了提问潮、没能保温、用户最终全量重付。
+    其间有真跳出场（hit/miss/error）即检测与执行已尽职——其后重付归 TTL
+    漂移/死区取舍（熔断与 D4 遥测管辖），不计漏检。判据真漏检（检测器没
+    认出提问潮）无正文级证据可回溯，粗粒度信号不含它——回调判据靠 D8 命中
+    清单人工复核。纯函数、只读计数类字段、坏行缺字段一律跳过（隐私不变量：
+    计数与 bool，永不接触消息内容）。
+    """
+    usage: dict[str, list[list[float]]] = {}    # sid → [(ts, cache_read), ...]
+    hits: dict[str, list[float]] = {}           # sid → [命中 ts, ...]
+    real_beats: dict[str, list[float]] = {}     # sid → [真跳 ts, ...]（observe 演练除外）
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        sid, ts = r.get("session_id"), r.get("ts")
+        if not isinstance(sid, str) or not sid or not isinstance(ts, (int, float)):
+            continue
+        kind = r.get("kind")
+        if kind == "usage":
+            cr = r.get("cache_read_tokens")
+            if isinstance(cr, (int, float)):
+                usage.setdefault(sid, []).append([float(ts), float(cr)])
+        elif kind == "qwatch_hit":
+            hits.setdefault(sid, []).append(float(ts))
+        elif kind == "beat" and r.get("outcome") != OUT_OBSERVE:
+            real_beats.setdefault(sid, []).append(float(ts))
+    n = 0
+    for sid, turns in usage.items():
+        turns.sort()
+        for (prev_ts, _), (ts, cr) in zip(turns, turns[1:]):
+            if cr != 0.0 or ts - prev_ts < idle_s:
+                continue    # 非闲置复活 / 非全量重付（首条无前驱天然出局）
+            window = [t for t in hits.get(sid, []) if ts - lookback_s <= t < ts]
+            if not window:
+                continue    # 此前 30 分钟内无末条疑似提问命中可关联
+            hit_ts = max(window)             # 取最近一次命中锚定真跳回看
+            if any(hit_ts <= b < ts for b in real_beats.get(sid, [])):
+                continue    # 其间有真跳保温——非漏检
+            n += 1
+    return n

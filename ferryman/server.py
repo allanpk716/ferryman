@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 from .accounts import Accounts
 from .ferry import INJECT_CLOSE, INJECT_OPEN
 from .ledger import SUBAGENT_EVENT_LEAK_S, Ledger, SessionState, now_s
+from .qwatch import correlate_miss_signals
 from .store import Store
 from .transcripts import has_dangling_tool_use
 
@@ -34,6 +35,7 @@ DEGRADE_AFTER_BLOCKS = 3        # DESIGNS §6.10-6：连续兜底拦截 3 次 �
 PENDING_TTL_S = 24 * 3600
 WARN_CONTEXT_CAP = 2000         # 警告 additionalContext 的字符上限
 HEALTH_GRACE_S = 600            # daemon 启动宽限：计数器刚归零不足以判钩子失效（防误报，T26）
+QWATCH_MISS_SCAN_S = 86400.0    # 票06 漏检关联扫描窗：24h（覆盖 30min 回看＋复活间隙）
 
 
 class GateStats:
@@ -425,6 +427,20 @@ class FerryDaemon:
         except Exception:  # noqa: BLE001 — 同上
             return False
 
+    def _qwatch_miss_signals(self) -> int:
+        """票06 漏检关联计数：全量重付的闲置复活请求 × 此前 30 分钟内末条疑似
+        提问命中且其间无真跳保温（口径见 qwatch.correlate_miss_signals）。
+        /stats 拉取时扫近 24h 账本行现算（无内存态，重启不丢口径）；只出计数
+        （隐私铁律）；任何故障按 0——旁路信号绝不影响 /stats 主路径。"""
+        if self.accounts is None:
+            return 0
+        try:
+            return correlate_miss_signals(
+                self.accounts.read(since=now_s() - QWATCH_MISS_SCAN_S))
+        except Exception as e:  # noqa: BLE001 — 账本读失败按无信号
+            print(f"[stats] 漏检关联计数失败（按 0）: {e}", flush=True)
+            return 0
+
     def qwatch_stop(self) -> dict:
         """一键停（T51 票04）：mode 置 off＋取消全部在飞计划与未关窗口。
 
@@ -475,6 +491,8 @@ class FerryDaemon:
                       "beats_by_outcome": {"hit": 0, "miss": 0,
                                            "error": 0, "observe": 0},
                       "cost_actual": 0.0}
+        # 票06：漏检关联计数（账本近 24h 行现算，粗粒度 observe 期信号）
+        qwatch["miss_signals"] = self._qwatch_miss_signals()
         qwatch["mode"] = self.cfg.question_watch.mode
         return {
             "gate_calls_total": total,
