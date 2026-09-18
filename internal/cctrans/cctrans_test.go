@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ferryman/internal/jsonl"
 )
 
 func lineOf(d any) string {
@@ -321,6 +323,51 @@ func TestT48AsyncLaunchBadLinesSkippedNotRaised(t *testing.T) {
 	}
 	if !HasAsyncLaunch(p) {
 		t.Fatal("坏行夹在好行间应跳过并照常判定 → true")
+	}
+}
+
+// ---- 票10 骑手收口 · 坏 UTF-8 尾窗用例 ----
+
+func TestTailWindowBadUTF8ReplacedThenParsedPerLine(t *testing.T) {
+	// 尾窗含非法 UTF-8 字节：统一 Python decode("utf-8", errors="replace") 语义
+	// （qwatch 版 ToValidUTF8 收口进 internal/jsonl.TailWindow 单源；修复旧
+	// cctrans 私有版直 Split 原始字节的保真缺口）——坏字节替换为 U+FFFD 后
+	// 照常按行切分，其余合法行不受影响照常解析。
+	good1 := lineOf(assistantLine("t1"))
+	good2 := lineOf(resultLine("t1"))
+	raw := good1 + "\n" + "\xff\xfe 非法字节行 \xc3\x28 更多\n" + good2
+	p := filepath.Join(t.TempDir(), "badutf8.jsonl")
+	if err := os.WriteFile(p, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 单源直断：TailWindow 输出的坏字节行已替换为 U+FFFD，无原始非法字节残留。
+	lines, ok := jsonl.TailWindow(p, 1<<20)
+	if !ok {
+		t.Fatal("TailWindow 应成功")
+	}
+	if len(lines) != 3 {
+		t.Fatalf("应按行切出 3 行, got %d", len(lines))
+	}
+	if i := strings.IndexByte(lines[1], 0xff); i >= 0 { // 原始 0xFF 不得残留
+		t.Fatalf("坏字节行应已替换, 仍含原始 0xFF 字节: %q", lines[1])
+	}
+	if !strings.Contains(lines[1], "�") {
+		t.Fatalf("坏字节应替换为 U+FFFD, got %q", lines[1])
+	}
+
+	// 行语义不变：坏行按坏行跳过，前后合法行照常参与判定——
+	// t1 已收 result → 静止 false。
+	if HasDanglingToolUse(p) {
+		t.Fatal("t1 已收 result 应为 false（坏行不阻断其余行解析）")
+	}
+	// 坏行之后追加悬空行 → 照常检出 true（坏行只跳过，不断流）。
+	p2 := filepath.Join(t.TempDir(), "badutf8_dangling.jsonl")
+	if err := os.WriteFile(p2, []byte(raw+"\n"+lineOf(assistantLine("t2"))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !HasDanglingToolUse(p2) {
+		t.Fatal("坏行后的悬空 t2 应检出 true")
 	}
 }
 

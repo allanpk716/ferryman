@@ -11,9 +11,6 @@ package cctrans
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
-	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,41 +144,8 @@ func AssistantTurns(path string) []Turn {
 	return turns
 }
 
-// tailWindow 只读尾部 tailBytes 字节并切行（Python 尾窗读法 1:1：
-// Stat 取文件长 → ReadAt 尾段 → end > tail 时丢弃首行半行）。
-// 打不开/读不了 → false（一切 OSError 语义 → false）。
-func tailWindow(path string, tailBytes int64) ([]string, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, false
-	}
-	end := st.Size()
-	off := end - tailBytes
-	if off < 0 {
-		off = 0
-	}
-	if off > end {
-		off = end // tailBytes 为负等异常入参：等效空窗（Python seek 越界读空）
-	}
-	data := make([]byte, end-off)
-	if len(data) > 0 {
-		n, rerr := f.ReadAt(data, off)
-		if rerr != nil && !errors.Is(rerr, io.EOF) {
-			return nil, false
-		}
-		data = data[:n]
-	}
-	lines := strings.Split(string(data), "\n")
-	if end > tailBytes && len(lines) > 0 {
-		lines = lines[1:] // 窗口首行可能是半行，丢弃
-	}
-	return lines, true
-}
+// tailWindow 已收口至 internal/jsonl.TailWindow（票 10 骑手：qwatch/cctrans
+// 两份私有副本归一单源；统一 ToValidUTF8 语义即 Python decode(errors="replace")）。
 
 // HasDanglingToolUse 尾部悬空 tool_use 判定（默认 256KB 尾窗）。
 func HasDanglingToolUse(path string) bool {
@@ -196,7 +160,7 @@ func HasDanglingToolUse(path string) bool {
 // 坏行/缺字段/无 assistant 行一律 False（宁可多摆渡不误判运行中；漏判由
 // covers_until 兜住正确性）。
 func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
-	lines, ok := tailWindow(path, tailBytes)
+	lines, ok := jsonl.TailWindow(path, tailBytes) // 票10 骑手：尾窗读法收口 jsonl 单源
 	if !ok {
 		return false
 	}
@@ -342,7 +306,7 @@ func FirstUserMessageHash(path string) string {
 // 坏行/缺字段/OSError 一律 False；message 非 dict 的行安全跳过（评审#11：
 // 调用点 _park_or_close 无 try，直穿 /subagent 钩子）。
 func HasAsyncLaunch(path string) bool {
-	lines, ok := tailWindow(path, DefaultTailBytes)
+	lines, ok := jsonl.TailWindow(path, DefaultTailBytes)
 	if !ok {
 		return false
 	}

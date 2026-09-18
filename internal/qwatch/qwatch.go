@@ -17,10 +17,7 @@
 package qwatch
 
 import (
-	"errors"
 	"fmt"
-	"io"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -158,8 +155,8 @@ func Detect(path string, minQuestions int) Verdict {
 // 缺文件/空文件/坏行：IsSurge=false 零计数兜底、读失败 AQD=true（真空真），
 // 绝不抛错。
 func DetectTail(path string, minQuestions int, tailBytes int64) Verdict {
-	lines, ok := tailWindow(path, tailBytes)
-	if !ok { // 一切 OSError 语义 → 读失败兜底（真空真口径）
+	lines, ok := jsonl.TailWindow(path, tailBytes) // 票10 骑手：尾窗读法收口 jsonl 单源
+	if !ok {                                       // 一切 OSError 语义 → 读失败兜底（真空真口径）
 		return Verdict{IsSurge: false, AskUserQuestionDangling: true}
 	}
 	texts := map[string][]string{} // message id → 文本块（分片聚合）
@@ -249,42 +246,8 @@ func DetectTail(path string, minQuestions int, tailBytes int64) Verdict {
 		AskUserQuestionDangling: aqDangling}
 }
 
-// tailWindow 只读尾部 tailBytes 字节并切行（Python 尾窗读法 1:1：
-// Stat 取文件长 → ReadAt 尾段 → end > tail 时丢弃首行半行）。
-// 打不开/读不了 → false（一切 OSError 语义 → false）。
-// 解码 errors="replace" 语义：非法 UTF-8 字节串以 U+FFFD 替换后按 str 切行。
-func tailWindow(path string, tailBytes int64) ([]string, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, false
-	}
-	end := st.Size()
-	off := end - tailBytes
-	if off < 0 {
-		off = 0
-	}
-	if off > end {
-		off = end // tailBytes 为负等异常入参：等效空窗（Python seek 越界读空）
-	}
-	data := make([]byte, end-off)
-	if len(data) > 0 {
-		n, rerr := f.ReadAt(data, off)
-		if rerr != nil && !errors.Is(rerr, io.EOF) {
-			return nil, false
-		}
-		data = data[:n]
-	}
-	lines := strings.Split(strings.ToValidUTF8(string(data), "�"), "\n")
-	if end > tailBytes && len(lines) > 0 {
-		lines = lines[1:] // 窗口首行可能是半行，丢弃
-	}
-	return lines, true
-}
+// tailWindow 已收口至 internal/jsonl.TailWindow（票 10 骑手：qwatch/cctrans
+// 两份逐字等价私有副本归一单源；ToValidUTF8 即 Python decode(errors="replace")）。
 
 // CorrelateMissSignals 漏检关联计数（票06，observe 期粗粒度信号）：
 // 对账本行做纯计数关联。
