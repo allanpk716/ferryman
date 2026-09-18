@@ -12,3 +12,5 @@
 **Blocked by**：15, 16, 11
 
 **追加验收（票 04 占位回填）**：test_accounts.py 的 3 个摆渡记账 e2e 占位在本票转绿——test_ferry_completion_books_handoff / test_failed_ferry_books_exactly_one_row / test_booking_failure_never_breaks_ferry（Go 占位见 internal/accounts/accounts_test.go 的 t.Skip，含 Python 断言要点）。
+
+**追加验收（票 08 缓交占位回填）**：test_codex_extract.py 的 test_skeleton_fallback_uses_codex_extraction 在本票（或其 daemon 链前序票落地处）转绿。

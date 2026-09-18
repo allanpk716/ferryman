@@ -10,3 +10,5 @@
 - [ ] Chat 全链 context 取消（超时请求不悬挂 goroutine）
 
 **Blocked by**：17, 07, 08
+
+**追加验收（票 08 缓交占位回填）**：test_codex_extract.py 的 test_ferry_session_dispatches_codex 在本票转绿（agent=codex 分派走 codextrans 提取）。
