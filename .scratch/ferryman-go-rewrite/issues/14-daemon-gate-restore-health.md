@@ -10,3 +10,5 @@
 - [ ] restore 相关用例（散在 test_gate.py）→ restore_test.go 且绿
 
 **Blocked by**：13
+
+**追加验收（票 04 占位回填）**：test_accounts.py 的 3 个闸门/归还 e2e 占位在本票转绿——test_block_books_entry / test_bypass_books_entry / test_restore_books_inject（Go 占位见 internal/accounts/accounts_test.go 的 t.Skip，含 Python 断言要点）。

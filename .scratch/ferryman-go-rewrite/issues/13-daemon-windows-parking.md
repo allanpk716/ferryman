@@ -11,3 +11,5 @@
 - [ ] 锁序注释在 windows.go 顶部（含"锁内只有内存操作"纪律说明）
 
 **Blocked by**：09, 10, 11, 04, 05
+
+**追加验收（票 04 占位回填）**：test_accounts.py 的 4 个窗口 e2e 占位在本票转绿——test_window_books_on_subagent_cycle / test_window_closes_on_prompt / test_window_closes_on_bypass_prompt / test_window_reanchors_after_leak_gap（Go 占位见 internal/accounts/accounts_test.go 的 t.Skip，含 Python 断言要点）。
