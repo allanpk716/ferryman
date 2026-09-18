@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -324,3 +325,60 @@ func TestAPI(t *testing.T) {
 }
 
 func near(a, b float64) bool { return math.Abs(a-b) <= 1e-6 }
+
+// TestNote 服务端提示条：SetNote 后 sessions/timeline 都带 note 键且值正确；
+// 未 SetNote 且目录存在时不得出现 note 键；目录缺失提示与演示标注并存时用
+// "；"连接、演示标注在后（前端展示顺序：先讲数据为何为空，再讲这是演示）。
+func TestNote(t *testing.T) {
+	dir := seedLedger(t)
+	demoNote := "演示模式：当前数据为合成账本（含未来心跳事件的预演），非真实流水"
+
+	noted := New(dir)
+	noted.SetNote(demoNote)
+	tsNoted := httptest.NewServer(noted.Routes())
+	t.Cleanup(tsNoted.Close)
+
+	missing := New(filepath.Join(dir, "no-such-dir"))
+	missing.SetNote(demoNote)
+	tsMissing := httptest.NewServer(missing.Routes())
+	t.Cleanup(tsMissing.Close)
+
+	cases := []struct {
+		name string
+		srv  *httptest.Server
+		path string
+		note any    // 期望 note 值；nil = 不应出现 note 键
+	}{
+		{name: "sessions 带演示标注", srv: tsNoted, path: "/api/sessions", note: demoNote},
+		{name: "timeline 带演示标注", srv: tsNoted, path: "/api/timeline?lineage=lin-t1", note: demoNote},
+		{
+			name: "未 SetNote 且目录存在 → 无 note 键", srv: serve(t, dir), path: "/api/sessions", note: nil,
+		},
+		{
+			name: "未 SetNote 且目录存在 → timeline 无 note 键", srv: serve(t, dir), path: "/api/timeline?lineage=lin-t1", note: nil,
+		},
+		{
+			name: "目录缺失 + 演示标注 → 「；」连接且演示在后", srv: tsMissing, path: "/api/sessions",
+			note: fmt.Sprintf("数据目录不存在：%s；%s", filepath.Join(dir, "no-such-dir"), demoNote),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := call(t, tc.srv, http.MethodGet, tc.path, "")
+			if status != 200 {
+				t.Fatalf("status = %d\n%s", status, body)
+			}
+			m := decode(t, body)
+			got, ok := m["note"]
+			if tc.note == nil {
+				if ok {
+					t.Fatalf("不应出现 note 键，got %v", got)
+				}
+				return
+			}
+			if !ok || got != tc.note {
+				t.Fatalf("note = %v, want %q", got, tc.note)
+			}
+		})
+	}
+}

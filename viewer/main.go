@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"ferryman/viewer/internal/demo"
 	"ferryman/viewer/internal/server"
 )
 
@@ -37,10 +38,30 @@ func main() {
 	data := flag.String("data", "", "账本目录或数据根（默认 $FERRYMAN_DATA 或 ~/ferryman；根下无 *.jsonl 而有 accounts/ 时自动下钻）")
 	port := flag.Int("port", 0, "监听端口（0=随机）")
 	noBrowser := flag.Bool("no-browser", false, "启动后不自动打开浏览器")
+	isDemo := flag.Bool("demo", false, "演示模式：加载确定性合成账本（非真实数据），忽略 --data")
 	flag.Parse()
-	dir := resolveDataDir(*data)
 
-	mux := server.New(dir).Routes()
+	// --demo 独占数据源：忽略 --data/$FERRYMAN_DATA，合成账本写进一次性临时目录，
+	// 绝不碰真实账本；目录留给系统临时区清理（查看器只读，进程期间无人回收它）。
+	var dir string
+	if *isDemo {
+		d, err := os.MkdirTemp("", "ferryman-demo-")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if _, err := demo.Write(d, demoBase(time.Now())); err != nil {
+			log.Fatal(err)
+		}
+		dir = d
+	} else {
+		dir = resolveDataDir(*data)
+	}
+
+	srv := server.New(dir)
+	if *isDemo {
+		srv.SetNote("演示模式：当前数据为合成账本（含未来心跳事件的预演），非真实流水")
+	}
+	mux := srv.Routes()
 	mux.HandleFunc("GET /favicon.svg", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Cache-Control", "max-age=86400")
@@ -57,13 +78,17 @@ func main() {
 		log.Fatal(err)
 	}
 	url := fmt.Sprintf("http://%s", ln.Addr())
-	fmt.Printf("时间线查看器: %s （数据目录 %s，Ctrl+C 退出）\n", url, dir)
+	if *isDemo {
+		fmt.Printf("时间线查看器(演示模式): %s （合成数据目录 %s，Ctrl+C 退出）\n", url, dir)
+	} else {
+		fmt.Printf("时间线查看器: %s （数据目录 %s，Ctrl+C 退出）\n", url, dir)
+	}
 	if !*noBrowser {
 		openBrowser(url)
 	}
 	// ReadHeaderTimeout 防 slowloris 式慢握手占死连接（本服务只听本机回环，纵深防御）。
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	log.Fatal(srv.Serve(ln))
+	httpsrv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	log.Fatal(httpsrv.Serve(ln))
 }
 
 // openBrowser 按 GOOS 起系统默认浏览器；起不起来都不影响服务，错误忽略。
@@ -78,6 +103,17 @@ func openBrowser(url string) {
 		cmd = exec.Command("xdg-open", url)
 	}
 	_ = cmd.Start()
+}
+
+// demoBase 取演示时间锚：今天本地 09:00，未到 09:00 则取昨日——剧本最晚事件在
+// base+101min，锚定 09:00 既让整条时间线落在白天，也保证所有时间戳都已过去
+//（演示里冒出"未来"的时间戳会露馅）。
+func demoBase(now time.Time) time.Time {
+	b := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, now.Location())
+	if b.After(now) {
+		b = b.AddDate(0, 0, -1)
+	}
+	return b
 }
 
 // resolveDataDir 解析账本目录。三种来源（--data / $FERRYMAN_DATA / ~/ferryman）都按

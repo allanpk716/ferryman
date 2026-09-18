@@ -19,10 +19,28 @@ import (
 // Server 持有数据目录；handler 内现读账本（6.6 万行量级解析 ~百毫秒，可接受）。
 type Server struct {
 	dataDir string
+	note    string // 非空时随 sessions/timeline 响应下发（--demo 的"合成数据"标注）
 }
 
 // New 构造服务。dataDir 为账本目录（accounts/*.jsonl 所在）。
 func New(dataDir string) *Server { return &Server{dataDir: dataDir} }
+
+// SetNote 设置响应提示条（演示模式的"非真实流水"标注）。走 API 而非页面：
+// 前端零改动即可拿到，且两个 JSON 端点行为一致。
+func (s *Server) SetNote(note string) { s.note = note }
+
+// noteSuffix 组装响应 note 值：目录缺失提示（可空）在前、本服务标注在后，"；"连接；
+// 两者皆空返回空串（调用方据此整体省略 note 键）。sessions/timeline 共用保证对称。
+func (s *Server) noteSuffix(base string) string {
+	switch {
+	case base == "":
+		return s.note
+	case s.note == "":
+		return base
+	default:
+		return base + "；" + s.note
+	}
+}
 
 // Routes 组装 API 路由并返回 mux。"/"（静态文件）不在此注册——
 // 由 main 用 //go:embed 的 web FS 追加挂载。
@@ -42,17 +60,21 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if os.IsNotExist(err) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"sessions": []ledger.SessionSummary{},
-				"note":     fmt.Sprintf("数据目录不存在：%s", s.dataDir),
+				"note":     s.noteSuffix(fmt.Sprintf("数据目录不存在：%s", s.dataDir)),
 			})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"sessions":     ledger.Summarize(entries),
 		"generated_at": float64(time.Now().Unix()),
-	})
+	}
+	if n := s.noteSuffix(""); n != "" {
+		resp["note"] = n
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleTimeline GET /api/timeline?lineage=<id> → 三数组（各自按 ts 升序）：
@@ -66,7 +88,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				"requests": []ledger.Entry{},
 				"events":   []ledger.Entry{},
 				"windows":  []ledger.Entry{},
-				"note":     fmt.Sprintf("数据目录不存在：%s", s.dataDir),
+				"note":     s.noteSuffix(fmt.Sprintf("数据目录不存在：%s", s.dataDir)),
 			})
 			return
 		}
@@ -101,11 +123,15 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if windows == nil {
 		windows = []ledger.Entry{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"requests": requests,
 		"events":   events,
 		"windows":  windows,
-	})
+	}
+	if n := s.noteSuffix(""); n != "" {
+		resp["note"] = n
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // backtestReq 是 POST /api/backtest 的请求体。params 键名全小写下划线，
