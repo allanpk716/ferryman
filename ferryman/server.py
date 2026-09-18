@@ -391,11 +391,32 @@ class FerryDaemon:
         if count > 0:
             w = self._windows.get(key)
             if w is None or now_s() - w["opened_ts"] > SUBAGENT_EVENT_LEAK_S:
-                # 首开；或上一轮 Stop 丢失、泄漏超时后重锚（旧窗不沿用，防 dur_s 虚高跨泄漏间隙，R10）
-                self._windows[key] = {"opened_ts": now_s()}
+                # 首开；或上一轮 Stop 丢失、泄漏超时后重锚（旧窗不沿用，防 dur_s
+                # 虚高跨泄漏间隙，R10）。T51 两窗互斥（先开者赢）：等答复窗口
+                # 开着 → 不开停车窗（等答复窗只由新写入关窗，start/stop 不动它）。
+                if not self._qwatch_open(agent, session_id):
+                    self._windows[key] = {"opened_ts": now_s()}
         if count == 0 and key in self._windows:
             self._close_window(key, "subagents_done")
         return {"ok": True, "active": count > 0}
+
+    def parking_open(self, agent: str, session_id: str) -> bool:
+        """T51 两窗互斥探测（守望开等答复窗前调用）：停车窗是否开着。
+        泄漏防护与开窗重锚同口径（SUBAGENT_EVENT_LEAK_S）——超期旧窗视同已闭。
+        任何异常按未开（False），绝不影响守望主路径。"""
+        try:
+            w = self._windows.get((agent, session_id))
+            return w is not None and now_s() - w["opened_ts"] <= SUBAGENT_EVENT_LEAK_S
+        except Exception:  # noqa: BLE001 — 探测故障不得影响守望
+            return False
+
+    def _qwatch_open(self, agent: str, session_id: str) -> bool:
+        """T51 等答复窗口是否开着（台账窗口字段）。异常按未开。"""
+        try:
+            st = self.ledger.get(agent, session_id)
+            return st is not None and st.qwatch_opened_ts is not None
+        except Exception:  # noqa: BLE001 — 同上
+            return False
 
     def health(self) -> dict:
         now = now_s()

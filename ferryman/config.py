@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 GATE_MODES = ("off", "observe", "enforce")
+QWATCH_MODES = ("off", "observe", "enforce")
+QWATCH_MIN_LEAD_S = 60.0        # ferry_deadline_lead_s 下限（spec 决策 3 夹取区间）
 CONFIG_PATH = Path.home() / "ferryman" / "config.toml"
 
 
@@ -61,6 +63,17 @@ class HeartbeatCfg:
 
 
 @dataclass
+class QuestionWatchCfg:
+    """T51 问询守望（spec 决策 9）：提问潮等答复窗口＋心跳保温，默认 off。"""
+
+    mode: str = "off"                    # off | observe | enforce
+    min_questions: int = 5               # 提问潮阈值（unit_count ≥ 此值命中）
+    beat_interval_s: float = 420.0       # 0.7×GLM 实测 TTL 600s（口径统一 0.7×）
+    max_beats: int = 2                   # 每窗最多心跳跳数
+    ferry_deadline_lead_s: float = 480.0 # 摆渡死线提前量（校验见 validate）
+
+
+@dataclass
 class Config:
     gate_cc: str = "observe"             # 验证期默认 observe（DESIGN §6.2）
     gate_codex: str = "off"              # E0b 后再议
@@ -69,6 +82,7 @@ class Config:
     server: ServerCfg = field(default_factory=ServerCfg)
     notify: NotifyCfg = field(default_factory=NotifyCfg)
     heartbeat: HeartbeatCfg = field(default_factory=HeartbeatCfg)
+    question_watch: QuestionWatchCfg = field(default_factory=QuestionWatchCfg)
     ferry_provider: str = ""              # 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
 
     @property
@@ -129,17 +143,48 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
                 ttl_s=float(hb.get("ttl_s", 0.0)),
                 ttl_measured_at=str(hb.get("ttl_measured_at", "")),
                 ttl_source=str(hb.get("ttl_source", "")))
+        if "question_watch" in data:
+            q = data["question_watch"]
+            cfg.question_watch = QuestionWatchCfg(
+                mode=str(q.get("mode", cfg.question_watch.mode)),
+                min_questions=int(q.get("min_questions",
+                                        cfg.question_watch.min_questions)),
+                beat_interval_s=float(q.get("beat_interval_s",
+                                            cfg.question_watch.beat_interval_s)),
+                max_beats=int(q.get("max_beats", cfg.question_watch.max_beats)),
+                ferry_deadline_lead_s=float(q.get(
+                    "ferry_deadline_lead_s",
+                    cfg.question_watch.ferry_deadline_lead_s)))
         cfg.ferry_provider = str(data.get("ferry", {}).get("provider", cfg.ferry_provider))
     validate(cfg, relax_min_gap=relax_min_gap)
     return cfg
 
 
 def validate(cfg: Config, relax_min_gap: bool = False) -> None:
+    """违例拒启。附带 T51 就地修正：question_watch 开启时 ferry_deadline_lead_s
+    低于下限则夹取为 QWATCH_MIN_LEAD_S（打印告警）；上限不夹取——summarize_s+lead
+    超过 block_s 直接拒绝（摆渡死线必须赶在闸门拦截之前，spec 决策 3）。"""
     problems: list[str] = []
     if cfg.gate_cc not in GATE_MODES:
         problems.append(f"gate.cc_mode 非法: {cfg.gate_cc}（可选 {GATE_MODES}）")
     if cfg.gate_codex not in GATE_MODES:
         problems.append(f"gate.codex_mode 非法: {cfg.gate_codex}")
+    qw = cfg.question_watch
+    if qw.mode not in QWATCH_MODES:
+        problems.append(f"question_watch.mode 非法: {qw.mode}（可选 {QWATCH_MODES}）")
+    if qw.mode != "off":        # 功能关闭时不校验 lead（存量小阈值配置零影响）
+        t = cfg.threshold_for("cc")
+        if qw.ferry_deadline_lead_s < QWATCH_MIN_LEAD_S:
+            print(f"[config] ⚠ question_watch.ferry_deadline_lead_s "
+                  f"{qw.ferry_deadline_lead_s:g}s 低于下限，已夹取为 "
+                  f"{QWATCH_MIN_LEAD_S:g}s", flush=True)
+            qw.ferry_deadline_lead_s = QWATCH_MIN_LEAD_S
+        if qw.ferry_deadline_lead_s + t.summarize_s > t.block_s:
+            problems.append(
+                f"question_watch.ferry_deadline_lead_s 过大："
+                f"summarize_s + lead（{t.summarize_s:g} + "
+                f"{qw.ferry_deadline_lead_s:g}s）须 ≤ block_s（{t.block_s:g}s）"
+                f"——摆渡死线必须赶在闸门拦截之前")
     for agent in ("cc", "codex"):
         t = cfg.threshold_for(agent)
         if not t.summarize_s < t.block_s:

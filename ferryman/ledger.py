@@ -11,7 +11,7 @@ DESIGN §4：
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
@@ -41,6 +41,13 @@ class SessionState:
     observed_active: bool = False    # daemon 启动后是否见过其活动（lookback=0 的摆渡闸）
     handed_off_at: float = 0.0       # 最近一次成功摆渡时间（防重复入队）
     enriched_write: float = -1.0     # 已富化(标题/峰值)到哪个 last_write 版本
+    # T51 等答复窗口（问询守望）：opened_ts None=无窗。开窗在 Watcher._maybe_qwatch
+    # （命中谓词四条件），关窗只在下面的新写入分支（任何新写入=用户已作答）；
+    # plan 由票03调度器填充，snapshot=(last_write,size) 供两道验新鲜度比对。
+    qwatch_opened_ts: float | None = None
+    qwatch_beats_fired: int = 0
+    qwatch_plan: list[float] = field(default_factory=list)
+    qwatch_snapshot: tuple[float, int] | None = None
 
 
 class Ledger:
@@ -118,6 +125,11 @@ class Ledger:
                 st.last_write = mtime
                 if mtime >= daemon_started_at:
                     st.observed_active = True
+                if st.qwatch_opened_ts is not None:   # T51：任何新写入关窗
+                    st.qwatch_opened_ts = None
+                    st.qwatch_beats_fired = 0
+                    st.qwatch_plan = []
+                    st.qwatch_snapshot = None
             return st
 
     def get(self, agent: str, session_id: str) -> SessionState | None:

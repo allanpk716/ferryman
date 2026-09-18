@@ -107,7 +107,7 @@ class Harness:
                                                       model="fake")})
         self.server = make_server(self.daemon, self.port, self.token)
         self.watcher = Watcher(cfg, self.ledger, self.store, enqueue, self.started_at,
-                               self.accounts)
+                               self.accounts, ferry_daemon=self.daemon)
         self.worker = FerryWorker(cfg, self.store, self.tasks,
                                   accounts=self.accounts)
         threading.Thread(target=self.server.serve_forever,

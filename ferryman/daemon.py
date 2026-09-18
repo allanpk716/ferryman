@@ -21,6 +21,7 @@ from .config import Config
 from .ferry import ferry_session, load_config as load_providers
 from .ledger import Ledger, now_s
 from .prices import load_prices, price_tag
+from .qwatch import detect
 from .server import FerryDaemon, already_running, ensure_token, make_server
 from .store import Store
 from .transcripts import has_dangling_tool_use
@@ -50,12 +51,16 @@ class Watcher(threading.Thread):
     """mtime 轮询：登记台账 + 对达总结阈值的活跃会话懒富化并入队摆渡。"""
 
     def __init__(self, cfg: Config, ledger: Ledger, store: Store,
-                 enqueue, started_at: float, accounts=None):
+                 enqueue, started_at: float, accounts=None, ferry_daemon=None):
         super().__init__(daemon=True, name="ferryman-watch")
         self.cfg, self.ledger, self.store = cfg, ledger, store
         self.enqueue = enqueue
         self.started_at = started_at
         self.accounts = accounts          # None = 不采集（旧调用/测试零改动）
+        self.ferry_daemon = ferry_daemon  # None = 不可知（旧调用零改动）；T51 停车窗互斥探测用
+        # T51 等答复窗开窗判定的版本章：(agent, sid) → 已判定过的 last_write。
+        # 同一写入版本只读盘判定一次；仅内存，重启丢章=重启后多判一轮（无害）。
+        self._qwatch_seen: dict[tuple[str, str], float] = {}
         self.harvest = None
         if accounts is not None and cfg.watch.harvest_usage:
             from .harvest import HarvestState
@@ -89,6 +94,7 @@ class Watcher(threading.Thread):
             st = self.ledger.touch("cc", p.stem, str(p), mtime=mtime, size=size,
                                    daemon_started_at=self.started_at)
             self._harvest_usage(p, size, st)
+            self._maybe_qwatch(st)
             self._maybe_enqueue(st)
 
     def _poll_codex(self) -> None:
@@ -120,16 +126,79 @@ class Watcher(threading.Thread):
             return
         if st.handed_off_at >= st.last_write:
             return                      # 交接仍覆盖最新活动
+        due, window = self._qwatch_deadline(st, th)   # T51：(死线已到, 窗口开着)
+        if window and not due:
+            return                      # 等答复窗口期间推迟常规入队（写入关窗即恢复）
         if self.ledger.subagent_active(st.agent, st.session_id):
             return                      # T32：子代理运行中（钩子计数，内存判定）→ 推迟，不置 handed_off
-        if st.agent == "cc" and has_dangling_tool_use(Path(st.transcript_path)):
-            return                      # 悬空 tool_use：工具/子代理仍在跑，本轮推迟（不置 handed_off，下轮重查）
+        # 悬空 tool_use：推迟（不置 handed_off，下轮重查）。死线强制入队时不再因
+        # 悬空让步——含 AskUserQuestion：等答复窗拖到死线意味着用户久未作答，
+        # 闸门临近，被拦 ⇒ 交接必已存在（失败/超时由骨架降级兜底）。
+        if (not due and st.agent == "cc"
+                and has_dangling_tool_use(Path(st.transcript_path))):
+            return
         self._enrich(st)                # 懒富化：标题/峰值（每版本一次读盘）
         if st.peak_ctx < th.min_ctx_tokens:
             st.handed_off_at = st.last_write   # 过小会话：标记已处理防反复读盘
             return
         if self.enqueue(st):
             st.handed_off_at = now_s()  # 入队即记（防重复入队；失败由队列重试语义覆盖）
+
+    def _qwatch_deadline(self, st, th) -> tuple[bool, bool]:
+        """T51 等答复窗摆渡死线判定 →（死线已到, 窗口开着）。
+
+        死线 = block_s − ferry_deadline_lead_s：窗口会话闲置达此线即强制入队，
+        赶在闸门拦截（block_s）之前留出交接生成余量。任何异常按 (False, False)
+        ——绝不影响摆渡主路径（T48 同款纪律）。"""
+        try:
+            if st.qwatch_opened_ts is None:
+                return False, False
+            lead = self.cfg.question_watch.ferry_deadline_lead_s
+            return now_s() - st.last_write >= th.block_s - lead, True
+        except Exception:  # noqa: BLE001 — 判定故障按无窗处理
+            return False, False
+
+    def _maybe_qwatch(self, st) -> None:
+        """T51 等答复窗口开窗判定（守望轮询循环内；关窗在 Ledger.touch 新写入分支）。
+
+        命中谓词四条件全真才开窗（spec 决策 2）：①提问潮（qwatch.detect）；
+        ②悬空集 ⊆ {AskUserQuestion}（Verdict.askuserquestion_dangling 直用，
+        空集真空真）；③子代理在飞 = 0；④前缀 ≥ min_ctx_tokens。与停车窗互斥、
+        先开者赢（ferry_daemon.parking_open 探测）。仅 cc（检测器只认 CC jsonl）。
+        判定按 last_write 版本章缓存（每写一次判一次，不逐轮读盘）；子代理在飞/
+        停车窗开着属瞬态阻塞，不盖版本章，解除后同版本仍可开窗。任何异常吞掉
+        ——绝不影响守望与摆渡主路径。"""
+        qw = self.cfg.question_watch
+        if qw.mode == "off" or st.agent != "cc":
+            return                      # off 零开销；非 cc 直接跳过
+        key = (st.agent, st.session_id)
+        if st.qwatch_opened_ts is not None:
+            return                      # 已开窗；关窗只由新写入触发
+        if self._qwatch_seen.get(key) == st.last_write:
+            return                      # 该写入版本已判定过
+        try:
+            if not st.observed_active:
+                return                  # 与摆渡同纪律：启动后只见登记不动作
+            verdict = detect(Path(st.transcript_path),
+                             min_questions=qw.min_questions)
+            if not verdict.is_surge or not verdict.askuserquestion_dangling:
+                self._qwatch_seen[key] = st.last_write   # 结论性不满足，随版本缓存
+                return                  # 条件①②
+            if self.ledger.subagent_active(st.agent, st.session_id):
+                return                  # 条件③（瞬态：不盖版本章）
+            if (self.ferry_daemon is not None
+                    and self.ferry_daemon.parking_open(st.agent, st.session_id)):
+                return                  # 两窗互斥先开者赢（瞬态：不盖版本章）
+            self._enrich(st)            # 条件④要 peak_ctx（懒富化按版本缓存）
+            if st.peak_ctx < self.cfg.threshold_for(st.agent).min_ctx_tokens:
+                self._qwatch_seen[key] = st.last_write
+                return                  # 条件④（结论性：不新写不再变）
+            st.qwatch_opened_ts = now_s()
+            st.qwatch_beats_fired = 0
+            st.qwatch_plan = []         # 计划由票03调度器排定
+            st.qwatch_snapshot = (st.last_write, st.size)
+        except Exception as e:  # noqa: BLE001 — 窗口路径异常不影响守望主路径
+            print(f"[qwatch] 开窗判定异常（忽略继续）: {e}", flush=True)
 
     def _enrich(self, st) -> None:
         """标题/峰值上下文懒提取；同一 last_write 版本只做一次。"""
@@ -326,7 +395,8 @@ def serve(relax_min_gap: bool = False) -> int:
          "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False),
         encoding="utf-8")
 
-    watcher = Watcher(cfg, ledger, store, enqueue, started_at, accounts)
+    watcher = Watcher(cfg, ledger, store, enqueue, started_at, accounts,
+                      ferry_daemon=daemon)
     worker = FerryWorker(cfg, store, tasks, accounts)
     watcher.start()
     worker.start()
