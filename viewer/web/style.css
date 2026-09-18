@@ -599,3 +599,71 @@ a.tl-back {
   font-size: 12px;
 }
 a.tl-back:hover { text-decoration: underline; }
+
+/* ---------- 工具条：标题行加"参数配置"入口 ---------- */
+#toolbar-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+#toolbar-cfg {
+  color: #6fb3ff;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+#toolbar-cfg:hover { text-decoration: underline; }
+
+/* ---------- 配置页（#/cfg 只读参数展示） ---------- */
+.cfg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 2px 0 8px;
+}
+.cfg-head a {
+  color: #6fb3ff;
+  text-decoration: none;
+  font-size: 12px;
+}
+.cfg-head a:hover { text-decoration: underline; }
+.cfg-title { color: #ccc; font-size: 13px; }
+.cfg-meta {
+  color: #888;
+  font-size: 12px;
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+.cfg-warn { color: #ff8a80; padding: 8px 0; }
+.cfg-sec { margin-bottom: 14px; }
+.cfg-sec h3 {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  color: #7bc47b;
+  font-weight: 600;
+}
+table.cfg-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.cfg-table td {
+  padding: 4px 10px;
+  text-align: left;
+  border-bottom: 1px solid #222;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12.5px;
+  vertical-align: top;
+}
+.cfg-table td.k { color: #6fb3ff; width: 220px; }
+.cfg-table td.v {
+  font-family: Consolas, "Courier New", monospace;
+  color: #ddd;
+}
+.cfg-table tr.redacted td.v { color: #777; font-style: italic; }
+.cfg-note {
+  color: #666;
+  font-size: 11.5px;
+  margin-top: 4px;
+}

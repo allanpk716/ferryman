@@ -1632,12 +1632,114 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   draw();
 }
 
+// ---------- 配置页（#/cfg）：守护进程 config.toml 只读展示 ----------
+
+// renderCfg GET /api/config → 分段表格。密钥行后端已脱敏（••• 已隐藏），
+// 前端照单全收绝不二次猜测；找不到/解析失败也如实渲染说明，不白屏。
+async function renderCfg() {
+  var app = document.getElementById('app');
+  var seq = ++navSeq;
+  stopTlPlay();
+  setNote('');
+  app.textContent = '';
+  var loading = document.createElement('p');
+  loading.className = 'loading';
+  loading.textContent = '加载中…';
+  app.appendChild(loading);
+  var data;
+  try {
+    data = await fetchJSON('/api/config');
+  } catch (e) {
+    if (seq !== navSeq) return;
+    app.textContent = '';
+    var err = document.createElement('p');
+    err.className = 'error';
+    err.textContent = '加载失败：' + e.message;
+    app.appendChild(err);
+    return;
+  }
+  if (seq !== navSeq) return;
+
+  app.textContent = '';
+  var head = document.createElement('div');
+  head.className = 'cfg-head';
+  var back = document.createElement('a');
+  back.href = '#/';
+  back.textContent = '← 返回会话列表';
+  var title = document.createElement('span');
+  title.className = 'cfg-title';
+  title.textContent = '守护进程参数（只读）';
+  head.appendChild(back);
+  head.appendChild(title);
+  app.appendChild(head);
+
+  var meta = document.createElement('div');
+  meta.className = 'cfg-meta';
+  meta.textContent = data.found
+    ? '文件：' + data.path + (data.mtime ? ' · 最后修改 ' + data.mtime : '')
+    : '';
+  if (meta.textContent) app.appendChild(meta);
+
+  if (!data.ok) {
+    var warn = document.createElement('p');
+    warn.className = 'cfg-warn';
+    warn.textContent = data.note || '配置不可读';
+    app.appendChild(warn);
+  } else {
+    (data.sections || []).forEach(function (sec) {
+      var box = document.createElement('div');
+      box.className = 'cfg-sec';
+      var h = document.createElement('h3');
+      h.textContent = '[' + sec.name + ']';
+      box.appendChild(h);
+      var tb = document.createElement('table');
+      tb.className = 'cfg-table';
+      var tbody = document.createElement('tbody');
+      (sec.rows || []).forEach(function (r) {
+        var tr = document.createElement('tr');
+        if (r.redact) tr.className = 'redacted';
+        var k = document.createElement('td');
+        k.className = 'k';
+        k.textContent = r.key;
+        var v = document.createElement('td');
+        v.className = 'v';
+        v.textContent = r.value;
+        v.title = r.redact ? '形似密钥的键已脱敏，页面永远不显示明文' : '';
+        tr.appendChild(k);
+        tr.appendChild(v);
+        tbody.appendChild(tr);
+      });
+      tb.appendChild(tbody);
+      box.appendChild(tb);
+      app.appendChild(box);
+    });
+    if (data.note) {
+      var note = document.createElement('p');
+      note.className = 'cfg-note';
+      note.textContent = data.note;
+      app.appendChild(note);
+    }
+  }
+
+  // 查看器自身的固定口径（非 config.toml，写在前端）：一并交代，参数问题一站式可查
+  var viewerNote = document.createElement('p');
+  viewerNote.className = 'cfg-note';
+  viewerNote.textContent = '另：时间线页的积分口径与 TTL 是查看器前端的固定值（GLM 价 6.9/1.7/24 每万 tokens、'
+    + 'TTL 默认 600 秒），不随 config.toml 变；TTL 可在时序页图例行临时改（只影响当次显示）。';
+  app.appendChild(viewerNote);
+}
+
 // ---------- 路由 ----------
 
-// route 按 hash 前缀分发：#/t/<lineage> → renderTimeline；其余（#/ 或空）→ renderList。
+// route 按 hash 前缀分发：#/t/<lineage> → renderTimeline；#/cfg → renderCfg；
+// 其余（#/ 或空）→ renderList。
 // 畸形 % 序列（如手输 #/t/%zz）decode 抛 URIError → 回退原样串，时序页以"暂无数据"兜底。
 function route() {
   var h = location.hash || '#/';
+  if (h === '#/cfg') {
+    renderCfg();
+    return;
+  }
   var m = h.match(/^#\/t\/(.+)$/);
   if (!m) {
     renderList();

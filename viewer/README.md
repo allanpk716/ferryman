@@ -6,27 +6,42 @@
 
 ## 构建
 
-需 Go 1.22+（路由用了方法+路径 pattern）。
+需 Go 1.22+（路由用了方法+路径 pattern）。GUI 子系统链接（双击/快捷方式启动不闪黑窗；
+输出仍可重定向捕获）：
 
 ```
 cd viewer
-go build -o ferryman-timeline.exe .
+go build -ldflags "-H windowsgui" -o ferryman-timeline.exe .
 ```
 
 ## 运行
 
 ```
-ferryman-timeline.exe                                  # 默认数据根 ~/ferryman
+ferryman-timeline.exe                                  # 默认数据根 ~/ferryman；托盘图标常驻
 ferryman-timeline.exe --data D:\data\ferryman          # 指数据根：无 *.jsonl 而下有 accounts/ 时自动下钻
 ferryman-timeline.exe --data D:\data\ferryman\accounts # 直接指账本目录也行
 ferryman-timeline.exe --port 8787 --no-browser         # 固定端口、不开浏览器
+ferryman-timeline.exe --no-tray                        # 不建托盘（无界面环境/服务化）
+ferryman-timeline.exe --install-shortcuts              # 建桌面+开始菜单快捷方式后退出
 ```
 
 - 数据目录来源优先级：`--data` > 环境变量 `FERRYMAN_DATA` > `~/ferryman`；三者同为
   **数据根语义**——目录本身没有 `*.jsonl` 而其下有 `accounts/` 子目录时自动下钻一层。
 - 端口缺省随机，启动横幅打印实际 URL（固定 `127.0.0.1`，不对外监听）。
+- **托盘**（T47）：帆船图标常驻通知区，菜单「打开面板 / 退出」。固定端口被占且探到
+  `/api/sessions` 活着 = 面板已在跑 → 直接开浏览器退出（快捷方式因此"点一下必达面板"）。
+- **快捷方式**：`--install-shortcuts` 建「Ferryman 面板.lnk」（桌面 + 开始菜单，钉
+  `--port 15900`，图标取 exe 同目录 `icon.ico`）。想钉任务栏：右键 .lnk → 固定到任务栏。
 
 **只读声明**：查看器对数据目录只读——每次请求现读账本、不缓存、绝不写任何文件。
+
+## 参数配置页（T47）
+
+页面右上「参数配置」（`#/cfg`）：只读展示守护进程 `config.toml`（数据根下，与
+`accounts/` 同级）——段名即 TOML 表（嵌套拍平 `prices.glm`），段内按键序。形似密钥
+的键（`api_key`/`token`/末段 key/auth…）后端脱敏为「••• 已隐藏」，明文密钥永不进页面；
+数量词如 `min_ctx_tokens` 不误伤。找不到/解析失败页面如实说明，不编造。改参数请编辑
+文件本身（守护进程重启后生效），查看器不在页面上改。
 
 ## 反跑口径
 
@@ -61,6 +76,7 @@ go vet ./... && go test ./...
 
 - `internal/ledger`：账本读取与聚合（对齐 `ferryman/accounts.py` 的字段口径）。
 - `internal/policy`：心跳推导公式（对齐 `ferryman/policy.py`，黄金数字锚定）。
-- `internal/server`：只读 JSON API（`/api/sessions`、`/api/timeline`、`/api/backtest`）。
+- `internal/server`：只读 JSON API（`/api/sessions`、`/api/timeline`、`/api/backtest`、
+  `/api/config`）。
 - `web/`：前端三件套。纪律：账本数据只经 createElement/textContent/setAttribute 进 DOM
   （不拼 innerHTML）；跨页与连点均有竞态守卫；畸形数值一律兜底不白屏。
