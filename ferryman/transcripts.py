@@ -165,3 +165,71 @@ def first_user_message_hash(path: Path) -> str | None:
     except OSError:
         return None
     return None
+
+
+def has_async_launch(path: Path, tail_bytes: int = 262_144) -> bool:
+    """尾部异步派发判定（T48 票01）：最后一个 Task/Agent 派发是否为后台/异步启动。
+
+    True = 刚派出 async 子代理（工具调用秒回、真身仍在跑）——等待窗口应停表
+    停车（Stop 到达不闭窗），直到主会话恢复调用。判据（对最后一个 Task/Agent
+    tool_use 取 OR）：input 的 run_in_background/background 为真；或其
+    tool_result 首个 text 块以 "Async agent launched" 为前缀（严格前缀非子串
+    ——评审#6：防同步 result 中段复读该文案被误停车 1h；2026-09-18 实机观测
+    文案，CC 改版可能失效——判不中一律 False，退回旧语义=Stop 即闭窗）。
+    交错派发（async A 在飞 + 再派 sync B）在此层面返回 False——async 等待的
+    保留由 server 侧 saw_async latch 兜住（round 0 e2 实验教训）。
+    只读尾部 tail_bytes；坏行/缺字段/OSError 一律 False；message 非 dict 的行
+    安全跳过（评审#11：调用点 _park_or_close 无 try，直穿 /subagent 钩子）。
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            end = f.tell()
+            f.seek(max(0, end - tail_bytes))
+            data = f.read()
+    except OSError:
+        return False
+    lines = data.decode("utf-8", errors="replace").split("\n")
+    if end > tail_bytes and lines:
+        lines = lines[1:]                  # 窗口首行可能是半行，丢弃
+    last_dispatch: str | None = None       # 尾窗内最后一个 Task/Agent tool_use id
+    is_async: dict[str, bool] = {}
+    for line in lines:
+        if '"tool_use"' not in line and '"tool_result"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):        # 顶层非 dict 的坏行同样静默跳过
+            continue
+        m = d.get("message")
+        if not isinstance(m, dict):        # 评审#11：message 非 dict 安全跳过
+            continue
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_use" and b.get("name") in ("Task", "Agent") \
+                    and isinstance(b.get("id"), str):
+                last_dispatch = b["id"]
+                inp = b.get("input")
+                is_async[b["id"]] = bool(
+                    isinstance(inp, dict)
+                    and (inp.get("run_in_background") or inp.get("background")))
+            elif b.get("type") == "tool_result" \
+                    and isinstance(b.get("tool_use_id"), str):
+                c = b.get("content")
+                if isinstance(c, str):
+                    text = c
+                elif isinstance(c, list):   # 评审#6：只取首个 text 块，严格前缀
+                    text = next((x.get("text", "") for x in c
+                                 if isinstance(x, dict) and x.get("type") == "text"),
+                                "")
+                else:
+                    text = ""
+                if isinstance(text, str) and text.startswith("Async agent launched"):
+                    is_async[b["tool_use_id"]] = True
+    return bool(last_dispatch and is_async.get(last_dispatch))
