@@ -17,6 +17,7 @@ import ferryman.daemon as daemon_mod
 from ferryman.config import Config, ThresholdCfg
 from ferryman.daemon import Watcher
 from ferryman.ledger import now_s
+from ferryman.server import ACK_GRACE_S
 from helpers import SUMMARIZE, Harness, free_port, now_iso, write_session
 
 
@@ -346,7 +347,7 @@ def test_t48_async_wait_flow_end_to_end(h):
     时序纪律（附录#2/#4/#8）：不手改 st.last_write、不把任何文件 mtime 拨到
     过去（ledger.touch 是高水位且 observed_active 要求 mtime≥守护启动时刻，
     手拨会破坏两腿）；ack 确认行在 stop 事件上报之后追加落盘；恢复行时间戳
-    写未来（+120s）越过 ACK_GRACE_S。
+    写未来（ACK_GRACE_S+30s）越过宽限。
     """
     sid = "e2e-async"
     ctrl = "e2e-ctrl"
@@ -409,10 +410,10 @@ def test_t48_async_wait_flow_end_to_end(h):
                       >= SUMMARIZE + 0.5), "停车会话闲置未过线，负样本前提不成立"
     assert sid not in h.enqueued_ok, "停车窗未挡住摆渡（T48 摆渡推迟失效）"
 
-    # 主会话恢复调用：追加 usage 行，时间戳 now+120s（越过 ACK_GRACE_S=90s，
-    # 附录#2；靠时间戳越线，不拨 mtime、不回拨 stop_ts）。
-    resume_ts = (datetime.now(timezone.utc)
-                 + timedelta(seconds=120)).isoformat().replace("+00:00", "Z")
+    # 主会话恢复调用：追加 usage 行，时间戳 now+ACK_GRACE_S+30（越线余量随
+    # 常量走，附录#2；靠时间戳越线，不拨 mtime、不回拨 stop_ts）。
+    resume_dt = datetime.now(timezone.utc) + timedelta(seconds=ACK_GRACE_S + 30)
+    resume_ts = resume_dt.isoformat().replace("+00:00", "Z")
     _append_jsonl(f, {
         "type": "assistant", "timestamp": resume_ts,
         "message": {"role": "assistant", "content": [

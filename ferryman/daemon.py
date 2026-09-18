@@ -182,7 +182,9 @@ class Watcher(threading.Thread):
             # getattr 同上，裸构造旧测试视同无接线）。
             fd = getattr(self, "ferry_daemon", None)
             if fd is not None:
-                fd.note_usage(st.agent, st.session_id, max(r["ts"] for r in rows))
+                # 坏行（无 timestamp）滤掉防 TypeError 丢整批喂入；default=0 时 ts 越线判据不成立=安全 no-op
+                ts_max = max((r["ts"] for r in rows if r["ts"] is not None), default=0)
+                fd.note_usage(st.agent, st.session_id, ts_max)
         except Exception as e:  # noqa: BLE001 — 采集故障只警告
             print(f"[harvest] 用量采集失败（忽略继续）: {path.name}: {e}",
                   flush=True)
