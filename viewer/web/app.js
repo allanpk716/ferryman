@@ -204,6 +204,10 @@ var TL_SCAFFOLD =
   '<a href="#/">← 返回会话列表</a>' +
   '<span id="tl-title"></span>' +
   '</div>' +
+  '<details id="tl-plan" open class="plan-card">' +
+  '<summary>保活计划（策略计算器）</summary>' +
+  '<div id="plan-body"></div>' +
+  '</details>' +
   '<div id="tl-wrap">' +
   '<svg id="tl-svg" viewBox="0 0 1200 520" preserveAspectRatio="xMidYMid meet" role="img" aria-label="单会话 token 时序图"></svg>' +
   '<div id="tl-side">' +
@@ -297,6 +301,9 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   var titleEl = document.getElementById('tl-title');
   titleEl.textContent = title || lineage.slice(0, 24);
   titleEl.title = lineage;
+
+  // 保活计划卡（策略计算器）：独立于图区状态，只依赖 requests 与 lineage
+  buildPlanCard(requests);
 
   // ---- 时间标尺：全部元素（柱/事件/窗口两端）的 min/max，两侧各扩 3% ----
   var tMin = Infinity, tMax = -Infinity;
@@ -668,6 +675,173 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       btResult.appendChild(note);
     }
     btResult.hidden = false;
+  }
+
+  // buildPlanCard 保活计划卡（策略计算器）：参数复用 BT_FIELDS + 自动前缀 S
+  // （本会话末次请求 input+cache_read+creation 取整，可改），提交 POST /api/backtest
+  // 假设窗一周（opened_ts=0 → beats 天然是相对 T0 的偏移；closed_ts=604800 让 cap
+  // 而非窗末截断跳数）。竞态只守 navSeq——计划卡结果区与反跑卡结果区互不相邻，
+  // 不会互相覆盖，无需 btSeq；请求期间按钮置灰防连点。
+  function buildPlanCard(requests) {
+    var body = document.getElementById('plan-body');
+
+    var ro = document.createElement('div');
+    ro.className = 'plan-ro';
+    ro.textContent = '闲置泳道（与心跳无关）：闲置 1500s 摆渡 · 2100s 拦截——人不在的归摆渡';
+    body.appendChild(ro);
+
+    var form = document.createElement('form');
+    form.className = 'bt-form';
+    var roPrefix = document.createElement('div');
+    roPrefix.className = 'bt-ro';
+    roPrefix.textContent = 'prefix S 自动填 ≈ 本会话末次请求前缀（input+cache_read+creation 取整），可改';
+    form.appendChild(roPrefix);
+
+    var last = requests.length ? requests[requests.length - 1] : null;
+    var autoPrefix = last
+      ? Math.round(last.input_tokens + last.cache_read_tokens + last.cache_creation_tokens)
+      : 0;
+    var fields = BT_FIELDS.concat([
+      { key: 'prefix_tokens', label: 'prefix S 前缀 tokens', def: autoPrefix },
+    ]);
+
+    var grid = document.createElement('div');
+    grid.className = 'bt-grid';
+    var inputs = {};
+    fields.forEach(function (f) {
+      var cell = document.createElement('label');
+      cell.className = 'bt-field';
+      var cap = document.createElement('span');
+      cap.textContent = f.label;
+      var inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = 'any';
+      inp.value = String(f.def);
+      inp.setAttribute('aria-label', f.label);
+      inp.addEventListener('input', function () { hint.textContent = ''; });
+      inputs[f.key] = inp;
+      cell.appendChild(cap);
+      cell.appendChild(inp);
+      grid.appendChild(cell);
+    });
+    form.appendChild(grid);
+
+    var hint = document.createElement('div');
+    hint.className = 'bt-hint';
+    form.appendChild(hint);
+
+    var go = document.createElement('button');
+    go.type = 'submit';
+    go.className = 'bt-go';
+    go.textContent = '计算计划';
+    form.appendChild(go);
+
+    var resultBox = document.createElement('div');
+    resultBox.className = 'plan-result';
+
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var params = {};
+      var prefix = NaN;
+      for (var i = 0; i < fields.length; i++) {
+        var f = fields[i];
+        var v = parseFloat(inputs[f.key].value);
+        if (!isFinite(v)) { // 畸形输入兜底：不发送，就地红字提示
+          hint.textContent = '参数 ' + f.key + ' 不是数字';
+          return;
+        }
+        if (f.key === 'prefix_tokens') prefix = v; // S 走请求体顶层，不进 params
+        else params[f.key] = v;
+      }
+      runPlan(params, prefix);
+    });
+
+    // runPlan 提交假设窗一周的策略推导，回填结果区（切页后响应丢弃）。
+    function runPlan(params, prefix) {
+      var seqAtGo = navSeq;
+      go.disabled = true;
+      go.textContent = '计算中…';
+      fetchJSON('/api/backtest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineage: lineage,
+          opened_ts: 0,
+          closed_ts: 604800,
+          prefix_tokens: prefix,
+          params: params,
+        }),
+      }).then(function (data) {
+        go.disabled = false;
+        go.textContent = '计算计划';
+        if (seqAtGo !== navSeq) return; // 已切页：卡片随页销毁，弃响应
+        showPlanResult(data, params.ttl_s);
+      }).catch(function (e) {
+        go.disabled = false;
+        go.textContent = '计算计划';
+        if (seqAtGo !== navSeq) return;
+        planError('计算失败：' + e.message);
+      });
+    }
+
+    // planError 结果区红字一行（业务拒绝 / 网络失败共用）。
+    function planError(msg) {
+      resultBox.textContent = '';
+      var err = document.createElement('div');
+      err.className = 'bt-error';
+      err.textContent = msg;
+      resultBox.appendChild(err);
+    }
+
+    // planRow 结果区追加一行说明/数据。
+    function planRow(cls, text) {
+      var d = document.createElement('div');
+      d.className = cls;
+      d.textContent = text;
+      resultBox.appendChild(d);
+    }
+
+    // showPlanResult 计划结果：行1 数字行 → 跳点偏移 → TTL 三区 → 触发/停跳规则
+    // → note。数值 isFinite 兜底（非有限显 -）；全部 createElement/textContent。
+    function showPlanResult(data, ttl) {
+      resultBox.textContent = '';
+      if (!data || data.ok !== true) { // 业务拒绝（p_cache 缺省 / ttl_s 非法）：红字
+        planError('计划被拒绝：' + ((data && data.error) || '未知原因'));
+        return;
+      }
+      var r = data.result || {};
+      var beats = Array.isArray(data.beats) ? data.beats.filter(function (b) { return isFinite(b); }) : [];
+
+      planRow('plan-numbers',
+        'τ 间隔 ' + numOrDash(r.tau_s, 's') +
+        ' · 首跳=开窗后闲置满 ' + numOrDash(r.tau_s, 's') +
+        ' · 等待上限 ' + numOrDash(r.cap_s, 's') +
+        ' · 最多 ' + beats.length + ' 跳' +
+        ' · 单跳 ' + (isFinite(r.per_beat) ? fmtCost(r.per_beat) : '-') + ' 积分' +
+        ' · 全程上限 ' + (isFinite(data.beats_cost) ? fmtCost(data.beats_cost) : '-') + ' 积分' +
+        ' · 放任过期（全款重付）' + (isFinite(r.expire) ? fmtCost(r.expire) : '-') + ' 积分');
+      if (beats.length) { // 跳点：相对 T0 的偏移，>4 个截断加 …
+        var parts = beats.slice(0, 4).map(function (b) { return '+' + fmtDur(b) + 's'; });
+        if (beats.length > 4) parts.push('…');
+        planRow('plan-sub', '跳点：' + parts.join('、'));
+      }
+      planRow('plan-rule',
+        '实测 TTL ' + fmtDur(ttl) + 's 三区：≤' + fmtDur(ttl) + 's 必活 / ' +
+        fmtDur(ttl) + '~' + fmtDur(ttl * 3) + 's 看驱逐脸色 / ≥1800s 必死（2026-09-17 实测口径）');
+      planRow('plan-rule',
+        '触发：子代理在飞＋主会话闲置满 τ＋四道预检（全局开关/窗口开/无新写入/前缀≥30k）→ 体外重放刷新缓存，不写会话文件');
+      planRow('plan-rule',
+        '停跳：子代理全回（自动续跑兑现暖缓存）/ 主会话有写入 / 任一跳 miss（立即停＋告警，绝不重试）/ 到等待上限');
+      if (data.note) {
+        var note = document.createElement('div');
+        note.className = 'bt-note';
+        note.textContent = data.note;
+        resultBox.appendChild(note);
+      }
+    }
+
+    body.appendChild(form);
+    body.appendChild(resultBox);
   }
 
   function selectWindow(wi) {

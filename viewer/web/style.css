@@ -223,32 +223,38 @@ body {
 }
 #tl-wininfo .win-backtest:hover { background: #245024; }
 
-/* 反跑参数表单（窗口信息卡内展开） */
-#tl-wininfo .bt-form {
+/* 反跑参数表单（窗口信息卡内展开；保活计划卡复用同一套 bt-* 结构） */
+#tl-wininfo .bt-form,
+.plan-card .bt-form {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px dashed #333;
 }
-#tl-wininfo .bt-ro {
+#tl-wininfo .bt-ro,
+.plan-card .bt-ro {
   color: #666;
   font-size: 11px;
   margin-bottom: 4px;
 }
-#tl-wininfo .bt-grid {
+#tl-wininfo .bt-grid,
+.plan-card .bt-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px 8px;
 }
-#tl-wininfo .bt-field {
+#tl-wininfo .bt-field,
+.plan-card .bt-field {
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
-#tl-wininfo .bt-field span {
+#tl-wininfo .bt-field span,
+.plan-card .bt-field span {
   color: #888;
   font-size: 10px;
 }
-#tl-wininfo .bt-field input {
+#tl-wininfo .bt-field input,
+.plan-card .bt-field input {
   width: 100%;
   padding: 2px 5px;
   background: #1a1a1a;
@@ -257,17 +263,20 @@ body {
   font: inherit;
   font-size: 12px;
 }
-#tl-wininfo .bt-field input:focus {
+#tl-wininfo .bt-field input:focus,
+.plan-card .bt-field input:focus {
   outline: none;
   border-color: #4caf50;
 }
-#tl-wininfo .bt-hint {
+#tl-wininfo .bt-hint,
+.plan-card .bt-hint {
   color: #ff7b72;
   font-size: 11px;
   min-height: 14px;
   margin-top: 2px;
 }
-#tl-wininfo .bt-go {
+#tl-wininfo .bt-go,
+.plan-card .bt-go {
   width: 100%;
   margin-top: 2px;
   padding: 3px 0;
@@ -279,8 +288,10 @@ body {
   font-size: 12px;
   cursor: pointer;
 }
-#tl-wininfo .bt-go:hover { background: #245024; }
-#tl-wininfo .bt-go:disabled {
+#tl-wininfo .bt-go:hover,
+.plan-card .bt-go:hover { background: #245024; }
+#tl-wininfo .bt-go:disabled,
+.plan-card .bt-go:disabled {
   opacity: 0.55;
   cursor: wait;
 }
@@ -353,12 +364,58 @@ body {
   font-variant-numeric: tabular-nums;
 }
 #tl-bt-result .bt-stat-k { color: #888; }
-#tl-bt-result .bt-note {
+#tl-bt-result .bt-note,
+.plan-card .bt-note {
   color: #666;
   font-size: 11px;
   margin-top: 4px;
 }
-#tl-bt-result .bt-error { color: #ff7b72; }
+#tl-bt-result .bt-error,
+.plan-card .bt-error { color: #ff7b72; }
+
+/* 保活计划卡（策略计算器，T45b）：时序图上方 details 折叠卡，色板对齐反跑结果卡 */
+.plan-card {
+  margin: 0 0 8px;
+  padding: 6px 10px 10px;
+  background: #151515;
+  border: 1px solid #2a2a2a;
+  font-size: 12px;
+}
+.plan-card summary {
+  cursor: pointer;
+  color: #fff;
+  font-weight: 600;
+  user-select: none;
+}
+.plan-card summary:hover { color: #7bc47b; }
+.plan-card .plan-ro {
+  color: #888;
+  font-size: 11px;
+  margin: 6px 0 2px;
+}
+/* 全宽卡里 2 列太空，字段按内容宽度自动排布 */
+.plan-card .bt-grid {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.plan-card .plan-result {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #333;
+}
+.plan-card .plan-numbers {
+  color: #ddd;
+  font-variant-numeric: tabular-nums;
+}
+.plan-card .plan-sub {
+  color: #666;
+  font-size: 11px;
+  margin-top: 2px;
+}
+.plan-card .plan-rule {
+  color: #888;
+  font-size: 11px;
+  margin-top: 4px;
+}
 
 /* 底部控制条 */
 #tl-ctrl {
