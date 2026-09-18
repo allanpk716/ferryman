@@ -28,12 +28,22 @@ from .accounts import Accounts
 from .ferry import INJECT_CLOSE, INJECT_OPEN
 from .ledger import SUBAGENT_EVENT_LEAK_S, Ledger, SessionState, now_s
 from .store import Store
-from .transcripts import has_dangling_tool_use
+from .transcripts import has_async_launch, has_dangling_tool_use
 
 DEGRADE_AFTER_BLOCKS = 3        # DESIGNS §6.10-6：连续兜底拦截 3 次 → 降级
 PENDING_TTL_S = 24 * 3600
 WARN_CONTEXT_CAP = 2000         # 警告 additionalContext 的字符上限
 HEALTH_GRACE_S = 600            # daemon 启动宽限：计数器刚归零不足以判钩子失效（防误报，T26）
+# T48 停车过期上界：停表后 PARK_EXPIRE_S 内无主会话恢复调用即闭窗记 expired。
+# 数值沿用 SUBAGENT_EVENT_LEAK_S（与计数道泄漏界同值，一致性优先），独立命名留
+# 单一改点。运营后果（如实声明）：过期即豁免失效+摆渡可恢复入队——即使 async
+# 真身仍在跑（>1h 的 async 等待接受失明；2026-09-18 实测最长等待 34.8min）。
+PARK_EXPIRE_S = 3600
+# T48 ack 宽限：stop 后 ACK_GRACE_S 内的 usage 行视为"派发确认回合"（ack）而非
+# 恢复，不闭窗。2026-09-18 实测 ack 均落在 stop 前（钩子时序：Stop 晚于 ack 落盘
+# 0.2-3.2min），此宽限是时序反转时的廉价保险；真 async 若 90s 内完成，其窗口
+# 数据本就边际。
+ACK_GRACE_S = 90
 
 
 class GateStats:
@@ -100,11 +110,17 @@ class FerryDaemon:
         self.accounts = accounts             # None = 不记账（旧测试零改动）
         self.stats = GateStats()
         self.pending = PendingTable()
-        # T41 等待窗口表：(agent, sid) → {"opened_ts": ...}。内存态，重启丢失可接受
-        # （同 PendingTable）——丢窗 = 该次等待不入账，宁缺毋错。泄漏兜底（R10）：
-        # Stop 丢失致旧窗滞留时，下次 start 超过台账泄漏阈值（SUBAGENT_EVENT_LEAK_S）
-        # 即重锚新窗（不沿用旧窗，dur_s 不虚高跨泄漏间隙）；此后若无新 start，
-        # 滞留窗永不闭、不记。注释勿夸安全性：重锚只覆盖"泄漏后又来 start"的路径。
+        # T41/T48 等待窗口表：(agent, sid) → {"opened_ts", "stop_ts", "saw_async"}。
+        # stop_ts 非 None = 停车挂起（async 真身仍在跑）；saw_async = 本窗曾异步
+        # 启动（锁存，防交错派发丢窗）。内存态，重启丢失可接受（同 PendingTable）
+        # ——丢窗 = 该次等待不入账，宁缺毋错。泄漏兜底（R10）：Stop 丢失致旧窗
+        # 滞留时，下次 start 超过台账泄漏阈值（SUBAGENT_EVENT_LEAK_S）即重锚新窗
+        # （旧停车窗如实闭账，见 subagent()）；此后若无新 start，滞留窗永不闭、
+        # 不记——重锚只覆盖"泄漏后又来 start"的路径。
+        # _wlock：窗口表被 HTTP 线程（gate/subagent）与守望线程（note_usage/
+        # window_wait，票03 接线）双头读写，RLock 串行化；"先记后 pop"的原子性
+        # 靠它（并发 close 被串行化，不可能双记）。
+        self._wlock = threading.RLock()
         self._windows: dict[tuple[str, str], dict] = {}
         self.started_at = started_at if started_at is not None else now_s()
 
@@ -120,9 +136,13 @@ class FerryDaemon:
 
         # 0. 主会话来讯 = 等待提前结束（词汇表"等待窗口"）——强续/bypass prompt 亦算
         #    恢复写入，故闭窗钩子置于 bypass 判定之前（R1；且台账 miss 也要闭）。
-        wk = (agent, session_id)
-        if wk in self._windows:
-            self._close_window(wk, "prompt")
+        #    T48：停车窗（async 真身仍在跑）不因 prompt 闭——等待没结束，缺口 A
+        #    由下方 2.5 的 machine-waiting 豁免接住放行；只有未停车窗照旧闭。
+        with self._wlock:
+            wk = (agent, session_id)
+            w0 = self._windows.get(wk)
+            if w0 is not None and w0.get("stop_ts") is None:
+                self._close_window(wk, "prompt")
 
         # 1. 魔法前缀：单次放行（「强续」为主——CC 下 ! 首字符触发 bash 模式，!! 打不出来；
         #    !! 保留匹配以兼容 Codex）
@@ -223,17 +243,24 @@ class FerryDaemon:
         return {"decision": "allow", "additional_context": self._warn_ctx(idle, None)}
 
     def _machine_waiting(self, agent: str, session_id: str, st: SessionState | None) -> bool:
-        """缺口A：机器等机器判定——子代理计数>0 或 jsonl 尾部悬空 tool_use。
+        """缺口A：机器等机器判定——子代理计数>0 / T48 异步停车窗 / 悬空 tool_use。
 
-        两道 OR 互为兜底：守护重启丢内存计数→悬空道兜底；泄漏期已过计数清零
-        而 tool_result 仍缺→悬空道兜底。上界分道（rev2 如实声明）：计数道 1h
-        泄漏保护（ledger.py:28）；悬空道无时间上界、有内容量上界——尾部 256KB
-        滑窗（transcripts.py:73），悬空事件被后续内容顶出窗口即失效。
+        三道 OR 互为兜底：守护重启丢内存计数→悬空道兜底；泄漏期已过计数清零
+        而 tool_result 仍缺→悬空道兜底；T48 异步派发计数早归零而真身在跑→
+        停车窗道兜底（window_wait）。上界分道（rev2 如实声明）：计数道 1h
+        泄漏保护（ledger.py:28）；停车窗道 PARK_EXPIRE_S=1h（过期即豁免失效）；
+        悬空道无时间上界、有内容量上界——尾部 256KB 滑窗（transcripts.py:73），
+        悬空事件被后续内容顶出窗口即失效。
         任何异常按 False（宁可走正常闸门路径，不误豁免）。"""
         try:
             if self.ledger.subagent_active(agent, session_id):
                 return True
         except Exception:  # noqa: BLE001 — 豁免判定异常不影响闸门主路径
+            pass
+        try:
+            if self.window_wait(agent, session_id):
+                return True                # T48 第三道：异步停车窗（停表未过期）
+        except Exception:  # noqa: BLE001 — 谓词自身保证不抛，此处双保险同上
             pass
         path = st.transcript_path if st is not None else ""
         if not path:
@@ -300,19 +327,113 @@ class FerryDaemon:
         except Exception as e:  # noqa: BLE001 — 记账永不弄断闸门（与 _book_handoff 同纪律）
             print(f"[account] {kind} 记账失败（忽略，闸门不受影响）: {e}", flush=True)
 
-    def _close_window(self, key: tuple[str, str], reason: str) -> None:
-        """闭等待窗口并入账 window 流水（pop 先行 → 天然幂等，绝不双记）。"""
-        w = self._windows.pop(key, None)
-        if w is None or self.accounts is None:
+    def _close_window(self, key: tuple[str, str], reason: str,
+                      closed_ts: float | None = None) -> None:
+        """闭等待窗口并入账 window 流水。
+
+        T48（附录#10）：先记账后 pop——记账路径抛异常时窗保留在表（绝不"先丢窗
+        后记账失败"），下次触发可重试；旧版"pop 先行天然幂等"改由调用方全部持
+        _wlock 保证（并发 close 被串行化，不可能双记）。调用方须持 _wlock。"""
+        w = self._windows.get(key)
+        if w is None:
+            return
+        self._record_window(key, w, reason, closed_ts)
+        self._windows.pop(key, None)
+
+    def _record_window(self, key: tuple[str, str], w: dict, reason: str,
+                       closed_ts: float | None = None) -> None:
+        """window 流水入账（从 _close_window 拆出：重锚旧停车窗等"窗已摘、账仍
+        要记"的路径复用）。closed_ts 缺省取当前时刻（过期闭窗传 stop+PARK_EXPIRE_S，
+        如实反映"只观察到这"）。accounts=None（旧测试形态）整条跳过。"""
+        if self.accounts is None:
             return
         agent, sid = key
         st = self.ledger.get(agent, sid)
-        closed = now_s()
+        closed = closed_ts if closed_ts is not None else now_s()
         self._acct("window", st, agent=agent, session_id=sid,
                    opened_ts=round(w["opened_ts"], 3), closed_ts=round(closed, 3),
                    dur_s=round(closed - w["opened_ts"], 1),
                    prefix_tokens=self._window_prefix(st, sid, w["opened_ts"]),
                    close_reason=reason)
+
+    def _park_or_close(self, key, agent: str, session_id: str) -> None:
+        """计数归零：同步派发→即闭窗（旧语义）；异步派发→停表停车（T48）。
+
+        saw_async 锁存：本窗曾以异步启动（stop 尾判或 start 尾判置位，后者覆盖
+        "sync start 先于 async stop"的重叠序），则后续同步派发的 stop 也停车——
+        交错派发（async A 在飞 + 再派 sync B）不丢 A 的等待（round 0 e2 实验：
+        无锁存时 B 的 stop 会使整窗误闭）。异步判据读主会话转录尾部
+        （has_async_launch，cc 轨专属）；判不中（CC 改文案/钩子早于文件落盘的
+        竞态）一律退回旧语义=即闭——宁可少记一个真窗，不误停一个假窗。
+        须持 _wlock 调用。"""
+        w = self._windows.get(key)
+        if w is None or w.get("stop_ts") is not None:
+            return
+        st = self.ledger.get(agent, session_id)
+        path = st.transcript_path if st is not None else ""
+        if agent == "cc" and path \
+                and (w.get("saw_async") or has_async_launch(Path(path))):
+            w["stop_ts"] = now_s()              # 停表停车：async 真身仍在跑
+            w["saw_async"] = True               # 锁存：此后本窗一律停车语义
+        else:
+            self._close_window(key, "subagents_done")
+
+    def _latch_async_if_tail(self, agent: str, session_id: str, w: dict) -> None:
+        """start 事件处理时尾判 async → 置 saw_async 锁存（T48 附录#7）。
+
+        重叠序"async start→sync start→async stop→sync stop"里停车判定只在计数
+        归零时跑，届时尾部最后派发已是 sync——不在此处置位就会误闭 async 等待。
+        判定读主会话转录尾部（has_async_launch，cc 轨专属）；任何异常吞掉打印
+        ——判定失败只是少一个锁存（退回旧语义），绝不弄断 /subagent 钩子。
+        须持 _wlock 调用。"""
+        try:
+            st = self.ledger.get(agent, session_id)
+            path = st.transcript_path if st is not None else ""
+            if agent == "cc" and path and has_async_launch(Path(path)):
+                w["saw_async"] = True
+        except Exception as e:  # noqa: BLE001 — 判定失败不弄断钩子（同上纪律）
+            print(f"[window] start 尾判 async 失败（跳过）: {e}", flush=True)
+
+    def note_usage(self, agent: str, session_id: str, ts: float) -> None:
+        """T48 闭窗道：主会话恢复调用（usage 行 ts 晚于停表+ack 宽限）→ 等待
+        结束，闭窗记 main_resumed。由守望 usage 采集每轮喂新行最大 ts（票03 接线）。
+
+        ACK_GRACE_S 内的行视为派发确认回合（ack），不闭窗——2026-09-18 实测
+        ack 落在 stop 前，此宽限是钩子时序反转时的保险（round 0 评审 #10/#11）。
+        ★ 异常边界（附录#10）：本方法被守望主路径调用，保证不抛；且闭窗走
+        "先记后 pop"——记账失败窗保留（绝不先丢窗后记账失败），下轮恢复行可再试。"""
+        key = (agent, session_id)
+        try:
+            with self._wlock:
+                w = self._windows.get(key)
+                if w is not None and w.get("stop_ts") is not None \
+                        and ts > w["stop_ts"] + ACK_GRACE_S:
+                    self._close_window(key, "main_resumed")
+        except Exception as e:  # noqa: BLE001 — 记账/台账故障绝不炸守望
+            print(f"[window] note_usage 异常（窗保留）: {e}", flush=True)
+
+    def window_wait(self, agent: str, session_id: str) -> bool:
+        """缺口A 第三道（T48）：异步等待窗在停（stop 已到、主会话未恢复、未过期）。
+
+        懒过期：停表超 PARK_EXPIRE_S → 闭窗记 expired（closed=stop+PARK_EXPIRE_S，
+        此刻必为过去时刻，如实反映"只观察到这"）并返回 False（豁免随之失效）。
+        ★ 异常边界（附录#3/#5）：本谓词被闸门/守望主路径直接调用，任何内部异常
+        （记账/台账）一律吞掉按 False 返回——宁可漏豁免，不炸主路径。"""
+        key = (agent, session_id)
+        try:
+            with self._wlock:
+                w = self._windows.get(key)
+                if w is None or w.get("stop_ts") is None:
+                    return False
+                if now_s() - w["stop_ts"] > PARK_EXPIRE_S:
+                    self._close_window(key, "expired",
+                                       closed_ts=min(w["stop_ts"] + PARK_EXPIRE_S,
+                                                     now_s()))
+                    return False
+                return True
+        except Exception as e:  # noqa: BLE001 — 记账/台账故障绝不炸闸门
+            print(f"[window] window_wait 异常（按不等待处理）: {e}", flush=True)
+            return False
 
     def _window_prefix(self, st: SessionState | None, sid: str,
                        opened_ts: float) -> int:
@@ -386,15 +507,38 @@ class FerryDaemon:
         count = self.ledger.subagent_event(agent, session_id, event)
         with self.stats.lock:
             self.stats.subagent_events += 1
-        # T41 等待窗口：首个子代理 start 开窗（嵌套不重复开）；计数归零闭窗
+        # T41/T48 等待窗口：首个子代理 start 开窗（嵌套不重复开）；计数归零时
+        # 同步派发即闭窗（旧语义 subagents_done），异步派发停表停车等主会话恢复。
         key = (agent, session_id)
-        if count > 0:
-            w = self._windows.get(key)
-            if w is None or now_s() - w["opened_ts"] > SUBAGENT_EVENT_LEAK_S:
-                # 首开；或上一轮 Stop 丢失、泄漏超时后重锚（旧窗不沿用，防 dur_s 虚高跨泄漏间隙，R10）
-                self._windows[key] = {"opened_ts": now_s()}
-        if count == 0 and key in self._windows:
-            self._close_window(key, "subagents_done")
+        with self._wlock:
+            if count > 0:
+                w = self._windows.get(key)
+                if w is None or now_s() - w["opened_ts"] > SUBAGENT_EVENT_LEAK_S:
+                    # 首开；或上一轮 Stop 丢失、泄漏超时后重锚（旧窗不沿用，防
+                    # dur_s 虚高跨泄漏间隙，R10）。旧窗若为停车窗，如实闭账：
+                    # 按距 stop_ts 超 PARK_EXPIRE_S 判过期（附录#3/#13，非
+                    # opened_ts）；closed_ts 封顶 now，绝不出现未来时刻。
+                    old = self._windows.pop(key, None) if w is not None else None
+                    if old is not None and old.get("stop_ts") is not None:
+                        try:
+                            self._record_window(
+                                key, old, "expired",
+                                closed_ts=min(old["stop_ts"] + PARK_EXPIRE_S,
+                                              now_s()))
+                        except Exception as e:  # noqa: BLE001 — 旧窗闭账失败不弄断钩子（丢行可接受）
+                            print(f"[window] 重锚旧停车窗闭账失败（丢弃）: {e}",
+                                  flush=True)
+                    w = {"opened_ts": now_s(), "stop_ts": None, "saw_async": False}
+                    self._windows[key] = w
+                elif w.get("stop_ts") is not None:
+                    w["stop_ts"] = None             # 停车窗又来 start：续窗（再派/嵌套）
+                # T48（附录#7）：start 时尾判 async 亦置锁存——覆盖"sync start
+                # 先于 async stop"的重叠序（停车判定只在计数归零时跑，届时尾部
+                # 最后派发已是 sync，唯有此处置位才不丢 async 等待）。
+                if not w.get("saw_async"):
+                    self._latch_async_if_tail(agent, session_id, w)
+            elif count == 0 and key in self._windows:
+                self._park_or_close(key, agent, session_id)
         return {"ok": True, "active": count > 0}
 
     def health(self) -> dict:

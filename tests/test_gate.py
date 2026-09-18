@@ -9,7 +9,7 @@ import pytest
 from ferryman.accounts import Accounts
 from ferryman.config import Config, ThresholdCfg
 from ferryman.ledger import Ledger
-from ferryman.server import FerryDaemon
+from ferryman.server import PARK_EXPIRE_S, FerryDaemon
 from ferryman.store import Store
 
 SUMMARIZE, BLOCK, MIN_CTX = 10, 30, 100
@@ -462,3 +462,235 @@ def test_A5_branch6_copy_deterministic_escape(env):
         assert "已保存" in r["reason"]                      # 原话下落明确
     r4 = d.gate(_body("a5", "C:/no-such-a5.jsonl", proj))
     assert r4["decision"] == "allow"                        # 第4次降级（行为不变）
+
+
+# ---- T48 票02：等待窗口停表停车状态机（async 停车/latch/宽限/过期/豁免） ----
+# 设计参照：docs/superpowers/plans/2026-09-18-t48-async-wait-signal.rev1.md Task 2
+# + xcheck 附录必改 #1/#3/#5/#7/#10/#12/#13（以票面验收标准为准）。
+
+PARK_EXPIRE_S_REF = PARK_EXPIRE_S   # 附录#12：import server 真常量，不复制 3600 字面量
+
+
+@pytest.fixture
+def wenv(tmp_path):
+    """带真 Accounts 的 daemon（停车状态机用例要读 window 流水断 close_reason）。"""
+    led = Ledger()
+    store = Store(tmp_path / "data")
+    acc = Accounts(tmp_path / "acc")
+    cfg = Config()
+    cfg.gate_cc = "enforce"
+    cfg.thresholds = ThresholdCfg(summarize_s=SUMMARIZE, block_s=BLOCK,
+                                  min_ctx_tokens=MIN_CTX)
+    d = FerryDaemon(cfg, led, store, lambda st: True, accounts=acc)
+    return d, led, acc, tmp_path
+
+
+def _write_session(led, tmp, sid, blocks, idle_s=0):
+    """写转录 jsonl + 登台账（路径真实存在，尾判 has_async_launch 可读）。"""
+    p = tmp / f"{sid}.jsonl"
+    p.write_text("\n".join(json.dumps(b) for b in blocks) + "\n", encoding="utf-8")
+    led.touch("cc", sid, str(p), mtime=time.time() - idle_s, size=10,
+              cwd="C:/proj", peak_ctx=150000, daemon_started_at=0)
+    return p
+
+
+def _append_blocks(p, blocks):
+    """两阶段交错用例（附录#1）：向已有转录追加块——一次性预写会使 stop 时
+    尾判读到 sync 块、latch 永不触发，测试实现后仍红（e2 实验已证）。"""
+    with open(p, "a", encoding="utf-8") as f:
+        for b in blocks:
+            f.write(json.dumps(b) + "\n")
+
+
+def _async_blocks():
+    return [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Task",
+             "input": {"prompt": "干活", "run_in_background": True}}]}},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1",
+             "content": "Async agent launched successfully"}]}},
+    ]
+
+
+def _sync_blocks():
+    return [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t2", "name": "Task",
+             "input": {"prompt": "短活"}}]}},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t2", "content": "done"}]}},
+    ]
+
+
+def _start_stop(d, sid):
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": sid})["ok"]
+    assert d.subagent({"event": "stop", "agent": "cc", "session_id": sid})["ok"]
+
+
+def test_async_stop_parks_until_main_resumes(wenv):
+    """核心案：async 派发 stop 后不闭窗；主会话恢复调用才闭（main_resumed）。"""
+    d, led, acc, tmp = wenv
+    sid = "as1"
+    _write_session(led, tmp, sid, _async_blocks())
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": sid})["ok"]
+    time.sleep(0.05)                                # dur_s > 0 可断言
+    assert d.subagent({"event": "stop", "agent": "cc", "session_id": sid})["ok"]
+    assert _window_rows(acc, sid) == []             # 不再秒闭（旧 bug：dur 0.6min 废数据）
+    assert d.window_wait("cc", sid) is True         # 机器等待在停
+    d.note_usage("cc", sid, ts=time.time() + 200)   # 恢复调用（晚于停表+90s 宽限）
+    rows = _window_rows(acc, sid)
+    assert len(rows) == 1
+    assert rows[0]["close_reason"] == "main_resumed"
+    assert rows[0]["dur_s"] > 0
+    assert d.window_wait("cc", sid) is False
+
+
+def test_ack_turn_within_grace_does_not_close(wenv):
+    """★ 宽限：stop 后 ack 确认回合（90s 内的 usage 行）不闭窗。
+
+    当天实测 ack 均落在 stop 前（钩子时序），时序反转时靠宽限兜底
+    （round 0 评审 #10/#11 的廉价保险）。"""
+    d, led, acc, tmp = wenv
+    sid = "as1b"
+    _write_session(led, tmp, sid, _async_blocks())
+    _start_stop(d, sid)
+    d.note_usage("cc", sid, ts=time.time() + 5)     # ack 行：stop 后 5s（宽限内）
+    assert _window_rows(acc, sid) == []
+    assert d.window_wait("cc", sid) is True
+    d.note_usage("cc", sid, ts=time.time() + 200)   # 真恢复
+    assert _window_rows(acc, sid)[0]["close_reason"] == "main_resumed"
+
+
+def test_sync_stop_closes_immediately(wenv):
+    """同步派发语义不变：stop 即闭（既有行为回归锁）。"""
+    d, led, acc, tmp = wenv
+    sid = "sy1"
+    _write_session(led, tmp, sid, _sync_blocks())
+    _start_stop(d, sid)
+    rows = _window_rows(acc, sid)
+    assert len(rows) == 1 and rows[0]["close_reason"] == "subagents_done"
+    assert d.window_wait("cc", sid) is False
+
+
+def test_interleave_sync_after_async_keeps_park(wenv):
+    """★ latch（附录#1 两阶段写文件）：async 停车后再派 sync，sync 的 stop 不再
+    走即闭——交错派发不丢 async 等待（round 0 e2 实验：一次性预写会使 stop 时
+    尾判读到 sync、latch 永不触发，故先 async 停车、再追加 sync 块）。"""
+    d, led, acc, tmp = wenv
+    sid = "ix1"
+    p = _write_session(led, tmp, sid, _async_blocks())
+    _start_stop(d, sid)                             # 第一段 async 的 stop → 停车
+    assert _window_rows(acc, sid) == []
+    _append_blocks(p, _sync_blocks())               # 再派 sync：追加转录块
+    d.subagent({"event": "start", "agent": "cc", "session_id": sid})   # 续窗
+    d.subagent({"event": "stop", "agent": "cc", "session_id": sid})    # sync 的 stop
+    assert _window_rows(acc, sid) == []             # 仍不闭（latch 生效）
+    assert d.window_wait("cc", sid) is True
+    d.note_usage("cc", sid, ts=time.time() + 200)
+    assert _window_rows(acc, sid)[0]["close_reason"] == "main_resumed"
+
+
+def test_overlap_seq_parks_even_when_sync_stop_seen_last(wenv):
+    """★ 重叠序（附录#7）：async start→sync start→async stop→sync stop。
+
+    停车判定只在计数归零时跑，届时尾部最后派发已是 sync——须靠 start 事件
+    处理时的尾判置 latch，否则 sync 的 stop 会误闭 async 等待。"""
+    d, led, acc, tmp = wenv
+    sid = "ov1"
+    p = _write_session(led, tmp, sid, _async_blocks())
+    d.subagent({"event": "start", "agent": "cc", "session_id": sid})   # async start
+    _append_blocks(p, _sync_blocks())
+    d.subagent({"event": "start", "agent": "cc", "session_id": sid})   # sync start（计数=2）
+    d.subagent({"event": "stop", "agent": "cc", "session_id": sid})    # async 早到 stop（计数=1，无判定）
+    d.subagent({"event": "stop", "agent": "cc", "session_id": sid})    # sync stop（归零）
+    assert _window_rows(acc, sid) == []             # 最终仍停车（不误闭）
+    assert d.window_wait("cc", sid) is True
+
+
+def test_parked_window_exempts_gate_and_prompt_keeps_park(wenv):
+    """停车窗期间用户输消息 → 缺口 A 放行（machine-waiting），且窗口不因
+    prompt 闭——async 真身还在跑，等待没结束（今天会误拦/误闭的场景）。"""
+    d, led, acc, tmp = wenv
+    sid = "as4"
+    p = _write_session(led, tmp, sid, _async_blocks(), idle_s=9999)  # 闲置远超 block 线
+    _start_stop(d, sid)
+    r = d.gate(_body(sid, str(p), "C:/proj"))
+    assert r["decision"] == "allow" and r["reason"] == "machine-waiting"
+    assert d.window_wait("cc", sid) is True
+    assert _window_rows(acc, sid) == []             # 停车窗不因 prompt 闭
+
+
+def test_parked_window_expires(wenv):
+    """停表超 PARK_EXPIRE_S → 懒过期闭窗记 expired，豁免随之失效。"""
+    d, led, acc, tmp = wenv
+    sid = "as5"
+    _write_session(led, tmp, sid, _async_blocks())
+    _start_stop(d, sid)
+    d._windows[("cc", sid)]["stop_ts"] = time.time() - (PARK_EXPIRE_S_REF + 400)
+    assert d.window_wait("cc", sid) is False
+    rows = _window_rows(acc, sid)
+    assert rows and rows[-1]["close_reason"] == "expired"
+
+
+def test_window_wait_never_raises(wenv, monkeypatch):
+    """★ 异常边界（附录#5 收窄 patch 面）：记账路径炸了，谓词只返回 False 不
+    外抛；patch 只打窗口记账内部（_record_window），闸门主路径不受影响照常决策。
+    且记账失败不丢窗（先记后 pop，附录#10）。"""
+    d, led, acc, tmp = wenv
+    sid = "as6"
+    p = _write_session(led, tmp, sid, _async_blocks(), idle_s=9999)
+    _start_stop(d, sid)
+    d._windows[("cc", sid)]["stop_ts"] = time.time() - (PARK_EXPIRE_S_REF + 400)
+
+    def boom(*a, **k):
+        raise RuntimeError("记账坏了")
+    monkeypatch.setattr(d, "_record_window", boom)
+    assert d.window_wait("cc", sid) is False        # 不抛、按 False
+    assert ("cc", sid) in d._windows                # 记账失败窗保留（未 pop）
+    r = d.gate(_body(sid, str(p), "C:/proj"))       # 闸门主路径不炸、照常出决策
+    assert r["decision"] in ("allow", "block")
+
+
+def test_note_usage_record_failure_keeps_window(wenv, monkeypatch):
+    """★ 附录#10：note_usage 记账炸 → 不抛，且绝不"先 pop 后记账失败丢窗"。"""
+    d, led, acc, tmp = wenv
+    sid = "as7"
+    _write_session(led, tmp, sid, _async_blocks())
+    _start_stop(d, sid)
+
+    def boom(*a, **k):
+        raise RuntimeError("记账坏了")
+    monkeypatch.setattr(d, "_record_window", boom)
+    d.note_usage("cc", sid, ts=time.time() + 200)   # 不抛
+    assert d.window_wait("cc", sid) is True         # 窗未丢（仍停车，下轮可重试）
+
+
+def test_reanchor_expired_park_records_expired_no_future_ts(wenv):
+    """重锚旧停车窗（附录#3/#13）：按距 stop_ts 超 PARK_EXPIRE_S 判过期（非
+    opened_ts）；closed_ts=min(stop+PARK_EXPIRE_S, now)——绝不出现未来时刻。"""
+    d, led, acc, tmp = wenv
+    sid = "ix2"
+    _write_session(led, tmp, sid, _async_blocks())
+    _start_stop(d, sid)
+    stop = time.time() - (PARK_EXPIRE_S_REF + 400)
+    w = d._windows[("cc", sid)]
+    w["stop_ts"] = stop
+    w["opened_ts"] = stop - 300      # opened 更早：超 LEAK 阈值 → 下个 start 走重锚
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": sid})["ok"]
+    rows = _window_rows(acc, sid)
+    assert len(rows) == 1 and rows[0]["close_reason"] == "expired"
+    assert rows[0]["closed_ts"] <= time.time() + 1            # 无未来时刻
+    assert abs(rows[0]["closed_ts"] - (stop + PARK_EXPIRE_S_REF)) < 5
+    assert d._windows[("cc", sid)]["stop_ts"] is None         # 新窗在跑
+
+
+def test_prompt_still_closes_open_window(wenv):
+    """未停车的窗口遇 prompt 照旧闭（R1 既有语义回归锁）。"""
+    d, led, acc, tmp = wenv
+    sid = "sy6"
+    p = _write_session(led, tmp, sid, _sync_blocks())
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": sid})["ok"]
+    d.gate(_body(sid, str(p), "C:/proj"))
+    rows = _window_rows(acc, sid)
+    assert len(rows) == 1 and rows[0]["close_reason"] == "prompt"
