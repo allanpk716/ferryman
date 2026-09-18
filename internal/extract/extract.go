@@ -7,21 +7,17 @@
 //   - token 估算：CJK 1 token/字、其余 chars/3.5（DESIGN §6.8 计量口径）。
 //
 // 防御纪律同 cctrans：坏行/缺字段静默跳过。行读一律 ReadBytes('\n') 无上限
-// （Scanner 有内部行上限，禁用——同票 06 纪律）。字符串长度/截断全按码点
-// （mathx.RuneLen/RuneTrunc = Python len/s[:cap]）。
+// （Scanner 有内部行上限，禁用——同票 06 纪律，助手已收口 internal/jsonl）。
+// 字符串长度/截断全按码点（mathx.RuneLen/RuneTrunc = Python len/s[:cap]）。
 package extract
 
 import (
-	"bufio"
-	"encoding/json"
-	"errors"
-	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 
 	"ferryman/internal/cctrans"
+	"ferryman/internal/jsonl"
 	"ferryman/internal/mathx"
 )
 
@@ -172,25 +168,8 @@ func contentText(content any) string {
 	return strings.Join(parts, "\n")
 }
 
-// truthy JSON 解码值的 Python bool() 真值语义（nil/0/""/空容器 falsy）。
-func truthy(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return x
-	case float64:
-		return x != 0
-	case string:
-		return x != ""
-	case []any:
-		return len(x) > 0
-	case map[string]any:
-		return len(x) > 0
-	default:
-		return true
-	}
-}
+// truthy/decodeDict/readLines 已收口至 internal/jsonl（票 07 评审：三包共用
+// 助手单源；本包经 jsonl.Truthy / jsonl.DecodeDict / jsonl.ReadLines 调用）。
 
 // inputDict Python (b.get("input") or {})：缺失/非 dict 按 {}（防御收紧，
 // 纪律同 cctrans 评审#11——message 非 dict 不外抛）。
@@ -225,41 +204,6 @@ func freezeFinalize(facts *Facts, items []Item,
 	facts.FreezeChoice = asstChoice
 }
 
-// decodeDict 行 → 顶层 dict；坏 JSON 或顶层非 dict 一律 false 静默
-// （防御纪律：绝不向调用方抛错）。
-func decodeDict(line string) (map[string]any, bool) {
-	var d any
-	if json.Unmarshal([]byte(line), &d) != nil {
-		return nil, false
-	}
-	m, ok := d.(map[string]any)
-	return m, ok
-}
-
-// readLines 以 ReadBytes('\n') 无上限行读逐行交付（Python for line in f 的
-// Go 形；Scanner 行上限禁用，同 cctrans 纪律）。打开/读失败上抛，由调用方
-// 按 OSError 语义收场。
-func readLines(path string, fn func(line string) bool) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	r := bufio.NewReaderSize(f, 64*1024)
-	for {
-		raw, rerr := r.ReadBytes('\n')
-		if len(raw) > 0 && !fn(string(raw)) {
-			return nil
-		}
-		if rerr != nil {
-			if errors.Is(rerr, io.EOF) {
-				return nil
-			}
-			return rerr
-		}
-	}
-}
-
 // Extract 读取一个 CC 会话：返回 (骨架, 正文条目, usage 轮次)。单遍扫描。
 // 打不开/读中断（OSError 语义）→ 已收部分 + 空 turns。
 func Extract(path string) (Facts, []Item, []cctrans.Turn) {
@@ -274,11 +218,11 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 	lastAsstTools := []string{}
 	var lastAsstChoice *Choice
 
-	scanErr := readLines(path, func(line string) bool {
+	scanErr := jsonl.ReadLines(path, func(line string) bool {
 		if !strings.Contains(line, `"type"`) { // 子串预筛快速跳行
 			return true
 		}
-		d, ok := decodeDict(line)
+		d, ok := jsonl.DecodeDict(line)
 		if !ok {
 			return true
 		}
@@ -358,7 +302,7 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 					inp := inputDict(b)
 					// Python inp.get("file_path") or inp.get("notebook_path")
 					fp := inp["file_path"]
-					if !truthy(fp) {
+					if !jsonl.Truthy(fp) {
 						fp = inp["notebook_path"]
 					}
 					if s, ok := fp.(string); ok && s != "" {

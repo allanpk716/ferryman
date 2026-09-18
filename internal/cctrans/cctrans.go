@@ -3,15 +3,14 @@
 // 行内格式属 CC 内部实现、版本间会变（官方明示不稳定）：本包只取需要的字段，
 // 任何坏行/缺字段一律静默跳过，绝不向调用方抛错。台账闲置判定另有 mtime 兜底路径。
 //
-// 行读一律 bufio.Reader.ReadBytes('\n') 无上限：Scanner 有内部行上限
-// （ErrTooLong 断流，超长行后的内容全部丢失），禁用。
+// 行读一律 ReadBytes('\n') 无上限：Scanner 有内部行上限
+// （ErrTooLong 断流，超长行后的内容全部丢失），禁用。行读/解码/真值助手已
+// 收口至 internal/jsonl（票 07 评审），本包只留 CC 行格式语义。
 package cctrans
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -19,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ferryman/internal/jsonl"
 )
 
 // DefaultTailBytes 尾窗判定默认只读的尾部字节数（Python tail_bytes=262_144）。
@@ -98,69 +99,18 @@ func toInt(v any) (int, bool) {
 	}
 }
 
-// truthy 对应 Python bool() 真值语义（json 解码只出这几种类型）。
-func truthy(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return x
-	case float64:
-		return x != 0
-	case string:
-		return x != ""
-	case []any:
-		return len(x) > 0
-	case map[string]any:
-		return len(x) > 0
-	default:
-		return true
-	}
-}
-
-// readLines 以 ReadBytes('\n') 无上限行读逐行交付；fn 返回 false 提前止步。
-// 打不开文件/读中断流（非 EOF）→ 上抛，由调用方按 OSError 语义收场
-// （AssistantTurns 全弃返回空，其余返回零值）。
-func readLines(path string, fn func(line string) bool) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	r := bufio.NewReaderSize(f, 64*1024)
-	for {
-		raw, rerr := r.ReadBytes('\n')
-		if len(raw) > 0 && !fn(string(raw)) {
-			return nil
-		}
-		if rerr != nil {
-			if errors.Is(rerr, io.EOF) {
-				return nil
-			}
-			return rerr
-		}
-	}
-}
-
-// decodeDict 行 → 顶层 dict；坏 JSON 或顶层非 dict（评审#11）一律 false 静默。
-func decodeDict(line string) (map[string]any, bool) {
-	var d any
-	if json.Unmarshal([]byte(line), &d) != nil {
-		return nil, false
-	}
-	m, ok := d.(map[string]any)
-	return m, ok
-}
+// truthy/decodeDict/readLines 已收口至 internal/jsonl（票 07 评审：三包共用
+// 助手单源；本包经 jsonl.Truthy / jsonl.DecodeDict / jsonl.ReadLines 调用）。
 
 // AssistantTurns 会话内全部 assistant usage 轮次，按时间升序（稳定排序）。
 // 一切坏行/缺字段/类型不符静默跳过；读失败（OSError 语义）整单返回空。
 func AssistantTurns(path string) []Turn {
 	turns := []Turn{}
-	err := readLines(path, func(line string) bool {
+	err := jsonl.ReadLines(path, func(line string) bool {
 		if !strings.Contains(line, `"usage"`) { // 子串预筛快速跳行
 			return true
 		}
-		d, ok := decodeDict(line)
+		d, ok := jsonl.DecodeDict(line)
 		if !ok {
 			return true
 		}
@@ -256,7 +206,7 @@ func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
 		if !strings.Contains(line, `"tool_use"`) && !strings.Contains(line, `"tool_result"`) {
 			continue // 子串预筛快速跳行
 		}
-		d, ok := decodeDict(line)
+		d, ok := jsonl.DecodeDict(line)
 		if !ok {
 			continue
 		}
@@ -298,11 +248,11 @@ func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
 // 无 → ""（Python None 的 Go 形）。
 func AITitle(path string) string {
 	title := ""
-	err := readLines(path, func(line string) bool {
+	err := jsonl.ReadLines(path, func(line string) bool {
 		if !strings.Contains(line, `"ai-title"`) { // 子串预筛快速跳行
 			return true
 		}
-		d, ok := decodeDict(line)
+		d, ok := jsonl.DecodeDict(line)
 		if !ok {
 			return true
 		}
@@ -325,14 +275,14 @@ func AITitle(path string) string {
 // 这是 lineage 校准（E0a 附带项）的判定信号。无 → ""。
 func FirstUserMessageHash(path string) string {
 	hash := ""
-	err := readLines(path, func(line string) bool {
+	err := jsonl.ReadLines(path, func(line string) bool {
 		if hash != "" { // Python 首条即 return，已命中则不再覆盖
 			return false
 		}
 		if !strings.Contains(line, `"type":"user"`) { // 子串预筛快速跳行
 			return true
 		}
-		d, ok := decodeDict(line)
+		d, ok := jsonl.DecodeDict(line)
 		if !ok {
 			return true
 		}
@@ -402,7 +352,7 @@ func HasAsyncLaunch(path string) bool {
 		if !strings.Contains(line, `"tool_use"`) && !strings.Contains(line, `"tool_result"`) {
 			continue // 子串预筛快速跳行
 		}
-		d, ok := decodeDict(line)
+		d, ok := jsonl.DecodeDict(line)
 		if !ok { // 顶层非 dict 的坏行同样静默跳过
 			continue
 		}
@@ -426,7 +376,7 @@ func HasAsyncLaunch(path string) bool {
 				if (name == "Task" || name == "Agent") && idOK {
 					lastDispatch = id
 					inp, _ := b["input"].(map[string]any)
-					isAsync[id] = truthy(inp["run_in_background"]) || truthy(inp["background"])
+					isAsync[id] = jsonl.Truthy(inp["run_in_background"]) || jsonl.Truthy(inp["background"])
 				}
 			} else if typ == "tool_result" {
 				id, ok := b["tool_use_id"].(string)
