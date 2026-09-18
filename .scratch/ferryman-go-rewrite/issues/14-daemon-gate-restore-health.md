@@ -9,6 +9,8 @@
 - [ ] 全部中文文案与 Python 版 diff 为空（block reason/警告/信息条逐字）
 - [ ] restore 相关用例（散在 test_gate.py）→ restore_test.go 且绿
 
+**追加验收（票 12 占位回填）**：test_notify.py 的 test_gate_block_fires_notification_async（gate block → 异步 notify_block 链路）在本票转绿（Go 占位见 internal/notify/notify_test.go 的 t.Skip）。
+
 **Blocked by**：13
 
 **追加验收（票 04 占位回填）**：test_accounts.py 的 3 个闸门/归还 e2e 占位在本票转绿——test_block_books_entry / test_bypass_books_entry / test_restore_books_inject（Go 占位见 internal/accounts/accounts_test.go 的 t.Skip，含 Python 断言要点）。
