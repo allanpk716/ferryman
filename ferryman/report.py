@@ -8,6 +8,7 @@ v1 已知简化，复算附录披露）；handoff 侧用流水钉死的 price_ve
 from __future__ import annotations
 
 import json
+import sys
 import time
 from datetime import datetime
 
@@ -205,6 +206,14 @@ def render_text(s: dict, st: dict, books: dict[str, PriceBook],
 
 
 def run(args) -> int:
+    # GBK 控制台兜底：报表含 U+2212（−）等字符，默认编码直接 UnicodeEncodeError
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if reconf is not None:
+            try:
+                reconf(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
     cfg = config_mod.load()
     acc = _accounts_for(cfg)
     books = load_prices()
