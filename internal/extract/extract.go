@@ -22,10 +22,10 @@ import (
 )
 
 const (
-	itemCharCap = 4000 // 单条正文截断（防超长粘贴撑爆材料）
-	cmdCharCap  = 160  // 骨架里单条命令截断
-	maxCommands = 2000 // 收集上限（防病态内存；正常会话远不及，渲染时取尾部 20）
-	maxFiles    = 200
+	ItemCharCap = 4000 // 单条正文截断（防超长粘贴撑爆材料）
+	CmdCharCap  = 160  // 骨架里单条命令截断
+	MaxCommands = 2000 // 收集上限（防病态内存；正常会话远不及，渲染时取尾部 20）
+	MaxFiles    = 200
 
 	freezeUserCap = 500  // 末段定格：用户末条截断（设计文档 §4.1）
 	freezeAsstCap = 1500 // 末段定格：助手末条截断
@@ -310,15 +310,15 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 					}
 					if cmd, ok := inp["command"].(string); ok && strings.TrimSpace(cmd) != "" {
 						key := strings.TrimSpace(cmd)
-						if !cmdSeen[key] && len(commands) < maxCommands {
+						if !cmdSeen[key] && len(commands) < MaxCommands {
 							cmdSeen[key] = true
-							commands = append(commands, mathx.RuneTrunc(key, cmdCharCap))
+							commands = append(commands, mathx.RuneTrunc(key, CmdCharCap))
 						}
 					}
 				}
 			}
 			if s := strings.TrimSpace(lastAsstText); s != "" {
-				items = append(items, Item{Role: "assistant", Text: mathx.RuneTrunc(s, itemCharCap)})
+				items = append(items, Item{Role: "assistant", Text: mathx.RuneTrunc(s, ItemCharCap)})
 			}
 		} else { // user：只要 text，tool_result（工具输出）整块丢弃
 			if blocks, ok := content.([]any); ok {
@@ -338,7 +338,7 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 				}
 			}
 			if s := strings.TrimSpace(contentText(content)); s != "" {
-				items = append(items, Item{Role: "user", Text: mathx.RuneTrunc(s, itemCharCap)})
+				items = append(items, Item{Role: "user", Text: mathx.RuneTrunc(s, ItemCharCap)})
 			}
 		}
 		return true
@@ -372,8 +372,8 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 		}
 		return files[i].Path < files[j].Path
 	})
-	if len(files) > maxFiles {
-		files = files[:maxFiles]
+	if len(files) > MaxFiles {
+		files = files[:MaxFiles]
 	}
 	facts.Files = files
 	facts.Commands = commands

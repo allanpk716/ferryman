@@ -56,8 +56,8 @@ var tsLayouts = []string{
 	"2006-01-02",
 }
 
-// tsToEpoch 对应 Python _ts_to_epoch：ISO 串 → epoch 秒；非串/空/解析失败 → false。
-func tsToEpoch(v any) (float64, bool) {
+// TSToEpoch 对应 Python _ts_to_epoch：ISO 串 → epoch 秒；非串/空/解析失败 → false。
+func TSToEpoch(v any) (float64, bool) {
 	s, ok := v.(string)
 	if !ok || s == "" {
 		return 0, false
@@ -70,10 +70,10 @@ func tsToEpoch(v any) (float64, bool) {
 	return 0, false
 }
 
-// toInt 对应 Python int(u.get(k) or 0) 的宽松转换语义：
+// ToInt 对应 Python int(u.get(k) or 0) 的宽松转换语义：
 // nil/零值/空容器 → 0；bool → 1/0；数值截断；整数字符串可解析；
 // 其余（非整数字符串、非空容器）→ false（Python 侧即 TypeError/ValueError → 跳行）。
-func toInt(v any) (int, bool) {
+func ToInt(v any) (int, bool) {
 	switch x := v.(type) {
 	case nil:
 		return 0, true
@@ -127,13 +127,13 @@ func AssistantTurns(path string) []Turn {
 		if u, ok := msg["usage"].(map[string]any); ok {
 			usage = u
 		}
-		cr, ok1 := toInt(usage["cache_read_input_tokens"])
-		cc, ok2 := toInt(usage["cache_creation_input_tokens"])
-		inp, ok3 := toInt(usage["input_tokens"])
+		cr, ok1 := ToInt(usage["cache_read_input_tokens"])
+		cc, ok2 := ToInt(usage["cache_creation_input_tokens"])
+		inp, ok3 := ToInt(usage["input_tokens"])
 		if !ok1 || !ok2 || !ok3 {
 			return true
 		}
-		ts, ok := tsToEpoch(d["timestamp"])
+		ts, ok := TSToEpoch(d["timestamp"])
 		if !ok || cr+cc+inp <= 0 {
 			return true
 		}
