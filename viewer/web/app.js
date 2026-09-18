@@ -827,7 +827,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       }
       planRow('plan-rule',
         '实测 TTL ' + fmtDur(ttl) + 's 三区：≤' + fmtDur(ttl) + 's 必活 / ' +
-        fmtDur(ttl) + '~' + fmtDur(ttl * 3) + 's 看驱逐脸色 / ≥1800s 必死（2026-09-17 实测口径）');
+        fmtDur(ttl) + '~1800s 看驱逐脸色 / ≥1800s 必死（死线 1800s=实测口径，必活线随 TTL 配置移动）');
       planRow('plan-rule',
         '触发：子代理在飞＋主会话闲置满 τ＋四道预检（全局开关/窗口开/无新写入/前缀≥30k）→ 体外重放刷新缓存，不写会话文件');
       planRow('plan-rule',

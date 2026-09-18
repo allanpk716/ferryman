@@ -361,6 +361,11 @@ func TestNote(t *testing.T) {
 			name: "目录缺失 + 演示标注 → 「；」连接且演示在后", srv: tsMissing, path: "/api/sessions",
 			note: fmt.Sprintf("数据目录不存在：%s；%s", filepath.Join(dir, "no-such-dir"), demoNote),
 		},
+		{
+			// 终审 nit#3：timeline 的对称分支——noteSuffix 两端点共用，但仍钉住行为
+			name: "目录缺失 + 演示标注 → timeline 同样「；」连接", srv: tsMissing, path: "/api/timeline?lineage=lin-t1",
+			note: fmt.Sprintf("数据目录不存在：%s；%s", filepath.Join(dir, "no-such-dir"), demoNote),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
