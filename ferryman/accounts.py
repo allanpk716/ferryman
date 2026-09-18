@@ -29,6 +29,16 @@ _KIND_FIELDS: dict[str, set[str]] = {
     "inject": {"tokens", "handoff_id"},
     "bypass": {"prefix_tokens"},
     "window": {"opened_ts", "closed_ts", "dur_s", "prefix_tokens", "close_reason"},
+    # 问询守望事件（T51 票04，spec 决策 8）：命中/开窗/关窗走本通道（每跳
+    # 复用上方 beat 科目）。命中行带复核证据形态（unit_count＋breakdown 三桶
+    # ＋转录绝对路径；session_id/命中时间是公共字段）——只记元数据与计数，
+    # 消息正文永不入账（隐私铁律，测试 test_hit_event_privacy_no_message_body
+    # 守着）。
+    "qwatch_hit": {"unit_count", "marker_lines", "qmark_lines",
+                   "numbered_lines", "transcript_path"},
+    "qwatch_open": {"unit_count", "prefix_tokens"},
+    "qwatch_close": {"opened_ts", "closed_ts", "dur_s", "beats_fired",
+                     "close_reason"},
     # 逐次请求的用量遥测（设计 §3.7；会话文件 30 天清理后的审计地基）
     "usage": {"model", "title", "input_tokens", "cache_read_tokens",
               "cache_creation_tokens", "output_tokens", "offset"},

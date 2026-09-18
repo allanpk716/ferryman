@@ -92,7 +92,8 @@ class FerryDaemon:
 
     def __init__(self, cfg, ledger: Ledger, store: Store, enqueue_ferry,
                  accounts: Accounts | None = None,
-                 started_at: float | None = None) -> None:
+                 started_at: float | None = None,
+                 qwatch_stats=None) -> None:
         self.cfg = cfg
         self.ledger = ledger
         self.store = store
@@ -100,6 +101,9 @@ class FerryDaemon:
         self.accounts = accounts             # None = 不记账（旧测试零改动）
         self.stats = GateStats()
         self.pending = PendingTable()
+        # T51 票04 问询守望计数器（Watcher 写、health() 读；None = 未接线，
+        # health 报全零占位——旧调用零改动）。
+        self.qwatch_stats = qwatch_stats
         # T41 等待窗口表：(agent, sid) → {"opened_ts": ...}。内存态，重启丢失可接受
         # （同 PendingTable）——丢窗 = 该次等待不入账，宁缺毋错。泄漏兜底（R10）：
         # Stop 丢失致旧窗滞留时，下次 start 超过台账泄漏阈值（SUBAGENT_EVENT_LEAK_S）
@@ -421,6 +425,37 @@ class FerryDaemon:
         except Exception:  # noqa: BLE001 — 同上
             return False
 
+    def qwatch_stop(self) -> dict:
+        """一键停（T51 票04）：mode 置 off＋取消全部在飞计划与未关窗口。
+
+        关窗而非只清计划：窗口还连着摆渡推迟与死线（_qwatch_deadline），
+        停守望必须连摆渡侧一并松开。只动内存（台账锁内清字段，关窗事件
+        锁外落账 close_reason=stop——四类事件口径完整）；重启后仍以配置
+        文件的 mode 为准（运行时开关不落盘）。"""
+        self.cfg.question_watch.mode = "off"
+        cancelled = 0
+        stopped: list[tuple[SessionState, float, int]] = []
+        with self.ledger.lock:
+            for st in self.ledger.all_sessions():
+                if st.qwatch_opened_ts is None and not st.qwatch_plan:
+                    continue
+                if st.qwatch_opened_ts is not None:
+                    stopped.append((st, st.qwatch_opened_ts, st.qwatch_beats_fired))
+                st.qwatch_opened_ts = None
+                st.qwatch_beats_fired = 0
+                st.qwatch_plan = []
+                st.qwatch_snapshot = None
+                cancelled += 1
+        for st, opened_ts, fired in stopped:    # 锁外落账（记账读盘不持台账锁）
+            closed = now_s()
+            self._acct("qwatch_close", st, opened_ts=round(opened_ts, 3),
+                       closed_ts=round(closed, 3),
+                       dur_s=round(max(0.0, closed - opened_ts), 1),
+                       beats_fired=fired, close_reason="stop")
+        print(f"[qwatch] 一键停：mode→off，已取消 {cancelled} 个会话的窗口/计划",
+              flush=True)
+        return {"ok": True, "mode": "off", "cancelled": cancelled}
+
     def health(self) -> dict:
         now = now_s()
         with self.stats.lock:
@@ -431,6 +466,16 @@ class FerryDaemon:
         in_grace = now - self.started_at < HEALTH_GRACE_S
         alert = (not in_grace) and (now - last_write < 3600) \
             and (total == 0 or now - last_call > 3600)
+        # T51 票04：问询守望计数器（命中/开窗/跳数/四道 outcome/累计实收花费/
+        # 当前 mode）。mode 读配置活值——熔断降级与一键停改的是同一处。
+        if self.qwatch_stats is not None:
+            qwatch = self.qwatch_stats.snapshot()
+        else:
+            qwatch = {"hits": 0, "windows_opened": 0, "beats_fired": 0,
+                      "beats_by_outcome": {"hit": 0, "miss": 0,
+                                           "error": 0, "observe": 0},
+                      "cost_actual": 0.0}
+        qwatch["mode"] = self.cfg.question_watch.mode
         return {
             "gate_calls_total": total,
             "gate_calls_by_agent": dict(self.stats.by_agent),
@@ -441,6 +486,7 @@ class FerryDaemon:
             "health_alert": alert,
             "health_msg": ("疑似钩子失效：1h 内有会话写入但 gate 零调用"
                            if alert else ("启动宽限中" if in_grace else "ok")),
+            "qwatch": qwatch,
         }
 
 
@@ -461,6 +507,7 @@ class DaemonLike(Protocol):
 
     def gate(self, body: dict) -> dict: ...
     def subagent(self, body: dict) -> dict: ...
+    def qwatch_stop(self) -> dict: ...
     def restore(self, agent: str, cwd: str, session_id: str) -> dict: ...
     def health(self) -> dict: ...
 
@@ -512,12 +559,15 @@ def make_server(daemon: DaemonLike, port: int, token: str) -> ThreadingHTTPServe
             # Windows 会发 RST 而非 FIN → 客户端读到 10053 连接中断而非状态码
             length = int(self.headers.get("Content-Length") or 0)
             body_raw = self.rfile.read(length) if length else b""
-            if self.path not in ("/gate", "/subagent"):
+            if self.path not in ("/gate", "/subagent", "/qwatch_stop"):
                 self._json(404, {"error": "not found"})
                 return
             if not self._authed():
                 return
             try:
+                if self.path == "/qwatch_stop":    # T51 票04 一键停：无请求体
+                    self._json(200, daemon.qwatch_stop())
+                    return
                 body = json.loads(body_raw.decode("utf-8"))
                 if self.path == "/gate":
                     self._json(200, daemon.gate(body))

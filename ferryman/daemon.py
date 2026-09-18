@@ -17,7 +17,8 @@ from pathlib import Path
 
 from . import config as config_mod
 from .accounts import Accounts
-from .beat import BeatBreaker, BeatPlan, BeatResult, BeatSender, NoopSender, classify
+from .beat import (BeatBreaker, BeatPlan, BeatResult, BeatSender, NoopSender,
+                   QWatchStats, classify)
 from .config import Config, FERRY_WALL_TIMEOUT_S
 from .ferry import ferry_session, load_config as load_providers
 from .ledger import Ledger, now_s
@@ -54,7 +55,8 @@ class Watcher(threading.Thread):
 
     def __init__(self, cfg: Config, ledger: Ledger, store: Store,
                  enqueue, started_at: float, accounts=None, ferry_daemon=None,
-                 beat_sender: BeatSender | None = None):
+                 beat_sender: BeatSender | None = None,
+                 qwatch_stats: QWatchStats | None = None):
         super().__init__(daemon=True, name="ferryman-watch")
         self.cfg, self.ledger, self.store = cfg, ledger, store
         self.enqueue = enqueue
@@ -64,6 +66,9 @@ class Watcher(threading.Thread):
         # T51 等答复窗开窗判定的版本章：(agent, sid) → 已判定过的 last_write。
         # 同一写入版本只读盘判定一次；仅内存，重启丢章=重启后多判一轮（无害）。
         self._qwatch_seen: dict[tuple[str, str], float] = {}
+        # T51 票04 命中事件去重章：瞬态阻塞（子代理/停车窗）不盖 _qwatch_seen、
+        # 会逐轮重判——命中事件靠本章保证每写入版本只落一次。
+        self._qwatch_hit_seen: dict[tuple[str, str], float] = {}
         # T51 票03 心跳调度：可注入发送器（None = 未接真实 sender——enforce 时
         # 降级为 observe 演练并告警一次，Q14 段二/三前不真发）；在途旗与熔断
         # 计数器（守望单线程串行，旗只作跨会话串行化的显式不变量）。
@@ -72,6 +77,8 @@ class Watcher(threading.Thread):
         self._breaker = BeatBreaker()
         self._noop_sender = NoopSender()
         self._beat_enforce_warned = False
+        # T51 票04 /stats 计数器（与 FerryDaemon 共享同一实例；None = 未接线）。
+        self.qwatch_stats = qwatch_stats
         self.harvest = None
         if accounts is not None and cfg.watch.harvest_usage:
             from .harvest import HarvestState
@@ -102,12 +109,48 @@ class Watcher(threading.Thread):
                 mtime, size = p.stat().st_mtime, p.stat().st_size
             except OSError:
                 continue
+            prev_open = self._prev_qwatch_open(p.stem)   # 票04：touch 前窗口态（关窗事件用）
             st = self.ledger.touch("cc", p.stem, str(p), mtime=mtime, size=size,
                                    daemon_started_at=self.started_at)
+            self._book_qwatch_close(st, prev_open)
             self._harvest_usage(p, size, st)
             self._maybe_qwatch(st)
             self._maybe_fire_beats(st)
             self._maybe_enqueue(st)
+
+    def _prev_qwatch_open(self, sid: str) -> float | None:
+        """touch 前的等答复窗口态（票04 关窗事件的"前"照）。异常按无窗。"""
+        try:
+            st = self.ledger.get("cc", sid)
+            return st.qwatch_opened_ts if st is not None else None
+        except Exception:  # noqa: BLE001 — 事件侧故障不碰守望主路径
+            return None
+
+    def _book_qwatch_close(self, st, prev_open_ts: float | None) -> None:
+        """票04 关窗事件：touch 前窗开着、touch 后窗没了 ⇒ 这次新写入关的窗
+        （touch 是关窗唯一入口，本对照即完整的关窗面）。lineage 换 sid 等罕见
+        边角（st 不是原对象）无从回指，不记。dur 以新写入时刻收口。"""
+        if prev_open_ts is None or st.qwatch_opened_ts is not None:
+            return
+        self._book_qwatch(
+            "qwatch_close", st, opened_ts=round(prev_open_ts, 3),
+            closed_ts=round(st.last_write, 3),
+            dur_s=round(max(0.0, st.last_write - prev_open_ts), 1),
+            beats_fired=st.qwatch_beats_fired, close_reason="write")
+
+    def _book_qwatch(self, kind: str, st, **fields) -> None:
+        """问询守望事件入账（票04）：走既有台账科目通道（accounts.jsonl），
+        只记元数据与计数，永不落消息正文（隐私铁律）。记账永不弄断守望。"""
+        if self.accounts is None:
+            return
+        try:
+            from .ledger import _norm_path
+            self.accounts.record(
+                kind, agent=st.agent, session_id=st.session_id,
+                lineage_id=_norm_path(st.transcript_path), project=st.cwd,
+                **fields)
+        except Exception as e:  # noqa: BLE001 — 记账故障不得弄断守望
+            print(f"[account] {kind} 记账失败（忽略）: {e}", flush=True)
 
     def _poll_codex(self) -> None:
         """跨目录按 session_id 去重：~/.codex/sessions 与 Orca runtime 目录可能
@@ -196,6 +239,19 @@ class Watcher(threading.Thread):
             if not verdict.is_surge or not verdict.askuserquestion_dangling:
                 self._qwatch_seen[key] = st.last_write   # 结论性不满足，随版本缓存
                 return                  # 条件①②
+            # 票04 命中事件（证据形态五字段，spec 决策 8）：随版本章去重——
+            # 瞬态阻塞不盖 _qwatch_seen、会逐轮重判，命中事件靠专属本章保证
+            # 每写入版本只落一次；observe 命中清单即人工复核与漏检对照地基。
+            if self._qwatch_hit_seen.get(key) != st.last_write:
+                self._qwatch_hit_seen[key] = st.last_write
+                self._book_qwatch(
+                    "qwatch_hit", st, unit_count=verdict.unit_count,
+                    marker_lines=verdict.breakdown.marker_lines,
+                    qmark_lines=verdict.breakdown.qmark_lines,
+                    numbered_lines=verdict.breakdown.qualified_numbered_lines,
+                    transcript_path=st.transcript_path)
+                if self.qwatch_stats is not None:
+                    self.qwatch_stats.record_hit()
             if self.ledger.subagent_active(st.agent, st.session_id):
                 return                  # 条件③（瞬态：不盖版本章）
             if (self.ferry_daemon is not None
@@ -208,6 +264,7 @@ class Watcher(threading.Thread):
             # 开窗 check-then-act 临界区（票03）：与停车窗开窗判定（server.subagent）
             # 共用台账 RLock，锁内复验全部瞬态条件——毫秒级双窗并存窗口归零。
             # 锁外已做初筛（复验几乎必过），锁内只有内存操作，不持锁读盘。
+            opened = False
             with self.ledger.lock:
                 if st.qwatch_opened_ts is not None:
                     return              # 复验：并发路径已开窗
@@ -220,6 +277,13 @@ class Watcher(threading.Thread):
                 st.qwatch_beats_fired = 0
                 st.qwatch_plan = self._beat_plan(st.qwatch_opened_ts)   # 票03：开窗即排计划
                 st.qwatch_snapshot = (st.last_write, st.size)
+                opened = True
+            # 票04 开窗事件锁外落账（记账读盘绝不持台账锁——与临界区"锁内只有
+            # 内存操作"同纪律）。
+            self._book_qwatch("qwatch_open", st, unit_count=verdict.unit_count,
+                              prefix_tokens=st.peak_ctx)
+            if self.qwatch_stats is not None:
+                self.qwatch_stats.record_window_opened()
         except Exception as e:  # noqa: BLE001 — 窗口路径异常不影响守望主路径
             print(f"[qwatch] 开窗判定异常（忽略继续）: {e}", flush=True)
 
@@ -260,7 +324,10 @@ class Watcher(threading.Thread):
                 print(f"[qwatch] 跳取消：台账有新写入（{st.session_id[:8]}），"
                       f"剩余计划作废", flush=True)
                 return
-            try:                        # 验②复 stat 转录：mtime+size 与开窗快照一致
+            try:                        # 验②复 stat 转录：mtime+size 与开窗快照一致。
+                # 锁内 Path.stat() 有意为之：两道验（版本章＋新鲜度）与出队/
+                # 在途占用必须同一临界区内完成才是原子的——挪到锁外会重新打开
+                # "验完被并发关窗/并发跳"的窗口（票04 M3 评审注明，勿顺手移出）。
                 sb = Path(st.transcript_path).stat()
                 fresh = sb.st_mtime == snap[0] and sb.st_size == snap[1]
             except OSError:
@@ -305,6 +372,8 @@ class Watcher(threading.Thread):
         try:
             outcome = classify(result)
             self._book_beat(st, outcome, result)
+            if self.qwatch_stats is not None:   # 票04：/stats 计数与累计实收
+                self.qwatch_stats.record_beat(outcome, result.cost_actual)
             action = self._breaker.record(outcome)
             if action == "demote" and self.cfg.question_watch.mode == "enforce":
                 self.cfg.question_watch.mode = "observe"    # 安全降级；人工复核后拨回
@@ -528,8 +597,9 @@ def serve(relax_min_gap: bool = False) -> int:
             return False
 
     started_at = now_s()
+    qwatch_stats = QWatchStats()            # 票04：daemon/watcher 共享计数器
     daemon = FerryDaemon(cfg, ledger, store, enqueue, accounts=accounts,
-                         started_at=started_at)
+                         started_at=started_at, qwatch_stats=qwatch_stats)
     try:
         server = make_server(daemon, cfg.server.port, token)
     except OSError:
@@ -547,7 +617,7 @@ def serve(relax_min_gap: bool = False) -> int:
         encoding="utf-8")
 
     watcher = Watcher(cfg, ledger, store, enqueue, started_at, accounts,
-                      ferry_daemon=daemon)
+                      ferry_daemon=daemon, qwatch_stats=qwatch_stats)
     worker = FerryWorker(cfg, store, tasks, accounts)
     watcher.start()
     worker.start()

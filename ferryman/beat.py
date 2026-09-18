@@ -8,6 +8,7 @@ beat 请求/结果形状与可注入发送接口（决策 5——本票仅接口
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -58,7 +59,10 @@ class BeatSender(Protocol):
     真实实现方职责（Q14 段二/三，本票不做）：直打本地代理 127.0.0.1:15721、
     发 CC 别名、重放前缀 [system+tools+u1..uN]（不含末轮 assistant 输出）、
     max_tokens=1 封顶输出、429/5xx/超时指数退避重试 1 次（重试语义归 sender，
-    调度器只看最终 BeatResult）、与摆渡路由零共用。"""
+    调度器只看最终 BeatResult）、与摆渡路由零共用。
+    时限要求：send() 必须自持秒级超时＋重试并在秒级内返回（守望单线程
+    串行调用）——一次挂起分钟级的 send 会阻塞守望循环，拖垮全部会话的
+    开窗与两道验。"""
 
     def send(self, plan: BeatPlan) -> BeatResult: ...
 
@@ -130,3 +134,42 @@ class BeatBreaker:
             return ""
         self.miss_streak = 0
         return ""
+
+
+class QWatchStats:
+    """问询守望运行计数器（T51 票04，/stats 数据源）：命中数/开窗数/跳数/
+    四道 outcome 计数/累计实收花费。纯内存计数（账本数据不反推跳数——
+    记归记、算归算，spec 决策 7）；守望线程写、HTTP 线程读，锁保护；
+    重启清零（与子代理计数同水位，内存态丢失可接受）。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._windows_opened = 0
+        self._beats_fired = 0
+        self._beats_by_outcome = {OUT_HIT: 0, OUT_MISS: 0,
+                                  OUT_ERROR: 0, OUT_OBSERVE: 0}
+        self._cost_actual = 0.0
+
+    def record_hit(self) -> None:
+        with self._lock:
+            self._hits += 1
+
+    def record_window_opened(self) -> None:
+        with self._lock:
+            self._windows_opened += 1
+
+    def record_beat(self, outcome: str, cost_actual: float = 0.0) -> None:
+        with self._lock:
+            self._beats_fired += 1
+            self._beats_by_outcome[outcome] = \
+                self._beats_by_outcome.get(outcome, 0) + 1
+            self._cost_actual += cost_actual
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"hits": self._hits,
+                    "windows_opened": self._windows_opened,
+                    "beats_fired": self._beats_fired,
+                    "beats_by_outcome": dict(self._beats_by_outcome),
+                    "cost_actual": round(self._cost_actual, 6)}

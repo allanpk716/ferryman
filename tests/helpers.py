@@ -10,6 +10,7 @@ from pathlib import Path
 
 import ferryman.daemon as daemon_mod
 from ferryman.accounts import Accounts
+from ferryman.beat import QWatchStats
 from ferryman.config import Config, ServerCfg, ThresholdCfg, WatchCfg
 from ferryman.daemon import FerryWorker, Watcher
 from ferryman.ledger import Ledger, now_s
@@ -88,8 +89,10 @@ class Harness:
             except queue.Full:
                 return False
 
+        self.qwatch_stats = QWatchStats()   # 票04：守望计数器（daemon/watcher 共享）
         self.daemon = FerryDaemon(cfg, self.ledger, self.store, enqueue,
-                                  accounts=self.accounts)
+                                  accounts=self.accounts,
+                                  qwatch_stats=self.qwatch_stats)
 
         def default_fake(path, provider, agent="cc"):
             md = ("[Ferryman 交接 · 会话 集成测试会话]\n\n<<<INJECT>>>\n注入层：干完了 fb.py\n"
@@ -107,7 +110,8 @@ class Harness:
                                                       model="fake")})
         self.server = make_server(self.daemon, self.port, self.token)
         self.watcher = Watcher(cfg, self.ledger, self.store, enqueue, self.started_at,
-                               self.accounts, ferry_daemon=self.daemon)
+                               self.accounts, ferry_daemon=self.daemon,
+                               qwatch_stats=self.qwatch_stats)
         self.worker = FerryWorker(cfg, self.store, self.tasks,
                                   accounts=self.accounts)
         threading.Thread(target=self.server.serve_forever,
@@ -133,6 +137,16 @@ class Harness:
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/subagent",
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.token}",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    def post(self, path: str, body: dict | None = None) -> dict:
+        """通用 POST（票04 /qwatch_stop 等无副作用控制端点用）。"""
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(body or {}, ensure_ascii=False).encode("utf-8"),
             headers={"Authorization": f"Bearer {self.token}",
                      "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as r:

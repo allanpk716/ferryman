@@ -173,6 +173,9 @@ def validate(cfg: Config, relax_min_gap: bool = False) -> None:
     qw = cfg.question_watch
     if qw.mode not in QWATCH_MODES:
         problems.append(f"question_watch.mode 非法: {qw.mode}（可选 {QWATCH_MODES}）")
+    if qw.beat_interval_s <= 0:     # 票04 M5：≤0 排出的计划全是过去跳（开窗即狂跳）
+        problems.append(f"question_watch.beat_interval_s 须 > 0"
+                        f"（当前 {qw.beat_interval_s:g}s）")
     if qw.mode != "off":        # 功能关闭时不校验 lead（存量小阈值配置零影响）
         t = cfg.threshold_for("cc")
         if qw.ferry_deadline_lead_s < QWATCH_MIN_LEAD_S:

@@ -42,9 +42,9 @@ type Entry struct {
 	PrefixTokens int64   `json:"prefix_tokens"`
 	CloseReason  string  `json:"close_reason"`
 
-	// handoff / beat / block / inject / bypass
+	// handoff / beat / block / inject / bypass / qwatch_*
 	Provider         string  `json:"provider"`
-	Outcome          string  `json:"outcome"`
+	Outcome          string  `json:"outcome"`    // handoff: fresh|skeleton|failed · beat: hit|miss|error|observe（T51 票03 起，旧 hit 布尔已废）
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
 	WallS            float64 `json:"wall_s"`
@@ -53,9 +53,16 @@ type Entry struct {
 	Tokens           int64   `json:"tokens"`     // inject
 	HandoffID        string  `json:"handoff_id"` // inject
 	IdleS            float64 `json:"idle_s"`     // block
-	Hit              bool    `json:"hit"`        // beat
 	CostPred         float64 `json:"cost_pred"`
 	CostActual       float64 `json:"cost_actual"`
+
+	// qwatch_hit / qwatch_open / qwatch_close（T51 票04 问询守望事件）
+	UnitCount     int    `json:"unit_count"`
+	MarkerLines   int    `json:"marker_lines"`
+	QmarkLines    int    `json:"qmark_lines"`
+	NumberedLines int    `json:"numbered_lines"`
+	Transcript    string `json:"transcript_path"`
+	BeatsFired    int    `json:"beats_fired"`
 }
 
 // SessionSummary 是列表页一行。

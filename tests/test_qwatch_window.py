@@ -72,6 +72,9 @@ def _watcher(cfg: Config, led: Ledger, ferry_daemon=None) -> Watcher:
     w.started_at = 0
     w.ferry_daemon = ferry_daemon
     w._qwatch_seen = {}
+    w._qwatch_hit_seen = {}                 # 票04：命中事件版本去重章
+    w.qwatch_stats = None                   # 票04：未接计数器（旧用例零改动）
+    w.accounts = None                       # 票04：命中/开窗事件不落账（专注窗口语义）
     w._enrich = lambda st: setattr(st, "peak_ctx", 50_000)   # 条件④确定性：富化即达标
     return w
 

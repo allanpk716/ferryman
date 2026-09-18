@@ -107,8 +107,8 @@ func rows(base time.Time) []map[string]any {
 		t0 := base.Add(36 * time.Minute)
 		close18 := t0.Add(18 * time.Minute)
 		rs = append(rs, mkWindow(close18, "sess-a1", lin, secs(t0), secs(close18), 150000))
-		rs = append(rs, mkBeat(t0.Add(480*time.Second), "sess-a1", lin, 150000, true))
-		rs = append(rs, mkBeat(t0.Add(960*time.Second), "sess-a1", lin, 150000, true))
+		rs = append(rs, mkBeat(t0.Add(480*time.Second), "sess-a1", lin, 150000, "hit"))
+		rs = append(rs, mkBeat(t0.Add(960*time.Second), "sess-a1", lin, 150000, "hit"))
 		u("sess-a1", t0.Add(1082*time.Second), "", 600, 150000, 0, 1800) // 自动续跑：命中活缓存，全绿柱
 		u("sess-a1", t0.Add(1160*time.Second), "", 700, 150000, 0, 1500)
 		u("sess-a1", t0.Add(1240*time.Second), "", 500, 150000, 0, 1700)
@@ -145,8 +145,8 @@ func rows(base time.Time) []map[string]any {
 		t0 := base.Add(21 * time.Minute)
 		close40 := t0.Add(40 * time.Minute)
 		rs = append(rs, mkWindow(close40, sess, lin, secs(t0), secs(close40), 120000))
-		rs = append(rs, mkBeat(t0.Add(480*time.Second), sess, lin, 120000, true))
-		rs = append(rs, mkBeat(t0.Add(960*time.Second), sess, lin, 120000, true))
+		rs = append(rs, mkBeat(t0.Add(480*time.Second), sess, lin, 120000, "hit"))
+		rs = append(rs, mkBeat(t0.Add(960*time.Second), sess, lin, 120000, "hit"))
 		// 放任过期：40min 窗远超 TTL，续跑时缓存凉透，input 全款重付——全红柱
 		u(close40.Add(2*time.Second), "", 120000, 0, 0, 2000)
 		u(t0.Add(2500*time.Second), "", 600, 122000, 400, 1400)
@@ -174,7 +174,7 @@ func rows(base time.Time) []map[string]any {
 		t0 := base.Add(15 * time.Minute)
 		close15 := t0.Add(15 * time.Minute)
 		rs = append(rs, mkWindow(close15, sess, lin, secs(t0), secs(close15), 90000))
-		rs = append(rs, mkBeat(t0.Add(480*time.Second), sess, lin, 90000, false)) // MISS：之后无跳
+		rs = append(rs, mkBeat(t0.Add(480*time.Second), sess, lin, 90000, "miss")) // MISS：之后无跳
 		u(close15.Add(2*time.Second), "", 90000, 0, 0, 1900)                      // 缓存已凉，全款重付
 		u(t0.Add(1000*time.Second), "心跳 miss 演示·立即停跳", 600, 91900, 500, 1300)
 	}
@@ -271,11 +271,11 @@ func mkWindow(ts time.Time, session, lineage string, opened, closed float64, pre
 // mkBeat 成本一律 policy.Derive 现算，绝不手抄：与反跑端点同源同公式，价目表改了
 // 演示图自动跟随。HIT 跳付保温价（预测=实际）；MISS 跳预测仍是单跳价、实际付过期
 // 全价款（miss 本身就是一次全价重付，之后停跳绝不重试）。
-func mkBeat(ts time.Time, session, lineage string, prefix int64, hit bool) map[string]any {
+func mkBeat(ts time.Time, session, lineage string, prefix int64, outcome string) map[string]any {
 	r := commonRow("beat", ts, session, lineage)
 	res := beatCost(prefix)
 	cacheRead, actual := int64(0), res.Expire
-	if hit {
+	if outcome == "hit" {
 		cacheRead, actual = prefix, res.PerBeat
 	}
 	r["provider"] = Provider
@@ -283,7 +283,7 @@ func mkBeat(ts time.Time, session, lineage string, prefix int64, hit bool) map[s
 	r["price_ver"] = PriceVer
 	r["prefix_tokens"] = prefix
 	r["cache_read"] = cacheRead
-	r["hit"] = hit
+	r["outcome"] = outcome // T51 票04：hit 布尔改三态 hit|miss|error（+observe）
 	r["cost_pred"] = res.PerBeat
 	r["cost_actual"] = actual
 	return r

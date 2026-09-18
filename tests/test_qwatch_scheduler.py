@@ -77,6 +77,8 @@ def _watcher(cfg: Config, led: Ledger, accounts=None, ferry_daemon=None,
     w.accounts = accounts
     w.ferry_daemon = ferry_daemon
     w._qwatch_seen = {}
+    w._qwatch_hit_seen = {}                 # 票04：命中事件版本去重章
+    w.qwatch_stats = None                   # 票04：未接计数器（旧用例零改动）
     w._enrich = lambda st: setattr(st, "peak_ctx", 50_000)   # 条件④确定性
     w._beat_sender = sender
     w._beat_in_flight = False

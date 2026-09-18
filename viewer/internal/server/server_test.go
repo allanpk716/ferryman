@@ -22,7 +22,7 @@ func seedLedger(t *testing.T) string {
 	// lin-t1：usage×2 + window×1 + beat/handoff/block 各 1
 	b.WriteString(`{"v":1,"kind":"usage","ts":200,"agent":"cc","lineage_id":"lin-t1","project":"P","title":"T1","input_tokens":7,"output_tokens":3}` + "\n")
 	b.WriteString(`{"v":1,"kind":"window","ts":110,"lineage_id":"lin-t1","opened_ts":1000,"closed_ts":2500,"dur_s":1500,"prefix_tokens":150000,"close_reason":"limit"}` + "\n")
-	b.WriteString(`{"v":1,"kind":"beat","ts":112,"lineage_id":"lin-t1","hit":true,"price_ver":"v2026-09"}` + "\n")
+	b.WriteString(`{"v":1,"kind":"beat","ts":112,"lineage_id":"lin-t1","outcome":"hit","price_ver":"v2026-09"}` + "\n")
 	b.WriteString(`{"v":1,"kind":"usage","ts":100,"agent":"cc","lineage_id":"lin-t1","project":"P","title":"T1","input_tokens":5,"output_tokens":2}` + "\n")
 	b.WriteString(`{"v":1,"kind":"handoff","ts":105,"lineage_id":"lin-t1","provider":"glm","price_ver":"v2026-09"}` + "\n")
 	b.WriteString(`{"v":1,"kind":"block","ts":104,"lineage_id":"lin-t1","idle_s":30}` + "\n")
