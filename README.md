@@ -4,6 +4,8 @@
 
 四个动作：**守望（watch）→ 摆渡（ferry）→ 闸门（gate）→ 归还（restore）**
 
+另有**问询守望（question watch，默认关）**：检测到 AI 提问潮（用户在组织长答案）时，仅对命中会话短窗保温缓存——等答复窗口内摆渡推迟但带死线，闸门语义不变；`[question_watch]` 独立配置，默认 `mode = "off"`。决策记录见 [ADR-0004](docs/adr/0004-conditioned-session-keepalive.md)。
+
 ## 文档
 
 - [docs/DESIGN.md](docs/DESIGN.md) — 设计定案 v3（开发依据）
