@@ -17,7 +17,8 @@ model 分布、长尾信号。
 会话聚合器(编排层,Implementation Decisions 3/4):主转录 + 全部子代理装配成
 会话总账(主 + Σ 子 self,含嵌套不双计),产出按 toolUseId 父链的 subtree 聚合、
 direct/total 两口径交叉校验(差值进长尾)、逐文件快照(扫描时刻/字节/sha256)、
-扫描窗口与末尾重枚举(新增文件标"扫描窗口外")、主转录 mtime 在跑标记;
+扫描窗口与末尾重枚举(新增文件标"扫描窗口外")、按主转录+会话目录全体文件
+max mtime 的在跑标记(子代理运行期间主文件无中间写入,只看主 mtime 会漏);
 族系合计行复用台账 lineage 规则(同 transcript_path 换 session_id → 同链),
 恒标"识别未验证"。
 
@@ -448,8 +449,10 @@ class SessionAccount:
     校验差值同时进 longtail。file_digests 覆盖主转录与会话目录下全部枚举文件,
     键为相对主转录所在目录(项目目录)的 posix 相对路径,值为(扫描时刻,字节,sha256)。
     scan_window 为(起点, 末尾重枚举后终点);now 注入时两点相同(测试确定性)。
-    running = 主转录 mtime 距扫描时点 < RUNNING_WINDOW_SECONDS → 整场在跑(非终值),
-    调用方(报告层)据此不进终值汇总、单独成节。
+    running = 主转录与会话目录全部枚举文件的最大 mtime 距扫描时点 <
+    RUNNING_WINDOW_SECONDS → 整场在跑(非终值),调用方(报告层)据此不进终值
+    汇总、单独成节。看 max mtime 而非仅主转录:子代理运行期间主文件没有中间
+    写入(tool_result 等子代理结束才落盘),只看主 mtime 会漏长跑子代理。
     path 为主转录绝对路径(归一化),供族系识别按 transcript_path 分组。
     """
 
@@ -470,7 +473,8 @@ class SessionAccount:
 class LineageRow:
     """族系合计行:一条 lineage 链(同 transcript_path 换 session_id)的合计。
 
-    session_ids 按扫描窗口起点排序(链上时间序);total 为链上各会话 total 四列合计。
+    session_ids 按扫描窗口起点排序(非验证过的会话时间序;实测每链单会话,
+    排序只为输出稳定);total 为链上各会话 total 四列合计。
     识别规则复用台账(ledger.py:同 transcript_path 出现新 session_id → 同链),
     但台账只保证"运行期观察到同路径复用"这一弱信号,未验证磁盘上的真实延续关系,
     故整行恒标"识别未验证"(unverified=True,basis 注明依据)。
@@ -553,8 +557,8 @@ def _has_usable_meta(r: AgentRow) -> bool:
 def _subtree_columns(agents: list[AgentRow]) -> dict[str, UsageColumns]:
     """按 toolUseId 父链聚合 subtree:self + 全部可恢复后代;未知桶不参与。
 
-    父链来自装配器恢复的 parent_agentId;异常环(理论构造才可能出现)只计 self,
-    不死循环。
+    父链来自装配器恢复的 parent_agentId,正常形态是森林(每个子代理至多一个父、
+    父必先于子存在,无环);折叠带 memo,visiting 集合纯防御兜底,正常数据不触达。
     """
     usable = [r for r in agents if _has_usable_meta(r)]
     selfcols = {r.agentId: _cols_of(r.self_acc) for r in usable}
@@ -567,7 +571,7 @@ def _subtree_columns(agents: list[AgentRow]) -> dict[str, UsageColumns]:
     def fold(aid: str, visiting: set[str]) -> UsageColumns:
         if aid in memo:
             return memo[aid]
-        if aid in visiting:  # 环:只计 self,防死循环
+        if aid in visiting:  # 防御兜底:正常森林无环,此分支正常数据不触达
             return selfcols[aid]
         visiting.add(aid)
         tot = selfcols[aid]
@@ -673,9 +677,14 @@ def aggregate_session(session_file: Path | str, *, now: float | None = None) -> 
         if rel not in seen:
             longtail.append(f"扫描窗口外新增文件 {rel},未计入本账")
 
-    # -- 在跑判定:主转录 mtime 距扫描时点 <5min → 整场在跑(非终值) ------------------
-    mtime = _mtime(session_file)
-    running = mtime is not None and (scan_ts - mtime) < RUNNING_WINDOW_SECONDS
+    # -- 在跑判定:主转录 + 会话目录全部文件的 max mtime 距扫描时点 <5min → 整场在跑 --
+    # 只看主 mtime 会漏:子代理运行期间主文件没有任何中间写入(Agent 的 tool_result
+    # 要等子代理结束才落盘),长跑子代理会让主 mtime 脱离窗口;首轮枚举(enum1)
+    # 已覆盖会话目录,取全体最大 mtime 作活跃信号。窗口外新增文件不计(未在扫描视野)。
+    mtimes = [_mtime(session_file)]
+    mtimes.extend(_mtime(p) for p in enum1)
+    mtimes = [m for m in mtimes if m is not None]
+    running = bool(mtimes) and (scan_ts - max(mtimes)) < RUNNING_WINDOW_SECONDS
 
     return SessionAccount(
         session_id=session_id,

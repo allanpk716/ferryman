@@ -253,6 +253,20 @@ def test_running_session_flag_by_main_mtime(tmp_path):
     assert aggregate_session(tree[1], now=OLD + 10).running is True
 
 
+def test_running_flag_uses_fresh_subagent_files(tmp_path):
+    """子代理文件新鲜、主文件很旧 → 整场在跑:子代理运行期间主文件无中间写入
+    (Agent 的 tool_result 等子代理结束才落盘),只看主 mtime 会漏长跑子代理。"""
+    tree = _mk_tree(tmp_path)
+    proj, mainp = tree
+    _aged(tree)
+    fresh = OLD + 100   # 距 now(OLD+370)270s < 300s 在窗口内;距主 mtime 100s 本身在窗口外
+    sub = proj / SID / "subagents"
+    os.utime(sub / "agent-a.jsonl", (fresh, fresh))
+    os.utime(sub / "agent-a.meta.json", (fresh, fresh))
+    acc = aggregate_session(mainp, now=FAR_NOW)   # now 远超主 mtime 的在跑窗口
+    assert acc.running is True
+
+
 def test_missing_main_file_is_defensive(tmp_path):
     proj, mainp = _mk_tree(tmp_path)
     mainp.unlink()
