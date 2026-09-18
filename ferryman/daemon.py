@@ -16,9 +16,11 @@ import time
 from pathlib import Path
 
 from . import config as config_mod
+from .accounts import Accounts
 from .config import Config
 from .ferry import ferry_session, load_config as load_providers
 from .ledger import Ledger, now_s
+from .prices import load_prices, price_tag
 from .server import FerryDaemon, already_running, ensure_token, make_server
 from .store import Store
 from .transcripts import has_dangling_tool_use
@@ -48,11 +50,16 @@ class Watcher(threading.Thread):
     """mtime 轮询：登记台账 + 对达总结阈值的活跃会话懒富化并入队摆渡。"""
 
     def __init__(self, cfg: Config, ledger: Ledger, store: Store,
-                 enqueue, started_at: float):
+                 enqueue, started_at: float, accounts=None):
         super().__init__(daemon=True, name="ferryman-watch")
         self.cfg, self.ledger, self.store = cfg, ledger, store
         self.enqueue = enqueue
         self.started_at = started_at
+        self.accounts = accounts          # None = 不采集（旧调用/测试零改动）
+        self.harvest = None
+        if accounts is not None and cfg.watch.harvest_usage:
+            from .harvest import HarvestState
+            self.harvest = HarvestState(accounts)
         self._stop = threading.Event()
         cc_dir = cfg.watch.cc_projects_dir or str(Path.home() / ".claude" / "projects")
         self.cc_dir = Path(cc_dir)
@@ -81,6 +88,7 @@ class Watcher(threading.Thread):
                 continue
             st = self.ledger.touch("cc", p.stem, str(p), mtime=mtime, size=size,
                                    daemon_started_at=self.started_at)
+            self._harvest_usage(p, size, st)
             self._maybe_enqueue(st)
 
     def _poll_codex(self) -> None:
@@ -143,13 +151,38 @@ class Watcher(threading.Thread):
                 st.cwd = session_cwd(Path(st.transcript_path))
         st.enriched_write = st.last_write
 
+    def _harvest_usage(self, path: Path, size: int, st) -> None:
+        """T42 用量采集：账本故障不得弄断守望（故障隔离不变量，模式同 _book_handoff）。"""
+        if getattr(self, "harvest", None) is None:   # __new__ 裸构造的旧测试无此属性 → 视同不采集
+            return
+        try:
+            rows = self.harvest.maybe_harvest(path, size, agent="cc")
+            if not rows:
+                return
+            from .ledger import _norm_path
+            lineage = _norm_path(str(path))
+            for r in rows:
+                self.accounts.record(
+                    "usage", ts=r["ts"], agent="cc", session_id=st.session_id,
+                    lineage_id=lineage, project=r["project"] or st.cwd,
+                    model=r["model"], title=r["title"],
+                    input_tokens=r["input_tokens"],
+                    cache_read_tokens=r["cache_read_tokens"],
+                    cache_creation_tokens=r["cache_creation_tokens"],
+                    output_tokens=r["output_tokens"], offset=r["offset"])
+        except Exception as e:  # noqa: BLE001 — 采集故障只警告
+            print(f"[harvest] 用量采集失败（忽略继续）: {path.name}: {e}",
+                  flush=True)
+
 
 class FerryWorker(threading.Thread):
     """并发 1 的摆渡工人：成功 → fresh；异常/超时 → 骨架-only（不变量保底）。"""
 
-    def __init__(self, cfg: Config, store: Store, tasks: "queue.Queue"):
+    def __init__(self, cfg: Config, store: Store, tasks: "queue.Queue",
+                 accounts: Accounts | None = None):
         super().__init__(daemon=True, name="ferryman-ferry")
         self.cfg, self.store, self.tasks = cfg, store, tasks
+        self.accounts = accounts    # None = 不记账（旧调用/测试零改动）
         self.providers = load_providers()
         self._stop = threading.Event()
         if not cfg.ferry_provider:
@@ -195,13 +228,19 @@ class FerryWorker(threading.Thread):
                 raise result["error"]
         except Exception as e:  # noqa: BLE001 — 降级骨架-only
             print(f"[ferry] 降级骨架-only（{sid[:8]}）: {e}", flush=True)
-            self._save_skeleton(path, agent, sid, item.get("cwd", ""))
+            try:
+                self._save_skeleton(path, agent, sid, item.get("cwd", ""))
+            finally:
+                # 终审#2：失败路径只记一行 failed，且在骨架保存之后——
+                # 骨架产物不另记行（append-only 从零起账，双行无法事后修复）。
+                self._book_handoff(item, agent, sid, {}, "failed")
             return
         meta = result["meta"]
         self.store.save_handoff(
             session_id=sid, agent=agent, cwd=item.get("cwd", ""), title=meta.get("title"),
             covers_until_iso=meta.get("covers_until_iso"), status="fresh",
             handoff_md=result["md"])
+        self._book_handoff(item, agent, sid, meta, "fresh")
         print(f"[ferry] {agent}/{sid[:8]} {meta.get('mode')} {meta.get('wall_s')}s "
               f"-> handoff", flush=True)
 
@@ -219,6 +258,35 @@ class FerryWorker(threading.Thread):
             session_id=sid, agent=agent, cwd=cwd or facts.cwd or "", title=facts.title,
             covers_until_iso=facts.last_ts, status="skeleton", handoff_md=md)
 
+    def _book_handoff(self, item: dict, agent: str, sid: str,
+                      meta: dict, outcome: str) -> None:
+        """摆渡记账：usage 失败记 0（墙钟超时线程被弃，usage 不可得）。
+        失败路径一行 failed（骨架产物不另记行，骨架语义可由 outcome=failed
+        + 后续 block/inject 观察到）。
+        记账永不弄断摆渡——任何异常吞为警告（骨架兜底不变量优先）。"""
+        if self.accounts is None:
+            return
+        try:
+            from .ledger import _norm_path
+            books = load_prices()
+            provider = self.cfg.ferry_provider
+            price_ver = None
+            book = books.get(provider)
+            if book is not None:
+                pv = book.at(time.time())
+                price_ver = price_tag(provider, pv) if pv else None
+            usage = meta.get("usage") or {}
+            self.accounts.record(
+                "handoff", agent=agent, session_id=sid,
+                lineage_id=_norm_path(item["transcript_path"]),
+                project=item.get("cwd", ""), provider=provider,
+                model=str(meta.get("model", "")), price_ver=price_ver,
+                prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                completion_tokens=int(usage.get("completion_tokens", 0)),
+                outcome=outcome, wall_s=float(meta.get("wall_s", 0.0)))
+        except Exception as e:  # noqa: BLE001 — 坏价格 TOML 等记账故障不得弄断摆渡
+            print(f"[account] handoff 记账失败（忽略，摆渡不受影响）: {e}", flush=True)
+
 
 def serve(relax_min_gap: bool = False) -> int:
     cfg = config_mod.load(relax_min_gap=relax_min_gap)
@@ -226,6 +294,7 @@ def serve(relax_min_gap: bool = False) -> int:
     token = ensure_token(cfg.data_dir)
     ledger = Ledger()
     store = Store(cfg.data_dir)
+    accounts = Accounts(cfg.data_dir)
     tasks: queue.Queue = queue.Queue(maxsize=10)
 
     def enqueue(st) -> bool:
@@ -239,7 +308,8 @@ def serve(relax_min_gap: bool = False) -> int:
             return False
 
     started_at = now_s()
-    daemon = FerryDaemon(cfg, ledger, store, enqueue, started_at)
+    daemon = FerryDaemon(cfg, ledger, store, enqueue, accounts=accounts,
+                         started_at=started_at)
     try:
         server = make_server(daemon, cfg.server.port, token)
     except OSError:
@@ -256,8 +326,8 @@ def serve(relax_min_gap: bool = False) -> int:
          "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False),
         encoding="utf-8")
 
-    watcher = Watcher(cfg, ledger, store, enqueue, started_at)
-    worker = FerryWorker(cfg, store, tasks)
+    watcher = Watcher(cfg, ledger, store, enqueue, started_at, accounts)
+    worker = FerryWorker(cfg, store, tasks, accounts)
     watcher.start()
     worker.start()
     print(f"[ferryman] serve: 127.0.0.1:{cfg.server.port} · gate cc={cfg.gate_cc} "

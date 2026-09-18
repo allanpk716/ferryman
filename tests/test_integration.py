@@ -15,7 +15,7 @@ import ferryman.daemon as daemon_mod
 from ferryman.config import Config, ThresholdCfg
 from ferryman.daemon import Watcher
 from ferryman.ledger import now_s
-from helpers import Harness, free_port, write_session
+from helpers import Harness, free_port, now_iso, write_session
 
 
 # ---------- T10 全链路 ----------
@@ -136,6 +136,39 @@ def test_t14_enrich_once_per_version(tmp_path, monkeypatch):
     assert calls["n"] == 1                               # 同一 last_write 版本只读盘一次
 
 
+def test_t14b_enrich_once_even_when_queue_full(tmp_path, monkeypatch):
+    """终审 I1 防回潮：队满（enqueue 恒 False）时版本章仍生效——
+    盖章行若误入分支内部（CC 永不盖章），队满场景每轮轮询整文件重跑 extract。"""
+    import ferryman.extract as extract_mod
+    calls = {"n": 0}
+    orig = extract_mod.extract
+
+    def counting(path):
+        calls["n"] += 1
+        return orig(path)
+
+    monkeypatch.setattr(extract_mod, "extract", counting)
+
+    cfg = Config()
+    cfg.thresholds = ThresholdCfg(summarize_s=0.1, block_s=1.0, min_ctx_tokens=10)
+    from ferryman.ledger import Ledger
+    led = Ledger()
+    proj = str(tmp_path / "proj")
+    f = write_session(tmp_path / "projects", "enrich-2", proj)
+    st = led.touch("cc", "enrich-2", str(f), mtime=now_s(), size=10, cwd=proj,
+                   daemon_started_at=0)
+    watcher = Watcher.__new__(Watcher)                   # 只测 _maybe_enqueue/_enrich
+    watcher.cfg = cfg
+    watcher.ledger = led
+    watcher.store = None
+    watcher.enqueue = lambda st: False                   # 队满：入队永远失败
+    watcher.started_at = 0
+    st.last_write -= 5                                   # 造闲置
+    for _ in range(4):
+        watcher._maybe_enqueue(st)
+    assert calls["n"] == 1                               # 入队失败不回滚版本章 → 只读盘一次
+
+
 # ---------- T31 悬空 tool_use 推迟入队 ----------
 
 def _dangling_session(projects: Path, sid: str, cwd: str) -> Path:
@@ -232,3 +265,60 @@ def test_health_grace_period_after_daemon_restart(h):
 
     d.started_at = now_s() - 601                      # 宽限期已过，同条件才告警
     assert d.health()["health_alert"] is True
+
+
+# ---------- T42 用量采集：守望接线 ----------
+
+def test_usage_harvested_to_accounts(h):
+    """T42：守望把会话用量落账为 usage 行（含标题/cwd），追加只采增量。"""
+    import json as _json
+    sid = "usid-0001"
+    write_session(h.projects, sid, "C:/proj", usage_input=1234)
+    assert h.wait_for(
+        lambda: h.accounts.read(kind="usage", session=sid))
+    rows = h.accounts.read(kind="usage", session=sid)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["agent"] == "cc" and r["session_id"] == sid
+    assert r["input_tokens"] == 1234 and r["cache_read_tokens"] == 100
+    assert r["model"] == "" and r["title"] == "集成测试会话"
+    assert r["lineage_id"] and r["offset"] > 0
+    # 追加一条 assistant → 只 +1 行
+    f = h.projects / "C--proj" / f"{sid}.jsonl"
+    ts2 = now_iso()
+    with f.open("a", encoding="utf-8") as fh:
+        fh.write(_json.dumps(
+            {"type": "assistant", "timestamp": ts2,
+             "message": {"role": "assistant",
+                         "content": [{"type": "text", "text": "又一步"}],
+                         "usage": {"input_tokens": 5, "cache_read_input_tokens": 2000,
+                                   "cache_creation_input_tokens": 0,
+                                   "output_tokens": 7}}}) + "\n")
+    assert h.wait_for(
+        lambda: len(h.accounts.read(kind="usage", session=sid)) == 2)
+
+
+def test_usage_harvest_disabled(tmp_path):
+    """watch.harvest_usage=False → 不落 usage 行。"""
+    from ferryman.accounts import Accounts
+    from ferryman.config import ServerCfg, WatchCfg
+    from ferryman.ledger import Ledger
+    from ferryman.store import Store
+
+    projects = tmp_path / "projects"
+    cfg = Config()
+    cfg.watch = WatchCfg(poll_interval_s=0.2,
+                         cc_projects_dir=str(projects),
+                         codex_sessions_dir=str(tmp_path / "no-codex"))
+    cfg.watch.harvest_usage = False
+    cfg.server = ServerCfg(port=free_port(), data_dir=str(tmp_path / "data"))
+    accounts = Accounts(Path(cfg.data_dir))
+    watcher = Watcher(cfg, Ledger(), Store(Path(cfg.data_dir)),
+                      lambda st: True, now_s(), accounts)
+    watcher.start()
+    try:
+        write_session(projects, "usid-0002", "C:/proj")
+        time.sleep(1.0)
+        assert accounts.read(kind="usage") == []
+    finally:
+        watcher.stop()

@@ -6,3 +6,6 @@ __pycache__/
 dist/
 .e2e/
 eval/
+.superpowers/
+viewer/*.exe
+viewer/ferryman-timeline

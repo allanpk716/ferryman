@@ -26,6 +26,7 @@ class WatchCfg:
     # 重定向到 %APPDATA%\orca\codex-runtime-home\home\sessions——不扫则这些会话
     # gate 能收到但永远不被摆渡）。Orca 目录存在时自动追加，无需配置。
     codex_extra_dirs: list[str] = field(default_factory=list)
+    harvest_usage: bool = True           # 用量采集（usage 科目）：30 天清理后的审计地基，隐私敏感可关
 
 
 @dataclass
@@ -33,6 +34,7 @@ class ThresholdCfg:
     summarize_s: float = 25 * 60
     block_s: float = 35 * 60             # E0a 实测拐点+5min（reports/e0a-cc-glm.md）
     min_ctx_tokens: int = 20_000
+    cache_warn_s: float = 720.0        # 12min：缓存死线纯提醒（信息条，不拦不触发摆渡；0=关）
 
 
 @dataclass
@@ -51,6 +53,14 @@ class NotifyCfg:
 
 
 @dataclass
+class HeartbeatCfg:
+    enabled: bool = False        # T41 仅预留：执行器未实装（设计 §0 授权边界）
+    ttl_s: float = 0.0           # 0 = 未实测/未配置（report 策略对比跳过）
+    ttl_measured_at: str = ""
+    ttl_source: str = ""
+
+
+@dataclass
 class Config:
     gate_cc: str = "observe"             # 验证期默认 observe（DESIGN §6.2）
     gate_codex: str = "off"              # E0b 后再议
@@ -58,6 +68,7 @@ class Config:
     watch: WatchCfg = field(default_factory=WatchCfg)
     server: ServerCfg = field(default_factory=ServerCfg)
     notify: NotifyCfg = field(default_factory=NotifyCfg)
+    heartbeat: HeartbeatCfg = field(default_factory=HeartbeatCfg)
     ferry_provider: str = ""              # 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
 
     @property
@@ -85,6 +96,7 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
                 summarize_s=float(t.get("summarize_s", cfg.thresholds.summarize_s)),
                 block_s=float(t.get("block_s", cfg.thresholds.block_s)),
                 min_ctx_tokens=int(t.get("min_ctx_tokens", cfg.thresholds.min_ctx_tokens)),
+                cache_warn_s=float(t.get("cache_warn_s", cfg.thresholds.cache_warn_s)),
             )
         if "watch" in data:
             w = data["watch"]
@@ -93,6 +105,7 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
                 cc_projects_dir=str(w.get("cc_projects_dir", "")),
                 codex_sessions_dir=str(w.get("codex_sessions_dir", "")),
                 codex_extra_dirs=[str(d) for d in w.get("codex_extra_dirs", [])],
+                harvest_usage=bool(w.get("harvest_usage", True)),
             )
         if "server" in data:
             s = data["server"]
@@ -109,6 +122,13 @@ def load(path: Path | None = None, relax_min_gap: bool = False) -> Config:
                 pushover_user=str(n.get("pushover_user", "")),
                 toast=bool(n.get("toast", cfg.notify.toast)),
             )
+        if "heartbeat" in data:
+            hb = data["heartbeat"]
+            cfg.heartbeat = HeartbeatCfg(
+                enabled=bool(hb.get("enabled", False)),
+                ttl_s=float(hb.get("ttl_s", 0.0)),
+                ttl_measured_at=str(hb.get("ttl_measured_at", "")),
+                ttl_source=str(hb.get("ttl_source", "")))
         cfg.ferry_provider = str(data.get("ferry", {}).get("provider", cfg.ferry_provider))
     validate(cfg, relax_min_gap=relax_min_gap)
     return cfg

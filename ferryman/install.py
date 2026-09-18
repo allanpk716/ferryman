@@ -199,6 +199,16 @@ def install_codex(hooks_path: Path | None = None,
     return len(entries)
 
 
+def _prune_ccswitch_baks(db_path: Path, keep: int = 3) -> None:
+    """删旧备份只留最近 keep 份（含刚写的那份）。删失败不抛——备份多余只是占盘，不影响注入。"""
+    baks = sorted(db_path.parent.glob(f"{db_path.name}.bak-ferryman-*"))
+    for old in baks[:-keep] if keep > 0 else baks:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
 def inject_ccswitch(db_path: Path | None = None) -> int:
     """把 ferryman 钩子注进 cc-switch.db 全部 claude 供应商快照。
 
@@ -216,6 +226,7 @@ def inject_ccswitch(db_path: Path | None = None) -> int:
     bak = db_path.with_name(f"{db_path.name}.bak-ferryman-{time.strftime('%Y%m%d_%H%M%S')}")
     try:
         shutil.copy2(db_path, bak)
+        _prune_ccswitch_baks(db_path, keep=3)  # 防复发：备份逐次 56MB，一晚多次重启曾攒 66 份 3.6GB
     except OSError as e:
         print(f"[!] cc-switch.db 备份失败，跳过注入（安全起见）: {e}")
         return 0

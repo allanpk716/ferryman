@@ -1,0 +1,669 @@
+/* Ferryman T43 查看器——暗色紧凑风。无外部资源（无 CDN/字体/图标，离线铁律）。 */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #111;
+  color: #ddd;
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* 顶部固定工具条：左标题，右数据目录说明 */
+#toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #111;
+  border-bottom: 1px solid #2a2a2a;
+}
+#toolbar-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+#toolbar-note {
+  font-size: 12px;
+  color: #888;
+  text-align: right;
+}
+
+#app { padding: 10px 16px 24px; }
+
+.loading, .error { padding: 16px 0; color: #888; }
+.error { color: #ff7b72; }
+
+/* 会话表格 */
+#session-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+#session-table th,
+#session-table td {
+  padding: 5px 10px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid #222;
+}
+#session-table th {
+  font-size: 12px;
+  font-weight: 600;
+  color: #999;
+  border-bottom: 1px solid #333;
+}
+/* 斑马纹（偶数行）；行 hover 高亮声明在后，覆盖斑马纹 */
+#session-table tbody tr:nth-child(even) { background: #1a1a1a; }
+#session-table tbody tr[data-lineage] { cursor: pointer; }
+#session-table tbody tr[data-lineage]:hover { background: #222; }
+
+/* 标题当链接色，超长省略 */
+#session-table td.cell-title {
+  color: #6fb3ff;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#session-table td.cell-project {
+  color: #aaa;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 数字列右对齐 + 等宽数字，便于纵向比对 */
+#session-table th.num,
+#session-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#session-table td.empty {
+  text-align: center;
+  color: #666;
+  padding: 24px 0;
+}
+
+/* ---------- 时序页（Task 5） ---------- */
+
+#tl-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 2px 0 8px;
+  min-width: 0;
+}
+#tl-head a {
+  color: #6fb3ff;
+  text-decoration: none;
+  font-size: 12px;
+  white-space: nowrap;
+}
+#tl-head a:hover { text-decoration: underline; }
+#tl-title {
+  color: #ccc;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* wrap 是 .tl-chart 的 flex 项目（svg 的父容器）；svg 在其中 width:100% */
+#tl-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 图区布局：左 SVG（缩放/平移光标），右详情面板 */
+.tl-chart {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+#tl-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #151515;
+  border: 1px solid #2a2a2a;
+  cursor: grab;
+}
+#tl-svg.dragging { cursor: grabbing; }
+
+/* 柱悬停明细浮层：跟随鼠标，绝不接收指针事件（不挡图） */
+#tl-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  max-width: 340px;
+  padding: 6px 10px;
+  background: #1e1e1e;
+  border: 1px solid #3a3a3a;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  color: #ddd;
+}
+#tl-tooltip .tip-time { color: #ddd; font-weight: 600; font-variant-numeric: tabular-nums; }
+#tl-tooltip .tip-model { color: #64b5f6; margin-bottom: 3px; }
+#tl-tooltip .tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-variant-numeric: tabular-nums;
+}
+#tl-tooltip .tip-row span:first-child { color: #888; }
+#tl-tooltip .tip-cost {
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid #3a3a3a;
+  color: #ffd54f;
+  font-variant-numeric: tabular-nums;
+}
+#tl-tooltip .tip-cost.tip-warn { color: #ff8a80; }
+
+/* ---------- 统计卡行（会话级汇总：请求/花费/命中率/断缓存） ---------- */
+.tl-cards {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+}
+.tl-cards .card {
+  flex: 1;
+  min-width: 118px;
+  padding: 6px 12px 7px;
+  background: #151515;
+  border: 1px solid #262626;
+  border-radius: 6px;
+}
+.tl-cards .card.clickable { cursor: pointer; }
+.tl-cards .card.clickable:hover { border-color: #64b5f6; }
+.tl-cards .card .k { font-size: 11px; color: #888; }
+.tl-cards .card .v { font-size: 16px; color: #fff; font-weight: 600; margin: 1px 0; }
+.tl-cards .card .v.good { color: #7bc47b; }
+.tl-cards .card .v.bad { color: #e57373; }
+.tl-cards .card .s { font-size: 10.5px; color: #777; }
+
+/* ---------- 图例行：科目 chips + TTL + 视图切换 + 事件图例 ---------- */
+.tl-lg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  background: #151515;
+  border: 1px solid #222;
+  border-radius: 6px;
+}
+.tl-lg .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 1px solid #333;
+  border-radius: 20px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: #ccc;
+  background: #1a1a1a;
+}
+.tl-lg .chip:hover { border-color: #666; }
+.tl-lg .chip.off { opacity: 0.4; text-decoration: line-through; }
+.tl-lg .chip .sw {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.tl-lg .chip .price { color: #777; font-size: 11px; }
+.tl-lg .chip input {
+  width: 56px;
+  padding: 1px 5px;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #ddd;
+  font: inherit;
+  font-size: 12px;
+}
+.tl-lg .segview {
+  display: inline-flex;
+  margin-left: auto;
+  border: 1px solid #333;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.tl-lg .segview button {
+  background: #1a1a1a;
+  color: #999;
+  border: 0;
+  padding: 3px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.tl-lg .segview button.on {
+  background: #64b5f6;
+  color: #04121f;
+  font-weight: 600;
+}
+.tl-lg .lg-ev {
+  display: inline-flex;
+  gap: 10px;
+  color: #888;
+  font-size: 11.5px;
+  flex-wrap: wrap;
+}
+.tl-lg .lg-ev span { cursor: help; }
+/* 事件图例项：符号用图上真实颜色，计数跟在名字后；0 次=灰暗（"没发生"≠"画丢了"） */
+.tl-lg .lg-ev .ev-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #aaa;
+}
+.tl-lg .lg-ev .ev-item.ev-zero { opacity: 0.38; }
+.tl-lg .lg-ev .ev-sym {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1;
+}
+/* 断缓存 chip 小样：与图上斜纹区同款（纯 CSS 渐变，无外部资源） */
+.tl-lg .chip .sw-dead {
+  background: repeating-linear-gradient(45deg,
+    rgba(229, 115, 115, 0.42) 0 2px, rgba(229, 115, 115, 0.08) 2px 6px);
+}
+.tl-lg .chip.chip-dead:not(.off) { border-color: #6b3a3a; }
+
+/* ---------- 详情面板（点柱/事件/窗口/断缓存区填充） ---------- */
+#tl-detail {
+  width: 300px;
+  flex-shrink: 0;
+  padding: 8px 10px;
+  background: #151515;
+  border: 1px solid #262626;
+  border-radius: 6px;
+  font-size: 12px;
+}
+#tl-detail .d-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+  color: #fff;
+  font-weight: 600;
+}
+#tl-detail .d-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+#tl-detail .d-close:hover { color: #fff; }
+#tl-detail .d-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+  font-variant-numeric: tabular-nums;
+}
+#tl-detail .d-row span:first-child { color: #888; }
+#tl-detail .d-sec {
+  margin-top: 7px;
+  padding-top: 5px;
+  border-top: 1px dashed #2e2e2e;
+}
+#tl-detail .d-sec-t { color: #888; font-size: 11px; margin-bottom: 2px; }
+#tl-detail .d-sw {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+  margin-right: 5px;
+}
+#tl-detail .d-note { margin-top: 6px; color: #999; }
+#tl-detail .d-note.d-warn { color: #e57373; }
+#tl-detail .d-note.d-good { color: #7bc47b; }
+#tl-detail .d-hint { color: #666; }
+#tl-detail .d-btns { margin-top: 6px; }
+#tl-detail .win-backtest {
+  padding: 2px 10px;
+  background: #1d3a1d;
+  color: #7bc47b;
+  border: 1px solid #2f5c2f;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+#tl-detail .win-backtest:hover { background: #245024; }
+
+/* 反跑参数表单（窗口信息卡内展开；保活计划卡复用同一套 bt-* 结构） */
+#tl-detail .bt-form,
+.plan-card .bt-form {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #333;
+}
+#tl-detail .bt-ro,
+.plan-card .bt-ro {
+  color: #666;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+#tl-detail .bt-grid,
+.plan-card .bt-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 8px;
+}
+#tl-detail .bt-field,
+.plan-card .bt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+#tl-detail .bt-field span,
+.plan-card .bt-field span {
+  color: #888;
+  font-size: 10px;
+}
+#tl-detail .bt-field input,
+.plan-card .bt-field input {
+  width: 100%;
+  padding: 2px 5px;
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  color: #ddd;
+  font: inherit;
+  font-size: 12px;
+}
+#tl-detail .bt-field input:focus,
+.plan-card .bt-field input:focus {
+  outline: none;
+  border-color: #4caf50;
+}
+#tl-detail .bt-hint,
+.plan-card .bt-hint {
+  color: #ff7b72;
+  font-size: 11px;
+  min-height: 14px;
+  margin-top: 2px;
+}
+#tl-detail .bt-go,
+.plan-card .bt-go {
+  width: 100%;
+  margin-top: 2px;
+  padding: 3px 0;
+  background: #1d3a1d;
+  color: #7bc47b;
+  border: 1px solid #2f5c2f;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+#tl-detail .bt-go:hover,
+.plan-card .bt-go:hover { background: #245024; }
+#tl-detail .bt-go:disabled,
+.plan-card .bt-go:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+/* 反跑结果卡（时序图下方） */
+#tl-bt-result {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #151515;
+  border: 1px solid #2a2a2a;
+  font-size: 12px;
+}
+#tl-bt-result .bt-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  color: #fff;
+  font-weight: 600;
+}
+#tl-bt-result .bt-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+#tl-bt-result .bt-close:hover { color: #fff; }
+#tl-bt-result .bt-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+#tl-bt-result .bt-label {
+  flex: none;
+  width: 84px;
+  color: #888;
+}
+#tl-bt-result .bt-track {
+  flex: 1;
+  height: 12px;
+  background: #1e1e1e;
+  border: 1px solid #262626;
+}
+#tl-bt-result .bt-fill { height: 100%; }
+#tl-bt-result .bt-fill-green { background: #4caf50; }
+#tl-bt-result .bt-fill-actual { background: #9e9e9e; }
+#tl-bt-result .bt-fill-red { background: #e57373; }
+#tl-bt-result .bt-val {
+  flex: none;
+  width: 118px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+#tl-bt-result .bt-dim { color: #666; }
+#tl-bt-result .bt-sub {
+  color: #666;
+  font-size: 11px;
+  margin: -2px 0 4px 92px;
+}
+#tl-bt-result .bt-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 6px;
+  color: #ccc;
+  font-variant-numeric: tabular-nums;
+}
+#tl-bt-result .bt-stat-k { color: #888; }
+#tl-bt-result .bt-note,
+.plan-card .bt-note {
+  color: #666;
+  font-size: 11px;
+  margin-top: 4px;
+}
+#tl-bt-result .bt-error,
+.plan-card .bt-error { color: #ff7b72; }
+
+/* 保活计划卡（策略计算器，T45b）：时序图上方 details 折叠卡，色板对齐反跑结果卡 */
+.plan-card {
+  margin: 0 0 8px;
+  padding: 6px 10px 10px;
+  background: #151515;
+  border: 1px solid #2a2a2a;
+  font-size: 12px;
+}
+.plan-card summary {
+  cursor: pointer;
+  color: #fff;
+  font-weight: 600;
+  user-select: none;
+}
+.plan-card summary:hover { color: #7bc47b; }
+.plan-card .plan-ro {
+  color: #888;
+  font-size: 11px;
+  margin: 6px 0 2px;
+}
+/* 全宽卡里 2 列太空，字段按内容宽度自动排布 */
+.plan-card .bt-grid {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.plan-card .plan-result {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #333;
+}
+.plan-card .plan-numbers {
+  color: #ddd;
+  font-variant-numeric: tabular-nums;
+}
+.plan-card .plan-sub {
+  color: #666;
+  font-size: 11px;
+  margin-top: 2px;
+}
+.plan-card .plan-rule {
+  color: #888;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+/* 底部控制条 */
+#tl-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+#tl-play {
+  width: 32px;
+  height: 24px;
+  background: #222;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  color: #ddd;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+}
+#tl-play:hover { background: #2c2c2c; }
+#tl-cursor {
+  flex: 1 1 240px;
+  min-width: 160px;
+  accent-color: #4caf50;
+}
+#tl-cum {
+  color: #999;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#tl-ctrl-hint {
+  margin-left: auto;
+  color: #666;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 时序页空态/兜底提示（error 复用列表页红色，后声明覆盖灰色） */
+.tl-empty {
+  padding: 72px 0 12px;
+  text-align: center;
+  color: #666;
+}
+.tl-empty.error { color: #ff7b72; }
+a.tl-back {
+  display: block;
+  padding: 4px 0 40px;
+  text-align: center;
+  color: #6fb3ff;
+  text-decoration: none;
+  font-size: 12px;
+}
+a.tl-back:hover { text-decoration: underline; }
+
+/* ---------- 工具条：标题行加"参数配置"入口 ---------- */
+#toolbar-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+#toolbar-cfg {
+  color: #6fb3ff;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+#toolbar-cfg:hover { text-decoration: underline; }
+
+/* ---------- 配置页（#/cfg 只读参数展示） ---------- */
+.cfg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 2px 0 8px;
+}
+.cfg-head a {
+  color: #6fb3ff;
+  text-decoration: none;
+  font-size: 12px;
+}
+.cfg-head a:hover { text-decoration: underline; }
+.cfg-title { color: #ccc; font-size: 13px; }
+.cfg-meta {
+  color: #888;
+  font-size: 12px;
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+.cfg-warn { color: #ff8a80; padding: 8px 0; }
+.cfg-sec { margin-bottom: 14px; }
+.cfg-sec h3 {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  color: #7bc47b;
+  font-weight: 600;
+}
+table.cfg-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.cfg-table td {
+  padding: 4px 10px;
+  text-align: left;
+  border-bottom: 1px solid #222;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12.5px;
+  vertical-align: top;
+}
+.cfg-table td.k { color: #6fb3ff; width: 220px; }
+.cfg-table td.v {
+  font-family: Consolas, "Courier New", monospace;
+  color: #ddd;
+}
+.cfg-table tr.redacted td.v { color: #777; font-style: italic; }
+.cfg-note {
+  color: #666;
+  font-size: 11.5px;
+  margin-top: 4px;
+}

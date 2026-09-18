@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from ferryman.accounts import Accounts
 from ferryman.config import Config, ThresholdCfg
 from ferryman.ledger import Ledger
 from ferryman.server import FerryDaemon
@@ -81,6 +82,9 @@ def test_observe_mode_warns_not_blocks(env):
     _reg(led, "s1", "C:/p1.jsonl", str(tmp / "proj"), idle_s=BLOCK + 5)
     r = d.gate(_body("s1", "C:/p1.jsonl", str(tmp / "proj")))
     assert r["decision"] == "allow" and r["additional_context"]
+    # 2026-09-18 文案修复：observe 永不拦，不得再发"将被拦"空头支票
+    assert "只提醒不拦" in r["additional_context"]
+    assert "将被拦" not in r["additional_context"]
     assert enqueued == ["s1"]                    # observe 也触发摆渡补交接
 
 
@@ -146,6 +150,7 @@ def test_branch7_no_enqueue_below_min_ctx(env):
     _reg(led, "s3", "C:/p3.jsonl", proj, idle_s=BLOCK + 5, peak=MIN_CTX - 1)
     r = d.gate(_body("s3", "C:/p3.jsonl", proj))
     assert r["decision"] == "allow" and r["additional_context"]   # 仍警告+置 pending
+    assert "将被拦" in r["additional_context"]                    # enforce 下承诺为真
     assert enqueued == []                                         # 但小会话不入队
 
 
@@ -173,3 +178,287 @@ def test_pending_ttl_24h(env):
     key = ("cc", "s9")
     d.pending.t[key]["set_at"] = time.time() - 25 * 3600
     assert d.pending.get(key) is None
+
+
+# ---- T44b：缓存死线纯提醒（12min 信息条；不拦、不摆渡、0=关）----
+
+def test_cache_info_at_15min(env):
+    """闲置 12–35min 区间：纯提醒信息条——含"全价计费/无需操作"，非"交接生成中"。"""
+    d, led, _, enqueued, _ = env
+    d.cfg.thresholds = ThresholdCfg()            # 真实默认：warn 720s / block 2100s
+    _reg(led, "s5", "C:/p5.jsonl", "C:/proj", idle_s=900)
+    r = d.gate(_body("s5", "C:/p5.jsonl", "C:/proj"))
+    assert r["decision"] == "allow"
+    assert "全价计费" in r["additional_context"]
+    assert "无需操作" in r["additional_context"]
+    assert "交接生成中" not in r["additional_context"]
+    assert enqueued == []                        # 纯提醒：不触发摆渡
+    d.cfg.gate_cc = "observe"                    # observe 放行路径同样带信息条
+    r2 = d.gate(_body("s5", "C:/p5.jsonl", "C:/proj"))
+    assert r2["decision"] == "allow" and "全价计费" in r2["additional_context"]
+
+
+def test_no_info_below_12min(env):
+    d, led, *_ = env
+    d.cfg.thresholds = ThresholdCfg()
+    _reg(led, "s6", "C:/p6.jsonl", "C:/proj", idle_s=400)
+    r = d.gate(_body("s6", "C:/p6.jsonl", "C:/proj"))
+    assert r == {"decision": "allow"}            # 未到死线：无 additional_context
+
+
+def test_no_info_at_block_window(env):
+    """≥block 窗口走既有警告而非信息条——"建议 /clear" vs "无需操作"互斥可辨。"""
+    d, led, *_ = env
+    d.cfg.gate_cc = "observe"
+    _reg(led, "s7", "C:/p7.jsonl", "C:/proj", idle_s=BLOCK + 5)
+    r = d.gate(_body("s7", "C:/p7.jsonl", "C:/proj"))
+    assert r["decision"] == "allow" and r["additional_context"]
+    assert "闲置" in r["additional_context"]              # 既有警告
+    assert "建议 /clear" in r["additional_context"]
+    assert "无需操作" not in r["additional_context"]      # 非信息条专属文案
+
+
+def test_cache_info_disabled(env):
+    d, led, *_ = env
+    d.cfg.thresholds = ThresholdCfg(cache_warn_s=0)
+    _reg(led, "s8", "C:/p8.jsonl", "C:/proj", idle_s=900)
+    r = d.gate(_body("s8", "C:/p8.jsonl", "C:/proj"))
+    assert r == {"decision": "allow"}            # 0=关：无 additional_context
+
+
+# ---- T46：窗口前缀懒富化（peak_ctx 缺位时回落账本 usage 实报值）----
+
+def _daemon_acc(tmp_path):
+    """带真 Accounts 的 daemon（env fixture 的 accounts=None，回落用例需要真账本）。"""
+    led = Ledger()
+    cfg = Config()
+    cfg.gate_cc = "enforce"
+    cfg.thresholds = ThresholdCfg(summarize_s=SUMMARIZE, block_s=BLOCK,
+                                  min_ctx_tokens=MIN_CTX)
+    acc = Accounts(tmp_path)
+    d = FerryDaemon(cfg, led, Store(tmp_path / "data"), lambda st: True,
+                    accounts=acc)
+    return d, led, acc
+
+
+def _usage(acc, ts, sid, i, cr, cc):
+    return acc.record("usage", ts=ts, agent="cc", session_id=sid,
+                      lineage_id=f"L-{sid}", project="C:/proj", model="glm-5.3",
+                      title="", input_tokens=i, cache_read_tokens=cr,
+                      cache_creation_tokens=cc, output_tokens=10, offset=0)
+
+
+def _open_close(d, sid):
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": sid})["ok"]
+    assert d.subagent({"event": "stop", "agent": "cc", "session_id": sid})["ok"]
+
+
+def _window_rows(acc, sid):
+    return [e for e in acc.read(kind="window") if e["session_id"] == sid]
+
+
+def test_window_prefix_prefers_peak_ctx(tmp_path):
+    """peak_ctx 非零 → 照旧直接用，不回落账本。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w1", "C:/p1.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=5000, daemon_started_at=0)
+    _usage(acc, time.time() - 60, "w1", 999, 149000, 0)
+    _open_close(d, "w1")
+    rows = _window_rows(acc, "w1")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 5000
+
+
+def test_window_prefix_falls_back_to_usage(tmp_path):
+    """peak_ctx=0 → 回落开窗前最后一条 usage 的 input+cache_read+cache_creation。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w2", "C:/p2.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    t0 = time.time()
+    _usage(acc, t0 - 300, "w2", 100, 120000, 300)
+    _usage(acc, t0 - 200, "w2", 200, 130000, 400)
+    _usage(acc, t0 - 100, "w2", 800, 140000, 9200)     # 开窗前最后一条 → 150000
+    _open_close(d, "w2")
+    rows = _window_rows(acc, "w2")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 150000
+
+
+def test_window_prefix_ignores_rows_after_open(tmp_path):
+    """开窗后（ts > opened_ts）写入的更大行不采纳——仍取 ≤opened_ts 的最后一条。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w3", "C:/p3.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    _usage(acc, time.time() - 100, "w3", 800, 140000, 9200)   # 开窗前 → 150000
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": "w3"})["ok"]
+    time.sleep(0.01)                                   # 避开 round(ts,3) 与开窗时刻同毫秒
+    _usage(acc, time.time(), "w3", 50000, 0, 0)        # 窗口期间别处写入的更大行
+    assert d.subagent({"event": "stop", "agent": "cc", "session_id": "w3"})["ok"]
+    rows = _window_rows(acc, "w3")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 150000
+
+
+def test_window_prefix_clock_skew_takes_latest_any(tmp_path):
+    """无 ≤opened_ts 行（时钟毛刺）→ 退取该会话任意最后一条 usage。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w4", "C:/p4.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": "w4"})["ok"]
+    _usage(acc, time.time() + 5, "w4", 800, 140000, 9200)     # 毛刺：ts 落在开窗后
+    assert d.subagent({"event": "stop", "agent": "cc", "session_id": "w4"})["ok"]
+    rows = _window_rows(acc, "w4")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 150000
+
+
+def test_window_prefix_zero_when_no_usage(tmp_path):
+    """账本里全无该会话 usage → 0（窗口行仍要落，不能丢）。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w5", "C:/p5.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    _open_close(d, "w5")
+    rows = _window_rows(acc, "w5")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 0
+
+
+def test_window_none_accounts_no_crash(env):
+    """accounts=None（旧测试形态）→ 闭窗整条跳过，全程不炸。"""
+    d, led, *_ = env
+    led.touch("cc", "w6", "C:/p6.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    _open_close(d, "w6")
+    assert d._windows == {}                            # 窗已 pop，无行可记也不炸
+
+
+# ---- 缺口A：机器等机器豁免（rev2 规格，验收 A1-A10 除 A6 人工项） ----
+# 规格：docs/superpowers/specs/20260918-antfeedinglog子代理等待场景-consensus.rev2.md
+
+def _mk_dangling(p: Path) -> Path:
+    """悬空 jsonl：末条 tool_use 无 tool_result（真实悬空形态）。"""
+    line = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "t1", "name": "Task", "input": {}}]}})
+    p.write_text(line + "\n", encoding="utf-8")
+    return p
+
+
+def _mk_resolved(p: Path) -> Path:
+    """自愈 jsonl：tool_use 与 tool_result 都在。"""
+    tu = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "t1", "name": "Task", "input": {}}]}})
+    tr = json.dumps({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}})
+    p.write_text(tu + "\n" + tr + "\n", encoding="utf-8")
+    return p
+
+
+def test_A1_subagent_active_exempts(env):
+    """A1：计数>0 → 放行 + 说明（含卡死恢复出路）+ 不置 pending + 不入队 + 计数不变。"""
+    d, led, store, enqueued, tmp = env
+    proj = str(tmp / "projA1")
+    _reg(led, "a1", "C:/no-such-a1.jsonl", proj, idle_s=BLOCK + 5)
+    led.subagent_event("cc", "a1", "start")
+    r = d.gate(_body("a1", "C:/no-such-a1.jsonl", proj))
+    assert r["decision"] == "allow" and r["reason"] == "machine-waiting"
+    assert "放行" in r["additional_context"] and "Esc" in r["additional_context"]
+    assert d.pending.get(("cc", "a1")) is None            # 不置 pending
+    assert enqueued == []                                 # 不入队摆渡（分支7不可达）
+    assert led.subagent_active("cc", "a1")                # 计数不受影响
+
+
+def test_A2_dangling_only_exempts(env):
+    """A2：仅悬空（计数=0）→ 同样放行（两道 OR 的直接验证）。"""
+    d, led, store, enqueued, tmp = env
+    f = _mk_dangling(tmp / "a2.jsonl")
+    proj = str(tmp / "projA2")
+    _reg(led, "a2", str(f), proj, idle_s=BLOCK + 5)
+    r = d.gate(_body("a2", str(f), proj))
+    assert r["decision"] == "allow" and r["reason"] == "machine-waiting"
+    assert d.pending.get(("cc", "a2")) is None
+    assert enqueued == []
+
+
+def test_A4_exemption_beats_observe_warn_and_enqueue(env):
+    """A4：observe 模式下豁免同样生效（不警告不入队，mid-wait 摆渡堵死）；
+    对照组证明非豁免路径零回归。"""
+    d, led, store, enqueued, tmp = env
+    d.cfg.gate_cc = "observe"
+    proj = str(tmp / "projA4")
+    _reg(led, "a4", "C:/no-such-a4.jsonl", proj, idle_s=BLOCK + 5)
+    led.subagent_event("cc", "a4", "start")
+    r = d.gate(_body("a4", "C:/no-such-a4.jsonl", proj))
+    assert r["decision"] == "allow" and r["reason"] == "machine-waiting"
+    assert enqueued == []
+    _reg(led, "a4b", "C:/no-such-a4b.jsonl", proj, idle_s=BLOCK + 5)
+    r2 = d.gate(_body("a4b", "C:/no-such-a4b.jsonl", proj))
+    assert r2["decision"] == "allow" and r2.get("additional_context")
+    assert enqueued == ["a4b"]                             # 既有 observe 行为零回归
+
+
+def test_A7_count_leak_recovers_gate(env):
+    """A7：计数泄漏期过后恢复拦截能力（前置：tool_result 已落盘=无悬空）。"""
+    d, led, store, enqueued, tmp = env
+    f = _mk_resolved(tmp / "a7.jsonl")
+    proj = str(tmp / "projA7")
+    _reg(led, "a7", str(f), proj, idle_s=BLOCK + 5)
+    led.subagent_event("cc", "a7", "start")                # Stop 丢失：计数停 1
+    led._subagents[("cc", "a7")] = (1, time.time() - 4000)  # 泄漏期已过
+    r = d.gate(_body("a7", str(f), proj))
+    assert r["decision"] == "allow"                        # 正常路径（分支7 警告）
+    assert r.get("reason") != "machine-waiting"
+    assert enqueued == ["a7"]                              # 入队恢复=拦截能力恢复
+
+
+def test_A8_pending_preserved_across_exemption(env):
+    """A8：先置 pending → 子代理在飞提交=放行且 pending 原样（不清、不 bump
+    blocks 计数）→ 子代理结束后下一次提交按 pending 状态机走（分支6）。"""
+    d, led, store, enqueued, tmp = env
+    f = _mk_resolved(tmp / "a8.jsonl")
+    proj = str(tmp / "projA8")
+    _reg(led, "a8", str(f), proj, idle_s=BLOCK + 5)
+    d.gate(_body("a8", str(f), proj))                      # 分支7：置 pending
+    assert d.pending.get(("cc", "a8")) is not None
+    led.subagent_event("cc", "a8", "start")
+    r1 = d.gate(_body("a8", str(f), proj))                 # 豁免放行
+    assert r1["reason"] == "machine-waiting"
+    assert d.pending.t[("cc", "a8")]["blocks"] == 0        # 计数不变（未 bump）
+    led.subagent_event("cc", "a8", "stop")                 # 计数归零
+    r2 = d.gate(_body("a8", str(f), proj))
+    assert r2["decision"] == "block" and "强续" in r2["reason"]   # pending 状态机照走
+
+
+def test_A9_dangling_persistent_is_design(env):
+    """A9：计数=0 且悬空=真 → 连续多次提交均放行（宁可不拦方向的显式验收）。"""
+    d, led, store, enqueued, tmp = env
+    f = _mk_dangling(tmp / "a9.jsonl")
+    proj = str(tmp / "projA9")
+    _reg(led, "a9", str(f), proj, idle_s=BLOCK + 5)
+    for _ in range(3):
+        r = d.gate(_body("a9", str(f), proj))
+        assert r["decision"] == "allow" and r["reason"] == "machine-waiting"
+
+
+def test_A10_dangling_selfheals(env):
+    """A10：悬空期放行 → tool_result 落盘 → 下一次提交恢复正常闸门路径。"""
+    d, led, store, enqueued, tmp = env
+    f = _mk_dangling(tmp / "a10.jsonl")
+    proj = str(tmp / "projA10")
+    _reg(led, "a10", str(f), proj, idle_s=BLOCK + 5)
+    assert d.gate(_body("a10", str(f), proj))["reason"] == "machine-waiting"
+    _mk_resolved(f)                                        # tool_result 落盘
+    r = d.gate(_body("a10", str(f), proj))
+    assert r["decision"] == "allow" and r.get("reason") != "machine-waiting"
+    assert enqueued == ["a10"]                             # 分支7 正常入队
+
+
+def test_A5_branch6_copy_deterministic_escape(env):
+    """A5：分支6 新文案——确定性出路（每次强续都放行）；第4次降级不变。
+    （A3 口径：分支5/7 既有断言不动；分支6 文案断言随本条更新。）"""
+    d, led, store, enqueued, tmp = env
+    proj = str(tmp / "projA5")
+    _reg(led, "a5", "C:/no-such-a5.jsonl", proj, idle_s=BLOCK + 5)
+    r0 = d.gate(_body("a5", "C:/no-such-a5.jsonl", proj))  # 分支7：警告+置 pending
+    assert r0["decision"] == "allow" and r0.get("additional_context")
+    for i in (1, 2, 3):
+        r = d.gate(_body("a5", "C:/no-such-a5.jsonl", proj))
+        assert r["decision"] == "block" and f"第 {i} 次" in r["reason"]
+        assert "每次以「强续」开头" in r["reason"]          # 确定性出路
+        assert "已保存" in r["reason"]                      # 原话下落明确
+    r4 = d.gate(_body("a5", "C:/no-such-a5.jsonl", proj))
+    assert r4["decision"] == "allow"                        # 第4次降级（行为不变）
