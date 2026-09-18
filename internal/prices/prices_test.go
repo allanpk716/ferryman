@@ -1,0 +1,98 @@
+package prices
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// 测试 TOML 与 Python tests/test_prices.py 逐字一致。
+const testTOML = `
+[prices.glm]
+unit = "智谱积分"
+per = 10000
+
+[[prices.glm.versions]]
+effective_from = "2026-09-01"
+p_in = 6.9
+p_cache = 1.7
+p_out = 24
+
+[[prices.glm.versions]]
+effective_from = "2026-09-17"
+p_in = 6.9
+p_cache = 1.7
+p_out = 24
+
+[prices.nocache]
+unit = "元"
+per = 1000000
+
+[[prices.nocache.versions]]
+effective_from = "2026-09-01"
+p_in = 1.0
+p_out = 2.0
+`
+
+// D16/D17 对应 Python 的 datetime(..., tzinfo=utc).timestamp()。
+var (
+	D16 = float64(time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC).Unix())
+	D17 = float64(time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC).Unix())
+)
+
+// books 对应 pytest 的 books fixture：TOML 写进临时目录再加载。
+func books(t *testing.T) map[string]PriceBook {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte(testTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return LoadPrices(p)
+}
+
+// TestMissingFileIsEmpty 无文件 → 空 dict。
+func TestMissingFileIsEmpty(t *testing.T) {
+	if got := LoadPrices(filepath.Join(t.TempDir(), "nope.toml")); len(got) != 0 {
+		t.Fatalf("len(books) = %d, want 0", len(got))
+	}
+}
+
+// TestVersionSelection 版本选择：生效日前一天 → 旧版；生效日起 → 新版；早于一切版本 → nil。
+func TestVersionSelection(t *testing.T) {
+	book := books(t)
+	glm := book["glm"]
+	if glm.Per != 10000 || glm.Unit != "智谱积分" {
+		t.Fatalf("per/unit = (%d, %q), want (10000, 智谱积分)", glm.Per, glm.Unit)
+	}
+	if got := glm.At(D16); got == nil || got.EffectiveFrom != "2026-09-01" {
+		t.Fatalf("at(D16) = %v, want 2026-09-01", got)
+	}
+	if got := glm.At(D17); got == nil || got.EffectiveFrom != "2026-09-17" {
+		t.Fatalf("at(D17) = %v, want 2026-09-17", got)
+	}
+	if got := glm.At(0); got != nil {
+		t.Fatalf("at(0) = %v, want nil", got)
+	}
+}
+
+// TestPCacheOptional 缺省 = 无缓存经济。
+func TestPCacheOptional(t *testing.T) {
+	nocache := books(t)["nocache"]
+	v := nocache.Versions[0]
+	if v.PCache != nil {
+		t.Fatalf("p_cache = %v, want nil", *v.PCache)
+	}
+}
+
+// TestPriceTag 记账标签 "key@YYYY-MM-DD"。
+func TestPriceTag(t *testing.T) {
+	glm := books(t)["glm"]
+	pv := glm.At(D17)
+	if pv == nil {
+		t.Fatal("at(D17) = nil")
+	}
+	if got := PriceTag("glm", *pv); got != "glm@2026-09-17" {
+		t.Fatalf("price_tag = %q, want glm@2026-09-17", got)
+	}
+}

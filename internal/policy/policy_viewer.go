@@ -1,4 +1,7 @@
-// Package policy 移植心跳推导公式：由价格制+实测 TTL 推导保活跳点与各档成本。
+// 本文件是 viewer 手抄版（原 internal/viewer/policy/policy.go）的原样并入：
+// Params/Result/Derive/SimulateBeats/DoNothingCost 签名不变，反跑端点与演示口径
+// 继续走这一套。公式本体见 policy.go（ferryman/policy.py 1:1）。
+
 package policy
 
 import "errors"
