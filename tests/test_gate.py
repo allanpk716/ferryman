@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from ferryman.accounts import Accounts
 from ferryman.config import Config, ThresholdCfg
 from ferryman.ledger import Ledger
 from ferryman.server import FerryDaemon
@@ -223,3 +224,104 @@ def test_cache_info_disabled(env):
     _reg(led, "s8", "C:/p8.jsonl", "C:/proj", idle_s=900)
     r = d.gate(_body("s8", "C:/p8.jsonl", "C:/proj"))
     assert r == {"decision": "allow"}            # 0=关：无 additional_context
+
+
+# ---- T46：窗口前缀懒富化（peak_ctx 缺位时回落账本 usage 实报值）----
+
+def _daemon_acc(tmp_path):
+    """带真 Accounts 的 daemon（env fixture 的 accounts=None，回落用例需要真账本）。"""
+    led = Ledger()
+    cfg = Config()
+    cfg.gate_cc = "enforce"
+    cfg.thresholds = ThresholdCfg(summarize_s=SUMMARIZE, block_s=BLOCK,
+                                  min_ctx_tokens=MIN_CTX)
+    acc = Accounts(tmp_path)
+    d = FerryDaemon(cfg, led, Store(tmp_path / "data"), lambda st: True,
+                    accounts=acc)
+    return d, led, acc
+
+
+def _usage(acc, ts, sid, i, cr, cc):
+    return acc.record("usage", ts=ts, agent="cc", session_id=sid,
+                      lineage_id=f"L-{sid}", project="C:/proj", model="glm-5.3",
+                      title="", input_tokens=i, cache_read_tokens=cr,
+                      cache_creation_tokens=cc, output_tokens=10, offset=0)
+
+
+def _open_close(d, sid):
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": sid})["ok"]
+    assert d.subagent({"event": "stop", "agent": "cc", "session_id": sid})["ok"]
+
+
+def _window_rows(acc, sid):
+    return [e for e in acc.read(kind="window") if e["session_id"] == sid]
+
+
+def test_window_prefix_prefers_peak_ctx(tmp_path):
+    """peak_ctx 非零 → 照旧直接用，不回落账本。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w1", "C:/p1.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=5000, daemon_started_at=0)
+    _usage(acc, time.time() - 60, "w1", 999, 149000, 0)
+    _open_close(d, "w1")
+    rows = _window_rows(acc, "w1")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 5000
+
+
+def test_window_prefix_falls_back_to_usage(tmp_path):
+    """peak_ctx=0 → 回落开窗前最后一条 usage 的 input+cache_read+cache_creation。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w2", "C:/p2.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    t0 = time.time()
+    _usage(acc, t0 - 300, "w2", 100, 120000, 300)
+    _usage(acc, t0 - 200, "w2", 200, 130000, 400)
+    _usage(acc, t0 - 100, "w2", 800, 140000, 9200)     # 开窗前最后一条 → 150000
+    _open_close(d, "w2")
+    rows = _window_rows(acc, "w2")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 150000
+
+
+def test_window_prefix_ignores_rows_after_open(tmp_path):
+    """开窗后（ts > opened_ts）写入的更大行不采纳——仍取 ≤opened_ts 的最后一条。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w3", "C:/p3.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    _usage(acc, time.time() - 100, "w3", 800, 140000, 9200)   # 开窗前 → 150000
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": "w3"})["ok"]
+    time.sleep(0.01)                                   # 避开 round(ts,3) 与开窗时刻同毫秒
+    _usage(acc, time.time(), "w3", 50000, 0, 0)        # 窗口期间别处写入的更大行
+    assert d.subagent({"event": "stop", "agent": "cc", "session_id": "w3"})["ok"]
+    rows = _window_rows(acc, "w3")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 150000
+
+
+def test_window_prefix_clock_skew_takes_latest_any(tmp_path):
+    """无 ≤opened_ts 行（时钟毛刺）→ 退取该会话任意最后一条 usage。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w4", "C:/p4.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    assert d.subagent({"event": "start", "agent": "cc", "session_id": "w4"})["ok"]
+    _usage(acc, time.time() + 5, "w4", 800, 140000, 9200)     # 毛刺：ts 落在开窗后
+    assert d.subagent({"event": "stop", "agent": "cc", "session_id": "w4"})["ok"]
+    rows = _window_rows(acc, "w4")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 150000
+
+
+def test_window_prefix_zero_when_no_usage(tmp_path):
+    """账本里全无该会话 usage → 0（窗口行仍要落，不能丢）。"""
+    d, led, acc = _daemon_acc(tmp_path)
+    led.touch("cc", "w5", "C:/p5.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    _open_close(d, "w5")
+    rows = _window_rows(acc, "w5")
+    assert len(rows) == 1 and rows[0]["prefix_tokens"] == 0
+
+
+def test_window_none_accounts_no_crash(env):
+    """accounts=None（旧测试形态）→ 闭窗整条跳过，全程不炸。"""
+    d, led, *_ = env
+    led.touch("cc", "w6", "C:/p6.jsonl", mtime=time.time(), size=10, cwd="C:/proj",
+              peak_ctx=0, daemon_started_at=0)
+    _open_close(d, "w6")
+    assert d._windows == {}                            # 窗已 pop，无行可记也不炸
