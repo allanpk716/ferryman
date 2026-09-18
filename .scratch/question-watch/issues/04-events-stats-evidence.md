@@ -16,3 +16,13 @@
 ## Blocked by
 
 票 03（事件源是调度器与窗口）。
+
+## 夜链补注（票 03 评审转来，验收必做）
+
+- [ ] **viewer schema 同步（Important）**：beat 账目 `hit: bool` 已改三态 `outcome: hit|miss|error|observe`——Go 端 `viewer/internal/ledger/ledger.go` 的 `Hit bool json:"hit"` 字段与 `viewer/web/app.js` 的命中渲染同步改：beat 行按 outcome 三态显示（observe 显示"演练"，不计命中/失败），`viewer/internal/ledger/testdata/` 夹具补 outcome 形态样例行；`go test ./...`（viewer 目录内）绿
+- [ ] **M5**：config validate 加 `beat_interval_s > 0`（≤0 拒绝）＋单测
+- [ ] **M1**：`beat.py` BeatSender 协议注释补一句时限要求（真实 sender 超时+重试须压秒级，避免阻塞守望循环）
+- [ ] **M3**：`_fire_one_beat` 锁内 `Path.stat()` 处补注释"有意为之：两道验原子性所需，勿顺手移出锁外"
+
+> 补注四项已在 e0b06dc 全部落地并经票 04 双轴评审确认 ADDRESSED（2026-09-18 夜链）。
+
