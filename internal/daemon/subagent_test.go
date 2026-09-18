@@ -19,8 +19,10 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -54,14 +56,60 @@ func TestWatcherDedupesSameSidAcrossCodexDirs(t *testing.T) {
 	t.Skip("e2e→票16：跨 codex 目录同 sid 去重、路径取主目录；Python: test_subagent.py::test_watcher_dedupes_same_sid_across_codex_dirs")
 }
 
-// ---- tests/test_subagent.py HTTP 2 例 → 票15 占位 ----
+// ---- tests/test_subagent.py HTTP 2 例 → 票15 转绿（真监听 + 真 Daemon 端到端） ----
 
 func TestSubagentEndpointRoundtrip(t *testing.T) {
-	t.Skip("e2e→票15：HTTP /subagent 往返 + /stats 计数（httpapi 装配后转绿；daemon 面由 TestSubagentReturnAndCounters 钉住）；Python: test_subagent.py::test_subagent_endpoint_roundtrip")
+	// test_subagent.py::test_subagent_endpoint_roundtrip 1:1：HTTP /subagent 往返
+	// + /stats 计数（Harness 的 Go 形：真监听临时端口，守望/工人不在此票面）。
+	port := freePort(t)
+	d := testDaemon(t, nil)
+	serveBg(t, d, port, "tok")
+
+	r := postJSON(t, port, "/subagent", "tok",
+		map[string]any{"agent": "cc", "session_id": "ep-1", "event": "start"})
+	if r["active"] != true {
+		t.Fatalf("start 返回 = %v, want active=true", r)
+	}
+	st := getJSON(t, port, "/stats", "tok")
+	if st["subagents_active"] != float64(1) { // 可观测性（T26 观察）
+		t.Fatalf("subagents_active = %v, want 1", st["subagents_active"])
+	}
+	if st["subagent_events_total"].(float64) < 1 { // 累计事件数（端到端验证用）
+		t.Fatalf("subagent_events_total = %v, want >= 1", st["subagent_events_total"])
+	}
+	r = postJSON(t, port, "/subagent", "tok",
+		map[string]any{"agent": "cc", "session_id": "ep-1", "event": "stop"})
+	if r["active"] != false {
+		t.Fatalf("stop 返回 = %v, want active=false", r)
+	}
+	st = getJSON(t, port, "/stats", "tok")
+	if st["subagents_active"] != float64(0) {
+		t.Fatalf("subagents_active = %v, want 0", st["subagents_active"])
+	}
+	if st["subagent_events_total"].(float64) < 2 {
+		t.Fatalf("subagent_events_total = %v, want >= 2", st["subagent_events_total"])
+	}
 }
 
 func TestSubagentEndpointAuthAndValidation(t *testing.T) {
-	t.Skip("e2e→票15：401 错 token + 400 非法 event（httpapi 装配后转绿；400 的 daemon 面由 TestSubagentInvalidEventRejected 钉住）；Python: test_subagent.py::test_subagent_endpoint_auth_and_validation")
+	// test_subagent.py::test_subagent_endpoint_auth_and_validation 1:1：
+	// 错 token → 401；非法 event → 400（daemon 面报错经 HTTP error 通道）。
+	port := freePort(t)
+	serveBg(t, testDaemon(t, nil), port, "tok")
+
+	code, _ := postRaw(t, port, "/subagent", "wrong-token",
+		[]byte(`{"agent": "cc", "session_id": "ep-2", "event": "start"}`))
+	if code != http.StatusUnauthorized {
+		t.Fatalf("错 token = %d, want 401", code)
+	}
+	code, body := postRaw(t, port, "/subagent", "tok",
+		[]byte(`{"agent": "cc", "session_id": "ep-2", "event": "boom"}`))
+	if code != http.StatusBadRequest {
+		t.Fatalf("非法 event = %d, want 400", code)
+	}
+	if !strings.HasPrefix(string(body), `{"error":"bad request: `) {
+		t.Fatalf("400 体 = %q, want bad request 前缀", body)
+	}
 }
 
 // ---- 票13 · daemon 面直驱 ----
