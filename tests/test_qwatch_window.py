@@ -90,16 +90,18 @@ def _opened(st: SessionState) -> bool:
 # ---------- 台账窗口态：开窗字段 + 新写入关窗 ----------
 
 def test_t51_window_fields_on_open(tmp_path):
-    """四条件全真开窗：opened_ts/beats_fired=0/plan 空/snapshot=(mtime,size)。"""
+    """四条件全真开窗：opened_ts/beats_fired=0/plan 按票03调度器排定/snapshot。"""
     projects = tmp_path / "projects"
     led = Ledger()
-    w = _watcher(_qw_cfg(), led)
+    w = _watcher(_qw_cfg(), led)                    # 默认 2 跳 × 420s
     f = _write_transcript(projects, "win-1", _SURGE)
     st = _session(led, projects, "win-1", f)
     w._maybe_qwatch(st)
     assert _opened(st)
     assert st.qwatch_beats_fired == 0
-    assert st.qwatch_plan == []                     # 计划由票03调度器填充
+    assert st.qwatch_plan == [st.qwatch_opened_ts + 420.0,
+                              st.qwatch_opened_ts + 840.0]   # 开窗即排计划
+    assert all(t > now_s() for t in st.qwatch_plan)          # 开窗瞬间不跳
     assert st.qwatch_snapshot == (st.last_write, st.size)
 
 

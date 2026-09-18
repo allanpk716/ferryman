@@ -17,7 +17,8 @@ from pathlib import Path
 
 from . import config as config_mod
 from .accounts import Accounts
-from .config import Config
+from .beat import BeatBreaker, BeatPlan, BeatResult, BeatSender, NoopSender, classify
+from .config import Config, FERRY_WALL_TIMEOUT_S
 from .ferry import ferry_session, load_config as load_providers
 from .ledger import Ledger, now_s
 from .prices import load_prices, price_tag
@@ -26,7 +27,8 @@ from .server import FerryDaemon, already_running, ensure_token, make_server
 from .store import Store
 from .transcripts import has_dangling_tool_use
 
-FERRY_WALL_TIMEOUT_S = 480       # 墙钟总时限 8min（DESIGN §4）
+# 摆渡墙钟总时限 8min（DESIGN §4）——常量本体在 config.py（配置告警共用，
+# 避免循环导入），此处同名再导出保住 daemon_mod.FERRY_WALL_TIMEOUT_S 补丁面。
 
 
 def codex_watch_dirs(watch_cfg, home: Path | None = None) -> list[Path]:
@@ -51,7 +53,8 @@ class Watcher(threading.Thread):
     """mtime 轮询：登记台账 + 对达总结阈值的活跃会话懒富化并入队摆渡。"""
 
     def __init__(self, cfg: Config, ledger: Ledger, store: Store,
-                 enqueue, started_at: float, accounts=None, ferry_daemon=None):
+                 enqueue, started_at: float, accounts=None, ferry_daemon=None,
+                 beat_sender: BeatSender | None = None):
         super().__init__(daemon=True, name="ferryman-watch")
         self.cfg, self.ledger, self.store = cfg, ledger, store
         self.enqueue = enqueue
@@ -61,6 +64,14 @@ class Watcher(threading.Thread):
         # T51 等答复窗开窗判定的版本章：(agent, sid) → 已判定过的 last_write。
         # 同一写入版本只读盘判定一次；仅内存，重启丢章=重启后多判一轮（无害）。
         self._qwatch_seen: dict[tuple[str, str], float] = {}
+        # T51 票03 心跳调度：可注入发送器（None = 未接真实 sender——enforce 时
+        # 降级为 observe 演练并告警一次，Q14 段二/三前不真发）；在途旗与熔断
+        # 计数器（守望单线程串行，旗只作跨会话串行化的显式不变量）。
+        self._beat_sender = beat_sender
+        self._beat_in_flight = False
+        self._breaker = BeatBreaker()
+        self._noop_sender = NoopSender()
+        self._beat_enforce_warned = False
         self.harvest = None
         if accounts is not None and cfg.watch.harvest_usage:
             from .harvest import HarvestState
@@ -95,6 +106,7 @@ class Watcher(threading.Thread):
                                    daemon_started_at=self.started_at)
             self._harvest_usage(p, size, st)
             self._maybe_qwatch(st)
+            self._maybe_fire_beats(st)
             self._maybe_enqueue(st)
 
     def _poll_codex(self) -> None:
@@ -193,12 +205,151 @@ class Watcher(threading.Thread):
             if st.peak_ctx < self.cfg.threshold_for(st.agent).min_ctx_tokens:
                 self._qwatch_seen[key] = st.last_write
                 return                  # 条件④（结论性：不新写不再变）
-            st.qwatch_opened_ts = now_s()
-            st.qwatch_beats_fired = 0
-            st.qwatch_plan = []         # 计划由票03调度器排定
-            st.qwatch_snapshot = (st.last_write, st.size)
+            # 开窗 check-then-act 临界区（票03）：与停车窗开窗判定（server.subagent）
+            # 共用台账 RLock，锁内复验全部瞬态条件——毫秒级双窗并存窗口归零。
+            # 锁外已做初筛（复验几乎必过），锁内只有内存操作，不持锁读盘。
+            with self.ledger.lock:
+                if st.qwatch_opened_ts is not None:
+                    return              # 复验：并发路径已开窗
+                if self.ledger.subagent_active(st.agent, st.session_id):
+                    return              # 复验条件③（瞬态）
+                if (self.ferry_daemon is not None
+                        and self.ferry_daemon.parking_open(st.agent, st.session_id)):
+                    return              # 复验两窗互斥（先开者赢）
+                st.qwatch_opened_ts = now_s()
+                st.qwatch_beats_fired = 0
+                st.qwatch_plan = self._beat_plan(st.qwatch_opened_ts)   # 票03：开窗即排计划
+                st.qwatch_snapshot = (st.last_write, st.size)
         except Exception as e:  # noqa: BLE001 — 窗口路径异常不影响守望主路径
             print(f"[qwatch] 开窗判定异常（忽略继续）: {e}", flush=True)
+
+    # ---------- T51 票03 心跳调度（spec 决策 4-7） ----------
+
+    def _beat_plan(self, t0: float) -> list[float]:
+        """开窗排计划（决策 4）：max_beats 跳、每跳间隔 beat_interval_s。
+        首跳在 t0+interval——开窗瞬间不跳（末条落盘本身已刷新缓存）。"""
+        qw = self.cfg.question_watch
+        return [t0 + i * qw.beat_interval_s
+                for i in range(1, max(0, qw.max_beats) + 1)]
+
+    def _maybe_fire_beats(self, st) -> None:
+        """心跳调度入口（守望轮询循环内，风格对齐 _maybe_qwatch）：到期跳逐发。
+        到期先两道验（无新写入＋复 stat 新鲜度），任一不符取消本跳并作废剩余
+        计划；"任何新写入取消剩余跳"的关窗在 Ledger.touch（清窗连着清计划）。
+        一切异常吞掉——绝不影响守望与摆渡主路径。"""
+        qw = self.cfg.question_watch
+        if qw.mode == "off" or st.agent != "cc":
+            return                      # off 零开销；窗口只在 cc 侧存在
+        try:
+            due = [t for t in st.qwatch_plan if t <= now_s()]
+            if due:
+                self._fire_one_beat(st, min(due))   # 一轮至多一发（全局串行节奏）
+        except Exception as e:  # noqa: BLE001 — 调度异常不影响守望主路径
+            print(f"[qwatch] 心跳调度异常（忽略继续）: {e}", flush=True)
+
+    def _fire_one_beat(self, st, beat_ts: float) -> None:
+        """单跳：两道验＋在途占用（台账 RLock 临界区内）→ 锁外发送 → 结账。"""
+        with self.ledger.lock:          # 两道验-占用-出队与台账写（关窗清计划）串行
+            if st.qwatch_opened_ts is None:
+                return                  # 窗已被新写入关掉，计划随窗作废
+            if self._beat_in_flight:
+                return                  # 全局同时最多 1 跳在途（跨会话串行）
+            snap = st.qwatch_snapshot
+            if snap is None or st.last_write != snap[0]:
+                st.qwatch_plan = []     # 验①台账版本章：计划基线后见过新写入
+                print(f"[qwatch] 跳取消：台账有新写入（{st.session_id[:8]}），"
+                      f"剩余计划作废", flush=True)
+                return
+            try:                        # 验②复 stat 转录：mtime+size 与开窗快照一致
+                sb = Path(st.transcript_path).stat()
+                fresh = sb.st_mtime == snap[0] and sb.st_size == snap[1]
+            except OSError:
+                fresh = False
+            if not fresh:
+                st.qwatch_plan = []     # 两道验不过：本跳取消＋作废剩余计划
+                print(f"[qwatch] 跳取消：转录新鲜度不符（{st.session_id[:8]}），"
+                      f"剩余计划作废", flush=True)
+                return
+            st.qwatch_plan.remove(beat_ts)
+            st.qwatch_beats_fired += 1
+            self._beat_in_flight = True
+        try:
+            result = self._send_beat(st, beat_ts)   # 网络绝不持台账锁
+        finally:
+            self._beat_in_flight = False
+        self._settle_beat(st, result)
+
+    def _send_beat(self, st, beat_ts: float) -> BeatResult:
+        """选发送器（决策 5）：observe → NoopSender（零网络）；enforce → 注入的
+        真实 sender；未注入（Q14 段二/三前）则告警一次并按 observe 演练。"""
+        qw = self.cfg.question_watch
+        plan = BeatPlan(agent=st.agent, session_id=st.session_id,
+                        transcript_path=st.transcript_path,
+                        opened_ts=st.qwatch_opened_ts or 0.0,
+                        last_write=st.last_write, size=st.size,
+                        beat_index=st.qwatch_beats_fired, beat_ts=beat_ts)
+        if qw.mode == "enforce" and self._beat_sender is not None:
+            try:
+                return self._beat_sender.send(plan)
+            except Exception as e:  # noqa: BLE001 — 发送器炸掉按一跳 ERROR 记
+                return BeatResult(sent=True, ok=False,
+                                  err=f"sender-raise:{type(e).__name__}")
+        if qw.mode == "enforce" and not self._beat_enforce_warned:
+            self._beat_enforce_warned = True
+            print("[qwatch] ⚠ mode=enforce 但未注入真实 BeatSender（Q14 段二/三"
+                  "前不授权真发）——心跳按 observe 演练记账", flush=True)
+        return self._noop_sender.send(plan)
+
+    def _settle_beat(self, st, result: BeatResult) -> None:
+        """结账：逐跳入账（含 observe 演练）→ 熔断判定 → 动作（决策 6/7）。"""
+        try:
+            outcome = classify(result)
+            self._book_beat(st, outcome, result)
+            action = self._breaker.record(outcome)
+            if action == "demote" and self.cfg.question_watch.mode == "enforce":
+                self.cfg.question_watch.mode = "observe"    # 安全降级；人工复核后拨回
+                self._qwatch_alert(
+                    "问询守望熔断降级",
+                    f"连续 {BeatBreaker.MISS_LIMIT} 跳 MISS，mode 已自动 "
+                    f"enforce→observe（人工复核 observe 数据后拨回）")
+            elif action == "pause":
+                with self.ledger.lock:
+                    st.qwatch_plan = []     # 暂停当前窗口剩余跳（窗口本身不关）
+                self._qwatch_alert(
+                    "问询守望错误熔断",
+                    f"连续 {BeatBreaker.ERROR_LIMIT} 跳 ERROR，已暂停当前窗口剩余心跳")
+        except Exception as e:  # noqa: BLE001 — 结账故障只警告
+            print(f"[qwatch] 心跳结账异常（忽略）: {e}", flush=True)
+
+    def _book_beat(self, st, outcome: str, result: BeatResult) -> None:
+        """逐跳入既有费用账本 beat 科目（决策 7，对齐既有科目不另起炉灶）：
+        时间/会话/token/费用/三态；observe 演练跳标 observe。只记元数据与
+        金额——隐私铁律。记账永不弄断调度。"""
+        if self.accounts is None:
+            return
+        try:
+            from .ledger import _norm_path
+            self.accounts.record(
+                "beat", agent=st.agent, session_id=st.session_id,
+                lineage_id=_norm_path(st.transcript_path), project=st.cwd,
+                provider=result.provider, model=result.model, price_ver=None,
+                prefix_tokens=st.peak_ctx, cache_read=result.cache_read_tokens,
+                cost_pred=result.cost_pred, cost_actual=result.cost_actual,
+                outcome=outcome)
+        except Exception as e:  # noqa: BLE001 — 记账故障不得弄断调度
+            print(f"[account] beat 记账失败（忽略）: {e}", flush=True)
+
+    def _qwatch_alert(self, title: str, msg: str) -> None:
+        """告警（仓库既有惯例）：控制台 + 双通道通知异步线程（notify_alert，
+        enabled=False 时静默）。任何故障只吞——通知是尽力而为的旁路。"""
+        print(f"[qwatch] ⚠ {title}: {msg}", flush=True)
+        try:
+            from . import notify
+            threading.Thread(target=notify.notify_alert, args=(title, msg),
+                             kwargs={"cfg": self.cfg}, daemon=True,
+                             name="ferryman-notify").start()
+        except Exception as e:  # noqa: BLE001 — 旁路故障绝不影响调度
+            print(f"[qwatch] 告警通知派发失败（忽略）: {e}", flush=True)
 
     def _enrich(self, st) -> None:
         """标题/峰值上下文懒提取；同一 last_write 版本只做一次。"""

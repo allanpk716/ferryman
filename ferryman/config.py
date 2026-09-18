@@ -16,6 +16,7 @@ from pathlib import Path
 GATE_MODES = ("off", "observe", "enforce")
 QWATCH_MODES = ("off", "observe", "enforce")
 QWATCH_MIN_LEAD_S = 60.0        # ferry_deadline_lead_s 下限（spec 决策 3 夹取区间）
+FERRY_WALL_TIMEOUT_S = 480      # 摆渡墙钟总时限 8min（DESIGN §4；daemon 同名再导出）
 CONFIG_PATH = Path.home() / "ferryman" / "config.toml"
 
 
@@ -185,6 +186,13 @@ def validate(cfg: Config, relax_min_gap: bool = False) -> None:
                 f"summarize_s + lead（{t.summarize_s:g} + "
                 f"{qw.ferry_deadline_lead_s:g}s）须 ≤ block_s（{t.block_s:g}s）"
                 f"——摆渡死线必须赶在闸门拦截之前")
+        elif qw.ferry_deadline_lead_s <= FERRY_WALL_TIMEOUT_S:
+            # 票02 评审转来的配置补强：死线余量不大于摆渡墙钟，摆渡可能贴线
+            # 被墙钟砍成骨架。只告警不改值（默认 480 恰在贴线位，属已知取舍）。
+            print(f"[config] ⚠ question_watch.ferry_deadline_lead_s "
+                  f"{qw.ferry_deadline_lead_s:g}s 不大于摆渡墙钟 "
+                  f"{FERRY_WALL_TIMEOUT_S}s——死线余量不足，骨架可能贴线",
+                  flush=True)
     for agent in ("cc", "codex"):
         t = cfg.threshold_for(agent)
         if not t.summarize_s < t.block_s:

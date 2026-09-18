@@ -389,13 +389,16 @@ class FerryDaemon:
         # T41 等待窗口：首个子代理 start 开窗（嵌套不重复开）；计数归零闭窗
         key = (agent, session_id)
         if count > 0:
-            w = self._windows.get(key)
-            if w is None or now_s() - w["opened_ts"] > SUBAGENT_EVENT_LEAK_S:
-                # 首开；或上一轮 Stop 丢失、泄漏超时后重锚（旧窗不沿用，防 dur_s
-                # 虚高跨泄漏间隙，R10）。T51 两窗互斥（先开者赢）：等答复窗口
-                # 开着 → 不开停车窗（等答复窗只由新写入关窗，start/stop 不动它）。
-                if not self._qwatch_open(agent, session_id):
-                    self._windows[key] = {"opened_ts": now_s()}
+            # 开窗 check-then-act 临界区（T51 票03）：与等答复窗开窗判定共用
+            # 台账 RLock——锁内复验等答复窗，两窗互斥的毫秒级 TOCTOU 归零。
+            with self.ledger.lock:
+                w = self._windows.get(key)
+                if w is None or now_s() - w["opened_ts"] > SUBAGENT_EVENT_LEAK_S:
+                    # 首开；或上一轮 Stop 丢失、泄漏超时后重锚（旧窗不沿用，防 dur_s
+                    # 虚高跨泄漏间隙，R10）。T51 两窗互斥（先开者赢）：等答复窗口
+                    # 开着 → 不开停车窗（等答复窗只由新写入关窗，start/stop 不动它）。
+                    if not self._qwatch_open(agent, session_id):
+                        self._windows[key] = {"opened_ts": now_s()}
         if count == 0 and key in self._windows:
             self._close_window(key, "subagents_done")
         return {"ok": True, "active": count > 0}
