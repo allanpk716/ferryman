@@ -912,8 +912,10 @@ def _q3_pairs(accounts: list[SessionAccount], recon: dict | None):
     """手记条目按 agentId 与扫描到的子代理配对。
 
     返回 (matched, unmatched):matched = (entry, AgentRow, 自报量, 文件四列合计,
-    残差);unmatched = entry(扫描未见该 agentId)。文件侧口径 = self 四列加总;
-    自报量缺/坏按 0(残差如实为 −文件合计,残差率记 n/a)。
+    文件 in+out, 残差);unmatched = entry(扫描未见该 agentId)。
+    残差口径 = in+out(评审 R2 裁定:CLI 自报数语义 ≈ 去重 in+out;cache_read
+    占体量 90%+,四列口径会得出 -363%~-3590% 的假残差,故只并列展示作参考)。
+    自报量缺/坏按 0(残差如实为 −in+out,残差率记 n/a)。
     """
     if recon is None:
         return [], []
@@ -921,7 +923,7 @@ def _q3_pairs(accounts: list[SessionAccount], recon: dict | None):
     for acc in accounts:
         for r in acc.agents.agents:
             agent_map.setdefault(r.agentId, r)
-    matched: list[tuple[dict, AgentRow, int, int, int]] = []
+    matched: list[tuple[dict, AgentRow, int, int, int, int]] = []
     unmatched: list[dict] = []
     for e in recon["entries"]:
         r = agent_map.get(e.get("agentId"))
@@ -932,8 +934,10 @@ def _q3_pairs(accounts: list[SessionAccount], recon: dict | None):
             reported = int(e.get("self_reported_tokens") or 0)
         except (TypeError, ValueError):
             reported = 0
-        file_sum = sum(_cols_of(r.self_acc))
-        matched.append((e, r, reported, file_sum, reported - file_sum))
+        cols = _cols_of(r.self_acc)
+        four_sum = sum(cols)
+        inout_sum = cols.input_tokens + cols.output_tokens
+        matched.append((e, r, reported, four_sum, inout_sum, reported - inout_sum))
     return matched, unmatched
 
 
@@ -1046,22 +1050,25 @@ def render_report(accounts: list[SessionAccount],
         else:
             if len(entries) < 10:
                 L.append(f"- 注:样本 {len(entries)} 条,不足 10,以下仅供参考。")
+            L.append("- 残差口径=in+out(与 CLI 自报语义对齐;四列口径另列仅作参考)。")
             L.append("")
-            L.append("| agentId | 类型 | 自报总量 | 文件四列合计 | 残差 | 残差率 | 备注 |")
-            L.append("|---|---|---:|---:|---:|---:|---|")
+            L.append("| agentId | 类型 | 自报总量 | 文件四列合计(参考) | 文件 in+out "
+                     "| 残差(in+out) | 残差率 | 备注 |")
+            L.append("|---|---|---:|---:|---:|---:|---:|---|")
             matched, unmatched = _q3_pairs(accounts, recon)
-            for e, r, reported, file_sum, residual in matched:
+            for e, r, reported, four_sum, inout_sum, residual in matched:
                 atype = (e.get("agentType") if isinstance(e.get("agentType"), str)
                          else None) or r.agentType or "未知"
                 rate = ("n/a" if reported <= 0
                         else f"{residual / reported * 100:+.1f}%")
                 L.append(f"| `{r.agentId}` | {atype} | {fmt_int(reported)} | "
-                         f"{fmt_int(file_sum)} | {fmt_int(residual)} | {rate} | |")
+                         f"{fmt_int(four_sum)} | {fmt_int(inout_sum)} | "
+                         f"{fmt_int(residual)} | {rate} | |")
             for e in unmatched:
                 atype = e.get("agentType") if isinstance(e.get("agentType"), str) else "未知"
                 reported = e.get("self_reported_tokens")
                 rep_s = fmt_int(int(reported)) if isinstance(reported, int) else "—"
-                L.append(f"| `{e.get('agentId')}` | {atype} | {rep_s} | — | — | — |"
+                L.append(f"| `{e.get('agentId')}` | {atype} | {rep_s} | — | — | — | — |"
                          f" 扫描未见该 agentId(在跑/窗口外/他机) |")
         L.append("")
 
@@ -1140,7 +1147,7 @@ def _render_suggestion(accounts: list[SessionAccount], finals: list[SessionAccou
     """定型建议:只给判据与本机实测锚点,不替维护者做决定。"""
     matched, _unmatched = _q3_pairs(accounts, recon)
     rates = []
-    for _e, _r, reported, _file_sum, residual in matched:
+    for _e, _r, reported, _four, _inout, residual in matched:
         if reported > 0:
             rates.append(abs(residual) / reported)
     if rates:
@@ -1156,8 +1163,9 @@ def _render_suggestion(accounts: list[SessionAccount], finals: list[SessionAccou
         "",
         "是否把记账做成正式功能由维护者决定,本报告只给判据与本机锚点:",
         "",
-        f"- 判据一(口径可信):Q3 残差率多数 ≤5% 且无 >10% 离群 → 文件四列口径可作记账"
-        f"权威;出现 >10% 离群先解释再议(spec 已知 ~2% 残差未解释,见 Q3)。{rate_line}",
+        f"- 判据一(口径可信):Q3 残差率(in+out 口径)多数 ≤5% 且无 >10% 离群 → "
+        f"文件侧 in+out 口径可作对账权威;出现 >10% 离群先解释再议"
+        f"(spec 已知残差未解释,见 Q3)。{rate_line}",
         f"- 判据二(功能价值):若子代理占比可观(参考:output 列 ≥20%)且会话平均 spawn "
         f"数不小(本机实测:终值会话平均 {avg_line} 次/会话,计 {spawns:,} 次),"
         f"记账入正式功能才有信息收益;两值都低则留实验记录即可。",

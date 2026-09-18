@@ -118,10 +118,11 @@ def _mk_projects(tmp_path: Path) -> Path:
 
 
 def _recon_dict() -> dict:
-    """对账手记:a 自报 13,600(文件四列合计 13,260,残差 340 = 2.5%);zzz 扫描未见。"""
+    """对账手记:a 自报 370(文件 in+out=360,残差 +10 = +2.7%;四列合计 13,260 仅参考);
+    zzz 扫描未见。自报语义 ≈ 去重 in+out(评审 R2 裁定口径)。"""
     return {"path": "recon.jsonl", "bad_lines": 0, "entries": [
         {"ts": T1, "agentId": "a", "agentType": "general",
-         "self_reported_tokens": 13600, "source": "task-notification"},
+         "self_reported_tokens": 370, "source": "task-notification"},
         {"ts": T2, "agentId": "zzz", "agentType": "general",
          "self_reported_tokens": 999, "source": "task-notification"},
     ]}
@@ -208,10 +209,11 @@ def test_report_key_numbers_match_units(tmp_path):
 
 def test_report_q3_pairs_and_residuals(tmp_path):
     text = _render(_mk_projects(tmp_path), recon=_recon_dict())
-    assert "13,600" in text            # 自报量(千分位)
-    assert "13,260" in text            # 文件四列合计 a=300+60+900+12000
-    assert "340" in text               # 残差
-    assert "2.5%" in text              # 残差率
+    # a:自报 370;文件侧 in+out = 3 响应 × (100+20) = 360;残差 = +10(+2.7%);
+    # 四列合计 13,260 照旧并列展示(仅参考,不进残差)
+    assert "| `a` | general | 370 | 13,260 | 360 | 10 | +2.7% | |" in text
+    assert "残差口径=in+out" in text                 # 口径注记固定出现
+    assert "与 CLI 自报语义对齐" in text
     assert "`zzz`" in text and "扫描未见" in text   # 未配对如实列出
     assert "不足 10" in text            # 样本 2 条,如实报告
     assert "无样本" not in text
@@ -280,7 +282,7 @@ def test_cli_end_to_end_fixture_tree(tmp_path):
     recon = tmp_path / "recon.jsonl"
     recon.write_text(
         json.dumps({"ts": T1, "agentId": "a", "agentType": "general",
-                    "self_reported_tokens": 13600, "source": "task-notification"})
+                    "self_reported_tokens": 370, "source": "task-notification"})
         + "\n", encoding="utf-8")
     rc = main(["e0c", "--projects", str(projects), "--out", str(out),
                "--recon", str(recon)])
@@ -291,7 +293,7 @@ def test_cli_end_to_end_fixture_tree(tmp_path):
     assert "## Q3 · 与 CLI 自报数对账" in text
     assert "## Q4 · 长尾清单" in text
     assert "回传耦合注记" in text
-    assert "71.4%" in text and "2.5%" in text   # 关键数字与单测一致
+    assert "71.4%" in text and "+2.7%" in text   # 关键数字与单测一致
 
 
 def test_cli_limit_and_missing_projects_dir(tmp_path):
