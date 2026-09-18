@@ -1,4 +1,4 @@
-module ferryman/viewer
+module ferryman
 
 go 1.23.4
 

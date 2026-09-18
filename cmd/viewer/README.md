@@ -1,5 +1,9 @@
 # Ferryman 时间线查看器（T43）
 
+> 票 01 起本查看器并入仓库根 Go module：入口在本目录（`cmd/viewer`），内部包在
+> `internal/viewer/{server,demo,ledger,policy}`，web 前端与 `icon.ico` 随本包放置
+> （`go:embed` 只能引用包目录子树）。以下构建/开发命令一律在仓库根执行。
+
 单 exe 的账本时间线查看器：读取 `accounts/*.jsonl` 流水，提供会话列表、单会话 token
 时序图（SVG 手绘）与心跳"反跑"仿真面板。前端为原生 HTML/JS/CSS 三件套，经
 `go:embed` 打进 exe，无任何外部资源（离线铁律：无 CDN、无字体、无图标库）。
@@ -10,8 +14,7 @@
 输出仍可重定向捕获）：
 
 ```
-cd viewer
-go build -ldflags "-H windowsgui" -o ferryman-timeline.exe .
+go build -ldflags "-H windowsgui" -o ferryman-timeline.exe ./cmd/viewer
 ```
 
 ## 运行
@@ -63,20 +66,19 @@ p_out=24 / per=10000；ttl_s=600 为实测缓存寿命，见
 ## 公式同步规则（ADR-0003）
 
 按 `docs/adr/0003-backend-migrate-to-go.md` 定案，策略公式**单源迁移**：
-**任何 `ferryman/policy.py` 的公式改动必须同步 `viewer/internal/policy/policy.go`，
+**任何 `ferryman/policy.py` 的公式改动必须同步 `internal/viewer/policy/policy.go`，
 且两边的黄金测试锚定同一批实验数**——一处改漏，测试必红。同步时同时核对
 `internal/server` 的响应键名（前端依赖 `result`/`beats`/`beats_cost`/`do_nothing_cost`）。
 
 ## 开发
 
 ```
-cd viewer
 go vet ./... && go test ./...
 ```
 
-- `internal/ledger`：账本读取与聚合（对齐 `ferryman/accounts.py` 的字段口径）。
-- `internal/policy`：心跳推导公式（对齐 `ferryman/policy.py`，黄金数字锚定）。
-- `internal/server`：只读 JSON API（`/api/sessions`、`/api/timeline`、`/api/backtest`、
+- `internal/viewer/ledger`：账本读取与聚合（对齐 `ferryman/accounts.py` 的字段口径）。
+- `internal/viewer/policy`：心跳推导公式（对齐 `ferryman/policy.py`，黄金数字锚定；票 03 起并入根 `policy` 包销毁此副本）。
+- `internal/viewer/server`：只读 JSON API（`/api/sessions`、`/api/timeline`、`/api/backtest`、
   `/api/config`）。
-- `web/`：前端三件套。纪律：账本数据只经 createElement/textContent/setAttribute 进 DOM
+- `cmd/viewer/web/`：前端三件套。纪律：账本数据只经 createElement/textContent/setAttribute 进 DOM
   （不拼 innerHTML）；跨页与连点均有竞态守卫；畸形数值一律兜底不白屏。

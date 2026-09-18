@@ -1,4 +1,4 @@
-// ferryman/viewer——账本时间线查看器（T43；T47 托盘+配置页）。
+// ferryman cmd/viewer——账本时间线查看器（T43；T47 托盘+配置页）。
 // 解析 flags → 解析数据目录（数据根自动探 accounts/）→ 组装路由（JSON API + favicon +
 // 嵌入的静态页）→ 127.0.0.1 监听 → 打印 URL → 自动开浏览器（可 --no-browser 关）→
 // 常驻系统托盘（帆船图标：菜单「打开面板/退出」；--no-tray 关）。
@@ -23,8 +23,8 @@ import (
 
 	"github.com/getlantern/systray"
 
-	"ferryman/viewer/internal/demo"
-	"ferryman/viewer/internal/server"
+	"ferryman/internal/viewer/demo"
+	"ferryman/internal/viewer/server"
 )
 
 //go:embed web

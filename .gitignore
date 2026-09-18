@@ -7,5 +7,5 @@ dist/
 .e2e/
 eval/
 .superpowers/
-viewer/*.exe
-viewer/ferryman-timeline
+*.exe
+ferryman-timeline

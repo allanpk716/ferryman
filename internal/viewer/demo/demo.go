@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"ferryman/viewer/internal/ledger"
-	"ferryman/viewer/internal/policy"
+	"ferryman/internal/viewer/ledger"
+	"ferryman/internal/viewer/policy"
 )
 
 // GLM 演示口径（与 config.example.toml [prices.glm] v2026-09-17、实测 TTL 600s 一致）
