@@ -253,6 +253,35 @@ def test_open_and_close_events_booked_via_poll_loop(tmp_path):
     assert stats.snapshot()["windows_opened"] == 1
 
 
+def test_close_event_beats_fired_reflects_actual_fires(tmp_path):
+    """票04 评审 Important 防回潮：关窗事件 beats_fired 必须是窗口实发跳数。
+    窗口先 observe 演练实发 1 跳 → 新写入关窗 → 断言 beats_fired == 1。
+    （touch 关窗时先把 qwatch_beats_fired 清零——不快照则落账恒 0。）"""
+    projects = tmp_path / "projects"
+    led = Ledger()
+    accts = Accounts(tmp_path / "data")
+    w = _watcher(_qw_cfg(), led, accounts=accts, projects=projects)
+    f = _write_transcript(projects, "oc-2", _SURGE,
+                          tools=(("tu_aq", "AskUserQuestion"),))
+    w._poll_cc()
+    st = led.get("cc", "oc-2")
+    assert st.qwatch_opened_ts is not None     # 前提：自然开窗
+    st.qwatch_plan = [now_s() - 1]             # 演练跳提前到期：observe 路径实发
+    w._maybe_fire_beats(st)
+    assert st.qwatch_beats_fired == 1          # 前提：窗口实发 1 跳
+    assert len(accts.read(kind="beat")) == 1
+
+    with f.open("a", encoding="utf-8") as fh:  # 用户提交：新写入关窗
+        fh.write(_line(_assistant("收到，开工。", mid="msg_2")) + "\n")
+    new_t = time.time() + 5
+    os.utime(f, (new_t, new_t))
+    w._poll_cc()
+    assert st.qwatch_opened_ts is None
+    (close_row,) = accts.read(kind="qwatch_close")
+    assert close_row["beats_fired"] == 1       # 修复点：实发跳数，非恒 0
+    assert close_row["close_reason"] == "write"
+
+
 def test_observe_drill_beats_counted_not_billed(tmp_path):
     """每跳事件沿用 beat 科目（票03 已落）；这里验 /stats 侧：observe 演练跳
     进 observe 桶、实收花费不计。"""

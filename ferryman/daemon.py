@@ -118,25 +118,32 @@ class Watcher(threading.Thread):
             self._maybe_fire_beats(st)
             self._maybe_enqueue(st)
 
-    def _prev_qwatch_open(self, sid: str) -> float | None:
-        """touch 前的等答复窗口态（票04 关窗事件的"前"照）。异常按无窗。"""
+    def _prev_qwatch_open(self, sid: str) -> tuple[float, int] | None:
+        """touch 前的等答复窗口态（票04 关窗事件的"前"照）：（开窗时刻，
+        实发跳数）二元组——跳数必须在 touch 前快照，Ledger.touch 关窗时
+        会先把 qwatch_beats_fired 清零，touch 后读现值恒 0（评审 Important
+        修复）。异常按无窗。"""
         try:
             st = self.ledger.get("cc", sid)
-            return st.qwatch_opened_ts if st is not None else None
+            if st is None or st.qwatch_opened_ts is None:
+                return None
+            return st.qwatch_opened_ts, st.qwatch_beats_fired
         except Exception:  # noqa: BLE001 — 事件侧故障不碰守望主路径
             return None
 
-    def _book_qwatch_close(self, st, prev_open_ts: float | None) -> None:
+    def _book_qwatch_close(self, st, prev_open: tuple[float, int] | None) -> None:
         """票04 关窗事件：touch 前窗开着、touch 后窗没了 ⇒ 这次新写入关的窗
         （touch 是关窗唯一入口，本对照即完整的关窗面）。lineage 换 sid 等罕见
-        边角（st 不是原对象）无从回指，不记。dur 以新写入时刻收口。"""
-        if prev_open_ts is None or st.qwatch_opened_ts is not None:
+        边角（st 不是原对象）无从回指，不记。dur 以新写入时刻收口。opened_ts
+        与 beats_fired 均取 touch 前快照——touch 关窗已清零，读现值失真。"""
+        if prev_open is None or st.qwatch_opened_ts is not None:
             return
+        opened_ts, beats_fired = prev_open
         self._book_qwatch(
-            "qwatch_close", st, opened_ts=round(prev_open_ts, 3),
+            "qwatch_close", st, opened_ts=round(opened_ts, 3),
             closed_ts=round(st.last_write, 3),
-            dur_s=round(max(0.0, st.last_write - prev_open_ts), 1),
-            beats_fired=st.qwatch_beats_fired, close_reason="write")
+            dur_s=round(max(0.0, st.last_write - opened_ts), 1),
+            beats_fired=beats_fired, close_reason="write")
 
     def _book_qwatch(self, kind: str, st, **fields) -> None:
         """问询守望事件入账（票04）：走既有台账科目通道（accounts.jsonl），
