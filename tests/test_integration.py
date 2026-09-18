@@ -1,12 +1,14 @@
-"""T10-T15, T31 · 集成测试：全链路 / skeleton 降级 / 墙钟强杀 / 队列背压 / 懒富化 / 鉴权健康 / 悬空 tool_use 推迟。
+"""T10-T15, T31, T48 · 集成测试：全链路 / skeleton 降级 / 墙钟强杀 / 队列背压 / 懒富化 / 鉴权健康 / 悬空 tool_use 推迟 / 异步等待全链路差异断言。
 
 全离线：摆渡模型用 monkeypatch 假件替代（不连真实推理网关、不出网）。
 """
 
+import json
 import queue
 import time
 import urllib.error
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,7 @@ import ferryman.daemon as daemon_mod
 from ferryman.config import Config, ThresholdCfg
 from ferryman.daemon import Watcher
 from ferryman.ledger import now_s
-from helpers import Harness, free_port, now_iso, write_session
+from helpers import SUMMARIZE, Harness, free_port, now_iso, write_session
 
 
 # ---------- T10 全链路 ----------
@@ -322,3 +324,108 @@ def test_usage_harvest_disabled(tmp_path):
         assert accounts.read(kind="usage") == []
     finally:
         watcher.stop()
+
+
+# ---------- T48 异步等待全链路（停车 / 差异断言 / ack 宽限 / 恢复闭窗） ----------
+
+def _append_jsonl(f: Path, rec: dict) -> None:
+    """追加一行会话记录（带换行——残行采集留待下轮的增量语义依赖它）。"""
+    with f.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def test_t48_async_wait_flow_end_to_end(h):
+    """T48 票04：async 派发 → stop → 窗口停车（不摆渡）→ ack 行（stop 后追加，
+    90s 宽限内）不闭窗 → 恢复行（ts=now+120s 越过宽限）→ 守望采集闭窗
+    main_resumed → 恢复后摆渡恢复入队（推迟不是丢弃）。
+
+    差异断言防空过（评审#8/#9）：对照会话无停车窗、同样"写完自然闲置"
+    → 必被摆渡（正样本，证明守望在跑且会摆）；再等停车会话的台账闲置
+    实打实越过总结阈值（守望至少完整评估过一轮）才断言它不在摆渡名单。
+
+    时序纪律（附录#2/#4/#8）：不手改 st.last_write、不把任何文件 mtime 拨到
+    过去（ledger.touch 是高水位且 observed_active 要求 mtime≥守护启动时刻，
+    手拨会破坏两腿）；ack 确认行在 stop 事件上报之后追加落盘；恢复行时间戳
+    写未来（+120s）越过 ACK_GRACE_S。
+    """
+    sid = "e2e-async"
+    ctrl = "e2e-ctrl"
+    projects = h.projects / "C--proj"
+
+    # 对照会话：正常收尾会话（既有 write_session 惯例），写完保持新 mtime，
+    # 闲置自然超 summarize 线（1s）→ 应被摆渡（差异断言正样本）。
+    write_session(h.projects, ctrl, "C:/proj")
+
+    # 停车会话：尾部 async 派发标记（Task input run_in_background=true +
+    # tool_result 文本以 "Async agent launched" 开头）。首条 usage 刻意压到
+    # MIN_CTX(1000) 之下：装配期（写盘→登记→start/stop 握手）即使意外越过
+    # 闲置线也只富化不入队（<min_ctx 标记 handed_off），测试不靠手速；停车
+    # 期间若摆渡推迟失效，后续 ack 行的大 usage 会让富化越过 min_ctx 入队
+    # ——负样本断言照样能揭穿，不会空过。
+    f = projects / f"{sid}.jsonl"
+    f.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
+        {"type": "user", "timestamp": now_iso(), "cwd": "C:/proj",
+         "sessionId": sid, "message": {"role": "user", "content": "派个后台活"}},
+        {"type": "assistant", "timestamp": now_iso(),
+         "message": {"role": "assistant", "content": [
+             {"type": "tool_use", "id": "t1", "name": "Task",
+              "input": {"prompt": "x", "run_in_background": True}}],
+             "usage": {"input_tokens": 50, "cache_read_input_tokens": 10,
+                        "cache_creation_input_tokens": 0, "output_tokens": 5}}},
+        {"type": "user", "timestamp": now_iso(),
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "t1",
+              "content": "Async agent launched successfully"}]}},
+    ]) + "\n", encoding="utf-8")
+
+    # 守望登记台账（stop 的停车判定 _park_or_close 需要台账里的 transcript_path）
+    assert h.wait_for(lambda: h.ledger.get("cc", sid) is not None), "会话未被守望登记"
+    assert h.sub({"event": "start", "agent": "cc", "session_id": sid})["ok"]
+    assert h.sub({"event": "stop", "agent": "cc", "session_id": sid})["ok"]
+    assert h.wait_for(lambda: h.daemon.window_wait("cc", sid)), "停车未成立"
+    # 没有秒闭（本次修复的原始 bug：Stop 早到把真实等待记成 0.5min 废账）
+    assert h.accounts.read(kind="window", session=sid) == []
+
+    # ack 确认回合：stop 事件之后追加落盘（附录#8）。usage 行 ts=现在，
+    # 落在 stop+90s 宽限内——守望采集会把它喂给 note_usage，但不得闭窗。
+    _append_jsonl(f, {
+        "type": "assistant", "timestamp": now_iso(),
+        "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "已派出，等它跑完"}],
+            "usage": {"input_tokens": 50, "cache_read_input_tokens": 150000,
+                       "cache_creation_input_tokens": 0, "output_tokens": 5}}})
+    # 采到 ack 行（usage 行 1→2）= note_usage 确实被喂过宽限内的 ts，
+    # 此前提下窗口仍未闭才是"宽限生效"的非空证明。
+    assert h.wait_for(lambda: len(h.accounts.read(kind="usage", session=sid)) >= 2), \
+        "ack 行未被守望采集"
+    assert h.accounts.read(kind="window", session=sid) == [], "ack 行误闭窗"
+    assert h.daemon.window_wait("cc", sid) is True
+
+    # 差异断言：对照被摆渡（正样本非空）之后，等停车会话的闲置也越过总结
+    # 阈值（last_write 变旧 ≥ summarize+0.5s——纯自然流逝，不动任何状态），
+    # 再断言它仍不在摆渡名单：同样闲置、唯独差一个停车窗 → 差异归因于 T48。
+    assert h.wait_for(lambda: ctrl in h.enqueued_ok), "对照会话未被摆渡——守望链路失效"
+    assert h.wait_for(lambda: now_s() - h.ledger.get("cc", sid).last_write
+                      >= SUMMARIZE + 0.5), "停车会话闲置未过线，负样本前提不成立"
+    assert sid not in h.enqueued_ok, "停车窗未挡住摆渡（T48 摆渡推迟失效）"
+
+    # 主会话恢复调用：追加 usage 行，时间戳 now+120s（越过 ACK_GRACE_S=90s，
+    # 附录#2；靠时间戳越线，不拨 mtime、不回拨 stop_ts）。
+    resume_ts = (datetime.now(timezone.utc)
+                 + timedelta(seconds=120)).isoformat().replace("+00:00", "Z")
+    _append_jsonl(f, {
+        "type": "assistant", "timestamp": resume_ts,
+        "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "子代理完成，主会话续跑"}],
+            "usage": {"input_tokens": 30, "cache_read_input_tokens": 250000,
+                       "cache_creation_input_tokens": 0, "output_tokens": 5}}})
+    assert h.wait_for(lambda: any(
+        r["close_reason"] == "main_resumed"
+        for r in h.accounts.read(kind="window", session=sid))), \
+        "恢复行喂入后窗口未以 main_resumed 闭"
+    assert h.daemon.window_wait("cc", sid) is False
+    rows = h.accounts.read(kind="window", session=sid)
+    assert len(rows) == 1 and rows[0]["dur_s"] > 0
+
+    # 恢复后摆渡恢复入队：同一会话最终也被摆渡（推迟语义，不是永久丢弃）
+    assert h.wait_for(lambda: sid in h.enqueued_ok), "窗闭后摆渡未恢复入队"
