@@ -10,4 +10,6 @@
 - [ ] doctor 对闸门事件缺位输出提示且不判 FAIL
 - [ ] go.mod 增 modernc.org/sqlite，无 CGO
 
+**追加验收（票 15 缓交回填）**：test_singleton.py 的 3 个 ensure_launcher 用例（测启动器产物：exe 路径/回退链/cmd 脚本内容）在 Go 侧按新形态（EnsureLauncher 生成 start "" /min "<exe>" serve 脚本）补等价测试——Python 原用例测 venv/uv 分发物，Go 无对应物故未移植，本票以新形态覆盖同语义（脚本内容/回退/幂等）。
+
 **Blocked by**：05
