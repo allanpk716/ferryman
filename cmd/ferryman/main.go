@@ -41,6 +41,7 @@ import (
 
 	"github.com/getlantern/systray"
 
+	"ferryman/internal/cutover"
 	"ferryman/internal/daemon"
 	"ferryman/internal/installer"
 	"ferryman/internal/report"
@@ -82,6 +83,10 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman install-codex [--events 事件1,事件2,…]
   ferryman account report [--since 日] [--until 日] [--project 名] [--session id]
                       [--kind 类型] [--provider 键] [--json]
+  ferryman cutover backup [--data 目录] [--dest 目录]
+  ferryman cutover rollback-write [--repo 目录] [--data 目录]
+  ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
+  ferryman cutover smoke [--config 沙箱配置]
 
 面板（时间线查看器，viewer 原样）:
   ferryman --demo [--port N] [--no-tray] [--no-browser]
@@ -90,6 +95,15 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
 
 --events 缺省 = 全集（UserPromptSubmit,SessionStart,SubagentStart,SubagentStop）；
 切换日按用户指令只装三类（闸门 UserPromptSubmit 暂不装，C12）。
+
+cutover 族（票23 切换工具，不执行生产切换）:
+  backup         数据全量备份（accounts/*.jsonl+handoffs/*.md+index.json+
+                 config.toml+daemon.token → 带时间戳目录；只读复制）
+  rollback-write 生成回退工件 <data>/rollback-to-python.cmd（幂等；切换日跑）
+  rollback-drill 临时环境演练回退机制（临时 worktree+临时启动器副本，
+                 绝不碰真实 start-daemon.cmd；tag 未打自动降级路径探测）
+  smoke          沙箱冒烟四链路（独立端口+独立数据目录，直打 API；
+                 ①observe 警告 ②摆渡 fresh+账本行 ③归还 ④enforce block 契约）
 `
 
 func main() {
@@ -115,6 +129,8 @@ func run(args []string) int {
 		return cmdInstallCodex(args[1:])
 	case "account":
 		return cmdAccount(args[1:])
+	case "cutover":
+		return cmdCutover(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
@@ -339,6 +355,121 @@ func cmdAccount(args []string) int {
 		Since: *since, Until: *until, Project: *project, Session: *session,
 		Kind: *kind, Provider: *provider, JSON: *asJSON,
 	})
+}
+
+// ---- cutover 族（票23：切换工具，不执行生产切换） ----
+
+// cmdCutover cutover 子命令分发：backup / rollback-write / rollback-drill /
+// smoke（各面语义见 usage 与 internal/cutover）。
+func cmdCutover(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "用法: ferryman cutover <backup|rollback-write|rollback-drill|smoke> [flags]")
+		return 2
+	}
+	switch args[0] {
+	case "backup":
+		return cmdCutoverBackup(args[1:])
+	case "rollback-write":
+		return cmdCutoverRollbackWrite(args[1:])
+	case "rollback-drill":
+		return cmdCutoverRollbackDrill(args[1:])
+	case "smoke":
+		return cmdCutoverSmoke(args[1:])
+	}
+	fmt.Fprintf(os.Stderr, "未知 cutover 子命令: %q\n", args[0])
+	return 2
+}
+
+// defaultDataDir ~/ferryman（cutover 族共用的数据目录缺省）。
+func defaultDataDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "ferryman"
+	}
+	return filepath.Join(home, "ferryman")
+}
+
+// cmdCutoverBackup 数据全量备份（只读复制；缺省 data=~/ferryman、dest=data 同卷上级）。
+func cmdCutoverBackup(args []string) int {
+	fs := flag.NewFlagSet("cutover backup", flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "数据目录（守护数据根）")
+	dest := fs.String("dest", "", "备份父目录（缺省 = 数据目录同卷上级）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	d, err := cutover.BackupData(*data, *dest)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println(d)
+	return 0
+}
+
+// cmdCutoverRollbackWrite 生成回退工件（repo 缺省 = exe 所在目录——build.ps1
+// 把 exe 出到仓库根；写盘目标 = data 目录，缺省 ~/ferryman）。
+func cmdCutoverRollbackWrite(args []string) int {
+	fs := flag.NewFlagSet("cutover rollback-write", flag.ExitOnError)
+	repo := fs.String("repo", "", "仓库根（缺省 = exe 所在目录）")
+	data := fs.String("data", defaultDataDir(), "数据目录（工件写到此目录）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	r := *repo
+	if r == "" {
+		r = filepath.Dir(exePathOrFallback())
+	}
+	if _, err := cutover.WriteRollbackScript(r, *data, exePathOrFallback()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// cmdCutoverRollbackDrill 隔离演练回退机制（临时 worktree+临时启动器副本；
+// dir 缺省 = 系统临时目录一次性子目录；tag 未打自动降级路径探测，不失败）。
+func cmdCutoverRollbackDrill(args []string) int {
+	fs := flag.NewFlagSet("cutover rollback-drill", flag.ExitOnError)
+	repo := fs.String("repo", "", "仓库根（缺省 = exe 所在目录）")
+	dir := fs.String("dir", "", "演练临时目录（缺省 = 系统临时区新建）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	r := *repo
+	if r == "" {
+		r = filepath.Dir(exePathOrFallback())
+	}
+	if err := cutover.DrillRollback(r, *dir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// cmdCutoverSmoke 沙箱冒烟四链路（独立端口+独立数据目录+假 provider，
+// 直打 API 断言；--config 可选阈值基座，端口/数据目录/通知强制沙箱值）。
+func cmdCutoverSmoke(args []string) int {
+	fs := flag.NewFlagSet("cutover smoke", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "沙箱配置路径（可选；仅阈值生效，"+
+		"端口/数据目录/通知/闸门模式强制沙箱值）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := cutover.SmokeAll(*cfgPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// exePathOrFallback 当前 exe 路径（installer.exePath 的本地镜像——避免为取路径
+// 引入 installer 包依赖；拿不到退 "ferryman.exe" 仅提示性）。
+func exePathOrFallback() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "ferryman.exe"
+	}
+	return exe
 }
 
 // ---- 面板族（原 cmd/viewer 形态原样） ----
