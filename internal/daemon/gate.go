@@ -48,6 +48,15 @@ func (d *Daemon) SetQWatchModeOff() {
 	d.cfgMu.Unlock()
 }
 
+// SetQWatchMode mode 通用写通道（票16 熔断降级 enforce→observe 用；一键停的
+// off 写走 SetQWatchModeOff，同一 cfgMu 护栏）——question_watch.mode 的运行时
+// 写点收敛于这对方法，守望侧经 Daemon 罩面调用。
+func (d *Daemon) SetQWatchMode(v string) {
+	d.cfgMu.Lock()
+	d.Cfg.QuestionWatch.Mode = v
+	d.cfgMu.Unlock()
+}
+
 // sessionSnap Gate 用的一次性台账快照（Python 直接读 st.* 的 Go 形——
 // 共享可变引用读写均须持锁，见包注释并发模型）。
 type sessionSnap struct {

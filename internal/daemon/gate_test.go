@@ -1,7 +1,7 @@
 package daemon
 
 // 规格：tests/test_gate.py 全部 43 例 1:1（T07 闸门状态机全分支 + T44b/T46/
-// 缺口A/T48 票02；T48 票03 的 2 例守望用例归票16 占位——子代理测试文件同惯例）。
+// 缺口A/T48 票02；T48 票03 的 2 例守望用例票16 Watcher 装配后转绿——见下方实现）。
 //
 // 时间纪律：Python 版以真实 time.time() + idle_s 相对量驱动；Go 版 clock.Now
 // 包级注入冻结为 t0（advance 推进），测试全确定性——idle 判定、pending TTL、
@@ -1147,14 +1147,121 @@ func TestPromptStillClosesOpenWindow(t *testing.T) {
 	}
 }
 
-// ---- T48 票03：守望接线（2 例归票16 占位，子代理测试文件同惯例） ----
+// ---- T48 票03：守望接线（2 例，票16 Watcher 装配后转绿） ----
 
 func TestParkedWindowDefersFerryAndResumesAfterClose(t *testing.T) {
-	t.Skip("e2e→票16：Watcher._maybe_enqueue 停车窗推迟道（20260918 误摆渡案回归锁，守望装配后转绿）；Python: test_gate.py::test_parked_window_defers_ferry_and_resumes_after_close")
+	// 回归锁（20260918 12:20/14:15 误摆渡案）：停车窗期间 maybe_enqueue 不入队
+	// （推迟且不置 handed_off）；恢复调用闭窗后同一会话恢复入队。
+	// test_gate.py::test_parked_window_defers_ferry_and_resumes_after_close 1:1。
+	w := newWenv(t)
+	sid := "wf1"
+	w.writeSession(t, sid, asyncBlocks(), 0)
+	cfg := config.Default()
+	cfg.Thresholds = config.ThresholdCfg{SummarizeS: 10, BlockS: 30,
+		MinCtxTokens: 100, CacheWarnS: 720}
+	var mu sync.Mutex
+	var calls []string
+	// Python accounts=None：watcher 不采集不记账（旧测试形态）
+	wtr := NewWatcher(cfg, w.led, nil, func(st *ledger.SessionState) bool {
+		mu.Lock()
+		calls = append(calls, st.SessionID)
+		mu.Unlock()
+		return true
+	}, 0, nil, w.d, nil, nil)
+	st := w.led.Get("cc", sid)
+	w.led.Mu().Lock()
+	st.ObservedActive = true
+	st.LastWrite = *w.now - 999     // 闲置远超 summarize 线
+	st.EnrichedWrite = st.LastWrite // 预置已富化：_enrich 会用转录重算
+	st.PeakCtx = 150000             //   peak（无 usage 的转录算 0），与本用例无关
+	w.led.Mu().Unlock()
+	w.sub(t, "start", sid) // 开窗 + 停车
+	w.sub(t, "stop", sid)
+	wtr.maybeEnqueue(st)
+	mu.Lock()
+	if len(calls) != 0 { // 停车窗 → 推迟摆渡
+		t.Fatalf("停车窗应推迟摆渡, calls = %v", calls)
+	}
+	mu.Unlock()
+	if got := w.led.Get("cc", sid).HandedOffAt; got != 0 { // 推迟不置 handed_off（下轮重查）
+		t.Fatalf("handed_off = %v, want 0", got)
+	}
+	w.d.NoteUsage("cc", sid, *w.now+200) // 恢复调用 → 窗闭
+	wtr.maybeEnqueue(st)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 || calls[0] != sid { // 窗闭后照常摆渡
+		t.Fatalf("calls = %v, want [wf1]", calls)
+	}
 }
 
 func TestHarvestUsageFeedsNoteUsageMaxTS(t *testing.T) {
-	t.Skip("e2e→票16：_harvest_usage 落账后把新行最大 ts 喂 note_usage（守望装配后转绿）；Python: test_gate.py::test_harvest_usage_feeds_note_usage_max_ts")
+	// 票03③：_harvest_usage 落完 usage 行后把新行最大 ts 喂 note_usage
+	// （agent 取会话自身，不硬编码）——停车窗靠守望采集感知主会话恢复调用。
+	// test_gate.py::test_harvest_usage_feeds_note_usage_max_ts 的 Go 形：
+	// Daemon 为具体类型无 RecDaemon 替身可注——以停车窗闭窗行为钉喂入值：
+	// stop = t2 − ACK_GRACE − 0.5，喂最大 ts（t2）→ main_resumed 闭窗；
+	// 若误喂首行 ts（t1 = t2−1）→ t1 < stop+GRACE 不闭（可判别）。
+	w := newWenv(t)
+	sid := "hu1"
+	blocks := []map[string]any{
+		{"type": "assistant", "timestamp": "2026-09-18T12:00:01Z", "cwd": "C:/proj",
+			"message": map[string]any{"role": "assistant",
+				"content": []any{map[string]any{"type": "text", "text": "一"}},
+				"usage": map[string]any{"input_tokens": 100,
+					"cache_read_input_tokens":     5000,
+					"cache_creation_input_tokens": 0, "output_tokens": 1}}},
+		{"type": "assistant", "timestamp": "2026-09-18T12:00:02Z",
+			"message": map[string]any{"role": "assistant",
+				"content": []any{map[string]any{"type": "text", "text": "二"}},
+				"usage": map[string]any{"input_tokens": 200,
+					"cache_read_input_tokens":     6000,
+					"cache_creation_input_tokens": 0, "output_tokens": 1}}},
+	}
+	var b strings.Builder
+	for _, blk := range blocks {
+		line, err := json.Marshal(blk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(line)
+		b.WriteString("\n")
+	}
+	p := filepath.Join(w.tmp, sid+".jsonl")
+	if err := os.WriteFile(p, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.led.TouchFull("cc", sid, p, w.t0, 10, "C:/proj", "", 150000, 0)
+
+	cfg := config.Default()
+	cfg.Thresholds = config.ThresholdCfg{SummarizeS: 10, BlockS: 30,
+		MinCtxTokens: 100, CacheWarnS: 720}
+	// accounts 接线（harvest 随之建立——NewWatcher 同条件）
+	wtr := NewWatcher(cfg, w.led, nil, func(*ledger.SessionState) bool { return true },
+		0, w.acc, w.d, nil, nil)
+	if wtr.harvest == nil {
+		t.Fatal("前提：harvest 应随 accounts+HarvestUsage 建立")
+	}
+	t2 := float64(time.Date(2026, 9, 18, 12, 0, 2, 0, time.UTC).Unix())
+	stop := t2 - AckGraceS - 0.5
+	w.d.windows[[2]string{"cc", sid}] = &waitWindow{OpenedTS: stop - 100,
+		StopTS: &stop, SawAsync: true}
+
+	wtr.harvestUsage(p, info.Size(), w.led.Get("cc", sid))
+
+	rows := w.acc.Read(accounts.ReadOpts{Kind: "usage", Session: sid})
+	if len(rows) != 2 {
+		t.Fatalf("usage 行数 = %d, want 2", len(rows))
+	}
+	windowRows := w.windowRows(sid)
+	if len(windowRows) != 1 || windowRows[0]["close_reason"] != "main_resumed" {
+		// 喂的是最大 ts（第二行），非首行——首行不越 ack 线，窗不会闭
+		t.Fatalf("window 行 = %v, want 1 条 main_resumed（喂入=最大 ts）", windowRows)
+	}
 }
 
 // ---- 骑手（票13 评审 Minor C）：QWatchStop 写 mode × Health/读侧并发护栏 ----

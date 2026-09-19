@@ -7,8 +7,8 @@ package daemon
 //     票10 收编转绿于 internal/ledger/ledger_test.go（TestSubagentCountLifecycle
 //     等三例），此处不重复立目；
 //   - 守望 5 例（skips_subagent_transcript_paths / maybe_enqueue_defers /
-//     codex_watch_dirs / polls_all_codex_dirs / dedupes_same_sid）——Watcher
-//     归票16，此处 t.Skip 占位保清点，装配后转绿；
+//     codex_watch_dirs / polls_all_codex_dirs / dedupes_same_sid）——票16
+//     Watcher 装配后转绿（见下方实现）；
 //   - HTTP 2 例（endpoint_roundtrip / auth_and_validation）——httpapi 归票15，
 //     此处 t.Skip 占位保清点（400 语义的 daemon 面由本文件 TestSubagentInvalidEventRejected 钉住）。
 //
@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -34,26 +35,186 @@ import (
 	"ferryman/internal/mathx"
 )
 
-// ---- tests/test_subagent.py 守望 5 例 → 票16 占位 ----
+// ---- tests/test_subagent.py 守望 5 例 → 票16 转绿（Watcher 装配完成） ----
 
 func TestWatcherSkipsSubagentTranscriptPaths(t *testing.T) {
-	t.Skip("e2e→票16：Watcher._poll_cc 跳过 <sid>/subagents/agent-*.jsonl（守望装配后转绿）；Python: test_subagent.py::test_watcher_skips_subagent_transcript_paths")
+	// test_subagent.py::test_watcher_skips_subagent_transcript_paths 1:1：
+	// <session-id>/subagents/agent-*.jsonl 不登记为独立会话（真实目录结构）。
+	tmp := t.TempDir()
+	projects := filepath.Join(tmp, "projects")
+	writeMergeTranscript(t, projects, "main-1", "干完了，没有问题。", nil)
+	sub := filepath.Join(projects, "C--proj", "main-1", "subagents", "agent-a1234.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sub,
+		[]byte("{\"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"子任务\"}}\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	led := ledger.New()
+	cfg := config.Default()
+	cfg.Watch.CCProjectsDir = projects
+	w := NewWatcher(cfg, led, nil, func(*ledger.SessionState) bool { return true }, 0, nil, nil, nil, nil)
+	w.cxDirs = []string{filepath.Join(tmp, "no-codex")}
+	w.pollCC()
+
+	ids := map[string]bool{}
+	for _, st := range led.AllSessions() {
+		ids[st.SessionID] = true
+	}
+	if !ids["main-1"] {
+		t.Fatal("主会话应登记")
+	}
+	for id := range ids { // 子代理转录不再被摆渡
+		if strings.HasPrefix(id, "agent-") {
+			t.Fatalf("子代理转录不应登记: %q", id)
+		}
+	}
 }
 
 func TestMaybeEnqueueDefersWhileSubagentActive(t *testing.T) {
-	t.Skip("e2e→票16：_maybe_enqueue 子代理计数推迟道（守望装配后转绿）；Python: test_subagent.py::test_maybe_enqueue_defers_while_subagent_active")
+	// test_subagent.py::test_maybe_enqueue_defers_while_subagent_active 1:1：
+	// 子代理计数 > 0 → 推迟摆渡（内存判定，先于 T31 悬空检测的磁盘扫描）。
+	tmp := t.TempDir()
+	cfg := config.Default()
+	cfg.Thresholds = config.ThresholdCfg{SummarizeS: 0.1, BlockS: 1.0,
+		MinCtxTokens: 10, CacheWarnS: 720}
+	led := ledger.New()
+	var mu sync.Mutex
+	var enqueued []string
+	w := NewWatcher(cfg, led, nil, func(st *ledger.SessionState) bool {
+		mu.Lock()
+		enqueued = append(enqueued, st.SessionID)
+		mu.Unlock()
+		return true
+	}, 0, nil, nil, nil, nil)
+
+	f := writeMergeTranscript(t, filepath.Join(tmp, "projects"), "sub-run-1", "干完了，没有问题。", nil)
+	st := led.Touch("cc", "sub-run-1", f, clock.Now(), 10, 0)
+	led.Mu().Lock()
+	st.LastWrite -= 5 // 造闲置达阈值
+	led.Mu().Unlock()
+
+	led.SubagentEvent("cc", "sub-run-1", "start")
+	for i := 0; i < 3; i++ {
+		w.maybeEnqueue(st)
+	}
+	mu.Lock()
+	if len(enqueued) != 0 { // 运行中 → 每轮推迟
+		t.Fatalf("运行中应推迟, enqueued = %v", enqueued)
+	}
+	mu.Unlock()
+
+	led.SubagentEvent("cc", "sub-run-1", "stop")
+	w.maybeEnqueue(st)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(enqueued) != 1 || enqueued[0] != "sub-run-1" { // 停了 → 正常摆渡
+		t.Fatalf("enqueued = %v, want [sub-run-1]", enqueued)
+	}
 }
 
 func TestCodexWatchDirsAutoDetectsOrcaRuntime(t *testing.T) {
-	t.Skip("e2e→票16：CodexWatchDirs 主目录+额外+Orca runtime 路径逐字；Python: test_subagent.py::test_codex_watch_dirs_auto_detects_orca_runtime")
+	// test_subagent.py::test_codex_watch_dirs_auto_detects_orca_runtime 1:1：
+	// Orca 运行时目录存在时自动追加（经 Orca 启动的 codex rollout 写在那里）。
+	tmp := t.TempDir()
+	cfg := config.WatchCfg{CodexSessionsDir: filepath.Join(tmp, "main")}
+
+	if got := CodexWatchDirs(cfg, tmp); !reflect.DeepEqual(got,
+		[]string{filepath.Join(tmp, "main")}) { // 无 orca → 只有一个
+		t.Fatalf("dirs = %v", got)
+	}
+
+	orca := filepath.Join(tmp, "AppData", "Roaming", "orca",
+		"codex-runtime-home", "home", "sessions")
+	if err := os.MkdirAll(orca, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := CodexWatchDirs(cfg, tmp); !reflect.DeepEqual(got,
+		[]string{filepath.Join(tmp, "main"), orca}) {
+		t.Fatalf("dirs = %v, want 主目录+orca", got)
+	}
+
+	cfg2 := config.WatchCfg{CodexSessionsDir: "", CodexExtraDirs: []string{filepath.Join(tmp, "x")}}
+	if got := CodexWatchDirs(cfg2, tmp); !reflect.DeepEqual(got,
+		[]string{filepath.Join(tmp, ".codex", "sessions"),
+			filepath.Join(tmp, "x"), orca}) {
+		t.Fatalf("dirs = %v, want 默认主目录+额外+orca", got)
+	}
 }
 
 func TestWatcherPollsAllCodexDirs(t *testing.T) {
-	t.Skip("e2e→票16：两 codex 目录 rollout 都登记（Orca 会话不漏摆渡）；Python: test_subagent.py::test_watcher_polls_all_codex_dirs")
+	// test_subagent.py::test_watcher_polls_all_codex_dirs 1:1：
+	// 两个目录里的 rollout 都要登记（Orca 会话不再漏摆渡）。
+	tmp := t.TempDir()
+	led := ledger.New()
+	cfg := config.Default()
+	cfg.Watch.CodexSessionsDir = filepath.Join(tmp, "a")
+	w := NewWatcher(cfg, led, nil, func(*ledger.SessionState) bool { return true }, 0, nil, nil, nil, nil)
+	w.ccDir = filepath.Join(tmp, "no-cc")
+	w.cxDirs = []string{filepath.Join(tmp, "a"), filepath.Join(tmp, "orca-home")}
+	for _, dir := range w.cxDirs {
+		f := filepath.Join(dir, "2026", "09", "17", "rollout-2026-09-17T10-00-00-x.jsonl")
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRollout(t, w.cxDirs[0], "aaa111")
+	writeRollout(t, w.cxDirs[1], "bbb222")
+	w.pollCodex()
+	ids := map[string]bool{}
+	for _, st := range led.AllSessions() {
+		if st.Agent == "codex" {
+			ids[st.SessionID] = true
+		}
+	}
+	if !ids["aaa111"] || !ids["bbb222"] || len(ids) != 2 {
+		t.Fatalf("codex 会话 = %v, want {aaa111, bbb222}", ids)
+	}
 }
 
 func TestWatcherDedupesSameSidAcrossCodexDirs(t *testing.T) {
-	t.Skip("e2e→票16：跨 codex 目录同 sid 去重、路径取主目录；Python: test_subagent.py::test_watcher_dedupes_same_sid_across_codex_dirs")
+	// test_subagent.py::test_watcher_dedupes_same_sid_across_codex_dirs 1:1：
+	// ~/.codex/sessions 与 Orca runtime 目录互为副本（2026-09-17 实测同 uuid
+	// 两份）→ 同 sid 只登记一次，路径取主目录（在前）。
+	tmp := t.TempDir()
+	led := ledger.New()
+	w := NewWatcher(config.Default(), led, nil, func(*ledger.SessionState) bool { return true }, 0, nil, nil, nil, nil)
+	w.ccDir = filepath.Join(tmp, "no-cc")
+	a, b := filepath.Join(tmp, "main"), filepath.Join(tmp, "orca")
+	writeRollout(t, a, "dup111")
+	writeRollout(t, b, "dup111")
+	w.cxDirs = []string{a, b}
+	w.pollCodex()
+	sessions := []*ledger.SessionState{}
+	for _, st := range led.AllSessions() {
+		if st.Agent == "codex" {
+			sessions = append(sessions, st)
+		}
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "dup111" {
+		t.Fatalf("登记 = %d 条, want 1 条 dup111", len(sessions))
+	}
+	if !strings.HasPrefix(sessions[0].TranscriptPath, a) { // 路径稳定取主目录
+		t.Fatalf("transcript_path = %q, want 主目录前缀 %q", sessions[0].TranscriptPath, a)
+	}
+}
+
+// writeRollout 造一份 rollout-<ts>-<sid>.jsonl（目录结构按真实布局）。
+func writeRollout(t *testing.T, dir, sid string) string {
+	t.Helper()
+	f := filepath.Join(dir, "2026", "09", "17",
+		"rollout-2026-09-17T10-00-00-"+sid+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f,
+		[]byte("{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"C:/x\"}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
 
 // ---- tests/test_subagent.py HTTP 2 例 → 票15 转绿（真监听 + 真 Daemon 端到端） ----

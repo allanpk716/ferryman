@@ -13,15 +13,16 @@ package daemon
 //     死线到线只跳过悬空让步，不跳过 window_wait（保守——两窗互斥成立时
 //     "死线遇停车窗"本不可达，此为防御性口径）。
 //
-// 票13 归属拆分：方向一/探针口径两例纯 daemon 面，本票转绿；方向二/死线口径
-// 两例的驱动方是 Watcher._maybe_qwatch / _maybe_enqueue（票16 范围），落
-// t.Skip 占位保清点，票16 装配后转绿。
+// 票13 归属拆分：方向一/探针口径两例纯 daemon 面，票13 转绿；方向二/死线
+// 口径两例的驱动方是 Watcher._maybe_qwatch / _maybe_enqueue，票16 Watcher
+// 装配后转绿（见下方实现）。
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -176,10 +177,32 @@ func TestMergeQwatchOpenBlocksFirstOpenAndReanchor(t *testing.T) {
 // ---------- 方向二：停车窗开着 → 等答复窗不可开（真探针，非替身） ----------
 
 func TestMergeParkedWindowBlocksQwatchOpen(t *testing.T) {
-	t.Skip("e2e→票16：真 Daemon 停车窗（停表未过期）→ Watcher._maybe_qwatch 不开等答复窗；" +
-		"停车窗闭后同写入版本仍可开（瞬态阻塞不盖版本章）。daemon 侧探针已由 " +
-		"TestMergeParkingProbeDelegatesToParkingState 钉住，守望装配后转绿。" +
-		"Python: test_merge_t51_parking_mutex.py::test_merge_parked_window_blocks_qwatch_open")
+	// test_merge_t51_parking_mutex.py::test_merge_parked_window_blocks_qwatch_open
+	// 1:1：真 Daemon 停车窗（停表未过期）→ 守望不开等答复窗；停车窗闭后
+	// 同写入版本仍可开（瞬态阻塞不盖版本章）。
+	tmp := t.TempDir()
+	projects := filepath.Join(tmp, "projects")
+	led := ledger.New()
+	d := NewDaemon(mergeCfg(), led, nil, func(*ledger.SessionState) bool { return true }, nil, 0, nil)
+	w := newTestWatcherW(mergeCfg(), led, nil, d, nil, nil)
+	f := writeMergeTranscript(t, projects, "mmx-2", mergeSurge, nil)
+	st := mergeSession(t, led, f, "mmx-2")
+	key := winKey{"cc", "mmx-2"}
+	d.windows[key] = &waitWindow{OpenedTS: clock.Now() - 120,
+		StopTS: fp(clock.Now() - 10), SawAsync: true}
+	w.maybeQwatch(st)
+	if qwRead(led, st).opened != nil { // 先开者赢
+		t.Fatal("停车窗开着不应开等答复窗")
+	}
+
+	d.NoteUsage("cc", "mmx-2", clock.Now()+200) // 主会话恢复 → 停车窗闭
+	if d.ParkingOpen("cc", "mmx-2") {
+		t.Fatal("停车窗应已闭")
+	}
+	w.maybeQwatch(st)
+	if qwRead(led, st).opened == nil { // 解除后同版本仍可开
+		t.Fatal("解除后同版本仍应开窗")
+	}
 }
 
 // ---------- 探针口径：委托 T48 停车状态、无副作用 ----------
@@ -229,8 +252,44 @@ func TestMergeParkingProbeDelegatesToParkingState(t *testing.T) {
 // ---------- 死线口径：只跳悬空让步，不跳 window_wait ----------
 
 func TestMergeDeadlineSkipsDanglingButNotWindowWait(t *testing.T) {
-	t.Skip("e2e→票16：死线到线＋悬空 AskUserQuestion：无停车窗 → 强制入队（跳过悬空让步）；" +
-		"同状态下若停车窗在停（防御性并存态）→ window_wait 仍推迟（死线不豁免它）。" +
-		"驱动方是 Watcher._maybe_enqueue 五道推迟（票16 装配后转绿）。" +
-		"Python: test_merge_t51_parking_mutex.py::test_merge_deadline_skips_dangling_but_not_window_wait")
+	// test_merge_t51_parking_mutex.py::test_merge_deadline_skips_dangling_but_
+	// not_window_wait 1:1：死线到线＋悬空 AskUserQuestion：无停车窗 → 强制入队
+	// （跳过悬空让步）；同状态下若停车窗在停（防御性并存态）→ window_wait 仍
+	// 推迟（死线不豁免它）。
+	tmp := t.TempDir()
+	projects := filepath.Join(tmp, "projects")
+	led := ledger.New()
+	d := NewDaemon(mergeCfg(), led, nil, func(*ledger.SessionState) bool { return true }, nil, 0, nil)
+	w := newTestWatcherW(mergeCfg(), led, nil, d, nil, nil)
+	var enq []string
+	w.Enqueue = func(st *ledger.SessionState) bool {
+		enq = append(enq, st.SessionID)
+		return true
+	}
+	f := writeMergeTranscript(t, projects, "mmx-4", mergeSurge,
+		[][2]string{{"t1", "AskUserQuestion"}})
+	st := mergeSession(t, led, f, "mmx-4")
+	now := clock.Now()
+	led.Mu().Lock()
+	ts := now
+	st.QWatchOpenedTS = &ts
+	st.LastWrite = now - 60 // 恰到死线（block 100 − lead 40）
+	led.Mu().Unlock()
+	key := winKey{"cc", "mmx-4"}
+
+	d.windows[key] = &waitWindow{OpenedTS: now - 120,
+		StopTS: fp(now - 5), SawAsync: true}
+	w.maybeEnqueue(st)
+	if len(enq) != 0 { // window_wait 推迟不被死线豁免
+		t.Fatalf("防御性并存态应被 window_wait 推迟, enq = %v", enq)
+	}
+
+	delete(d.windows, key) // 停车窗撤（防御态解除）
+	w.maybeEnqueue(st)
+	if !reflect.DeepEqual(enq, []string{"mmx-4"}) { // 死线强制入队，跳过悬空
+		t.Fatalf("enq = %v, want [mmx-4]", enq)
+	}
+	if qwRead(led, st).handedOff <= 0 {
+		t.Fatal("入队即记 handed_off")
+	}
 }
