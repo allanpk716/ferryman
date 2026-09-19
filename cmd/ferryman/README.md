@@ -1,40 +1,54 @@
-# Ferryman 时间线查看器（T43）
+# Ferryman 合并 exe（守护+面板+托盘+CLI，票22）
 
-> 票 01 起本查看器并入仓库根 Go module：入口在本目录（`cmd/viewer`），内部包在
+> 入口在本目录（`cmd/ferryman`，吸收原 `cmd/viewer`），内部包在
 > `internal/viewer/{server,demo,ledger}`，web 前端与 `icon.ico` 随本包放置
 > （`go:embed` 只能引用包目录子树）。以下构建/开发命令一律在仓库根执行。
 
-单 exe 的账本时间线查看器：读取 `accounts/*.jsonl` 流水，提供会话列表、单会话 token
-时序图（SVG 手绘）与心跳"反跑"仿真面板。前端为原生 HTML/JS/CSS 三件套，经
-`go:embed` 打进 exe，无任何外部资源（离线铁律：无 CDN、无字体、无图标库）。
+单一 exe：守护（127.0.0.1:7311）+ 时间线面板（15900）+ 托盘 + 全部 CLI 子命令。
+面板读取 `accounts/*.jsonl` 流水，提供会话列表、单会话 token 时序图（SVG 手绘）与
+心跳"反跑"仿真面板。前端为原生 HTML/JS/CSS 三件套，经 `go:embed` 打进 exe，无任何
+外部资源（离线铁律：无 CDN、无字体、无图标库）。
 
 ## 构建
 
-需 Go 1.22+（路由用了方法+路径 pattern）。GUI 子系统链接（双击/快捷方式启动不闪黑窗；
-输出仍可重定向捕获）：
+需 Go 1.23+（路由用了方法+路径 pattern）。**console 子系统**（spec C9：doctor/
+report/install/serve 横幅在终端全部可见；窗口性交给启动方——点火脚本经
+ensure.ps1 的 `Start-Process -WindowStyle Hidden` 拉起，快捷方式
+WindowStyle=minimized）：
 
 ```
-go build -ldflags "-H windowsgui" -o ferryman-timeline.exe ./cmd/viewer
+powershell -File build.ps1            # = go build -o ferryman.exe ./cmd/ferryman
+powershell -File build.ps1 -Release   # -ldflags "-s -w" 变体（同样无 windowsgui）
 ```
 
 ## 运行
 
 ```
-ferryman-timeline.exe                                  # 默认数据根 ~/ferryman；托盘图标常驻
-ferryman-timeline.exe --data D:\data\ferryman          # 指数据根：无 *.jsonl 而下有 accounts/ 时自动下钻
-ferryman-timeline.exe --data D:\data\ferryman\accounts # 直接指账本目录也行
-ferryman-timeline.exe --port 8787 --no-browser         # 固定端口、不开浏览器
-ferryman-timeline.exe --no-tray                        # 不建托盘（无界面环境/服务化）
-ferryman-timeline.exe --install-shortcuts              # 建桌面+开始菜单快捷方式后退出
+ferryman.exe                # 无参 = serve：守护(7311)+面板(15900)+托盘
+ferryman.exe serve          # 同上（点火脚本 start-daemon.cmd 调它）
+ferryman.exe serve --no-tray --smoke    # 前台 Ctrl+C 退出；放宽阈值差校验
+ferryman.exe doctor         # 一键体检
+ferryman.exe install-cc [--events SessionStart,SubagentStart,SubagentStop]
+ferryman.exe install-ccswitch
+ferryman.exe install-codex [--events ...]
+ferryman.exe account report --json
+
+# 面板族（viewer 原样，只起面板不起守护）：
+ferryman.exe --demo --no-tray --no-browser             # 演示合成账本
+ferryman.exe --data D:\dataerryman --port 8787      # 根下无 *.jsonl 而有 accounts/ 时自动下钻
+ferryman.exe --install-shortcuts                       # 建桌面+开始菜单快捷方式后退出
+```
 ```
 
 - 数据目录来源优先级：`--data` > 环境变量 `FERRYMAN_DATA` > `~/ferryman`；三者同为
   **数据根语义**——目录本身没有 `*.jsonl` 而其下有 `accounts/` 子目录时自动下钻一层。
 - 端口缺省随机，启动横幅打印实际 URL（固定 `127.0.0.1`，不对外监听）。
-- **托盘**（T47）：帆船图标常驻通知区，菜单「打开面板 / 退出」。固定端口被占且探到
-  `/api/sessions` 活着 = 面板已在跑 → 直接开浏览器退出（快捷方式因此"点一下必达面板"）。
-- **快捷方式**：`--install-shortcuts` 建「Ferryman 面板.lnk」（桌面 + 开始菜单，钉
-  `--port 15900`，图标取 exe 同目录 `icon.ico`）。想钉任务栏：右键 .lnk → 固定到任务栏。
+- **托盘**（T47）：帆船图标常驻通知区，菜单「打开面板 / 退出」（合并 exe 的退出 =
+  停守护）。面板固定口被占且探到 `/api/sessions` 活着 = 面板已在跑 → 直接开浏览器
+  （快捷方式因此"点一下必达面板"）。
+- **快捷方式**：`--install-shortcuts` 建「Ferryman 面板.lnk」（桌面 + 开始菜单，
+  目标 `ferryman.exe serve --port 15900`、WindowStyle=minimized——双击不闪黑窗、
+  托盘常驻；图标取 exe 同目录 `icon.ico`）。想钉任务栏：右键 .lnk → 固定到任务栏。
 
 **只读声明**：查看器对数据目录只读——每次请求现读账本、不缓存、绝不写任何文件。
 
@@ -82,5 +96,5 @@ go vet ./... && go test ./...
   viewer 的 server/demo 与反跑端点同引此包）。
 - `internal/viewer/server`：只读 JSON API（`/api/sessions`、`/api/timeline`、`/api/backtest`、
   `/api/config`）。
-- `cmd/viewer/web/`：前端三件套。纪律：账本数据只经 createElement/textContent/setAttribute 进 DOM
+- `cmd/ferryman/web/`：前端三件套。纪律：账本数据只经 createElement/textContent/setAttribute 进 DOM
   （不拼 innerHTML）；跨页与连点均有竞态守卫；畸形数值一律兜底不白屏。

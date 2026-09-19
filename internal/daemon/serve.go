@@ -43,13 +43,20 @@ type pidFileJSON struct {
 // （0 = 正常/唯一化跳过；1 = 配置坏/端口被占）。Python config_mod.load 校验
 // 失败未捕获 → traceback + 非零退出；Go 打印错误 + 1。
 func Serve(relaxMinGap bool) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt) // KeyboardInterrupt 同位
+	defer stop()
+	return ServeContext(ctx, relaxMinGap)
+}
+
+// ServeContext Serve 的 ctx 注入形（票22 合并 exe 停机缝）：托盘退出/Ctrl+C
+// 由调用方取消 ctx ≡ KeyboardInterrupt，serveConfig 走优雅停。CLI `serve`
+// 子命令走 Serve（自带 SIGINT 装配）；合并 exe 的 serveAll 用本形。
+func ServeContext(ctx context.Context, relaxMinGap bool) int {
 	cfg, err := config.Load("", relaxMinGap)
 	if err != nil {
 		fmt.Println(err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt) // KeyboardInterrupt 同位
-	defer stop()
 	return serveConfig(cfg, ctx)
 }
 
