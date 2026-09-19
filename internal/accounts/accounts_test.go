@@ -361,30 +361,11 @@ func TestRecordConcurrentSafety(t *testing.T) {
 	}
 }
 
-// ===== 以下 10 例为 e2e 占位（Python Harness 全链）=====
-// 依赖 internal/daemon 的 Harness（gate/window/worker/serve，票 13/14/17），
-// 仅 internal/accounts 就位时无法转绿。按票面 19 例 1:1 清点要求先落占位，
-// 随归属票装配后移植转绿（届时删除 Skip、补全断言）。
-
-func TestFerryCompletionBooksHandoff(t *testing.T) {
-	t.Skip("e2e→票17：合成会话达总结阈值→摆渡→账本 handoff 行（session_id/lineage 尾缀/Provider=fake/outcome 三选一/无 content 无 md）；Python: test_accounts.py::test_ferry_completion_books_handoff")
-}
-
-func TestFailedFerryBooksExactlyOneRow(t *testing.T) {
-	t.Skip("e2e→票17：失败摆渡只记一行 outcome=failed，骨架产物不另记行（终审：append-only 双行无法事后修复）；Python: test_accounts.py::test_failed_ferry_books_exactly_one_row")
-}
-
-func TestBookingFailureNeverBreaksFerry(t *testing.T) {
-	t.Skip("e2e→票17：记账抛异常（坏价格表）时摆渡照常产出交接、worker 线程不死——骨架兜底不变量优先；Python: test_accounts.py::test_booking_failure_never_breaks_ferry")
-}
-
-// 票14 回填注：3 个 gate/restore e2e（test_block_books_entry /
-// test_bypass_books_entry / test_restore_books_inject）已转绿——落在本目录
-// 外部测试包 gate_e2e_test.go（window_e2e_test.go 装配器同款扩 Gate/Restore
-// 通道；内部测试包引 daemon 会成环）。
-
-// 票13 回填注：4 个窗口 e2e（test_window_books_on_subagent_cycle /
-// test_window_closes_on_prompt / test_window_closes_on_bypass_prompt /
-// test_window_reanchors_after_leak_gap）已转绿——因 daemon→accounts 依赖方向
-// 不可被内部测试包引用，落在本目录外部测试包 window_e2e_test.go（最小装配器：
-// 临时目录 Accounts+Ledger+Daemon，直驱 Subagent/NoteGatePrompt）。
+// ===== e2e 占位清点收口（票17）=====
+// 原本目录的 10 个 e2e 占位已全部转绿：
+//   - 3 个摆渡记账 e2e → 票17 本目录外部测试包 ferry_e2e_test.go
+//     （Worker 通道装配器：TestFerryCompletionBooksHandoff /
+//     TestFailedFerryBooksExactlyOneRow / TestBookingFailureNeverBreaksFerry）；
+//   - 3 个 gate/restore e2e → 票14 gate_e2e_test.go（Gate/Restore 通道）；
+//   - 4 个窗口 e2e → 票13 window_e2e_test.go（Subagent/NoteGatePrompt 通道）。
+// 内部测试包引 daemon 会成环，e2e 一律落外部测试包（window_e2e_test.go 惯例）。

@@ -111,6 +111,10 @@ type Watcher struct {
 	stopOnce sync.Once
 }
 
+// extractFacts CC 提取函数缝（Python monkeypatch ferryman.extract.extract
+// 的同位补丁面：T14 懒富化单次性等测试以计数替身注入——生产勿动）。
+var extractFacts = extract.Extract
+
 // NewWatcher 构造 Watcher（Python __init__ 1:1）。
 func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 	enqueue func(*ledger.SessionState) bool, startedAt float64,
@@ -745,7 +749,7 @@ func (w *Watcher) enrichImpl(st *ledger.SessionState) {
 		return
 	}
 	if agent == "cc" {
-		facts, _, _ := extract.Extract(path)
+		facts, _, _ := extractFacts(path)
 		w.Ledger.Mu().Lock()
 		if facts.Title != "" {
 			st.Title = facts.Title

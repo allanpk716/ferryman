@@ -491,6 +491,10 @@ func pyStr(v any) string {
 	}
 }
 
+// PyFloatStr pyFloatStr 的导出面（票17 serve 横幅跨包复用 Python str(float)
+// 渲染：1500 → "1500.0"，0.01 → "0.01"）。
+func PyFloatStr(v float64) string { return pyFloatStr(v) }
+
 // pyFloatStr 以 Python str(float) 语义渲染浮点：整值补 ".0"（100 → "100.0"），
 // 其余最短往返。供校验文案与 Python 版逐字对齐。
 func pyFloatStr(v float64) string {
