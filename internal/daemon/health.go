@@ -4,10 +4,15 @@ package daemon
 // 逐字即 API 契约——gate_calls_total / gate_calls_by_agent /
 // last_gate_call_s_ago / last_transcript_write_s_ago / subagents_active /
 // subagent_events_total / health_alert / health_msg / qwatch（含
-// miss_signals 与 mode 活值）。
+// miss_signals 与 mode 活值）。glm_balance 为票07 Go 侧增量字段（余额展示行，
+// 按需查询一次；Python 契约字段不动）。
 
 import (
+	"errors"
+
 	"ferryman/internal/clock"
+	"ferryman/internal/config"
+	"ferryman/internal/dock"
 	"ferryman/internal/mathx"
 )
 
@@ -73,5 +78,25 @@ func (d *Daemon) Health() map[string]any {
 		"health_alert":                alert,
 		"health_msg":                  msg,
 		"qwatch":                      qw,
+		"glm_balance":                 d.glmBalance(),
 	}
+}
+
+// glmBalance 票07：余额展示行值（/stats 面板拉取时按需查询一次，无后台轮询/
+// 定时器）。未配置（无 [dock] 节或无 api_key）→「未配置」（零 HTTP）；失败 →
+// 「余额查询失败：<类别>」（类别文案 dock 侧单源，永不携带真钥）；成功 →
+// 余额数值字面量。
+func (d *Daemon) glmBalance() string {
+	var dk *config.DockCfg
+	if d.Cfg != nil {
+		dk = d.Cfg.Dock
+	}
+	info, err := dock.FetchBalance(dk)
+	if errors.Is(err, dock.ErrBalanceNotConfigured) {
+		return "未配置"
+	}
+	if err != nil {
+		return "余额查询失败：" + err.Error()
+	}
+	return info.Balance
 }

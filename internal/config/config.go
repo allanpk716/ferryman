@@ -97,6 +97,10 @@ type WaitWindowCfg struct {
 	ManualWaitCapS float64 // >0 = 手动等待上限（只收小）；0 = 未配置
 }
 
+// DefaultDockBalanceURL 票07：bigmodel 余额查询默认端点（解析层缺省与查询侧
+// 防御回落共用此单源；同一把 [dock].api_key 出 Bearer，只读）。
+const DefaultDockBalanceURL = "https://open.bigmodel.cn/api/user/balance"
+
 // DockCfg 渡口（本机 API 中转，票01）配置。注意语义是 opt-in：Config.Dock
 // 为 nil 指针（[dock] 节缺失）＝渡口完全不启动——不绑端口、零行为变化
 // （评审 F11 裁定）；节存在才构造本结构，缺字段回落默认值。
@@ -111,6 +115,8 @@ type DockCfg struct {
 	APIKey         string            // 上游真钥：只进出站 Authorization，永不入日志/账本/错误（T39）
 	ModelMap       map[string]string // 别名→GLM 档；含 default 键（改写模式必须非空）
 	TextOnly       []string          // text-only 模型名单（命中则 image 块降级文本占位）
+	// 票07 余额只读查询（/stats 面板展示用；查询侧无 api_key → 未配置零请求）。
+	BalanceURL string // 余额端点覆写；解析层缺省回落 DefaultDockBalanceURL
 }
 
 // Config 全量配置（字段=Python dataclass 1:1）。
@@ -384,6 +390,8 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
 			RewriteEnabled:  pyBool(get(dk, "rewrite_enabled", false)),
 			APIKey:          pyStr(get(dk, "api_key", "")),
+			// 票07：缺省回落内置默认端点（同 upstream_base_url 的解析层补默认惯例）。
+			BalanceURL: pyStr(get(dk, "balance_url", DefaultDockBalanceURL)),
 		}
 		if rawMM, ok := dk["model_map"]; ok {
 			mm, ok := rawMM.(map[string]any)
