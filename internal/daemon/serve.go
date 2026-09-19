@@ -13,76 +13,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"time"
 
-	"github.com/BurntSushi/toml"
-
 	"ferryman/internal/accounts"
 	"ferryman/internal/beat"
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
+	"ferryman/internal/ferry"
 	"ferryman/internal/ledger"
 	"ferryman/internal/store"
 )
 
-// FerrySession 生产摆渡执行器（票18 前占位：恒错 → 骨架降级保底不变量——
-// 未实装期 serve 照常起、交接全走骨架，与 provider 未配置同一条兜底路；
-// 票18 落地 internal/ferry 后以真实实现替换本 var）。
-var FerrySession FerryFunc = func(string, Provider, float64,
-	string) (string, map[string]any, error) {
-	return "", nil, errors.New("摆渡执行器未实装（票18）")
-}
-
-// loadProviders 读 ~/ferryman/config.toml [providers.*]（Python
-// ferry.load_config 占位平移：无文件/无节/坏 TOML → 空 map=全降级骨架；
-// 票18 统一到 ferry 包后删除）。
-func loadProviders() map[string]Provider {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return map[string]Provider{}
-	}
-	raw, err := os.ReadFile(filepath.Join(home, "ferryman", "config.toml"))
-	if err != nil {
-		return map[string]Provider{}
-	}
-	var data map[string]any
-	if _, err := toml.Decode(string(raw), &data); err != nil {
-		return map[string]Provider{}
-	}
-	provsAny, _ := data["providers"].(map[string]any)
-	out := map[string]Provider{}
-	for key, blkAny := range provsAny {
-		blk, _ := blkAny.(map[string]any)
-		out[key] = Provider{
-			Name:    key,
-			BaseURL: tomlStr(blk, "base_url"),
-			Model:   tomlStr(blk, "model"),
-			APIKey:  tomlStr(blk, "api_key"),
-			Window:  tomlIntOr(blk, "window", 131072),
-		}
-	}
-	return out
-}
-
-func tomlStr(m map[string]any, k string) string {
-	s, _ := m[k].(string)
-	return s
-}
-
-func tomlIntOr(m map[string]any, k string, def int) int {
-	switch n := m[k].(type) {
-	case int64:
-		return int(n)
-	case float64:
-		return int(n)
-	}
-	return def
-}
+// FerrySession 生产摆渡执行器（票18：internal/ferry 落地，票17 的恒错占位
+// 退役；保留 var 形 = 测试可注入缝，签名即 FerryFunc）。
+var FerrySession FerryFunc = ferry.FerrySession
 
 // pidFileJSON daemon.pid 的行形（字段序 = Python dict 插入序）。
 type pidFileJSON struct {
@@ -129,7 +77,17 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 		fmt.Println(err)
 		return 1
 	}
-	worker := NewWorker(cfg, st, acc, loadProviders(), FerrySession)
+	// providers 配置（票18）：LoadProviders 恢复 Python load_config 语义——
+	// 坏 TOML 上抛。Python FerryWorker.__init__ 里 load_providers() 无兜底，
+	// 坏 TOML 直接炸 serve；Go 决断（已声明偏差）：此处捕获 → 打印警告 +
+	// 空 map 继续起——一次性切换+日志驱动修复语境下，不炸守护比逐字上抛更
+	// 合理（骨架兜底不变量优先）。
+	providers, err := ferry.LoadProviders("")
+	if err != nil {
+		fmt.Printf("[ferry] ⚠ providers 配置解析失败——摆渡降级骨架: %v\n", err)
+		providers = map[string]ferry.Provider{}
+	}
+	worker := NewWorker(cfg, st, acc, providers, FerrySession)
 	startedAt := clock.Now()
 	qwatchStats := beat.NewQWatchStats() // 票04：daemon/watcher 共享计数器
 	enqueue := func(s *ledger.SessionState) bool {

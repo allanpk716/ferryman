@@ -18,6 +18,7 @@ import (
 	"ferryman/internal/accounts"
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
+	"ferryman/internal/ferry"
 	"ferryman/internal/store"
 )
 
@@ -33,7 +34,7 @@ type ferryWenv struct {
 	cfg       *config.Config
 	st        *store.Store
 	acc       *accounts.Accounts
-	providers map[string]Provider
+	providers map[string]ferry.Provider
 }
 
 func newFerryWenv(t *testing.T) *ferryWenv {
@@ -55,7 +56,7 @@ func newFerryWenv(t *testing.T) *ferryWenv {
 		cfg: cfg,
 		st:  st,
 		acc: acc,
-		providers: map[string]Provider{"fake": {
+		providers: map[string]ferry.Provider{"fake": {
 			Name: "fake", BaseURL: "http://127.0.0.1:9/v1", Model: "fake"}}, // httptest 假 provider 形状（不监听）
 	}
 }
@@ -145,7 +146,7 @@ func waitForCond(t *testing.T, timeout time.Duration, cond func() bool) {
 }
 
 // succFerry 恒成功替身（假 md+meta，字段齐全供记账断言）。
-func succFerry(path string, pr Provider, timeoutS float64, agent string) (string, map[string]any, error) {
+func succFerry(path string, pr ferry.Provider, timeoutS float64, agent string) (string, map[string]any, error) {
 	md := "[Ferryman 交接 · 会话 集成测试会话]\n\n<<<INJECT>>>\n注入层：干完了 fb.py\n<<</INJECT>>\n\n# 全文\n干完了：fb.py\n"
 	meta := map[string]any{
 		"title": "集成测试会话", "mode": "L1", "wall_s": 1.2,
@@ -159,7 +160,7 @@ func succFerry(path string, pr Provider, timeoutS float64, agent string) (string
 }
 
 // explodingFerry 恒败替身（Python exploding 同位）。
-func explodingFerry(string, Provider, float64, string) (string, map[string]any, error) {
+func explodingFerry(string, ferry.Provider, float64, string) (string, map[string]any, error) {
 	return "", nil, fmt.Errorf("provider down")
 }
 
@@ -178,7 +179,7 @@ func TestT39UnconfiguredProviderWarns(t *testing.T) {
 	env := newFerryWenv(t)
 	env.cfg.FerryProvider = "" // 未配置
 	read := captureStdout(t)
-	NewWorker(env.cfg, env.st, nil, map[string]Provider{}, nil)
+	NewWorker(env.cfg, env.st, nil, map[string]ferry.Provider{}, nil)
 	out := read()
 	if !strings.Contains(out, "未配置") || !strings.Contains(out, "config.toml") {
 		t.Fatalf("未配置告警缺失: %q", out)
@@ -187,7 +188,7 @@ func TestT39UnconfiguredProviderWarns(t *testing.T) {
 	cfg2 := config.Default()
 	cfg2.FerryProvider = "ghost" // 配了名字但无定义
 	read2 := captureStdout(t)
-	NewWorker(cfg2, env.st, nil, map[string]Provider{}, nil)
+	NewWorker(cfg2, env.st, nil, map[string]ferry.Provider{}, nil)
 	out2 := read2()
 	if !strings.Contains(out2, "ghost") {
 		t.Fatalf("ghost 告警缺失: %q", out2)
@@ -289,7 +290,7 @@ func TestT12WallClockKill(t *testing.T) {
 	FerryWallTimeoutS = 0.5
 	defer func() { FerryWallTimeoutS = old }()
 
-	sleeping := func(path string, pr Provider, timeoutS float64, agent string) (string, map[string]any, error) {
+	sleeping := func(path string, pr ferry.Provider, timeoutS float64, agent string) (string, map[string]any, error) {
 		time.Sleep(30 * time.Second) // 超墙钟：线程被弃的 Go 形（goroutine 遗弃）
 		return "never", map[string]any{}, nil
 	}
@@ -321,7 +322,7 @@ func TestWorkerRecoversFromFerryPanic(t *testing.T) {
 	env := newFerryWenv(t)
 	projects := filepath.Join(env.tmp, "projects")
 	f1 := writeWenvSession(t, projects, "panic-1", "C:/proj")
-	panicky := func(path string, pr Provider, timeoutS float64, agent string) (string, map[string]any, error) {
+	panicky := func(path string, pr ferry.Provider, timeoutS float64, agent string) (string, map[string]any, error) {
 		panic("ferry 炸点")
 	}
 	w := NewWorker(env.cfg, env.st, nil, env.providers, panicky)

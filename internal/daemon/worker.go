@@ -10,8 +10,8 @@
 // run() 的 `except Exception —— 单任务失败不炸工人`（daemon.py:516-522）；
 // Go 的 panic 在 goroutine 间不传播， Recover 是该语义的等价承载。
 //
-// Provider/FerryFunc 为票18 前的最小占位（附录#2：ferryFunc/NewWorker 需可
-// 编译；票18 落地 internal/ferry 后统一到 ferry.Provider 并删除本占位）。
+// 票18：Provider 统一为 ferry.Provider（占位类型删除），生产执行器
+// ferry.FerrySession 经 serve.go 的 FerrySession var 接入。
 package daemon
 
 import (
@@ -25,25 +25,16 @@ import (
 	"ferryman/internal/codextrans"
 	"ferryman/internal/config"
 	"ferryman/internal/extract"
+	"ferryman/internal/ferry"
 	"ferryman/internal/pathsx"
 	"ferryman/internal/prices"
 	"ferryman/internal/store"
 )
 
-// Provider 摆渡提供方最小占位（ferry.py Provider 字段 1:1；票18 将统一到
-// ferry.Provider——届时删除本类型）。
-type Provider struct {
-	Name    string
-	BaseURL string
-	Model   string
-	APIKey  string
-	Window  int
-}
-
 // FerryFunc 摆渡执行器签名（Python ferry_session(path, provider, timeout,
 // agent) 的 Go 形）：返回 (交接md, meta, err)；err 非 nil = 失败 → 骨架降级。
-// timeoutS 即墙钟余量（生产实现应用于网络调用；占位实现忽略）。
-type FerryFunc func(path string, pr Provider, timeoutS float64,
+// timeoutS 即墙钟余量（生产实现 ferry.FerrySession 用于网络调用超时）。
+type FerryFunc func(path string, pr ferry.Provider, timeoutS float64,
 	agent string) (string, map[string]any, error)
 
 // FerryWallTimeoutS 摆渡墙钟总时限 8min（DESIGN §4；config 同名常量的 daemon
@@ -60,7 +51,7 @@ type Worker struct {
 	// Accounts nil = 不记账（旧调用/测试零改动，Python 同名约定）。
 	Accounts  *accounts.Accounts
 	Ferry     FerryFunc
-	Providers map[string]Provider
+	Providers map[string]ferry.Provider
 
 	// BookHandoff 摆渡记账缝（Python monkeypatch FerryWorker._book_handoff
 	// 的同位注入面；NewWorker 缺省绑 bookHandoffImpl——仅测试注入炸点用）。
@@ -74,7 +65,7 @@ type Worker struct {
 // NewWorker 构造工人（daemon.py:496-509 逐字）：provider 配置缺失/未定义在
 // 构造期醒目警告——摆渡将全部降级为骨架交接。
 func NewWorker(cfg *config.Config, st *store.Store, acc *accounts.Accounts,
-	providers map[string]Provider, f FerryFunc) *Worker {
+	providers map[string]ferry.Provider, f FerryFunc) *Worker {
 	w := &Worker{
 		Tasks:     make(chan map[string]any, 10), // queue.Queue(maxsize=10)
 		Cfg:       cfg,

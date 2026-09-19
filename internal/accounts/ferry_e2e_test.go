@@ -24,6 +24,7 @@ import (
 	"ferryman/internal/accounts"
 	"ferryman/internal/config"
 	"ferryman/internal/daemon"
+	"ferryman/internal/ferry"
 	"ferryman/internal/store"
 )
 
@@ -36,7 +37,7 @@ type ferryHarness struct {
 	defaultBook func(item map[string]any, agent, sid string, meta map[string]any, outcome string)
 }
 
-func newFerryHarness(t *testing.T, ferry daemon.FerryFunc) *ferryHarness {
+func newFerryHarness(t *testing.T, ferryFn daemon.FerryFunc) *ferryHarness {
 	t.Helper()
 	tmp := t.TempDir()
 	accts, err := accounts.New(tmp)
@@ -49,9 +50,9 @@ func newFerryHarness(t *testing.T, ferry daemon.FerryFunc) *ferryHarness {
 	}
 	cfg := config.Default()
 	cfg.FerryProvider = "fake"
-	providers := map[string]daemon.Provider{"fake": {
+	providers := map[string]ferry.Provider{"fake": {
 		Name: "fake", BaseURL: "http://127.0.0.1:9/v1", Model: "fake"}}
-	w := daemon.NewWorker(cfg, st, accts, providers, ferry)
+	w := daemon.NewWorker(cfg, st, accts, providers, ferryFn)
 	h := &ferryHarness{t: t, tmp: tmp, accts: accts, st: st, w: w,
 		defaultBook: w.BookHandoff}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -104,7 +105,7 @@ func (h *ferryHarness) enqueue(sid, transcriptPath, cwd string) bool {
 }
 
 // succFerry 恒成功替身（假 md+meta）。
-var succFerry = func(path string, pr daemon.Provider, timeoutS float64,
+var succFerry = func(path string, pr ferry.Provider, timeoutS float64,
 	agent string) (string, map[string]any, error) {
 	md := "[Ferryman 交接 · 会话 集成测试会话]\n\n<<<INJECT>>>\n注入层：干完了\n<<</INJECT>>\n\n# 全文\n干完了\n"
 	meta := map[string]any{
@@ -118,7 +119,7 @@ var succFerry = func(path string, pr daemon.Provider, timeoutS float64,
 }
 
 // explodingFerry 恒败替身。
-var explodingFerry = func(string, daemon.Provider, float64,
+var explodingFerry = func(string, ferry.Provider, float64,
 	string) (string, map[string]any, error) {
 	return "", nil, fmt.Errorf("provider down")
 }

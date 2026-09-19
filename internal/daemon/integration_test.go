@@ -32,6 +32,7 @@ import (
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
 	"ferryman/internal/extract"
+	"ferryman/internal/ferry"
 	"ferryman/internal/ledger"
 	"ferryman/internal/store"
 )
@@ -92,7 +93,7 @@ type integHarness struct {
 	enqueuedOK []string
 }
 
-func newIntegHarness(t *testing.T, ferry FerryFunc) *integHarness {
+func newIntegHarness(t *testing.T, ferryFn FerryFunc) *integHarness {
 	t.Helper()
 	tmp := t.TempDir()
 	projects := filepath.Join(tmp, "projects")
@@ -121,8 +122,8 @@ func newIntegHarness(t *testing.T, ferry FerryFunc) *integHarness {
 		t.Fatal(err)
 	}
 	w := NewWorker(cfg, st, acc,
-		map[string]Provider{"fake": {Name: "fake",
-			BaseURL: "http://127.0.0.1:9/v1", Model: "fake"}}, ferry)
+		map[string]ferry.Provider{"fake": {Name: "fake",
+			BaseURL: "http://127.0.0.1:9/v1", Model: "fake"}}, ferryFn)
 	h := &integHarness{t: t, tmp: tmp, projects: projects, dataDir: dataDir,
 		cfg: cfg, token: token, led: led, st: st, acc: acc, w: w, port: port}
 	enqueue := func(s *ledger.SessionState) bool {
