@@ -10,8 +10,11 @@
 //   - CheckCCHooks 闸门事件（UserPromptSubmit）缺位 = 提示不失败（C12 用户
 //     策略：正文注明"闸门钩子按用户指令未安装"）；其余三事件缺失/路径不
 //     存在/SessionStart 超时 <10s 照旧失败；
-//   - CheckLauncher 查点火脚本 start 行的 exe 路径有效性（Python 时代查
-//     venv python.exe，Go 新形态查合并 exe）；
+//   - CheckLauncher 查点火脚本启动行的 exe 路径有效性（Python 时代查
+//     venv python.exe，Go 新形态查合并 exe——票22 起脚本为裸形态
+//     `"<exe>" serve >> …`）；
+//   - CheckCCSwitch / CheckCodex 同款闸门豁免（票22 骑手 M2：子集安装后
+//     doctor 全绿）；
 //   - HttpBeatSender 功能退化声明（评审附录#14）：信息行输出，不判 FAIL。
 package installer
 
@@ -47,8 +50,9 @@ const HttpBeatNotice = "[提示] 心跳真实发送未实装（Q14 未授权）�
 var (
 	escPathRe   = regexp.MustCompile(`-File \\"(.*?)\\"`)
 	plainPathRe = regexp.MustCompile(`-File "(.*?)"`)
-	// startExeRe 点火脚本 start 行的 exe 路径（Go 新形态 EnsureLauncher 产物）。
-	startExeRe = regexp.MustCompile(`start "" /min "([^"]+)"`)
+	// startExeRe 点火脚本启动行的 exe 路径（裸形态 EnsureLauncher 产物，票22
+	// 骑手1/M6：`"<exe>" serve >> …`——` serve` 尾注保证日志路径不会被误捕）。
+	startExeRe = regexp.MustCompile(`"([^"]+)" serve`)
 )
 
 // CheckCCHooks settings.json 四事件齐全、路径存在、restore 超时够自举
@@ -157,7 +161,8 @@ func CheckHookScripts(paths []string) []Check {
 }
 
 // CheckCCSwitch 全部 claude 供应商快照都带 ferryman 钩子（切换=逐字写入，
-// 缺了就会被抹）（doctor.py check_ccswitch 逐字）。
+// 缺了就会被抹）（doctor.py check_ccswitch 逐字 + 票22 骑手 M2：闸门事件
+// 豁免同 CheckCCHooks——UserPromptSubmit 缺位 = 提示不失败；其余三事件硬性）。
 func CheckCCSwitch(dbPath string) Check {
 	if _, err := os.Stat(dbPath); err != nil {
 		return Check{true, "未装 CC Switch（跳过）"}
@@ -167,60 +172,76 @@ func CheckCCSwitch(dbPath string) Check {
 		return Check{false, fmt.Sprintf("cc-switch.db 读取失败: %v", err)}
 	}
 	var lacking []string
+	gateMissing := false
 	for _, r := range rows {
-		if !snapshotHasAllEvents(r.Raw) {
+		others, gate := snapshotMissing(r.Raw)
+		if len(others) > 0 {
 			lacking = append(lacking, r.Name)
+		} else if gate {
+			gateMissing = true
 		}
 	}
 	if len(lacking) > 0 {
 		return Check{false, fmt.Sprintf("供应商快照缺钩子: %s（重跑 install-ccswitch）",
 			strings.Join(lacking, ", "))}
 	}
+	if gateMissing {
+		// C12 用户策略：闸门钩子按用户指令未安装——提示不失败
+		return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照钩子在位"+
+			"（缺闸门 UserPromptSubmit——闸门钩子按用户指令未安装，提示不判失败）", len(rows))}
+	}
 	return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照全带钩子", len(rows))}
 }
 
-// snapshotHasAllEvents 单快照四事件全覆盖判定（NULL/坏 JSON/非 dict 记缺——
-// 该快照需要的正是重注入）。
-func snapshotHasAllEvents(raw sql.NullString) bool {
+// snapshotMissing 单快照缺位清单分两桶（票22 骑手 M2）：others = 硬性三事件
+// （SessionStart/SubagentStart/SubagentStop，缺一即该快照需重注入）；gate =
+// 闸门 UserPromptSubmit 缺位（C12 豁免）。NULL/坏 JSON/非 dict = 全缺（照旧
+// 记缺——该快照需要的正是重注入）。
+func snapshotMissing(raw sql.NullString) (others []string, gate bool) {
 	var root map[string]any
 	if !raw.Valid || json.Unmarshal([]byte(raw.String), &root) != nil {
-		return false
+		root = nil
 	}
 	hooks, _ := root["hooks"].(map[string]any)
 	for _, evt := range FerryEvents {
-		if !eventHasFerryman(hooks, evt) {
-			return false
+		if eventHasFerryman(hooks, evt) {
+			continue
+		}
+		if evt == GateEvent {
+			gate = true
+		} else {
+			others = append(others, evt)
 		}
 	}
-	return true
+	return
 }
 
 // CheckCodex Codex：钩子条目在位 + [features] hooks = true（默认关，不开则
-// 整包静默失效）（doctor.py check_codex 逐字）。
+// 整包静默失效）（doctor.py check_codex 逐字 + 票22 骑手：M5 读失败与解析
+// 失败分开、单次 unmarshal；M2 闸门事件豁免同 CheckCCHooks——缺位 = 提示
+// 不失败，其余三事件硬性）。
 func CheckCodex(hooksPath, configPath string) Check {
 	var problems []string
+	gateMissing := false
 	if _, err := os.Stat(hooksPath); err != nil {
 		problems = append(problems, "hooks.json 不存在（跑 install-codex）")
+	} else if rawData, err := os.ReadFile(hooksPath); err != nil {
+		// M5：读失败（权限/IO）不是解析失败——文案分开，不再把 nil err 误报成解析错
+		problems = append(problems, fmt.Sprintf("hooks.json 读取失败: %v", err))
 	} else {
-		rawData, err := os.ReadFile(hooksPath)
 		var root map[string]any
-		if err != nil || json.Unmarshal(rawData, &root) != nil {
-			detail := err
-			if rawData != nil {
-				if uerr := json.Unmarshal(rawData, &root); uerr != nil {
-					detail = uerr
-				}
-			}
-			problems = append(problems, fmt.Sprintf("hooks.json 解析失败: %v", detail))
+		if err := json.Unmarshal(rawData, &root); err != nil { // M5：单次 unmarshal
+			problems = append(problems, fmt.Sprintf("hooks.json 解析失败: %v", err))
 		} else {
 			hooks, _ := root["hooks"].(map[string]any)
-			var missing []string
-			for _, evt := range FerryEvents {
-				if !eventHasFerryman(hooks, evt) {
-					missing = append(missing, evt)
+			var others []string
+			others, gateMissing = splitGateMissing(hooks)
+			if len(others) > 0 {
+				// 文案逐字（缺位列全量——含闸门；闸门缺位只在"仅缺闸门"时放行）
+				missing := append([]string{}, others...)
+				if gateMissing {
+					missing = append(missing, GateEvent)
 				}
-			}
-			if len(missing) > 0 {
 				problems = append(problems, fmt.Sprintf("hooks.json 缺: %s（跑 install-codex）",
 					strings.Join(missing, ", ")))
 			}
@@ -233,7 +254,28 @@ func CheckCodex(hooksPath, configPath string) Check {
 	if len(problems) > 0 {
 		return Check{false, strings.Join(problems, "；")}
 	}
+	if gateMissing {
+		// C12 用户策略：闸门钩子按用户指令未安装——提示不失败
+		return Check{true, "Codex 钩子+旗标在位（缺闸门 UserPromptSubmit——" +
+			"闸门钩子按用户指令未安装，提示不判失败）"}
+	}
 	return Check{true, "Codex 钩子+旗标在位"}
+}
+
+// splitGateMissing FerryEvents 缺位清单分两桶（票22 骑手 M2 共享件）：others =
+// 硬性事件缺位（闸门除外）；gate = 闸门 UserPromptSubmit 缺位（C12 豁免）。
+func splitGateMissing(hooks map[string]any) (others []string, gate bool) {
+	for _, evt := range FerryEvents {
+		if eventHasFerryman(hooks, evt) {
+			continue
+		}
+		if evt == GateEvent {
+			gate = true
+		} else {
+			others = append(others, evt)
+		}
+	}
+	return
 }
 
 // CheckDaemon probe() 返回 /stats dict（活）或 nil（死）（doctor.py check_daemon 逐字）。
@@ -272,7 +314,7 @@ func CheckFerryProvider(name string, providers map[string]ferry.Provider) Check 
 }
 
 // CheckLauncher 点火脚本在位且其 exe 路径有效（钩子自举的地基；doctor.py
-// check_launcher 的 Go 新形态：脚本内 start 行的 exe 路径存在）。
+// check_launcher 的 Go 新形态：脚本内启动行的 exe 路径存在）。
 func CheckLauncher(path string) Check {
 	if _, err := os.Stat(path); err != nil {
 		return Check{false, fmt.Sprintf("%s 不存在（重跑 install-cc 生成点火脚本）", path)}

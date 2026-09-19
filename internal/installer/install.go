@@ -10,8 +10,10 @@
 // 幂等：先移除 command 含 "ferryman" 的旧条目再追加。
 //
 // Go 新形态（spec 决策 C9/C12 + 评审附录#1/#14）：
-//   - EnsureLauncher 产出 `start "" /min "<exe>" serve` 点火脚本——不再指向
-//     venv python；窗口隐藏归启动方（console 子系统 exe + start /min）；
+//   - EnsureLauncher 产出裸形态 `"<exe>" serve >> … 2>> …` 点火脚本——不再指向
+//     venv python；重定向绑定守护进程本身（start "" /min 会把重定向留在瞬时
+//     cmd 上，exe 输出丢失）；窗口隐藏归启动方（console 子系统 exe +
+//     ferryman-ensure.ps1 的 Start-Process -WindowStyle Hidden，生产已验证）；
 //   - 事件子集安装：CC 与 Codex 两侧一致（events 空 = 全集）；切换日装
 //     SessionStart+SubagentStart+SubagentStop 三类——UserPromptSubmit 闸门
 //     按用户指令暂不装（防子代理久跑场景主会话输入被吞），doctor 对闸门
@@ -87,24 +89,30 @@ func homeDir() string {
 }
 
 // EnsureLauncher 生成守护进程点火脚本 <dataDir>/start-daemon.cmd（钩子自举用，
-// DESIGN §3）。Go 新形态：start "" /min "<exe>" serve——不做开机自启，任意
-// agent 的钩子 POST 前探测 :7311，不在则经本脚本隐藏/最小化窗口拉起 exe；
-// 输出重定向到 serve.{out,err}.log（进程独立于钩子存活的关键）。
-func EnsureLauncher(dataDir, exePath string) string {
-	_ = os.MkdirAll(dataDir, 0o755) // mkdir(parents=True, exist_ok=True)
-	// CRLF 行尾（Python win 分支逐字）；cmd 内容三行：@echo off + rem 注释 + start 行
+// DESIGN §3）。裸形态（票22 骑手1，回归 Python win 分支形态）：
+// `"<exe>" serve >> serve.out.log 2>> serve.err.log`——重定向绑定守护进程本身，
+// 日志真落盘（此前的 start "" /min 形态把重定向留在 start 的瞬时 cmd 上，
+// exe 的 stdout/stderr 根本到不了日志）；窗口隐藏归启动方——ferryman-ensure.ps1
+// 的 Start-Process -WindowStyle Hidden（生产已验证机制）。CRLF 行尾 + rem 注释
+// 保留（票22 骑手6：测试断言随裸形态）。写盘失败响亮返回 error（票22 骑手
+// M3——绝不报"就绪"）。
+func EnsureLauncher(dataDir, exePath string) (string, error) {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil { // mkdir(parents=True, exist_ok=True)
+		return "", err
+	}
+	// CRLF 行尾（Python win 分支逐字）；cmd 内容三行：@echo off + rem 注释 + 启动行
 	body := "@echo off\r\n" +
 		"rem Ferryman 守护进程点火脚本（install-cc 自动生成，勿手改）\r\n" +
-		fmt.Sprintf("start \"\" /min \"%s\" serve >> \"%s\" 2>> \"%s\"\r\n",
+		fmt.Sprintf("\"%s\" serve >> \"%s\" 2>> \"%s\"\r\n",
 			exePath,
 			filepath.Join(dataDir, "serve.out.log"),
 			filepath.Join(dataDir, "serve.err.log"))
 	launcher := filepath.Join(dataDir, LauncherName)
 	if err := os.WriteFile(launcher, []byte(body), 0o644); err != nil {
-		fmt.Println(err)
+		return "", err
 	}
 	fmt.Printf("[ensure] 点火脚本就绪: %s（钩子自举 = agent 启动会话即拉起 daemon）\n", launcher)
-	return launcher
+	return launcher, nil
 }
 
 // hookSpec 单事件条目形（script/timeout 逐字；matcher 仅 SessionStart 带）。
@@ -127,9 +135,11 @@ var ccSpecs = map[string]hookSpec{
 
 // codexSpecs Codex 侧四段钩子（install.py install_codex 逐字；超时 10s 含
 // daemon 自举等待预算同 CC restore；子代理钩子 session_id = 父会话 id → 纯计数）。
+// 票22 骑手 M1：Python 的 Codex 侧 SessionStart **无 matcher 键**（matcher 是
+// CC 侧 SessionStart 专属——resume/compact 过滤），此前多写已删（测试有断言）。
 var codexSpecs = map[string]hookSpec{
 	"UserPromptSubmit": {script: "ferryman-gate-codex.ps1", timeout: 3},
-	"SessionStart":     {script: "ferryman-restore-codex.ps1", timeout: 10, matcher: "clear|startup"},
+	"SessionStart":     {script: "ferryman-restore-codex.ps1", timeout: 10},
 	"SubagentStart":    {script: "ferryman-subagent-codex.ps1", timeout: 3},
 	"SubagentStop":     {script: "ferryman-subagent-codex.ps1", timeout: 3},
 }
@@ -279,7 +289,14 @@ func InstallCC(settingsPath, dbPath, dataDir, repo string, events []string) int 
 	if repo == "" {
 		repo = repoRoot()
 	}
-	EnsureLauncher(dataDir, exePath()) // 钩子自举点火脚本（唯一化前提）
+	launcher, err := EnsureLauncher(dataDir, exePath()) // 钩子自举点火脚本（唯一化前提）
+	if err != nil {
+		// 票22 骑手 M3：点火脚本写不出 = 钩子自举地基缺失，响亮失败（退出 1），
+		// 绝不继续装钩子装出"就绪"假象。
+		fmt.Println(err)
+		return 1
+	}
+	_ = launcher
 	if _, err := os.Stat(settingsPath); errors.Is(err, os.ErrNotExist) {
 		_ = os.WriteFile(settingsPath, []byte("{}"), 0o644)
 	}
@@ -321,7 +338,9 @@ func InstallCC(settingsPath, dbPath, dataDir, repo string, events []string) int 
 	fmt.Println()
 
 	// CC Switch 地雷（DESIGN §3）：检测到 → 钩子注进全部 claude 供应商快照
-	n := InjectCCSwitch(dbPath, events)
+	// （repo 透传——票22 骑手 M4：与 settings.json 侧同一 repo 根，消除
+	// repoRoot() 二次求值的分叉面）
+	n := InjectCCSwitch(dbPath, repo, events)
 	if n == 0 {
 		fmt.Println("[!] CC Switch 地雷（DESIGN §3）：切换供应商会全量覆盖 settings.json。")
 		fmt.Println("   未检测到 cc-switch.db——若日后安装 CC Switch，重跑本命令或 install-ccswitch。")

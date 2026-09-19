@@ -44,6 +44,7 @@ import (
 	"testing"
 	"time"
 
+	"ferryman/internal/config"
 	"ferryman/internal/store"
 )
 
@@ -373,8 +374,9 @@ func TestT32SubagentHookEnvDisableShortCircuits(t *testing.T) {
 // ---- T23 Codex 钩子（准备阶段：脚本契约真跑验证） ----
 
 func TestT23CodexGateHookBlocksIdle(t *testing.T) {
-	h := newIntegHarness(t, succFerry)
-	h.cfg.GateCodex = "enforce"
+	// 票21 Minor1（票22 落地）：GateCodex 不再装配后活写（守护 goroutine 并发
+	// 读 cfg，活写是数据竞争）——经构造前配置钩子注入
+	h := newIntegHarness(t, succFerry, func(c *config.Config) { c.GateCodex = "enforce" })
 	proj := filepath.Join(h.tmp, "proj")
 	f := writeHookRollout(t, filepath.Join(h.tmp, "no-codex"), "codexgat01", proj)
 	// 防御式字段：rollout_path / transcript_path 二选一（真实 schema 晨间信任后校准）

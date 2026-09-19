@@ -288,16 +288,20 @@ func TestLauncher(t *testing.T) {
 	}
 	dataDir := filepath.Join(tmp, "data")
 	read := captureStdout(t)
-	EnsureLauncher(dataDir, exe)
+	if _, err := EnsureLauncher(dataDir, exe); err != nil {
+		t.Fatal(err)
+	}
 	read()
 	c = CheckLauncher(filepath.Join(dataDir, LauncherName))
 	if !c.OK {
 		t.Fatalf("应通过: %s", c.Msg)
 	}
-	// Go 新形态：start 行 exe 路径不存在 → 失败（票15 覆盖：exe 存在性检查）
+	// Go 新形态：启动行 exe 路径不存在 → 失败（票15 覆盖：exe 存在性检查）
 	missingData := filepath.Join(tmp, "data2")
 	read = captureStdout(t)
-	EnsureLauncher(missingData, filepath.Join(tmp, "gone.exe"))
+	if _, err := EnsureLauncher(missingData, filepath.Join(tmp, "gone.exe")); err != nil {
+		t.Fatal(err)
+	}
 	read()
 	c = CheckLauncher(filepath.Join(missingData, LauncherName))
 	if c.OK {
@@ -318,10 +322,115 @@ func TestHttpBeatNoticeContent(t *testing.T) {
 	}
 }
 
+// ---- 票22 骑手 M2：CheckCCSwitch / CheckCodex 闸门事件豁免 ----
+
+// subsetSnapshot 只带三硬性事件的供应商快照（C12 切换日安装面）。
+func subsetSnapshot(t *testing.T) string {
+	t.Helper()
+	return mustJSON(t, map[string]any{"hooks": map[string]any{
+		"SessionStart":  []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+		"SubagentStart": []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+		"SubagentStop":  []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+	}})
+}
+
+func TestCCSwitchGateMissingHintNotFail(t *testing.T) {
+	tmp := t.TempDir()
+	db := filepath.Join(tmp, "cc-switch.db")
+	makeDB(t, db, [][3]string{
+		{"claude", "子集快照", subsetSnapshot(t)},
+		{"claude", "全集快照", mustJSON(t, map[string]any{"hooks": map[string]any{
+			"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+			"SessionStart":     []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+			"SubagentStart":    []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+			"SubagentStop":     []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+		}})},
+	})
+	c := CheckCCSwitch(db)
+	if !c.OK {
+		t.Fatalf("仅缺闸门应提示不失败（C12）: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "UserPromptSubmit") || !strings.Contains(c.Msg, "未安装") {
+		t.Fatalf("提示应注明闸门钩子按用户指令未安装: %s", c.Msg)
+	}
+	// 硬性事件缺失照旧失败（闸门豁免不覆盖三硬性事件）
+	db2 := filepath.Join(tmp, "cc2.db")
+	makeDB(t, db2, [][3]string{{"claude", "缺硬事件", mustJSON(t, map[string]any{"hooks": map[string]any{
+		"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+	}})}})
+	c = CheckCCSwitch(db2)
+	if c.OK || !strings.Contains(c.Msg, "缺硬事件") {
+		t.Fatalf("缺硬性事件应失败并点名: %s", c.Msg)
+	}
+}
+
+func TestCodexGateMissingHintNotFail(t *testing.T) {
+	tmp := t.TempDir()
+	hooks := filepath.Join(tmp, "hooks.json")
+	writeJSONFile(t, hooks, map[string]any{"hooks": map[string]any{
+		"SessionStart":  []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+		"SubagentStart": []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+		"SubagentStop":  []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+	}})
+	cfg := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(cfg, []byte("[features]\nhooks = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := CheckCodex(hooks, cfg)
+	if !c.OK {
+		t.Fatalf("仅缺闸门应提示不失败（C12）: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "UserPromptSubmit") || !strings.Contains(c.Msg, "未安装") {
+		t.Fatalf("提示应注明闸门钩子按用户指令未安装: %s", c.Msg)
+	}
+	// 硬性事件缺失照旧失败
+	writeJSONFile(t, hooks, map[string]any{"hooks": map[string]any{
+		"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+	}})
+	c = CheckCodex(hooks, cfg)
+	if c.OK || !strings.Contains(c.Msg, "SessionStart") {
+		t.Fatalf("缺硬性事件应失败并点名: %s", c.Msg)
+	}
+}
+
+// ---- 票22 骑手 M5：CheckCodex 读失败与解析失败分开 ----
+
+func TestCodexReadFailureSeparatedFromParse(t *testing.T) {
+	tmp := t.TempDir()
+	hooks := filepath.Join(tmp, "hooks.json")
+	if err := os.WriteFile(hooks, []byte("not json {"), 0o644); err != nil { // 坏 JSON
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(cfg, []byte("[features]\nhooks = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := CheckCodex(hooks, cfg)
+	if c.OK || !strings.Contains(c.Msg, "hooks.json 解析失败") {
+		t.Fatalf("坏 JSON 应报解析失败: %s", c.Msg)
+	}
+	if strings.Contains(c.Msg, "读取失败") {
+		t.Fatalf("解析失败不得混报读取失败: %s", c.Msg)
+	}
+	// 读失败分支：路径在（目录）但读不出（Windows 拒读目录）——独立于解析失败
+	asDir := filepath.Join(tmp, "hooks-as-dir")
+	if err := os.MkdirAll(asDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c = CheckCodex(asDir, cfg)
+	if c.OK {
+		t.Fatalf("读失败应失败: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "读取失败") || strings.Contains(c.Msg, "解析失败") {
+		t.Fatalf("读失败应独立成支: %s", c.Msg)
+	}
+}
+
 // ---- runDoctor 聚合：闸门缺位提示不失败 + 声明行 + 退出码 ----
 
 // greenDoctorDeps 全绿环境（闸门缺位除外）：临时 HOME/仓库/codex 文件，
-// 配置与探针注入。
+// 配置与探针注入。票22 骑手 M2：CC/Codex 两侧 + CC Switch 快照全部按 C12
+// 子集安装——doctor 必须全绿（提示不判失败）。
 func greenDoctorDeps(t *testing.T, probe func() map[string]any) (doctorDeps, string) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -335,19 +444,22 @@ func greenDoctorDeps(t *testing.T, probe func() map[string]any) (doctorDeps, str
 		t.Fatal(err)
 	}
 	dataDir := filepath.Join(home, "ferryman")
+	subset := []string{"SessionStart", "SubagentStart", "SubagentStop"}
 	read := captureStdout(t)
 	InstallCC(filepath.Join(home, ".claude", "settings.json"),
-		filepath.Join(tmp, "no.db"), dataDir, repo,
-		[]string{"SessionStart", "SubagentStart", "SubagentStop"})
-	// Codex 全集（CheckCodex 四事件照旧）
-	InstallCodex(CodexHooksPath(home), CodexConfigPath(home), repo, nil)
+		filepath.Join(tmp, "no.db"), dataDir, repo, subset)
+	// Codex 同款子集（骑手 M2：CheckCodex 闸门豁免）
+	InstallCodex(CodexHooksPath(home), CodexConfigPath(home), repo, subset)
+	// CC Switch 库在位且快照为子集（骑手 M2：CheckCCSwitch 闸门豁免）
+	db := filepath.Join(tmp, "cc-switch.db")
+	makeDB(t, db, [][3]string{{"claude", "P1", subsetSnapshot(t)}})
 	read()
 	cfg := config.Default()
 	cfg.FerryProvider = "glm"
 	return doctorDeps{
 		Home:        home,
 		Repo:        repo,
-		CCSwitchDB:  filepath.Join(tmp, "no-ccswitch.db"),
+		CCSwitchDB:  db,
 		CodexHooks:  CodexHooksPath(home),
 		CodexConfig: CodexConfigPath(home),
 		LoadCfg:     func() (*config.Config, error) { return cfg, nil },

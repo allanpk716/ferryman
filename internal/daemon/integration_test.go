@@ -93,7 +93,11 @@ type integHarness struct {
 	enqueuedOK []string
 }
 
-func newIntegHarness(t *testing.T, ferryFn FerryFunc) *integHarness {
+// newIntegHarness tests/helpers.py::Harness 的 Go 形：最小 daemon（守望+工人
+// +HTTP）；摆渡模型由注入替身替代（离线）。opts 在装配（NewDaemon/Watcher/
+// Worker 起 goroutine）**之前**对 cfg 收口——票21 Minor1：装配后活写 cfg 与
+// 守护 goroutine 的并发读构成数据竞争，一律走本缝（见 test_hooks_test.go）。
+func newIntegHarness(t *testing.T, ferryFn FerryFunc, opts ...func(*config.Config)) *integHarness {
 	t.Helper()
 	tmp := t.TempDir()
 	projects := filepath.Join(tmp, "projects")
@@ -108,6 +112,9 @@ func newIntegHarness(t *testing.T, ferryFn FerryFunc) *integHarness {
 		CodexExtraDirs:   []string{}, HarvestUsage: true}
 	cfg.Server = config.ServerCfg{Port: port, DataDir: dataDir}
 	cfg.FerryProvider = "fake" // T39 去内置默认后，测试密闭：注入假 provider
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	token, err := EnsureToken(dataDir)
 	if err != nil {
 		t.Fatal(err)

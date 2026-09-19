@@ -33,16 +33,21 @@ type providerRow struct {
 }
 
 // InjectCCSwitch 把 ferryman 钩子注进 cc-switch.db 全部 claude 供应商快照。
+// repo = 钩子脚本仓库根（嵌入条目路径；空 = exe 所在目录——票22 骑手 M4：
+// 接参消除 InstallCC 与本函数各自求值 repoRoot() 的分叉）。
 // 返回注入的供应商数；无 DB / 任何 sqlite 故障 → 0（绝不影响 settings.json 安装）。
-func InjectCCSwitch(dbPath string, events []string) int {
+func InjectCCSwitch(dbPath, repo string, events []string) int {
 	if dbPath == "" {
 		dbPath = CCSwitchDBPath(homeDir())
+	}
+	if repo == "" {
+		repo = repoRoot()
 	}
 	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
 		fmt.Printf("未检测到 CC Switch（%s 不存在），跳过供应商快照注入。\n", dbPath)
 		return 0
 	}
-	entries := FerryHookEntries(repoRoot(), events)
+	entries := FerryHookEntries(repo, events)
 	bak := filepath.Join(filepath.Dir(dbPath),
 		filepath.Base(dbPath)+".bak-ferryman-"+stamp())
 	if err := backupFile(dbPath, bak); err != nil {

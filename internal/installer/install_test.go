@@ -252,6 +252,11 @@ func TestInstallCodexMergesAndEnablesFeature(t *testing.T) {
 	if tv, _ := firstMap(t, asList(ss["hooks"]), "")["timeout"].(float64); tv != 10 { // 自举等待预算
 		t.Fatalf("SessionStart timeout = %v, want 10", tv)
 	}
+	// 票22 骑手 M1：Python install.py 的 Codex 侧 SessionStart 无 matcher 键
+	//（matcher 是 CC 侧 resume/compact 过滤专属），多写已删——断言防复发
+	if _, has := ss["matcher"]; has {
+		t.Fatalf("Codex SessionStart 不应带 matcher（Python 无此键）: %s", compactOf(t, ss))
+	}
 	// 子代理生命周期（subagent 钩子 session_id = 父会话 id，官方文档）
 	for _, evt := range []string{"SubagentStart", "SubagentStop"} {
 		sub := firstMap(t, asList(dHooks[evt]), "ferryman")
@@ -391,7 +396,10 @@ func TestEnsureLauncherContent(t *testing.T) {
 	}
 
 	read := captureStdout(t)
-	got := EnsureLauncher(dataDir, exe)
+	got, err := EnsureLauncher(dataDir, exe)
+	if err != nil {
+		t.Fatalf("EnsureLauncher 不应失败: %v", err)
+	}
 	read()
 
 	if want := filepath.Join(dataDir, LauncherName); got != want {
@@ -402,10 +410,16 @@ func TestEnsureLauncherContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(raw)
-	// start/min/exe/日志重定向（票15 覆盖面：脚本内容四要素）
-	wantStart := fmt.Sprintf("start \"\" /min \"%s\" serve", exe)
+	// 裸形态启动行（票22 骑手1/M6）：`"<exe>" serve >> out 2>> err`——
+	// 无 start/min；重定向绑定守护进程，日志真落盘
+	if strings.Contains(body, "start ") {
+		t.Fatalf("点火脚本不应再有 start /min（裸形态）: %s", body)
+	}
+	wantStart := fmt.Sprintf(`"%s" serve >> "%s" 2>> "%s"`, exe,
+		filepath.Join(dataDir, "serve.out.log"),
+		filepath.Join(dataDir, "serve.err.log"))
 	if !strings.Contains(body, wantStart) {
-		t.Fatalf("start 行缺失:\nwant: %s\ngot:  %s", wantStart, body)
+		t.Fatalf("裸形态启动行缺失:\nwant: %s\ngot:  %s", wantStart, body)
 	}
 	for _, logName := range []string{"serve.out.log", "serve.err.log"} {
 		if !strings.Contains(body, filepath.Join(dataDir, logName)) {
@@ -427,6 +441,48 @@ func TestEnsureLauncherContent(t *testing.T) {
 	}
 }
 
+// ---- 票22 骑手 M3：写盘失败响亮返回 error，不报"就绪" ----
+
+func TestEnsureLauncherWriteFailureLoud(t *testing.T) {
+	tmp := t.TempDir()
+	// 用文件占住 dataDir 名字 → MkdirAll 必败
+	blocker := filepath.Join(tmp, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := captureStdout(t)
+	got, err := EnsureLauncher(blocker, filepath.Join(tmp, "ferryman.exe"))
+	out := read()
+	if err == nil {
+		t.Fatalf("写盘失败应响亮返回 error, got 路径 %q", got)
+	}
+	if strings.Contains(out, "就绪") {
+		t.Fatalf("失败时不得报『就绪』: %s", out)
+	}
+}
+
+func TestInstallCCLauncherFailureAborts(t *testing.T) {
+	// 点火脚本写不出 → InstallCC 响亮失败（退出 1），不继续装钩子
+	tmp := t.TempDir()
+	blocker := filepath.Join(tmp, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(tmp, "settings.json")
+	if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := captureStdout(t)
+	code := InstallCC(p, filepath.Join(tmp, "no.db"), blocker, tmp, nil)
+	out := read()
+	if code != 1 {
+		t.Fatalf("点火脚本失败应退出 1, got %d", code)
+	}
+	if strings.Contains(out, "已追加") {
+		t.Fatal("点火脚本失败后不应继续装钩子")
+	}
+}
+
 func TestEnsureLauncherIdempotent(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "data")
@@ -435,12 +491,14 @@ func TestEnsureLauncherIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	read := captureStdout(t)
-	EnsureLauncher(dataDir, exe)
+	if _, err := EnsureLauncher(dataDir, exe); err != nil {
+		t.Fatal(err)
+	}
 	first, err := os.ReadFile(filepath.Join(dataDir, LauncherName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	EnsureLauncher(dataDir, exe) // 重跑：内容不变（幂等）
+	_, _ = EnsureLauncher(dataDir, exe) // 重跑：内容不变（幂等）
 	read()
 	second, err := os.ReadFile(filepath.Join(dataDir, LauncherName))
 	if err != nil {

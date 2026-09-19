@@ -125,7 +125,7 @@ func TestInjectAllClaudeProvidersPreservesExisting(t *testing.T) {
 	})
 
 	read := captureStdout(t)
-	n := InjectCCSwitch(db, nil)
+	n := InjectCCSwitch(db, tmp, nil)
 	read()
 	if n != 2 { // 只动 claude
 		t.Fatalf("注入数 = %d, want 2", n)
@@ -191,8 +191,8 @@ func TestInjectIdempotent(t *testing.T) {
 	db := filepath.Join(tmp, "cc-switch.db")
 	makeDB(t, db, [][3]string{{"claude", "P1", mustJSON(t, map[string]any{"env": map[string]any{}})}})
 	read := captureStdout(t)
-	InjectCCSwitch(db, nil)
-	InjectCCSwitch(db, nil) // 第二次不重复
+	InjectCCSwitch(db, tmp, nil)
+	InjectCCSwitch(db, tmp, nil) // 第二次不重复
 	read()
 	raw := queryScalar(t, db, "SELECT settings_config FROM providers")
 	hooks := cfgHooks(t, parseCfg(t, raw))
@@ -217,7 +217,7 @@ func TestInjectReplacesStaleFerrymanEntries(t *testing.T) {
 	}})
 	makeDB(t, db, [][3]string{{"claude", "P1", stale}})
 	read := captureStdout(t)
-	InjectCCSwitch(db, nil)
+	InjectCCSwitch(db, tmp, nil)
 	read()
 	raw := queryScalar(t, db, "SELECT settings_config FROM providers")
 	subs := asList(cfgHooks(t, parseCfg(t, raw))["SubagentStart"])
@@ -229,7 +229,7 @@ func TestInjectReplacesStaleFerrymanEntries(t *testing.T) {
 func TestNoDBIsSilentNoop(t *testing.T) {
 	tmp := t.TempDir()
 	read := captureStdout(t)
-	n := InjectCCSwitch(filepath.Join(tmp, "nope.db"), nil)
+	n := InjectCCSwitch(filepath.Join(tmp, "nope.db"), tmp, nil)
 	out := read()
 	if n != 0 {
 		t.Fatalf("无库应返回 0, got %d", n)
@@ -244,7 +244,7 @@ func TestBackupCreatedBeforeModifying(t *testing.T) {
 	db := filepath.Join(tmp, "cc-switch.db")
 	makeDB(t, db, [][3]string{{"claude", "P1", mustJSON(t, map[string]any{"env": map[string]any{}})}})
 	read := captureStdout(t)
-	InjectCCSwitch(db, nil)
+	InjectCCSwitch(db, tmp, nil)
 	read()
 	baks, err := filepath.Glob(filepath.Join(tmp, "cc-switch.db.bak-ferryman-*"))
 	if err != nil {
