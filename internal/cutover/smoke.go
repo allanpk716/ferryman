@@ -310,7 +310,7 @@ func newSandbox(tmp, mode string, base *config.Config, fakeBaseURL string) (*san
 			"agent": s.Agent, "session_id": s.SessionID, "cwd": cwd})
 	}
 	d := daemon.NewDaemon(&cfg, led, st, enqueue, acc, clock.Now(), beat.NewQWatchStats())
-	d.NotifyBlock = func(string, string, string, *config.Config) {} // 沙箱铁律：通知空操作
+	d.NotifyBlock = func(string, string, string, string, string, *config.Config) {} // 沙箱铁律：通知空操作（票08 seam 加宽）
 	ln, srv, err := daemon.ListenAndServe(d, port, token)
 	if err != nil {
 		return nil, fmt.Errorf("沙箱端口 %d 绑定失败: %w", port, err)

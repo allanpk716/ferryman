@@ -282,6 +282,7 @@ func (d *Daemon) cacheInfoCtx(idle float64, th config.ThresholdCfg) string {
 // monkeypatch notify_mod.notify_block 同位；nil 回落真通道）。
 func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float64) {
 	agent, sid := st.Agent, st.SessionID // goroutine 只碰本地副本（共享引用纪律）
+	cwd, title := st.Cwd, st.Title       // 票08：标题降级链入参同款本地副本
 	fmt.Printf("[gate] BLOCK %s/%s idle=%.0fm handoff=%s\n",
 		agent, runeCap8(sid), idle/60, h.HandoffID)
 	fn := d.NotifyBlock
@@ -289,7 +290,7 @@ func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float
 		fn = notify.NotifyBlock
 	}
 	path, cfg := h.Path, d.Cfg
-	go fn(path, agent, sid, cfg)
+	go fn(path, agent, sid, cwd, title, cfg)
 }
 
 // runeCap8 Python s[:8]：按码点截断。

@@ -745,14 +745,14 @@ func (w *Watcher) settleBeat(st *ledger.SessionState, result beat.BeatResult) {
 	action := w.breaker.Record(outcome)
 	if action == "demote" && w.qwatchMode() == "enforce" {
 		w.setQWatchMode("observe") // 安全降级；人工复核后拨回（护栏方法，config 写点收敛）
-		w.qwatchAlert("问询守望熔断降级",
+		w.qwatchAlert(st, "问询守望熔断降级",
 			fmt.Sprintf("连续 %d 跳 MISS，mode 已自动 enforce→observe（人工复核 observe 数据后拨回）",
 				beat.MissLimit))
 	} else if action == "pause" {
 		w.Ledger.Mu().Lock()
 		st.QWatchPlan = nil // 暂停当前窗口剩余跳（窗口本身不关）
 		w.Ledger.Mu().Unlock()
-		w.qwatchAlert("问询守望错误熔断",
+		w.qwatchAlert(st, "问询守望错误熔断",
 			fmt.Sprintf("连续 %d 跳 ERROR，已暂停当前窗口剩余心跳", beat.ErrorLimit))
 	}
 }
@@ -778,12 +778,27 @@ func (w *Watcher) bookBeat(st *ledger.SessionState, outcome string, result beat.
 
 // qwatchAlert 告警（仓库既有惯例）：控制台 + 双通道通知异步线程（notify_alert，
 // enabled=False 时静默）。任何故障只吞——通知是尽力而为的旁路。
-func (w *Watcher) qwatchAlert(title, msg string) {
-	fmt.Printf("[qwatch] ⚠ %s: %s\n", title, msg)
+// 票08：推送标题走 BuildTitle 降级链（项目名＋台账会话标题，不再含裸
+// session id）；事件名移正文开头，sid 移正文尾部小字（notify.AlertCopy 单源）。
+func (w *Watcher) qwatchAlert(st *ledger.SessionState, evTitle, msg string) {
+	fmt.Printf("[qwatch] ⚠ %s: %s\n", evTitle, msg)
+	title, body := w.alertCopy(st, evTitle, msg)
 	go func() {
 		defer func() { _ = recover() }() // 旁路故障绝不影响调度
-		notify.NotifyAlert(title, msg, w.Cfg)
+		notify.NotifyAlert(title, body, w.Cfg)
 	}()
+}
+
+// alertCopy 台账快照 → notify.AlertCopy（票08 接线）。Title/Cwd 是可变字段：
+// ledgerMu 下快照（共享引用纪律）。st 为 nil 防御退裸标题（无 sid 小字）。
+func (w *Watcher) alertCopy(st *ledger.SessionState, evTitle, msg string) (string, string) {
+	if st == nil {
+		return "Ferryman", evTitle + "：" + msg
+	}
+	w.Ledger.Mu().Lock()
+	cwd, stTitle := st.Cwd, st.Title
+	w.Ledger.Mu().Unlock()
+	return notify.AlertCopy(cwd, stTitle, evTitle, msg, st.SessionID)
 }
 
 // ---- 票04：等待窗泳道（双泳道第二道；风格对齐 maybeFireBeats/fireOneBeat） ----
@@ -870,7 +885,7 @@ func (w *Watcher) maybeWaitBeats(st *ledger.SessionState) {
 		// 无策略（TTL 未实测/无 p_cache，Q16 宁可不跳不造数）：告警一次，
 		// 本进程内等待窗泳道零排跳（窗口/Pin 照常——只缺节律）。
 		if w.waitPolicyWarned.CompareAndSwap(false, true) {
-			w.qwatchAlert("等待窗心跳无策略",
+			w.qwatchAlert(st, "等待窗心跳无策略",
 				fmt.Sprintf("策略计算器不可用（%v）——等待窗泳道本进程内不排跳；配置 [heartbeat] ttl_s 与 [prices.*] 后重启生效", perr))
 		}
 		return
@@ -977,22 +992,23 @@ func (w *Watcher) settleWaitBeat(st *ledger.SessionState,
 	case beat.OutMiss:
 		rec.stopped = true // F9：1 MISS 即停本窗剩余跳
 		alertTitle = "等待窗心跳熔断"
-		alertMsg = fmt.Sprintf("%s 1 跳 MISS：停本窗剩余跳——建议复测 TTL"+
-			"（experiments/cache-ttl 套件），配置不自改", runeCap8(st.SessionID))
+		// 票08：裸 sid 移正文尾部小字（qwatchAlert→AlertCopy 统一追加）。
+		alertMsg = "1 跳 MISS：停本窗剩余跳——建议复测 TTL" +
+			"（experiments/cache-ttl 套件），配置不自改"
 	case beat.OutError:
 		rec.errStreak++
 		if rec.errStreak >= beat.ErrorLimit {
 			rec.stopped = true
 			alertTitle = "等待窗心跳错误熔断"
-			alertMsg = fmt.Sprintf("%s 连续 %d 跳 transport-ERROR：停本窗剩余跳",
-				runeCap8(st.SessionID), beat.ErrorLimit)
+			alertMsg = fmt.Sprintf("连续 %d 跳 transport-ERROR：停本窗剩余跳",
+				beat.ErrorLimit)
 		}
 	default:
 		rec.errStreak = 0 // hit/observe：能拿到结论即清 ERROR 连击（Breaker 同语义）
 	}
 	w.Daemon.windowsMu.Unlock()
 	if alertTitle != "" {
-		w.qwatchAlert(alertTitle, alertMsg)
+		w.qwatchAlert(st, alertTitle, alertMsg)
 	}
 }
 

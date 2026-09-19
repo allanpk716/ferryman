@@ -44,10 +44,10 @@ func TestGateBlockFiresNotificationAsync(t *testing.T) {
 	d := daemon.NewDaemon(cfg, led, st,
 		func(*ledger.SessionState) bool { return true }, acc, 0, nil)
 
-	fired := make(chan [3]string, 4)
-	d.NotifyBlock = func(handoffPath, agent, sessionID string, _ *config.Config) {
-		fired <- [3]string{handoffPath, agent, sessionID}
-	} // monkeypatch notify_block 同位
+	fired := make(chan [5]string, 4)
+	d.NotifyBlock = func(handoffPath, agent, sessionID, project, sessionTitle string, _ *config.Config) {
+		fired <- [5]string{handoffPath, agent, sessionID, project, sessionTitle}
+	} // monkeypatch notify_block 同位（票08 加宽：project/sessionTitle）
 
 	// 造一个已达拦截阈值、有有效交接的会话（enforce 下必被拦）。
 	sid := "notify-0001"
@@ -75,6 +75,9 @@ func TestGateBlockFiresNotificationAsync(t *testing.T) {
 		}
 		if agent != "cc" || sess != sid {
 			t.Fatalf("agent/session_id = %s/%s, want cc/%s", agent, sess, sid)
+		}
+		if projGot := call[3]; projGot != proj { // 票08：项目名随 seam 传到（标题降级链入参）
+			t.Fatalf("project = %q, want %q", projGot, proj)
 		}
 		if !strings.HasPrefix(handoffPath, filepath.Join(tmp, "data", "handoffs")) {
 			t.Fatalf("handoff_path 应指向 handoffs 目录: %s", handoffPath)

@@ -151,13 +151,23 @@ func NotifyAlert(title, message string, cfg *config.Config) {
 
 // NotifyBlock 拦截发生：双通道通知（文案带交接路径）。绝不抛出。
 // agent 形参保留（Python 签名对齐，文案不带 agent）。
-func NotifyBlock(handoffPath, agent, sessionID string, cfg *config.Config) {
+// 票08：标题走 BuildTitle 降级链（项目名＋会话标题——用户痛点：旧文案只有
+// 裸数字 sid 无法分辨哪个项目哪个会话）；project/sessionTitle 皆空时回落
+// 旧标题（直调/旧测试兼容）。session id 移正文尾部小字。
+func NotifyBlock(handoffPath, agent, sessionID, project, sessionTitle string, cfg *config.Config) {
 	_ = agent
 	sid := sessionID
 	if rs := []rune(sid); len(rs) > 8 { // Python session_id[:8] 按码点切
 		sid = string(rs[:8])
 	}
-	message := "会话 " + sid + " 闲置被拦，交接已生成：\n" + handoffPath + "\n" +
+	message := "会话闲置被拦，交接已生成：\n" + handoffPath + "\n" +
 		"新会话发任意字即可取回上下文。"
-	NotifyAlert("Ferryman 拦截", message, cfg)
+	if sid != "" {
+		message += "\n(sid=" + sid + ")"
+	}
+	title := "Ferryman 拦截"
+	if project != "" || sessionTitle != "" {
+		title = BuildTitle(project, sessionTitle, "")
+	}
+	NotifyAlert(title, message, cfg)
 }
