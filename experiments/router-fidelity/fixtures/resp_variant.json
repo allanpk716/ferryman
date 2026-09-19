@@ -1,0 +1,14 @@
+{
+  "seq": 2,
+  "ts": "2026-09-19T20:05:01.500000000+08:00",
+  "status": 200,
+  "content_type": "text/event-stream",
+  "content_encoding": "",
+  "usage_source": "message_delta",
+  "usage": {
+    "input_tokens": 4,
+    "cache_read_input_tokens": 41000,
+    "cache_creation_input_tokens": 1234,
+    "output_tokens": 90
+  }
+}
