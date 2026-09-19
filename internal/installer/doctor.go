@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"ferryman/internal/config"
+	"ferryman/internal/dock"
 	"ferryman/internal/ferry"
 )
 
@@ -313,6 +314,24 @@ func CheckFerryProvider(name string, providers map[string]ferry.Provider) Check 
 	return Check{true, fmt.Sprintf("摆渡 provider '%s' 在位", name)}
 }
 
+// CheckDockRewrite 渡口改写守卫体检（票06）：判定单源在 dock.ResolveRewrite
+// ——doctor 与 daemon 构造期读同一函数，绝不出现两套判据。rewrite_enabled
+// =true 却被守卫拒绝＝FAIL：配置说开了、实际在透传，是"静默失效"同类事故
+// （与本文件头两类事故同性质），必须点名修法。
+func CheckDockRewrite(dockCfg *config.DockCfg) Check {
+	if dockCfg == nil {
+		return Check{true, "渡口未配置（[dock] 节缺失，零行为）"}
+	}
+	if !dockCfg.RewriteEnabled {
+		return Check{true, "渡口纯透传（rewrite_enabled=false）"}
+	}
+	_, ok, reason := dock.ResolveRewrite(dockCfg)
+	if !ok {
+		return Check{false, "渡口改写模式未生效: " + reason}
+	}
+	return Check{true, "渡口改写模式在位（default 键在、上游非本地中转）"}
+}
+
 // CheckAutostart Run 键自启三态（票02）：installed=在位；missing/mismatch=
 // 失败并给修法（登录自启是常驻保障第 1 腿，缺位与钩子缺失同级）。
 func CheckAutostart(f func() (autostartStatus, error)) Check {
@@ -422,6 +441,10 @@ func runDoctor(d doctorDeps) int {
 		results = append(results, Check{false, fmt.Sprintf("摆渡配置加载失败: %v", err)})
 	} else {
 		results = append(results, CheckFerryProvider(cfg.FerryProvider, providers))
+		// 票06：渡口配置了才查（无 [dock] 的存量用户零新增检查行）
+		if cfg.Dock != nil {
+			results = append(results, CheckDockRewrite(cfg.Dock))
+		}
 	}
 
 	scripts := []string{}

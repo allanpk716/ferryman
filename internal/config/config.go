@@ -103,6 +103,14 @@ type WaitWindowCfg struct {
 type DockCfg struct {
 	UpstreamBaseURL string // 上游（默认 cc-switch）地址
 	Listen          string // 渡口监听地址（绑本机）
+	// 票06 改写模式（rewrite_enabled=false＝纯透传，以下字段不生效）。
+	// 校验语义：true 但 model_map 缺 default 键/值为空、或上游指回本地中转
+	// 端口 → 守卫拒绝进入改写模式（退回纯透传）＋告警——不硬拒启（渡口挂
+	// ＝CC 直连旧行为，见 dock.ResolveRewrite 单源）。
+	RewriteEnabled bool              // true＝/v1/messages POST 过改写器＋出站头卫生
+	APIKey         string            // 上游真钥：只进出站 Authorization，永不入日志/账本/错误（T39）
+	ModelMap       map[string]string // 别名→GLM 档；含 default 键（改写模式必须非空）
+	TextOnly       []string          // text-only 模型名单（命中则 image 块降级文本占位）
 }
 
 // Config 全量配置（字段=Python dataclass 1:1）。
@@ -364,15 +372,42 @@ func applyTOML(cfg *Config, data map[string]any) error {
 	// [dock]（票01）：节存在才构造（Default() 里 Dock 恒 nil——nil 即 F11 的
 	// "完全不启动"判据，daemon 侧据此不绑端口）；节内缺字段回落默认值
 	// （上游=cc-switch 15721，监听=本机 15722，与透传实验 forwarder.go 一致）。
+	// 票06 补改写四字段（开关默认 false；model_map 含 default 键、text_only
+	// 数组；api_key 真钥只活本机 config.toml 永不入库）。
 	if raw, ok := data["dock"]; ok {
 		dk, err := asTable(raw, "dock")
 		if err != nil {
 			return err
 		}
-		cfg.Dock = &DockCfg{
+		dcfg := &DockCfg{
 			UpstreamBaseURL: pyStr(get(dk, "upstream_base_url", "http://127.0.0.1:15721")),
 			Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
+			RewriteEnabled:  pyBool(get(dk, "rewrite_enabled", false)),
+			APIKey:          pyStr(get(dk, "api_key", "")),
 		}
+		if rawMM, ok := dk["model_map"]; ok {
+			mm, ok := rawMM.(map[string]any)
+			if !ok {
+				return errors.New("config: dock.model_map 不是表")
+			}
+			m := make(map[string]string, len(mm))
+			for k, v := range mm {
+				m[k] = pyStr(v)
+			}
+			dcfg.ModelMap = m
+		}
+		if rawTO, ok := dk["text_only"]; ok {
+			arr, ok := rawTO.([]any)
+			if !ok {
+				return errors.New("config: dock.text_only 不是数组")
+			}
+			to := make([]string, 0, len(arr))
+			for _, v := range arr {
+				to = append(to, pyStr(v))
+			}
+			dcfg.TextOnly = to
+		}
+		cfg.Dock = dcfg
 	}
 	return nil
 }

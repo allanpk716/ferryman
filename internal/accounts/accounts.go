@@ -54,6 +54,13 @@ var kindFields = map[string][]string{
 	// 「无效保温单列入账」）。只记元数据与金额（隐私铁律）。
 	"wait_close": {"lane", "opened_ts", "closed_ts", "dur_s", "beats_fired",
 		"cost_actual", "main_resumed", "useless_warm", "close_reason"},
+	// 渡口流水（票06，spec F13）：透传与改写两种模式都记，每请求一行纯元
+	// 数据——改写前后模型名（透传时同值）、四列 token、延迟、状态码。
+	// 透传模式不解析上游响应（保真优先），token 列尽力而为记 0；改写模式
+	// 解析上游 SSE usage（message_delta 真值，Q14）。消息内容永不入账
+	// （隐私铁律，白名单拒 messages 等内容字段）。
+	"dock": {"mode", "model_in", "model_out", "input_tokens", "cache_read_tokens",
+		"cache_creation_tokens", "output_tokens", "latency_s", "status"},
 	// 逐次请求的用量遥测（设计 §3.7；会话文件 30 天清理后的审计地基）
 	"usage": {"model", "title", "input_tokens", "cache_read_tokens",
 		"cache_creation_tokens", "output_tokens", "offset"},
@@ -62,7 +69,7 @@ var kindFields = map[string][]string{
 // kindOrder 科目顺序 = Python dict 插入序（KINDS 元组），未知科目报错文案用。
 // wait_close 为 Go 版新增（票04），列于 qwatch 系之后。
 var kindOrder = []string{"handoff", "beat", "block", "inject", "bypass", "window",
-	"qwatch_hit", "qwatch_open", "qwatch_close", "wait_close", "usage"}
+	"qwatch_hit", "qwatch_open", "qwatch_close", "wait_close", "dock", "usage"}
 
 // commonFields 公共字段（模块盖章；白名单校验不拒，但不随传入 Fields 覆盖）。
 var commonFields = map[string]bool{

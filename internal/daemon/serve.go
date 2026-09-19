@@ -147,7 +147,13 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 	// 把 CC base_url 指到渡口是人工操作，不在本程序职责内。
 	var dockSrv *dock.Server
 	if cfg.Dock != nil {
-		ds, derr := dock.New(cfg.Dock.Listen, cfg.Dock.UpstreamBaseURL)
+		// 票06 接线：改写模式/守卫/dock 科目/漂移告警经 Options 注入——
+		// rewrite_enabled 与守卫判定在 dock 包内单源裁决（拒绝即退纯透传）。
+		ds, derr := dock.NewWithOptions(cfg.Dock.Listen, cfg.Dock.UpstreamBaseURL, dock.Options{
+			Dock:     cfg.Dock,
+			Accounts: acc,
+			Alert:    dock.AlertViaNotify(cfg),
+		})
 		if derr != nil {
 			fmt.Printf("[ferryman] ⚠ 渡口未启动（配置无效）: %v\n", derr)
 		} else if derr = ds.Start(); derr != nil {
@@ -156,7 +162,7 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 		} else {
 			dockSrv = ds
 			d.DockSnap = ds.Snapshots()
-			fmt.Printf("[ferryman] 渡口: http://%s → %s（纯透传；快照内存态，重启即失）\n",
+			fmt.Printf("[ferryman] 渡口: http://%s → %s（模式由守卫裁决；快照内存态，重启即失）\n",
 				cfg.Dock.Listen, cfg.Dock.UpstreamBaseURL)
 		}
 	}

@@ -95,3 +95,62 @@ func TestLoadDockBadSectionFails(t *testing.T) {
 		t.Fatal("Load(dock=123) err = nil, want 非空")
 	}
 }
+
+// ---- 票06：改写模式四字段 ----
+
+func TestLoadDockRewriteFields(t *testing.T) {
+	// 改写模式全字段显式：rewrite_enabled/api_key/model_map（含 default 键）/
+	// text_only 数组
+	f := filepath.Join(t.TempDir(), "dock-rewrite.toml")
+	src := `
+[dock]
+rewrite_enabled = true
+api_key = "sk-real-key"
+text_only = ["glm-5.3", "glm-5-air"]
+[dock.model_map]
+claude-opus-5 = "glm-5.5"
+claude-sonnet-5 = "glm-5.3-air"
+default = "glm-4.7-flash"
+`
+	if err := os.WriteFile(f, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := cfg.Dock
+	if d == nil {
+		t.Fatal("cfg.Dock = nil")
+	}
+	if !d.RewriteEnabled {
+		t.Fatal("rewrite_enabled = false, want true")
+	}
+	if d.APIKey != "sk-real-key" {
+		t.Fatalf("api_key = %q", d.APIKey)
+	}
+	if d.ModelMap["claude-opus-5"] != "glm-5.5" ||
+		d.ModelMap["claude-sonnet-5"] != "glm-5.3-air" ||
+		d.ModelMap["default"] != "glm-4.7-flash" {
+		t.Fatalf("model_map = %v", d.ModelMap)
+	}
+	if len(d.TextOnly) != 2 || d.TextOnly[0] != "glm-5.3" || d.TextOnly[1] != "glm-5-air" {
+		t.Fatalf("text_only = %v", d.TextOnly)
+	}
+}
+
+func TestLoadDockRewriteDefaultsOff(t *testing.T) {
+	// 节存在但未写改写字段：默认 false/空（开关默认关——红线 opt-in）
+	f := filepath.Join(t.TempDir(), "dock-default.toml")
+	if err := os.WriteFile(f, []byte("[dock]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := cfg.Dock
+	if d == nil || d.RewriteEnabled || d.APIKey != "" || d.ModelMap != nil || d.TextOnly != nil {
+		t.Fatalf("dock 改写字段默认应为零值: %+v", d)
+	}
+}
