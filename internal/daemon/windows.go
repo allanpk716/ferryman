@@ -332,14 +332,31 @@ func (d *Daemon) ParkingOpen(agent, sessionID string) bool {
 // 反向嵌套 AB-BA 死锁）；Go 版等价解见本文件顶部铁律块——临界区统一双锁
 // 同序全拿，windowsMu 下读表即"同临界区内的一致视图"。
 func (d *Daemon) parkingOpenLocked(agent, sessionID string) bool {
+	_, open := d.waitWindowOpenLocked(agent, sessionID)
+	return open
+}
+
+// waitWindowOpenLocked 窗口开着的只读探测（票04 等待窗泳道的最小读接口，
+// parkingOpenLocked 的加细版）：开着返回 (opened_ts, true)。口径与
+// parkingOpenLocked 完全一致（活跃窗按泄漏判、停车窗按 PARK_EXPIRE_S 判——
+// 停车满 1h 视同已闭，F8"停车满 1h 懒过期窗口已闭→不排"），零副作用——
+// 懒过期闭账留给 window_wait/重锚的正规路径。多回传 opened_ts 供泳道识别
+// "重开新窗"（重置泳道状态、旧泳道如实收尾）。须持 windowsMu 调用。
+func (d *Daemon) waitWindowOpenLocked(agent, sessionID string) (float64, bool) {
 	w := d.windows[winKey{agent, sessionID}]
 	if w == nil {
-		return false
+		return 0, false
 	}
 	if w.StopTS == nil {
-		return clock.Now()-w.OpenedTS <= ledger.SubagentEventLeakS
+		if clock.Now()-w.OpenedTS > ledger.SubagentEventLeakS {
+			return 0, false
+		}
+		return w.OpenedTS, true
 	}
-	return clock.Now()-*w.StopTS <= ParkExpireS
+	if clock.Now()-*w.StopTS > ParkExpireS {
+		return 0, false
+	}
+	return w.OpenedTS, true
 }
 
 // NoteGatePrompt gate 步 0（server.py:143-151 逐字）：主会话来讯 = 等待提前

@@ -282,6 +282,12 @@ func (d *Daemon) cacheInfoCtx(idle float64, th config.ThresholdCfg) string {
 // monkeypatch notify_mod.notify_block 同位；nil 回落真通道）。
 func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float64) {
 	agent, sid := st.Agent, st.SessionID // goroutine 只碰本地副本（共享引用纪律）
+	// 票08 R1（评审补丁）：Cwd/Title 是可变字段（ai-title 更新），无锁直读与
+	// 仓库纪律（台账锁内快照——见 serve.go enqueue/alertCopy）不一致；agent/sid
+	// 创建后不可变，维持原样。本函数不在台账锁内（评审核实），短持快照安全。
+	d.Ledger.Mu().Lock()
+	cwd, title := st.Cwd, st.Title
+	d.Ledger.Mu().Unlock()
 	fmt.Printf("[gate] BLOCK %s/%s idle=%.0fm handoff=%s\n",
 		agent, runeCap8(sid), idle/60, h.HandoffID)
 	fn := d.NotifyBlock
@@ -289,7 +295,7 @@ func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float
 		fn = notify.NotifyBlock
 	}
 	path, cfg := h.Path, d.Cfg
-	go fn(path, agent, sid, cfg)
+	go fn(path, agent, sid, cwd, title, cfg)
 }
 
 // runeCap8 Python s[:8]：按码点截断。

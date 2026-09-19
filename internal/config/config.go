@@ -29,6 +29,8 @@ var (
 	GateModes = [...]string{"off", "observe", "enforce"}
 	// QWatchModes 问询守望模式合法值（Python QWATCH_MODES，同款三元）。
 	QWatchModes = [...]string{"off", "observe", "enforce"}
+	// WaitWindowModes 等待窗心跳模式合法值（票04，与 [question_watch] 平行的三元）。
+	WaitWindowModes = [...]string{"off", "observe", "enforce"}
 )
 
 // QwatchMinLeadS ferry_deadline_lead_s 下限（spec 决策 3 夹取区间）。
@@ -86,6 +88,37 @@ type QuestionWatchCfg struct {
 	FerryDeadlineLeadS float64 // 摆渡死线提前量（校验见 Validate）
 }
 
+// WaitWindowCfg 等待窗心跳（票04，spec「心跳·配置」）：与 [question_watch]
+// 平行的独立三态，默认 off。间隔/等待上限/最小前缀阈值全部由策略计算器
+// （internal/policy）现算——本节不含也不得引入这些参数（公式单源红线）；
+// manual_wait_cap_s 只能在使用点向下夹紧计算器输出的 cap（0=未配置）。
+type WaitWindowCfg struct {
+	Mode           string  // off | observe | enforce
+	ManualWaitCapS float64 // >0 = 手动等待上限（只收小）；0 = 未配置
+}
+
+// DefaultDockBalanceURL 票07：bigmodel 余额查询默认端点（解析层缺省与查询侧
+// 防御回落共用此单源；同一把 [dock].api_key 出 Bearer，只读）。
+const DefaultDockBalanceURL = "https://open.bigmodel.cn/api/user/balance"
+
+// DockCfg 渡口（本机 API 中转，票01）配置。注意语义是 opt-in：Config.Dock
+// 为 nil 指针（[dock] 节缺失）＝渡口完全不启动——不绑端口、零行为变化
+// （评审 F11 裁定）；节存在才构造本结构，缺字段回落默认值。
+type DockCfg struct {
+	UpstreamBaseURL string // 上游（默认 cc-switch）地址
+	Listen          string // 渡口监听地址（绑本机）
+	// 票06 改写模式（rewrite_enabled=false＝纯透传，以下字段不生效）。
+	// 校验语义：true 但 model_map 缺 default 键/值为空、或上游指回本地中转
+	// 端口 → 守卫拒绝进入改写模式（退回纯透传）＋告警——不硬拒启（渡口挂
+	// ＝CC 直连旧行为，见 dock.ResolveRewrite 单源）。
+	RewriteEnabled bool              // true＝/v1/messages POST 过改写器＋出站头卫生
+	APIKey         string            // 上游真钥：只进出站 Authorization，永不入日志/账本/错误（T39）
+	ModelMap       map[string]string // 别名→GLM 档；含 default 键（改写模式必须非空）
+	TextOnly       []string          // text-only 模型名单（命中则 image 块降级文本占位）
+	// 票07 余额只读查询（/stats 面板展示用；查询侧无 api_key → 未配置零请求）。
+	BalanceURL string // 余额端点覆写；解析层缺省回落 DefaultDockBalanceURL
+}
+
 // Config 全量配置（字段=Python dataclass 1:1）。
 type Config struct {
 	GateCC        string // 验证期默认 observe（DESIGN §6.2）
@@ -96,7 +129,9 @@ type Config struct {
 	Notify        NotifyCfg
 	Heartbeat     HeartbeatCfg
 	QuestionWatch QuestionWatchCfg
-	FerryProvider string // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	WaitWindow    WaitWindowCfg // 票04：等待窗心跳三态（默认 off，缺节即 off）
+	FerryProvider string        // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	Dock          *DockCfg      // nil=[dock] 节缺失＝渡口不启动（F11 opt-in）
 }
 
 // Default 内置全默认值（config.py 各 dataclass 默认逐字）。
@@ -128,6 +163,7 @@ func Default() *Config {
 			MaxBeats:           2,
 			FerryDeadlineLeadS: 480.0,
 		},
+		WaitWindow:    WaitWindowCfg{Mode: "off", ManualWaitCapS: 0},
 		FerryProvider: "",
 	}
 }
@@ -315,6 +351,22 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			FerryDeadlineLeadS: lead,
 		}
 	}
+	// [wait_window]（票04）：缺字段回落默认（off/0）。夹紧不在此做——manual
+	// 只能向下夹紧计算器输出，发生在 watcher 使用点（Validate 只拦负值）。
+	if raw, ok := data["wait_window"]; ok {
+		ww, err := asTable(raw, "wait_window")
+		if err != nil {
+			return err
+		}
+		capS, err := pyFloat(get(ww, "manual_wait_cap_s", cfg.WaitWindow.ManualWaitCapS))
+		if err != nil {
+			return err
+		}
+		cfg.WaitWindow = WaitWindowCfg{
+			Mode:           pyStr(get(ww, "mode", cfg.WaitWindow.Mode)),
+			ManualWaitCapS: capS,
+		}
+	}
 	// Python: cfg.ferry_provider = str(data.get("ferry", {}).get("provider", cfg.ferry_provider))
 	if raw, ok := data["ferry"]; ok {
 		f, err := asTable(raw, "ferry")
@@ -322,6 +374,48 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			return err
 		}
 		cfg.FerryProvider = pyStr(get(f, "provider", cfg.FerryProvider))
+	}
+	// [dock]（票01）：节存在才构造（Default() 里 Dock 恒 nil——nil 即 F11 的
+	// "完全不启动"判据，daemon 侧据此不绑端口）；节内缺字段回落默认值
+	// （上游=cc-switch 15721，监听=本机 15722，与透传实验 forwarder.go 一致）。
+	// 票06 补改写四字段（开关默认 false；model_map 含 default 键、text_only
+	// 数组；api_key 真钥只活本机 config.toml 永不入库）。
+	if raw, ok := data["dock"]; ok {
+		dk, err := asTable(raw, "dock")
+		if err != nil {
+			return err
+		}
+		dcfg := &DockCfg{
+			UpstreamBaseURL: pyStr(get(dk, "upstream_base_url", "http://127.0.0.1:15721")),
+			Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
+			RewriteEnabled:  pyBool(get(dk, "rewrite_enabled", false)),
+			APIKey:          pyStr(get(dk, "api_key", "")),
+			// 票07：缺省回落内置默认端点（同 upstream_base_url 的解析层补默认惯例）。
+			BalanceURL: pyStr(get(dk, "balance_url", DefaultDockBalanceURL)),
+		}
+		if rawMM, ok := dk["model_map"]; ok {
+			mm, ok := rawMM.(map[string]any)
+			if !ok {
+				return errors.New("config: dock.model_map 不是表")
+			}
+			m := make(map[string]string, len(mm))
+			for k, v := range mm {
+				m[k] = pyStr(v)
+			}
+			dcfg.ModelMap = m
+		}
+		if rawTO, ok := dk["text_only"]; ok {
+			arr, ok := rawTO.([]any)
+			if !ok {
+				return errors.New("config: dock.text_only 不是数组")
+			}
+			to := make([]string, 0, len(arr))
+			for _, v := range arr {
+				to = append(to, pyStr(v))
+			}
+			dcfg.TextOnly = to
+		}
+		cfg.Dock = dcfg
 	}
 	return nil
 }
@@ -344,6 +438,18 @@ func Validate(c *Config, relaxMinGap bool) error {
 	if qw.BeatIntervalS <= 0 { // 票04 M5：≤0 排出的计划全是过去跳（开窗即狂跳）
 		problems = append(problems, fmt.Sprintf("question_watch.beat_interval_s 须 > 0（当前 %gs）",
 			qw.BeatIntervalS))
+	}
+	// [wait_window]（票04）：mode 三元；manual_wait_cap_s ≥0（0=未配置，
+	// 负值拒绝——夹紧逻辑只认 >0）。enforce＋渡口关不在配置层拒——那是运行时
+	// 降级（watcher 启动告警一次＋按 observe 对待），问询守望同不受此校验。
+	ww := &c.WaitWindow
+	if !slices.Contains(WaitWindowModes[:], ww.Mode) {
+		problems = append(problems, fmt.Sprintf("wait_window.mode 非法: %s（可选 %s）",
+			ww.Mode, pyTuple(WaitWindowModes[:])))
+	}
+	if ww.ManualWaitCapS < 0 {
+		problems = append(problems, fmt.Sprintf("wait_window.manual_wait_cap_s 须 ≥ 0（当前 %gs；0=未配置）",
+			ww.ManualWaitCapS))
 	}
 	if qw.Mode != "off" { // 功能关闭时不校验 lead（存量小阈值配置零影响）
 		t := c.ThresholdFor("cc")

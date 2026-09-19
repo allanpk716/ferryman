@@ -196,7 +196,8 @@ func TestHealthMissSignalsCorrelation(t *testing.T) {
 	mustRecord("beat", w.t0-500, accounts.Fields{ // 真跳保温 → 洗白
 		"agent": "cc", "session_id": "ms1", "lineage_id": "L", "project": "C:/p",
 		"provider": "p", "model": "m", "price_ver": "v", "prefix_tokens": 1,
-		"cache_read": 1, "outcome": "hit", "cost_pred": 0.0, "cost_actual": 0.0})
+		"cache_read": 1, "outcome": "hit", "cost_pred": 0.0, "cost_actual": 0.0,
+		"lane": "qwatch"}) // 票04：beat 科目泳道标记为必填
 	if got := w.d.Health()["qwatch"].(map[string]any)["miss_signals"]; got != 0 {
 		t.Fatalf("真跳后 miss_signals = %v, want 0", got)
 	}

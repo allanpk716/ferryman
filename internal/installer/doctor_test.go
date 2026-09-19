@@ -5,6 +5,7 @@
 package installer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -467,7 +468,10 @@ func greenDoctorDeps(t *testing.T, probe func() map[string]any) (doctorDeps, str
 			return map[string]ferry.Provider{"glm": {Name: "glm", BaseURL: "http://x", Model: "m"}}, nil
 		},
 		Probe: probe,
-		Out:   nil, // 调用方填
+		// 票02：常驻保障两查注入绿色（在位）
+		Autostart:    func() (autostartStatus, error) { return autostartInstalled, nil },
+		WatchdogTask: func() (TaskStatus, error) { return TaskStatus{Exists: true, NextRun: "2026/9/19 21:00:00"}, nil },
+		Out:          nil, // 调用方填
 	}, dataDir
 }
 
@@ -520,9 +524,76 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	deps.Out = &out
 	_ = runDoctor(deps)
 	got := out.String()
-	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1,
-		1+1+1+1+len(doctorScriptNames())+1+1)
+	// 票02 起：+2 = Run 键自启 + 看门计划任务两查
+	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2,
+		1+1+1+1+len(doctorScriptNames())+1+1+2)
 	if !strings.Contains(got, want) {
 		t.Fatalf("结论计数不符:\nwant: %s\ngot:\n%s", want, got)
+	}
+	// 票02：两查绿色行可见
+	if !strings.Contains(got, "Run 键自启在位") || !strings.Contains(got, "看门计划任务在位") {
+		t.Fatalf("缺常驻保障两查绿色行:\n%s", got)
+	}
+}
+
+// ---- 票02：Run 键自启 + 看门计划任务两项检查 ----
+
+// 三态 × 判定（可注入面，fake 返回三态——票面验收④）。
+func TestCheckAutostartStates(t *testing.T) {
+	table := []struct {
+		name    string
+		st      autostartStatus
+		err     error
+		wantOK  bool
+		wantSub string
+	}{
+		{"installed", autostartInstalled, nil, true, "在位"},
+		{"missing", autostartMissing, nil, false, "缺失"},
+		{"mismatch", autostartMismatch, nil, false, "不符"},
+		{"readerr", 0, errors.New("boom"), false, "读取失败"},
+	}
+	for _, tc := range table {
+		c := CheckAutostart(func() (autostartStatus, error) { return tc.st, tc.err })
+		if c.OK != tc.wantOK || !strings.Contains(c.Msg, tc.wantSub) {
+			t.Fatalf("%s: got %+v, want ok=%v msg含%q", tc.name, c, tc.wantOK, tc.wantSub)
+		}
+	}
+}
+
+// 在位（含/缺下次运行）/缺失/查询失败 四面。
+func TestCheckWatchdogTaskStates(t *testing.T) {
+	c := CheckWatchdogTask(func() (TaskStatus, error) {
+		return TaskStatus{Exists: true, NextRun: "2026/9/19 21:00:00"}, nil
+	})
+	if !c.OK || !strings.Contains(c.Msg, "2026/9/19 21:00:00") {
+		t.Fatalf("在位应通过并带下次运行: %+v", c)
+	}
+	c = CheckWatchdogTask(func() (TaskStatus, error) { return TaskStatus{Exists: true}, nil })
+	if !c.OK {
+		t.Fatalf("在位但解析不出下次运行仍应通过: %+v", c)
+	}
+	c = CheckWatchdogTask(func() (TaskStatus, error) { return TaskStatus{}, nil })
+	if c.OK || !strings.Contains(c.Msg, "缺失") {
+		t.Fatalf("缺失应失败并点名: %+v", c)
+	}
+	c = CheckWatchdogTask(func() (TaskStatus, error) { return TaskStatus{}, errors.New("schtasks broken") })
+	if c.OK || !strings.Contains(c.Msg, "查询失败") {
+		t.Fatalf("查询失败应失败: %+v", c)
+	}
+}
+
+// runDoctor 聚合：两查缺失 → 两行可见 + 退出 1。
+func TestRunDoctorAutostartWatchdogFailVisible(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	deps.Autostart = func() (autostartStatus, error) { return autostartMissing, nil }
+	deps.WatchdogTask = func() (TaskStatus, error) { return TaskStatus{}, nil }
+	var out strings.Builder
+	deps.Out = &out
+	if code := runDoctor(deps); code != 1 {
+		t.Fatalf("两查缺失应退出 1, got %d:\n%s", code, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "Run 键自启缺失") || !strings.Contains(got, "看门计划任务缺失") {
+		t.Fatalf("缺两查失败行:\n%s", got)
 	}
 }

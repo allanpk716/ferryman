@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"ferryman/internal/config"
+	"ferryman/internal/dock"
 	"ferryman/internal/ferry"
 )
 
@@ -313,6 +314,57 @@ func CheckFerryProvider(name string, providers map[string]ferry.Provider) Check 
 	return Check{true, fmt.Sprintf("摆渡 provider '%s' 在位", name)}
 }
 
+// CheckDockRewrite 渡口改写守卫体检（票06）：判定单源在 dock.ResolveRewrite
+// ——doctor 与 daemon 构造期读同一函数，绝不出现两套判据。rewrite_enabled
+// =true 却被守卫拒绝＝FAIL：配置说开了、实际在透传，是"静默失效"同类事故
+// （与本文件头两类事故同性质），必须点名修法。
+func CheckDockRewrite(dockCfg *config.DockCfg) Check {
+	if dockCfg == nil {
+		return Check{true, "渡口未配置（[dock] 节缺失，零行为）"}
+	}
+	if !dockCfg.RewriteEnabled {
+		return Check{true, "渡口纯透传（rewrite_enabled=false）"}
+	}
+	_, ok, reason := dock.ResolveRewrite(dockCfg)
+	if !ok {
+		return Check{false, "渡口改写模式未生效: " + reason}
+	}
+	return Check{true, "渡口改写模式在位（default 键在、上游非本地中转）"}
+}
+
+// CheckAutostart Run 键自启三态（票02）：installed=在位；missing/mismatch=
+// 失败并给修法（登录自启是常驻保障第 1 腿，缺位与钩子缺失同级）。
+func CheckAutostart(f func() (autostartStatus, error)) Check {
+	st, err := f()
+	if err != nil {
+		return Check{false, fmt.Sprintf("Run 键自启状态读取失败: %v", err)}
+	}
+	switch st {
+	case autostartInstalled:
+		return Check{true, "Run 键自启在位（HKCU Run\\Ferryman）"}
+	case autostartMismatch:
+		return Check{false, "Run 键自启值不符（exe 挪窝或手改——重跑 ferryman autostart install）"}
+	default:
+		return Check{false, "Run 键自启缺失（跑 ferryman autostart install）"}
+	}
+}
+
+// CheckWatchdogTask 看门计划任务两态（票02）：在位含下次运行时间（解析不出
+// 只附注不扣分——存在性才是承重信息）；缺失=失败并给修法。
+func CheckWatchdogTask(f func() (TaskStatus, error)) Check {
+	st, err := f()
+	if err != nil {
+		return Check{false, fmt.Sprintf("看门计划任务查询失败: %v", err)}
+	}
+	if !st.Exists {
+		return Check{false, "看门计划任务缺失（跑 ferryman watchdog install）"}
+	}
+	if st.NextRun == "" {
+		return Check{true, "看门计划任务在位（下次运行时间解析不出/未排）"}
+	}
+	return Check{true, fmt.Sprintf("看门计划任务在位（下次运行: %s）", st.NextRun)}
+}
+
 // CheckLauncher 点火脚本在位且其 exe 路径有效（钩子自举的地基；doctor.py
 // check_launcher 的 Go 新形态：脚本内启动行的 exe 路径存在）。
 func CheckLauncher(path string) Check {
@@ -339,7 +391,10 @@ type doctorDeps struct {
 	LoadCfg                 func() (*config.Config, error)
 	LoadProviders           func() (map[string]ferry.Provider, error)
 	Probe                   func() map[string]any
-	Out                     io.Writer
+	// 票02：常驻保障两查（Run 键三态 + 看门任务在位/缺失）。
+	Autostart    func() (autostartStatus, error)
+	WatchdogTask func() (TaskStatus, error)
+	Out          io.Writer
 }
 
 // RunDoctor 一键体检真实入口（HOME/exe 面）；返回进程退出码（有 FAIL → 1）。
@@ -356,7 +411,10 @@ func RunDoctor() int {
 			return ferry.LoadProviders("")
 		},
 		Probe: realStatsProbe(filepath.Join(home, "ferryman")),
-		Out:   os.Stdout,
+		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
+		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
+		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
+		Out:          os.Stdout,
 	})
 }
 
@@ -383,6 +441,10 @@ func runDoctor(d doctorDeps) int {
 		results = append(results, Check{false, fmt.Sprintf("摆渡配置加载失败: %v", err)})
 	} else {
 		results = append(results, CheckFerryProvider(cfg.FerryProvider, providers))
+		// 票06：渡口配置了才查（无 [dock] 的存量用户零新增检查行）
+		if cfg.Dock != nil {
+			results = append(results, CheckDockRewrite(cfg.Dock))
+		}
 	}
 
 	scripts := []string{}
@@ -392,6 +454,10 @@ func runDoctor(d doctorDeps) int {
 	results = append(results, CheckHookScripts(scripts)...)
 	results = append(results, CheckCodex(d.CodexHooks, d.CodexConfig))
 	results = append(results, CheckDaemon(d.Probe, filepath.Join(dataDir, "daemon.pid")))
+	// 票02：常驻保障两查——缺失/值不符照旧 FAIL（缺了＝常驻保障缺位，与钩子
+	// 缺失同级；修法各印在文案里）
+	results = append(results, CheckAutostart(d.Autostart))
+	results = append(results, CheckWatchdogTask(d.WatchdogTask))
 
 	fails := 0
 	for _, r := range results {
