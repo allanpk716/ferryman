@@ -51,6 +51,20 @@ func crlf(s string) []byte {
 	return []byte(strings.ReplaceAll(s, "\n", "\r\n"))
 }
 
+// ensureASCII 全 ASCII 铁律的生成器侧防线：模板全 ASCII 只是必要条件——占位
+// 值（repoDir/dataDir/exePath 来自磁盘真实路径）若含非 ASCII 字节，工件照样会
+// 在非 UTF-8 代码页控制台下炸（票23 实测教训）。任一入参含非 ASCII 字节 →
+// 响亮拒绝生成，绝不产出一个注定解析失败的批处理。
+func ensureASCII(what, s string) error {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return fmt.Errorf("%s 含非 ASCII 字节 @%d（回退批处理全 ASCII 铁律拒绝生成；"+
+				"请用纯 ASCII 路径）: %q", what, i, s)
+		}
+	}
+	return nil
+}
+
 // WriteRollbackScript 生成回退工件 <dataDir>/rollback-to-python.cmd（CRLF、
 // UTF-8 无 BOM）。内容三步（rev1 Task 27 Step 3 逐字语义）：worktree add
 // <repo>-py archive/python-final（幂等复用）→ uv sync → 点火脚本启动行指回
@@ -65,6 +79,13 @@ func WriteRollbackScript(repoDir, dataDir, exePath string) (string, error) {
 			exePath = p
 		} else {
 			exePath = "ferryman.exe"
+		}
+	}
+	for _, c := range [...]struct{ what, val string }{
+		{"repoDir", repoDir}, {"dataDir", dataDir}, {"exePath", exePath},
+	} {
+		if err := ensureASCII(c.what, c.val); err != nil {
+			return "", err
 		}
 	}
 	tpl := strings.NewReplacer(
@@ -153,6 +174,7 @@ rem ---- 3. Point the daemon launcher back to Python (tmp+move, deterministic) -
 >>"%LNK_TMP%" echo cd /d "%REPO_PY%"
 >>"%LNK_TMP%" echo "%PY%" -m ferryman serve ^>^> "%DATA%\serve.out.log" 2^>^> "%DATA%\serve.err.log"
 move /y "%LNK_TMP%" "%DATA%\start-daemon.cmd" >nul
+if errorlevel 1 goto fail_move
 
 echo [rollback] done: launcher start line now points to %PY%
 echo [rollback] next: stop the Go daemon (tray Exit / close the start-daemon window),
@@ -177,6 +199,10 @@ popd
 exit /b 1
 :fail_no_py
 echo [rollback] venv python missing: %PY%
+exit /b 1
+:fail_move
+echo [rollback] move failed: %LNK_TMP% -^> %DATA%\start-daemon.cmd
+echo [rollback] target locked or path unreachable - close the daemon window / check perms, then re-run.
 exit /b 1
 `
 

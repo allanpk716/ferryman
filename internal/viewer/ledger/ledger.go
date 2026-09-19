@@ -44,7 +44,7 @@ type Entry struct {
 
 	// handoff / beat / block / inject / bypass / qwatch_*
 	Provider         string  `json:"provider"`
-	Outcome          string  `json:"outcome"`    // handoff: fresh|skeleton|failed · beat: hit|miss|error|observe（T51 票03 起，旧 hit 布尔已废）
+	Outcome          string  `json:"outcome"` // handoff: fresh|skeleton|failed · beat: hit|miss|error|observe（T51 票03 起，旧 hit 布尔已废）
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
 	WallS            float64 `json:"wall_s"`

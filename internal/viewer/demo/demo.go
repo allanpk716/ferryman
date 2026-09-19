@@ -175,7 +175,7 @@ func rows(base time.Time) []map[string]any {
 		close15 := t0.Add(15 * time.Minute)
 		rs = append(rs, mkWindow(close15, sess, lin, secs(t0), secs(close15), 90000))
 		rs = append(rs, mkBeat(t0.Add(480*time.Second), sess, lin, 90000, "miss")) // MISS：之后无跳
-		u(close15.Add(2*time.Second), "", 90000, 0, 0, 1900)                      // 缓存已凉，全款重付
+		u(close15.Add(2*time.Second), "", 90000, 0, 0, 1900)                       // 缓存已凉，全款重付
 		u(t0.Add(1000*time.Second), "心跳 miss 演示·立即停跳", 600, 91900, 500, 1300)
 	}
 

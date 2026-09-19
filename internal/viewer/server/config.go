@@ -25,7 +25,7 @@ var (
 )
 
 // ConfigPath 由数据目录推配置路径：约定 config.toml 与 accounts/ 同级
-//（即数据根下）；dataDir 本身可能是根（直接给了含 *.jsonl 的目录），
+// （即数据根下）；dataDir 本身可能是根（直接给了含 *.jsonl 的目录），
 // 两处都探，父目录优先。都找不到返回空串，由 handler 如实报告。
 func ConfigPath(dataDir string) string {
 	cands := []string{
@@ -54,7 +54,7 @@ type cfgSection struct {
 }
 
 // parseConfig 把 TOML 拍平成有序段列表：顶层标量进「全局」段；每张表
-//（含嵌套）自成一段，段名用点路径。段间按表名字母序、段内按键字母序——
+// （含嵌套）自成一段，段名用点路径。段间按表名字母序、段内按键字母序——
 // TOML 本身无序，输出必须稳定可 diff。
 func parseConfig(raw []byte) ([]cfgSection, error) {
 	var doc map[string]any

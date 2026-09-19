@@ -25,7 +25,7 @@ powershell -File build.ps1 -Release   # -ldflags "-s -w" 变体（同样无 wind
 
 ```
 ferryman.exe                # 无参 = serve：守护(7311)+面板(15900)+托盘
-ferryman.exe serve          # 同上（点火脚本 start-daemon.cmd 调它）
+ferryman.exe serve [--no-browser]    # 同上（点火脚本 start-daemon.cmd 调它；面板口被占探到活面板时不自动开浏览器）
 ferryman.exe serve --no-tray --smoke    # 前台 Ctrl+C 退出；放宽阈值差校验
 ferryman.exe doctor         # 一键体检
 ferryman.exe install-cc [--events SessionStart,SubagentStart,SubagentStop]
@@ -35,9 +35,8 @@ ferryman.exe account report --json
 
 # 面板族（viewer 原样，只起面板不起守护）：
 ferryman.exe --demo --no-tray --no-browser             # 演示合成账本
-ferryman.exe --data D:\dataerryman --port 8787      # 根下无 *.jsonl 而有 accounts/ 时自动下钻
+ferryman.exe --data D:\data\ferryman --port 8787      # 根下无 *.jsonl 而有 accounts/ 时自动下钻
 ferryman.exe --install-shortcuts                       # 建桌面+开始菜单快捷方式后退出
-```
 ```
 
 - 数据目录来源优先级：`--data` > 环境变量 `FERRYMAN_DATA` > `~/ferryman`；三者同为

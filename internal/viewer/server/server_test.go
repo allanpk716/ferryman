@@ -347,7 +347,7 @@ func TestNote(t *testing.T) {
 		name string
 		srv  *httptest.Server
 		path string
-		note any    // 期望 note 值；nil = 不应出现 note 键
+		note any // 期望 note 值；nil = 不应出现 note 键
 	}{
 		{name: "sessions 带演示标注", srv: tsNoted, path: "/api/sessions", note: demoNote},
 		{name: "timeline 带演示标注", srv: tsNoted, path: "/api/timeline?lineage=lin-t1", note: demoNote},

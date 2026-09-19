@@ -54,6 +54,10 @@ func TestWriteRollbackScriptShape(t *testing.T) {
 		"uv sync",
 		`>"%LNK_TMP%" echo @echo off`,
 		`-m ferryman serve`,
+		// move 失败分支（终局评审 A）：move /y 后必须跟 errorlevel 跳转 + 对应标签
+		`move /y "%LNK_TMP%" "%DATA%\start-daemon.cmd" >nul`,
+		`if errorlevel 1 goto fail_move`,
+		":fail_move",
 		`set "REPO=` + repo + `"`,
 		`set "REPO_PY=` + repo + `-py"`,
 		`set "DATA=` + data + `"`,
@@ -80,6 +84,37 @@ func TestWriteRollbackScriptShape(t *testing.T) {
 	// 占位符全部已替换（无残留 {{）
 	if strings.Contains(s, "{{") {
 		t.Fatal("工件残留未替换占位符")
+	}
+}
+
+// TestWriteRollbackScriptRejectsNonASCIIPath 全 ASCII 铁律的生成器侧防线：
+// 任一入参（repoDir/dataDir/exePath）含非 ASCII 字节 → 响亮拒绝、不产工件。
+func TestWriteRollbackScriptRejectsNonASCIIPath(t *testing.T) {
+	repo := t.TempDir()
+	data := t.TempDir()
+	cases := []struct {
+		name             string
+		repoDir, dataDir string
+		exePath          string
+	}{
+		{"repoDir 含中文", filepath.Join(repo, "仓库"), data, ""},
+		{"dataDir 含中文", repo, filepath.Join(data, "数据"), ""},
+		{"exePath 含中文", repo, data, `C:\工具\ferryman.exe`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, err := WriteRollbackScript(tc.repoDir, tc.dataDir, tc.exePath)
+			if err == nil {
+				t.Fatalf("非 ASCII 路径应响亮报错, got 工件 %q", path)
+			}
+			if !strings.Contains(err.Error(), "非 ASCII") {
+				t.Fatalf("报错应点名非 ASCII: %v", err)
+			}
+			// 拒绝发生在落盘之前：工件不得已写出
+			if _, statErr := os.Stat(filepath.Join(tc.dataDir, "rollback-to-python.cmd")); statErr == nil {
+				t.Fatal("拒绝时不得写出工件")
+			}
+		})
 	}
 }
 
