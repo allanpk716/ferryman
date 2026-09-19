@@ -313,6 +313,39 @@ func CheckFerryProvider(name string, providers map[string]ferry.Provider) Check 
 	return Check{true, fmt.Sprintf("摆渡 provider '%s' 在位", name)}
 }
 
+// CheckAutostart Run 键自启三态（票02）：installed=在位；missing/mismatch=
+// 失败并给修法（登录自启是常驻保障第 1 腿，缺位与钩子缺失同级）。
+func CheckAutostart(f func() (autostartStatus, error)) Check {
+	st, err := f()
+	if err != nil {
+		return Check{false, fmt.Sprintf("Run 键自启状态读取失败: %v", err)}
+	}
+	switch st {
+	case autostartInstalled:
+		return Check{true, "Run 键自启在位（HKCU Run\\Ferryman）"}
+	case autostartMismatch:
+		return Check{false, "Run 键自启值不符（exe 挪窝或手改——重跑 ferryman autostart install）"}
+	default:
+		return Check{false, "Run 键自启缺失（跑 ferryman autostart install）"}
+	}
+}
+
+// CheckWatchdogTask 看门计划任务两态（票02）：在位含下次运行时间（解析不出
+// 只附注不扣分——存在性才是承重信息）；缺失=失败并给修法。
+func CheckWatchdogTask(f func() (TaskStatus, error)) Check {
+	st, err := f()
+	if err != nil {
+		return Check{false, fmt.Sprintf("看门计划任务查询失败: %v", err)}
+	}
+	if !st.Exists {
+		return Check{false, "看门计划任务缺失（跑 ferryman watchdog install）"}
+	}
+	if st.NextRun == "" {
+		return Check{true, "看门计划任务在位（下次运行时间解析不出/未排）"}
+	}
+	return Check{true, fmt.Sprintf("看门计划任务在位（下次运行: %s）", st.NextRun)}
+}
+
 // CheckLauncher 点火脚本在位且其 exe 路径有效（钩子自举的地基；doctor.py
 // check_launcher 的 Go 新形态：脚本内启动行的 exe 路径存在）。
 func CheckLauncher(path string) Check {
@@ -339,7 +372,10 @@ type doctorDeps struct {
 	LoadCfg                 func() (*config.Config, error)
 	LoadProviders           func() (map[string]ferry.Provider, error)
 	Probe                   func() map[string]any
-	Out                     io.Writer
+	// 票02：常驻保障两查（Run 键三态 + 看门任务在位/缺失）。
+	Autostart    func() (autostartStatus, error)
+	WatchdogTask func() (TaskStatus, error)
+	Out          io.Writer
 }
 
 // RunDoctor 一键体检真实入口（HOME/exe 面）；返回进程退出码（有 FAIL → 1）。
@@ -356,7 +392,10 @@ func RunDoctor() int {
 			return ferry.LoadProviders("")
 		},
 		Probe: realStatsProbe(filepath.Join(home, "ferryman")),
-		Out:   os.Stdout,
+		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
+		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
+		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
+		Out:          os.Stdout,
 	})
 }
 
@@ -392,6 +431,10 @@ func runDoctor(d doctorDeps) int {
 	results = append(results, CheckHookScripts(scripts)...)
 	results = append(results, CheckCodex(d.CodexHooks, d.CodexConfig))
 	results = append(results, CheckDaemon(d.Probe, filepath.Join(dataDir, "daemon.pid")))
+	// 票02：常驻保障两查——缺失/值不符照旧 FAIL（缺了＝常驻保障缺位，与钩子
+	// 缺失同级；修法各印在文案里）
+	results = append(results, CheckAutostart(d.Autostart))
+	results = append(results, CheckWatchdogTask(d.WatchdogTask))
 
 	fails := 0
 	for _, r := range results {

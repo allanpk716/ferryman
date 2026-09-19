@@ -81,6 +81,9 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman install-cc [--events 事件1,事件2,…]
   ferryman install-ccswitch
   ferryman install-codex [--events 事件1,事件2,…]
+  ferryman autostart install|uninstall|status  # 登录自启 Run 键（票02 常驻保障）
+  ferryman watchdog             # 看门单次探活：无监听拉起 daemon（票02，schtasks 每 5 分钟调它）
+  ferryman watchdog install|uninstall|status   # 看门计划任务三操作
   ferryman account report [--since 日] [--until 日] [--project 名] [--session id]
                       [--kind 类型] [--provider 键] [--json]
   ferryman cutover backup [--data 目录] [--dest 目录]
@@ -127,6 +130,10 @@ func run(args []string) int {
 		return cmdInstallCCSwitch()
 	case "install-codex":
 		return cmdInstallCodex(args[1:])
+	case "autostart":
+		return cmdAutostart(args[1:])
+	case "watchdog":
+		return cmdWatchdog(args[1:])
 	case "account":
 		return cmdAccount(args[1:])
 	case "cutover":
@@ -332,6 +339,43 @@ func cmdInstallCodex(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// ---- 常驻保障（票02）：自启 Run 键 + 看门 ----
+
+// cmdAutostart Run 键自启三操作（缺省 = status——只读最安全）。
+func cmdAutostart(args []string) int {
+	if len(args) == 0 {
+		return installer.AutostartStatus()
+	}
+	switch args[0] {
+	case "install":
+		return installer.AutostartInstall()
+	case "uninstall":
+		return installer.AutostartUninstall()
+	case "status":
+		return installer.AutostartStatus()
+	}
+	fmt.Fprintf(os.Stderr, "未知 autostart 子命令: %q（install|uninstall|status）\n", args[0])
+	return 2
+}
+
+// cmdWatchdog 看门：无参 = 单次探活（schtasks 注册的就是这个形态——
+// 无监听才拉起/占用只告警不双拉）；install/uninstall/status = 计划任务三操作。
+func cmdWatchdog(args []string) int {
+	if len(args) == 0 {
+		return installer.RunWatchdogCLI()
+	}
+	switch args[0] {
+	case "install":
+		return installer.WatchdogTaskInstall()
+	case "uninstall":
+		return installer.WatchdogTaskUninstall()
+	case "status":
+		return installer.WatchdogTaskStatus()
+	}
+	fmt.Fprintf(os.Stderr, "未知 watchdog 子命令: %q（install|uninstall|status；无参 = 单次探活）\n", args[0])
+	return 2
 }
 
 func cmdAccount(args []string) int {
