@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -204,7 +203,7 @@ func Chat(pr Provider, system, user string, timeoutS float64, maxTokens int) (st
 		}
 		usage[k] = v
 	}
-	usage["wall_s"] = math.Round(wall*10) / 10 // Python round(wall, 1)
+	usage["wall_s"] = mathx.Round(wall, 1) // Python round(wall, 1)（票18评审：消 naive 舍入例外）
 	return reply, usage, nil
 }
 
@@ -282,8 +281,9 @@ func numOr0(v any) float64 {
 	return 0
 }
 
-// round1 Python round(x, 1) 的 Go 形（十分位；两值差异仅浮点表示级）。
-func round1(v float64) float64 { return math.Round(v*10) / 10 }
+// round1 Python round(x, 1) 的 Go 形（十分位；mathx.Round half-even 与
+// CPython 跨语言一致——票18评审：全仓唯一 naive 缩放例外就此收口）。
+func round1(v float64) float64 { return mathx.Round(v, 1) }
 
 // HandoffMarkdown 两层交接 MD（ferry.py handoff_markdown 1:1）：头部文案逐字
 // （生成时刻/模型/模式/耗时）+ 注入层 + 分隔 + 全文。

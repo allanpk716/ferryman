@@ -7,8 +7,8 @@ package ferry
 // 捕获同一断言面）。
 //
 // 差异声明：test_ferry_providers.py::test_eval_run_rejects_unknown_provider
-// 的被测物是 ferryman.eval.run——Go 侧 internal/eval 尚无对应包/票，不在本票
-// 范围（eval 移植票落地时随包补）。
+// 的被测物是 ferryman.eval.run——Go 侧不移植（eval 属冻结面，随 Python tag
+// 退役；账目：冻结 72/可移植 315）。
 
 import (
 	"encoding/json"
