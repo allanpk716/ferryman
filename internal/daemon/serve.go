@@ -161,7 +161,11 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 		}
 	}
 
-	watcher := NewWatcher(cfg, led, st, enqueue, startedAt, acc, d, nil, qwatchStats)
+	// 心跳真身注入（票03）：渡口开→HttpBeatSender（发往渡口入站口，与真
+	// 流量同路径同改写）；渡口关→nil＝watcher 既有"enforce 无 sender→observe
+	// 演练＋告警一次"降级路径原样保留。
+	watcher := NewWatcher(cfg, led, st, enqueue, startedAt, acc, d,
+		newBeatSender(cfg, d.DockSnap), qwatchStats)
 	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
 	go watcher.Run(ctx)
 	go worker.Run(ctx)
@@ -186,3 +190,14 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 // DockSnapshot 渡口快照只读句柄（未启用返回 nil）。票03 HttpBeatSender 经
 // 此取会话主快照（最大体）做心跳前缀源——daemon 其余代码不碰快照内部。
 func (d *Daemon) DockSnapshot() *dock.SnapshotStore { return d.DockSnap }
+
+// newBeatSender 票03 serve 注入点：渡口开（配了 [dock] 且快照句柄在——含
+// 渡口构造/绑定失败降级为 nil 的情形）→ HttpBeatSender（发往渡口入站口）；
+// 渡口关 → nil＝watcher.sendBeat 既有降级（enforce 无 sender→observe 演练＋
+// 告警一次），行为分支不动。
+func newBeatSender(cfg *config.Config, dockSnap *dock.SnapshotStore) beat.Sender {
+	if cfg.Dock == nil || dockSnap == nil {
+		return nil
+	}
+	return beat.NewHttpBeatSender("http://"+cfg.Dock.Listen, dockSnap)
+}

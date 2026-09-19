@@ -1,8 +1,8 @@
 // Package beat 心跳调度的纯类型与纯逻辑（规格 ferryman/beat.py 1:1）。
 //
 // 调度本体挂在守望（daemon，风格对齐 _maybe_qwatch）；本包只放：
-// beat 请求/结果形状与可注入发送接口（真实 HTTP 发送属 Q14 段二/三，
-// 未授权前不实现——HttpBeatSender 不落地，仅接口位保留）、三态分类
+// beat 请求/结果形状与可注入发送接口（真实发送＝HttpBeatSender，票03：
+// 渡口快照重放，见 httpsender.go）、三态分类
 // （HIT/MISS/ERROR）与熔断计数器。全部无 I/O、无消息内容
 // （隐私不变量：字段只有元数据与金额）。
 package beat
@@ -45,7 +45,7 @@ type BeatPlan struct {
 	BeatTS         float64 // 本跳计划时刻
 }
 
-// BeatResult 一跳的结果。Sent=false = 未真发（observe 演练）；OK=false = 重试后仍败。
+// BeatResult 一跳的结果。Sent=false = 未真发（observe 演练）；OK=false = 发送后仍败（不重试，F1）。
 type BeatResult struct {
 	Sent            bool
 	OK              bool
@@ -61,11 +61,12 @@ type BeatResult struct {
 
 // Sender 可注入发送接口。
 //
-// 真实实现方职责（Q14 段二/三，本包不做）：直打本地代理 127.0.0.1:15721、
-// 发 CC 别名、重放前缀 [system+tools+u1..uN]（不含末轮 assistant 输出）、
-// max_tokens=1 封顶输出、429/5xx/超时指数退避重试 1 次（重试语义归 sender，
-// 调度器只看最终 BeatResult）、与摆渡路由零共用。
-// 时限要求：Send 必须自持秒级超时＋重试并在秒级内返回（守望单线程
+// 真实实现方职责（票03 HttpBeatSender，internal/beat/httpsender.go）：取渡口
+// 内存主快照原样重放（唯一改写 max_tokens=1）、带快照头集发往渡口入站口
+// （与真流量同路径同改写）；传输错误（连接失败/超时/429/5xx）跳过不重试
+// （ADR-0006/0007），按 ERROR 语义返回 BeatResult（调度器只看最终结果）、
+// 与摆渡路由零共用。
+// 时限要求：Send 必须自持秒级超时并在秒级内返回（守望单线程
 // 串行调用）——一次挂起分钟级的 Send 会阻塞守望循环，拖垮全部会话的
 // 开窗与两道验。
 type Sender interface {
@@ -78,7 +79,7 @@ type NoopSender struct{}
 // Send 恒返回零值 BeatResult（Sent=false）。
 func (NoopSender) Send(BeatPlan) BeatResult { return BeatResult{Sent: false} }
 
-// Classify 三态判定：未真发=observe；重试后仍败=error；
+// Classify 三态判定：未真发=observe；发送后仍败（不重试，F1）=error；
 // 成功按 cache_read 占比 ≥ 阈值记 hit，否则 miss（含 ≈0 全 miss——
 // 单跳 MISS = 全前缀按全价重付，故部分命中也按 miss 计入熔断连击）。
 func Classify(r BeatResult) string {
