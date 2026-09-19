@@ -202,6 +202,7 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 
 	// 票08 协调者补线：项目名＋会话标题齐备时标题走降级链（用户痛点 4 的
 	// 主场景——拦截通知可分辨哪个项目哪个会话）；project/title 皆空回落旧标题。
+	// R1：project 传全路径形态时提取项目基名（gate 生产路径传的是台账 Cwd 原文）。
 	ps.reset()
 	NotifyBlock("C:/handoffs/h3.md", "cc", "s456", "proj-x", "心跳保真实验", cfg)
 	form = ps.form(t)
@@ -210,6 +211,12 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 	}
 	if !strings.HasSuffix(form.Get("message"), "(sid=s456)") {
 		t.Fatal("正文尾部应含 sid 小字（带项目标题形态）")
+	}
+	ps.reset()
+	NotifyBlock("C:/handoffs/h4.md", "cc", "s789", `C:\WorkSpace\agent\Ferryman`, "渡口联调", cfg)
+	form = ps.form(t)
+	if form.Get("title") != "Ferryman｜Ferryman：渡口联调" {
+		t.Fatalf("全路径形态应提取基名: title = %q", form.Get("title"))
 	}
 
 	cfg.Notify.Enabled = false // 总开关关 → 全静默

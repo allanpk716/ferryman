@@ -167,7 +167,9 @@ func NotifyBlock(handoffPath, agent, sessionID, project, sessionTitle string, cf
 	}
 	title := "Ferryman 拦截"
 	if project != "" || sessionTitle != "" {
-		title = BuildTitle(project, sessionTitle, "")
+		// gate 侧传入的是台账 Cwd 原文（全路径）——统一在此提取项目基名，
+		// 与 watcher 侧 AlertCopy 的 ProjectName 口径一致（评审 R1 补丁）。
+		title = BuildTitle(ProjectName(project), sessionTitle, "")
 	}
 	NotifyAlert(title, message, cfg)
 }
