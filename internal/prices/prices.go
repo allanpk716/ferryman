@@ -80,6 +80,13 @@ func LoadPrices(path string) map[string]PriceBook {
 		var vers []PriceVersion
 		for _, vbAny := range orSlice(blk["versions"]) { // blk.get("versions", [])
 			vb := orEmpty(vbAny)
+			// 票03评审M1：p_in/p_out 缺失或非数值的版本跳过并 stderr 告警——
+			// asFloat 的 0 兜底会产出零价行，带着合法 price_tag 记账（假账）。
+			if !isNumeric(vb["p_in"]) || !isNumeric(vb["p_out"]) {
+				fmt.Fprintf(os.Stderr, "[prices] 版本缺必填键，跳过: %s@%s\n",
+					key, asString(vb["effective_from"]))
+				continue
+			}
 			vers = append(vers, PriceVersion{
 				EffectiveFrom: asString(vb["effective_from"]),
 				PIn:           asFloat(vb["p_in"]),
@@ -147,6 +154,15 @@ func asFloat(v any) float64 {
 		return float64(n)
 	}
 	return 0
+}
+
+// isNumeric 数值键判定（票03评审M1）：TOML 整数/浮点皆可；缺失/串/布尔皆非数值。
+func isNumeric(v any) bool {
+	switch v.(type) {
+	case float64, int64, int:
+		return true
+	}
+	return false
 }
 
 // asPCache 对应 Python 的 float(vb["p_cache"]) if vb.get("p_cache") is not None else None：

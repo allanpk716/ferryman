@@ -1,8 +1,11 @@
 package prices
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,5 +97,89 @@ func TestPriceTag(t *testing.T) {
 	}
 	if got := PriceTag("glm", *pv); got != "glm@2026-09-17" {
 		t.Fatalf("price_tag = %q, want glm@2026-09-17", got)
+	}
+}
+
+// captureStderr 换掉 os.Stderr 捕获告警输出。
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	fn()
+	w.Close()
+	os.Stderr = old
+	return <-done
+}
+
+// TestRequiredKeysMissingSkipped 票03评审M1：p_in/p_out 缺失或非数值的版本
+// 跳过 + stderr 告警——杜绝零价行带着合法 price_tag 记账。
+func TestRequiredKeysMissingSkipped(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "config.toml")
+	tomlSrc := `
+[prices.glm]
+unit = "积分"
+per = 10000
+
+[[prices.glm.versions]]
+effective_from = "2026-09-01"
+p_cache = 1.7
+p_out = 24
+
+[[prices.glm.versions]]
+effective_from = "2026-09-17"
+p_in = 6.9
+p_out = 24
+
+[prices.bad]
+unit = "元"
+
+[[prices.bad.versions]]
+effective_from = "2026-09-01"
+p_in = "6.9"
+
+[[prices.bad.versions]]
+effective_from = "2026-09-02"
+p_in = 1.0
+p_out = 2.0
+`
+	if err := os.WriteFile(f, []byte(tomlSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]PriceBook
+	errOut := captureStderr(t, func() { got = LoadPrices(f) })
+	glm := got["glm"]
+	if len(glm.Versions) != 1 || glm.Versions[0].EffectiveFrom != "2026-09-17" {
+		t.Fatalf("glm 版本 = %v, want 仅 2026-09-17（缺 p_in 的被跳过）", glm.Versions)
+	}
+	bad := got["bad"]
+	if len(bad.Versions) != 1 || bad.Versions[0].EffectiveFrom != "2026-09-02" {
+		t.Fatalf("bad 版本 = %v, want 仅 2026-09-02（p_in 非数值的被跳过）", bad.Versions)
+	}
+	// 不产出 0 价书：任何存活版本的 p_in/p_out 都不得为 0 兜底值
+	for key, b := range got {
+		for _, v := range b.Versions {
+			if v.PIn == 0 || v.POut == 0 {
+				t.Fatalf("%s@%s 出现零价（PIn=%v POut=%v）", key, v.EffectiveFrom, v.PIn, v.POut)
+			}
+		}
+	}
+	// 每个被跳过的版本一条 stderr 告警
+	for _, want := range []string{
+		"[prices] 版本缺必填键，跳过: glm@2026-09-01",
+		"[prices] 版本缺必填键，跳过: bad@2026-09-01",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr 告警缺 %q:\n%s", want, errOut)
+		}
 	}
 }
