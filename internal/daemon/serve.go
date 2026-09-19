@@ -23,6 +23,7 @@ import (
 	"ferryman/internal/beat"
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
+	"ferryman/internal/dock"
 	"ferryman/internal/ferry"
 	"ferryman/internal/ledger"
 	"ferryman/internal/store"
@@ -140,6 +141,26 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 		return 1
 	}
 
+	// 渡口（票01，F11 opt-in 裁定）：配置 [dock] 节才构造并启动——不配＝
+	// 不绑端口、零行为变化。独立 listener/生命周期：构造或绑定失败只告警
+	// 降级，绝不拖垮主服务（渡口挂＝CC 直连上游旧行为，base_url 指回即回退）。
+	// 把 CC base_url 指到渡口是人工操作，不在本程序职责内。
+	var dockSrv *dock.Server
+	if cfg.Dock != nil {
+		ds, derr := dock.New(cfg.Dock.Listen, cfg.Dock.UpstreamBaseURL)
+		if derr != nil {
+			fmt.Printf("[ferryman] ⚠ 渡口未启动（配置无效）: %v\n", derr)
+		} else if derr = ds.Start(); derr != nil {
+			fmt.Printf("[ferryman] ⚠ 渡口未启动（监听 %s 失败，主服务不受影响）: %v\n",
+				cfg.Dock.Listen, derr)
+		} else {
+			dockSrv = ds
+			d.DockSnap = ds.Snapshots()
+			fmt.Printf("[ferryman] 渡口: http://%s → %s（纯透传；快照内存态，重启即失）\n",
+				cfg.Dock.Listen, cfg.Dock.UpstreamBaseURL)
+		}
+	}
+
 	watcher := NewWatcher(cfg, led, st, enqueue, startedAt, acc, d, nil, qwatchStats)
 	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
 	go watcher.Run(ctx)
@@ -152,9 +173,16 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 		cfg.FerryProvider, dataDir)
 	<-ctx.Done() // serve_forever 阻塞；KeyboardInterrupt ≈ ctx 取消
 	fmt.Println("\n[ferryman] 停止中…")
-	_ = srv.Close()        // server.shutdown()
+	_ = srv.Close() // server.shutdown()
+	if dockSrv != nil {
+		_ = dockSrv.Close() // 渡口随主服务优雅停（快照随进程消失，不持久化）
+	}
 	watcher.Stop()         // watcher.stop()
 	worker.Stop()          // worker.stop()
 	_ = os.Remove(pidFile) // unlink(missing_ok=True)
 	return 0
 }
+
+// DockSnapshot 渡口快照只读句柄（未启用返回 nil）。票03 HttpBeatSender 经
+// 此取会话主快照（最大体）做心跳前缀源——daemon 其余代码不碰快照内部。
+func (d *Daemon) DockSnapshot() *dock.SnapshotStore { return d.DockSnap }

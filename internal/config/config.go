@@ -86,6 +86,14 @@ type QuestionWatchCfg struct {
 	FerryDeadlineLeadS float64 // 摆渡死线提前量（校验见 Validate）
 }
 
+// DockCfg 渡口（本机 API 中转，票01）配置。注意语义是 opt-in：Config.Dock
+// 为 nil 指针（[dock] 节缺失）＝渡口完全不启动——不绑端口、零行为变化
+// （评审 F11 裁定）；节存在才构造本结构，缺字段回落默认值。
+type DockCfg struct {
+	UpstreamBaseURL string // 上游（默认 cc-switch）地址
+	Listen          string // 渡口监听地址（绑本机）
+}
+
 // Config 全量配置（字段=Python dataclass 1:1）。
 type Config struct {
 	GateCC        string // 验证期默认 observe（DESIGN §6.2）
@@ -96,7 +104,8 @@ type Config struct {
 	Notify        NotifyCfg
 	Heartbeat     HeartbeatCfg
 	QuestionWatch QuestionWatchCfg
-	FerryProvider string // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	FerryProvider string   // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	Dock          *DockCfg // nil=[dock] 节缺失＝渡口不启动（F11 opt-in）
 }
 
 // Default 内置全默认值（config.py 各 dataclass 默认逐字）。
@@ -322,6 +331,19 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			return err
 		}
 		cfg.FerryProvider = pyStr(get(f, "provider", cfg.FerryProvider))
+	}
+	// [dock]（票01）：节存在才构造（Default() 里 Dock 恒 nil——nil 即 F11 的
+	// "完全不启动"判据，daemon 侧据此不绑端口）；节内缺字段回落默认值
+	// （上游=cc-switch 15721，监听=本机 15722，与透传实验 forwarder.go 一致）。
+	if raw, ok := data["dock"]; ok {
+		dk, err := asTable(raw, "dock")
+		if err != nil {
+			return err
+		}
+		cfg.Dock = &DockCfg{
+			UpstreamBaseURL: pyStr(get(dk, "upstream_base_url", "http://127.0.0.1:15721")),
+			Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
+		}
 	}
 	return nil
 }

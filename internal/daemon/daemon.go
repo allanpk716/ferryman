@@ -20,6 +20,7 @@ import (
 	"ferryman/internal/beat"
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
+	"ferryman/internal/dock"
 	"ferryman/internal/ledger"
 	"ferryman/internal/store"
 )
@@ -155,7 +156,8 @@ type Daemon struct {
 	Accounts     *accounts.Accounts              // nil = 不记账（旧测试零改动）
 	Stats        *GateStats
 	Pending      *PendingTable
-	QWatchStats  *beat.QWatchStats // nil = 未接线
+	QWatchStats  *beat.QWatchStats   // nil = 未接线
+	DockSnap     *dock.SnapshotStore // nil = 渡口未启用（票01 F11：无 [dock] 节零行为；serve 接线注入，DockSnapshot() 只读转交）
 
 	// cfgMu 骑手（票13 评审 Minor C）：question_watch.mode 运行时活值的并发
 	// 护栏——QWatchStop 写（一键停）与 Health/守望读之间的读写串行化。独立小
