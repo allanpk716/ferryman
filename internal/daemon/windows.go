@@ -100,8 +100,11 @@ func (d *Daemon) Subagent(body map[string]any) (map[string]any, error) {
 			// 同序；守望侧临界区持台账锁时只做无锁探测 parking_open，
 			// 反向嵌套即死锁——Go 形见本文件顶部铁律块）。
 			w = nil
-			st := d.Ledger.Get(agent, sessionID) // 共享引用：台账锁内只读字段
+			// B 修复（票14 评审）：引用必须在台账锁内经 GetLocked 重取——
+			// 锁外 Get 与锁内复验之间的两段式 TOCTOU 归零（锁外取到的引用
+			// 可能已非映射的权威条目）。
 			d.Ledger.Mu().Lock()
+			st := d.Ledger.GetLocked(agent, sessionID)
 			qwatchOpen := st != nil && st.QWatchOpenedTS != nil
 			if !qwatchOpen {
 				w = &waitWindow{OpenedTS: clock.Now(), SawAsync: false}
@@ -196,21 +199,31 @@ func (d *Daemon) closeWindowLocked(key winKey, reason string, closedTS float64) 
 // "窗已摘、账仍要记"的路径复用）。closedTS<=0 缺省取当前时刻（过期闭窗传
 // stop+PARK_EXPIRE_S，如实反映"只观察到这"）。Accounts=nil（旧测试形态）
 // 整条跳过。须持 windowsMu 调用。
+//
+// A 修复（票13 评审 Minor A）：PeakCtx/Cwd 是可变字段（TouchFull 写者并发），
+// 在 windowsMu→ledger.Mu 同序双锁下快照（GetLocked）后出锁使用——账本读盘
+// 绝不持台账锁（"锁内只有内存操作"铁律）。
 func (d *Daemon) recordWindowLocked(key winKey, w *waitWindow, reason string, closedTS float64) {
 	if d.Accounts == nil {
 		return
 	}
 	agent, sid := key[0], key[1]
-	st := d.Ledger.Get(agent, sid)
 	closed := closedTS
 	if closed <= 0 {
 		closed = clock.Now()
 	}
+	d.Ledger.Mu().Lock()
+	st := d.Ledger.GetLocked(agent, sid)
+	var peak int
+	if st != nil {
+		peak = st.PeakCtx
+	}
+	d.Ledger.Mu().Unlock()
 	d.Acct("window", st, agent, sid, "", accounts.Fields{
 		"opened_ts":     mathx.Round(w.OpenedTS, 3),
 		"closed_ts":     mathx.Round(closed, 3),
 		"dur_s":         mathx.Round(closed-w.OpenedTS, 1),
-		"prefix_tokens": d.windowPrefixLocked(st, sid, w.OpenedTS),
+		"prefix_tokens": d.windowPrefixLocked(peak, sid, w.OpenedTS),
 		"close_reason":  reason,
 	})
 }
@@ -221,9 +234,11 @@ func (d *Daemon) recordWindowLocked(key winKey, w *waitWindow, reason string, cl
 // 算准）；开窗前的行一条都没有（时钟毛刺）则退取该会话任意最后一条，再无则 0。
 // 任何异常吞成 0——窗口行绝不因富化失败而丢。须持 windowsMu 调用（Python
 // 版同在 _wlock 下读账本盘；记账富化永不弄断闭窗，与 _acct 同纪律）。
-func (d *Daemon) windowPrefixLocked(st *ledger.SessionState, sid string, openedTS float64) int {
-	if st != nil && st.PeakCtx != 0 {
-		return st.PeakCtx
+// A 修复（票13 评审 Minor A）：peakCtx 由调用方在 windowsMu→ledger.Mu 同序
+// 双锁下快照传入，本函数不再触碰共享引用。
+func (d *Daemon) windowPrefixLocked(peakCtx int, sid string, openedTS float64) int {
+	if peakCtx != 0 {
+		return peakCtx
 	}
 	if d.Accounts == nil {
 		return 0
@@ -256,9 +271,11 @@ func (d *Daemon) windowPrefixLocked(st *ledger.SessionState, sid string, openedT
 //
 // ACK_GRACE_S 内的行视为派发确认回合（ack），不闭窗——2026-09-18 实测
 // ack 落在 stop 前，此宽限是钩子时序反转时的保险（round 0 评审 #10/#11）。
-// ★ 异常边界（附录#10）：本方法被守望主路径调用，保证不抛——Python 以
-// try/except 打印兜底；Go 无异常，Acct 打印吞错即此保证的 Go 形，且闭窗走
-// "先记后 pop"——记账失败窗保留（绝不先丢窗后记账失败），下轮恢复行可再试。
+// ★ 异常边界（附录#10）：本方法被守望主路径调用，保证不炸——Python 以
+// try/except 打印兜底；Go 无异常，Acct 打印吞错即此保证的 Go 形。Go 契约
+// （票14 顺手清）：闭账路径 pop 恒达——记账失败不保留窗（与 closeWindowLocked
+// 的差异声明同口径；TestWindowWaitNeverRaises /
+// TestNoteUsageRecordFailureKeepsWindow 钉的就是本契约）。
 func (d *Daemon) NoteUsage(agent, sessionID string, ts float64) {
 	key := winKey{agent, sessionID}
 	d.windowsMu.Lock()
@@ -401,7 +418,13 @@ func (d *Daemon) Acct(kind string, st *ledger.SessionState,
 		} else {
 			lineageID = sessionID
 		}
+		// A 修复（票13 评审 Minor A）：Cwd 可变（TouchFull 写者并发），台账锁内
+		// 快照；Agent/SessionID/TranscriptPath 建后不变，直读。调用方（gate/
+		// restore/QWatchStop/recordWindowLocked）均不持台账锁，此处加锁无
+		// 重入/反序风险。
+		d.Ledger.Mu().Lock()
 		project = st.Cwd
+		d.Ledger.Mu().Unlock()
 	} else {
 		agent, sessionID = agentOv, sidOv
 		lineageID = sessionID // 无台账线索：lineage 退化为 session 自身

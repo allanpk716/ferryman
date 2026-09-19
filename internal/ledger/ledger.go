@@ -161,6 +161,13 @@ func (l *Ledger) TouchFull(agent, sid, path string, mtime float64, size int,
 func (l *Ledger) Get(agent, sid string) *SessionState {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.GetLocked(agent, sid)
+}
+
+// GetLocked Get 的无锁内方法——仅供已持 l.Mu() 的临界区（daemon 双锁同序的
+// 开窗复验/闭账快照等，票13 评审 Minor A）调用；不经临界区的调用方一律走
+// 自带锁的 Get。返回共享可变引用：字段读写须在本临界区内完成（快照读法）。
+func (l *Ledger) GetLocked(agent, sid string) *SessionState {
 	return l.byKey[[2]string{agent, sid}]
 }
 

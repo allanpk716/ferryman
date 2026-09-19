@@ -86,7 +86,8 @@ func TestBlockBooksEntry(t *testing.T) {
 		t.Fatalf("session_id = %v, want acct2", e["session_id"])
 	}
 	pt, _ := e["prefix_tokens"].(float64)
-	if !(pt >= 20000 || pt == 0) { // peak_ctx 尽力而为
+	// 票14 Minor 顺手清：阈值引用 config.Default()，不再硬编码 20000
+	if !(pt >= float64(config.Default().Thresholds.MinCtxTokens) || pt == 0) { // peak_ctx 尽力而为
 		t.Fatalf("prefix_tokens = %v, want ≥MIN_CTX 或 0", e["prefix_tokens"])
 	}
 	if e["idle_s"].(float64) <= 0 {
