@@ -29,6 +29,8 @@ var (
 	GateModes = [...]string{"off", "observe", "enforce"}
 	// QWatchModes 问询守望模式合法值（Python QWATCH_MODES，同款三元）。
 	QWatchModes = [...]string{"off", "observe", "enforce"}
+	// WaitWindowModes 等待窗心跳模式合法值（票04，与 [question_watch] 平行的三元）。
+	WaitWindowModes = [...]string{"off", "observe", "enforce"}
 )
 
 // QwatchMinLeadS ferry_deadline_lead_s 下限（spec 决策 3 夹取区间）。
@@ -86,6 +88,15 @@ type QuestionWatchCfg struct {
 	FerryDeadlineLeadS float64 // 摆渡死线提前量（校验见 Validate）
 }
 
+// WaitWindowCfg 等待窗心跳（票04，spec「心跳·配置」）：与 [question_watch]
+// 平行的独立三态，默认 off。间隔/等待上限/最小前缀阈值全部由策略计算器
+// （internal/policy）现算——本节不含也不得引入这些参数（公式单源红线）；
+// manual_wait_cap_s 只能在使用点向下夹紧计算器输出的 cap（0=未配置）。
+type WaitWindowCfg struct {
+	Mode           string  // off | observe | enforce
+	ManualWaitCapS float64 // >0 = 手动等待上限（只收小）；0 = 未配置
+}
+
 // DockCfg 渡口（本机 API 中转，票01）配置。注意语义是 opt-in：Config.Dock
 // 为 nil 指针（[dock] 节缺失）＝渡口完全不启动——不绑端口、零行为变化
 // （评审 F11 裁定）；节存在才构造本结构，缺字段回落默认值。
@@ -104,8 +115,9 @@ type Config struct {
 	Notify        NotifyCfg
 	Heartbeat     HeartbeatCfg
 	QuestionWatch QuestionWatchCfg
-	FerryProvider string   // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
-	Dock          *DockCfg // nil=[dock] 节缺失＝渡口不启动（F11 opt-in）
+	WaitWindow    WaitWindowCfg // 票04：等待窗心跳三态（默认 off，缺节即 off）
+	FerryProvider string        // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	Dock          *DockCfg      // nil=[dock] 节缺失＝渡口不启动（F11 opt-in）
 }
 
 // Default 内置全默认值（config.py 各 dataclass 默认逐字）。
@@ -137,6 +149,7 @@ func Default() *Config {
 			MaxBeats:           2,
 			FerryDeadlineLeadS: 480.0,
 		},
+		WaitWindow:    WaitWindowCfg{Mode: "off", ManualWaitCapS: 0},
 		FerryProvider: "",
 	}
 }
@@ -324,6 +337,22 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			FerryDeadlineLeadS: lead,
 		}
 	}
+	// [wait_window]（票04）：缺字段回落默认（off/0）。夹紧不在此做——manual
+	// 只能向下夹紧计算器输出，发生在 watcher 使用点（Validate 只拦负值）。
+	if raw, ok := data["wait_window"]; ok {
+		ww, err := asTable(raw, "wait_window")
+		if err != nil {
+			return err
+		}
+		capS, err := pyFloat(get(ww, "manual_wait_cap_s", cfg.WaitWindow.ManualWaitCapS))
+		if err != nil {
+			return err
+		}
+		cfg.WaitWindow = WaitWindowCfg{
+			Mode:           pyStr(get(ww, "mode", cfg.WaitWindow.Mode)),
+			ManualWaitCapS: capS,
+		}
+	}
 	// Python: cfg.ferry_provider = str(data.get("ferry", {}).get("provider", cfg.ferry_provider))
 	if raw, ok := data["ferry"]; ok {
 		f, err := asTable(raw, "ferry")
@@ -366,6 +395,18 @@ func Validate(c *Config, relaxMinGap bool) error {
 	if qw.BeatIntervalS <= 0 { // 票04 M5：≤0 排出的计划全是过去跳（开窗即狂跳）
 		problems = append(problems, fmt.Sprintf("question_watch.beat_interval_s 须 > 0（当前 %gs）",
 			qw.BeatIntervalS))
+	}
+	// [wait_window]（票04）：mode 三元；manual_wait_cap_s ≥0（0=未配置，
+	// 负值拒绝——夹紧逻辑只认 >0）。enforce＋渡口关不在配置层拒——那是运行时
+	// 降级（watcher 启动告警一次＋按 observe 对待），问询守望同不受此校验。
+	ww := &c.WaitWindow
+	if !slices.Contains(WaitWindowModes[:], ww.Mode) {
+		problems = append(problems, fmt.Sprintf("wait_window.mode 非法: %s（可选 %s）",
+			ww.Mode, pyTuple(WaitWindowModes[:])))
+	}
+	if ww.ManualWaitCapS < 0 {
+		problems = append(problems, fmt.Sprintf("wait_window.manual_wait_cap_s 须 ≥ 0（当前 %gs；0=未配置）",
+			ww.ManualWaitCapS))
 	}
 	if qw.Mode != "off" { // 功能关闭时不校验 lead（存量小阈值配置零影响）
 		t := c.ThresholdFor("cc")

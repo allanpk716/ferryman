@@ -695,7 +695,8 @@ func TestBeatRowPrivacyNoMessageContent(t *testing.T) {
 	allowed := map[string]bool{"v": true, "ts": true, "ts_iso": true, "kind": true,
 		"agent": true, "session_id": true, "lineage_id": true, "project": true,
 		"provider": true, "model": true, "price_ver": true, "prefix_tokens": true,
-		"cache_read": true, "outcome": true, "cost_pred": true, "cost_actual": true}
+		"cache_read": true, "outcome": true, "cost_pred": true, "cost_actual": true,
+		"lane": true} // 票04：beat 科目泳道标记（qwatch|wait）
 	for k := range rows[0] {
 		if !allowed[k] {
 			t.Fatalf("账面出现白名单外字段 %q（行 = %v）", k, rows[0])

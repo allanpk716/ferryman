@@ -40,6 +40,8 @@ import (
 	"ferryman/internal/mathx"
 	"ferryman/internal/notify"
 	"ferryman/internal/pathsx"
+	"ferryman/internal/policy"
+	"ferryman/internal/prices"
 	"ferryman/internal/qwatch"
 	"ferryman/internal/store"
 )
@@ -104,6 +106,31 @@ type Watcher struct {
 	noopSender        beat.NoopSender
 	beatEnforceWarned atomic.Bool
 
+	// ---- 票04：等待窗泳道（双泳道第二道，F8/F9/F4） ----
+	// waitLane 每窗一条泳道状态，键 (agent, sid)；守卫锁＝Daemon.windowsMu
+	// （泳道状态与窗口表同域同生死：探测/占用/结算全程在 windowsMu 临界区，
+	// 不引入新锁序条目——windowsMu 是既有铁律的外层锁，单独取用合法）。
+	// 台账锁（ledger.Mu）内绝不触碰本表（铁律第 2 条的引申：泳道判定点
+	// 只在 windowsMu 下）。
+	waitLane map[winKey]*waitLaneRec
+	// waitPolicyFn 策略计算器缝：前缀 → 心跳参数组。公式单源红线——生产
+	// 实现（defaultWaitPolicy）只调 policy.Compute，本文件绝不出现第二份
+	// τ/cap 公式；测试注入 fake 断言取值调用。
+	waitPolicyFn func(prefixTokens int) (policy.HeartbeatPolicy, error)
+	// waitBooks 价格表缓存（NewWatcher 一次读盘；config 重启生效，无热加载）。
+	waitBooks map[string]prices.PriceBook
+	// waitEnforceDowngraded enforce＋渡口关（无 [dock]）的启动降级位：等待窗
+	// 侧按 observe 对待（告警一次）。问询守望不受此校验影响——它维持既有
+	// "nil sender→observe 演练" 行为。
+	waitEnforceDowngraded bool
+	waitPolicyWarned      atomic.Bool // 策略不可用（TTL 未测/无 p_cache）告警一次
+	waitDrillWarned       atomic.Bool // enforce 无 sender 演练告警一次（问询同款语义）
+	// lanePins 两泳道 Pin 对账表（stampMu 叶子锁守护）：已 Pin 会话集合。
+	// Pin/Unpin 走 dockPin/dockUnpin 缝（渡口关＝句柄 nil 安全跳过）。
+	lanePins  map[winKey]bool
+	dockPin   func(sessionID string)
+	dockUnpin func(sessionID string)
+
 	detect func(path string, minQuestions int) qwatch.Verdict // 测试注入缝（Python monkeypatch daemon_mod.detect 同位）
 	enrich func(*ledger.SessionState)                         // 测试注入缝（Python _enrich 覆写同位）
 
@@ -131,12 +158,34 @@ func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 		QWatchStats:   qs,
 		qwatchSeen:    map[winKey]float64{},
 		qwatchHitSeen: map[winKey]float64{},
+		waitLane:      map[winKey]*waitLaneRec{},
+		lanePins:      map[winKey]bool{},
 		stopCh:        make(chan struct{}),
 	}
 	w.detect = qwatch.Detect
 	w.enrich = w.enrichImpl
 	if acc != nil && cfg.Watch.HarvestUsage {
 		w.harvest = harvest.NewHarvestState(acc)
+	}
+	// 票04 等待窗泳道接线：策略缝（生产实现）＋价格表一次读盘＋Pin 缝。
+	w.waitPolicyFn = w.defaultWaitPolicy
+	w.waitBooks = prices.LoadPrices("")
+	w.dockPin = func(sid string) {
+		if w.Daemon != nil && w.Daemon.DockSnap != nil { // 渡口关＝句柄 nil 安全跳过
+			w.Daemon.DockSnap.Pin(sid)
+		}
+	}
+	w.dockUnpin = func(sid string) {
+		if w.Daemon != nil && w.Daemon.DockSnap != nil {
+			w.Daemon.DockSnap.Unpin(sid)
+		}
+	}
+	// 启动校验（票04）：mode=enforce 且无 [dock]（渡口关，快照源不存在）→
+	// 告警一次并把等待窗侧按 observe 对待。问询守望不受此校验影响。
+	if cfg.WaitWindow.Mode == "enforce" && cfg.Dock == nil {
+		w.waitEnforceDowngraded = true
+		fmt.Printf("[wait] ⚠ [wait_window] mode=enforce 但未配置 [dock]（渡口关，快照源不存在）" +
+			"——等待窗侧按 observe 演练对待（问询守望不受影响；配置 [dock] 后重启生效）\n")
 	}
 	ccDir := cfg.Watch.CCProjectsDir
 	if ccDir == "" {
@@ -213,6 +262,8 @@ func (w *Watcher) pollCC() {
 		w.harvestUsage(p, info.Size(), st)
 		w.maybeQwatch(st)
 		w.maybeFireBeats(st)
+		w.maybeWaitBeats(st) // 票04：等待窗泳道（在问询跳之后——两泳道共用单在途）
+		w.reconcilePins(st)  // 票04：两泳道快照 Pin 对账（窗开→Pin/窗关且结算→Unpin）
 		w.maybeEnqueue(st)
 		return nil
 	})
@@ -687,7 +738,7 @@ func (w *Watcher) settleBeat(st *ledger.SessionState, result beat.BeatResult) {
 		}
 	}()
 	outcome := beat.Classify(result)
-	w.bookBeat(st, outcome, result)
+	w.bookBeat(st, outcome, result, "qwatch")
 	if w.QWatchStats != nil { // 票04：/stats 计数与累计实收
 		w.QWatchStats.RecordBeat(outcome, result.CostActual)
 	}
@@ -707,9 +758,9 @@ func (w *Watcher) settleBeat(st *ledger.SessionState, result beat.BeatResult) {
 }
 
 // bookBeat 逐跳入既有费用账本 beat 科目（决策 7，对齐既有科目不另起炉灶）：
-// 时间/会话/token/费用/三态；observe 演练跳标 observe。只记元数据与
-// 金额——隐私铁律。记账永不弄断调度。
-func (w *Watcher) bookBeat(st *ledger.SessionState, outcome string, result beat.BeatResult) {
+// 时间/会话/token/费用/三态＋泳道标记（lane=qwatch|wait，票04 双泳道可区分）；
+// observe 演练跳标 observe。只记元数据与金额——隐私铁律。记账永不弄断调度。
+func (w *Watcher) bookBeat(st *ledger.SessionState, outcome string, result beat.BeatResult, lane string) {
 	if w.Accounts == nil {
 		return
 	}
@@ -717,6 +768,7 @@ func (w *Watcher) bookBeat(st *ledger.SessionState, outcome string, result beat.
 	peak := st.PeakCtx // 可变字段：锁内快照（A 修复同款）
 	w.Ledger.Mu().Unlock()
 	w.bookQwatch("beat", st, accounts.Fields{
+		"lane":     lane,
 		"provider": result.Provider, "model": result.Model, "price_ver": nil,
 		"prefix_tokens": peak, "cache_read": result.CacheReadTokens,
 		"cost_pred": result.CostPred, "cost_actual": result.CostActual,
@@ -732,6 +784,311 @@ func (w *Watcher) qwatchAlert(title, msg string) {
 		defer func() { _ = recover() }() // 旁路故障绝不影响调度
 		notify.NotifyAlert(title, msg, w.Cfg)
 	}()
+}
+
+// ---- 票04：等待窗泳道（双泳道第二道；风格对齐 maybeFireBeats/fireOneBeat） ----
+
+// waitLaneRec 等待窗泳道的每窗状态（F9 按窗计熔断的载体）。守卫锁＝
+// Daemon.windowsMu（与窗口表同域；见 Watcher.waitLane 注释）。
+type waitLaneRec struct {
+	windowTS    float64 // 窗口 OpenedTS——识别重开（变更＝新窗：旧泳道收尾、状态重置）
+	anchorWrite float64 // 建泳道时的 last_write——窗口收尾"主会话未回归"判据
+	fired       int     // 本窗已跳数（第 k 跳在闲置 k·τ 到点）
+	errStreak   int     // 连续 transport-ERROR 计（HIT/MISS 清零——Breaker 同语义）
+	stopped     bool    // F9 停本窗剩余跳（1 MISS / 3 连 ERROR；新窗另起）
+	costActual  float64 // 本窗累计实收（收尾行汇总用）
+}
+
+// waitEffectiveMode 等待窗侧生效 mode：enforce＋渡口关 → observe（NewWatcher
+// 判定一次并告警）；off（含裸构造零值容错）与 observe 原样。
+func (w *Watcher) waitEffectiveMode() string {
+	if w.waitEnforceDowngraded {
+		return "observe"
+	}
+	return w.Cfg.WaitWindow.Mode
+}
+
+// maybeWaitBeats 等待窗泳道调度入口（守望轮询循环内，pollCC 在问询跳之后
+// 调用——两泳道共用单在途，先后即串行）。判据（F8）：排跳 ⇔ 等待窗开着
+// （windows.go 现有窗口状态，含停车未过期窗＝异步子代理仍在跑；停车满 1h
+// 懒过期窗口已闭→不排；纯工具等待无子代理→无窗→自然不覆盖）且主会话闲置
+// 满 τ 且前缀 ≥ 计算器 MinPrefixTokens。主会话恢复写入→窗口已闭（NoteUsage/
+// NoteGatePrompt 既有道）→不排。间隔与等待上限全部从策略计算器取——本函数
+// 只消费 τ/cap/min_prefix，绝不出现第二份公式（公式单源红线）。一切异常吞掉
+// ——绝不影响守望与摆渡主路径。
+func (w *Watcher) maybeWaitBeats(st *ledger.SessionState) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[wait] 等待窗泳道调度异常（忽略继续）: %v\n", r)
+		}
+	}()
+	if w.Daemon == nil || st.Agent != "cc" {
+		return // 泳道依赖窗口表（Daemon 接线）；心跳前缀源＝渡口 CC 流量，仅 cc
+	}
+	mode := w.waitEffectiveMode()
+	if mode != "observe" && mode != "enforce" {
+		return // off 零开销（含零值容错：非 observe/enforce 一律按关）
+	}
+	d := w.Daemon
+	w.Ledger.Mu().Lock()
+	lastWrite := st.LastWrite
+	w.Ledger.Mu().Unlock()
+	key := winKey{st.Agent, st.SessionID}
+	d.windowsMu.Lock()
+	openedTS, open := d.waitWindowOpenLocked(st.Agent, st.SessionID)
+	if !open {
+		if rec := w.waitLane[key]; rec != nil {
+			delete(w.waitLane, key)
+			w.settleWaitLaneLocked(st, rec, lastWrite, "window_closed")
+		}
+		d.windowsMu.Unlock()
+		return
+	}
+	rec := w.waitLane[key]
+	if rec == nil || rec.windowTS != openedTS {
+		if rec != nil {
+			// 同轮间隙关+开（收尾没见到闭态）：旧泳道如实收尾再另起新泳道
+			delete(w.waitLane, key)
+			w.settleWaitLaneLocked(st, rec, lastWrite, "reopened")
+		}
+		w.waitLane[key] = &waitLaneRec{windowTS: openedTS, anchorWrite: lastWrite}
+		d.windowsMu.Unlock()
+		return // 本轮只登记：开窗瞬间的派发请求本身已刷缓存（首跳在闲置满 τ）
+	}
+	stopped, fired := rec.stopped, rec.fired
+	d.windowsMu.Unlock()
+	if stopped {
+		return // F9 停本窗：剩余跳不排（窗口照常开，重开新窗另起）
+	}
+	// 锁外：懒富化（读盘）＋策略现算——绝不持 windowsMu 读盘/推导。
+	w.enrich(st)
+	w.Ledger.Mu().Lock()
+	peak := st.PeakCtx
+	w.Ledger.Mu().Unlock()
+	pol, perr := w.waitPolicyFn(peak)
+	if perr != nil {
+		// 无策略（TTL 未实测/无 p_cache，Q16 宁可不跳不造数）：告警一次，
+		// 本进程内等待窗泳道零排跳（窗口/Pin 照常——只缺节律）。
+		if w.waitPolicyWarned.CompareAndSwap(false, true) {
+			w.qwatchAlert("等待窗心跳无策略",
+				fmt.Sprintf("策略计算器不可用（%v）——等待窗泳道本进程内不排跳；配置 [heartbeat] ttl_s 与 [prices.*] 后重启生效", perr))
+		}
+		return
+	}
+	if peak < pol.MinPrefixTokens {
+		return // 前缀不足（计算器输出）：保温无经济性，不排
+	}
+	// 节律只取计算器输出：第 k 跳在闲置 k·τ 到点（对应 policy.StrategyCosts
+	// 的 ⌈wait/τ⌉ 口径），等待上限 cap 只向下夹紧（manual_wait_cap_s）。
+	k := float64(fired + 1)
+	dueIdle := k * pol.TauS
+	capS := pol.WorthwhileCapS
+	if manual := w.Cfg.WaitWindow.ManualWaitCapS; manual > 0 && manual < capS {
+		capS = manual // 手动只能往下收（policy_viewer.Derive 同口径）
+	}
+	if dueIdle > capS {
+		return // 超上限（expire 档）：剩余等待不保温
+	}
+	if clock.Now()-lastWrite < dueIdle {
+		return // 未到点（主会话闲置未满 τ·k）
+	}
+	w.fireWaitBeat(st, rec, mode, lastWrite+dueIdle)
+}
+
+// fireWaitBeat 单跳：验窗-占用-登记同一临界区（windowsMu——等待窗的窗态在
+// 窗口表而非台账，与 fireOneBeat 的台账临界区同型对位）→ 锁外发送 → 结账。
+// 在途占用与问询守望共用全局 beatInFlight（多窗排队，绝不并行）。
+func (w *Watcher) fireWaitBeat(st *ledger.SessionState, rec *waitLaneRec,
+	mode string, beatTS float64) {
+	d := w.Daemon
+	d.windowsMu.Lock()
+	openedTS, open := d.waitWindowOpenLocked(st.Agent, st.SessionID)
+	if !open || openedTS != rec.windowTS || rec.stopped {
+		d.windowsMu.Unlock()
+		return // 窗已关/已换新窗/本窗已停：本跳取消
+	}
+	if w.beatInFlight.Load() {
+		d.windowsMu.Unlock()
+		return // 全局同时最多 1 跳在途（跨泳道串行；下轮再试）
+	}
+	rec.fired++
+	idx := rec.fired
+	windowTS := rec.windowTS
+	w.beatInFlight.Store(true) // 占用与验窗同临界区（fireOneBeat 同型）
+	d.windowsMu.Unlock()
+	defer w.beatInFlight.Store(false)                         // fireOneBeat 同款（atomic 防 -race）
+	result := w.sendWaitBeat(st, mode, windowTS, idx, beatTS) // 网络绝不持锁
+	w.settleWaitBeat(st, rec, result)
+}
+
+// sendWaitBeat 选发送器（问询 sendBeat 同型）：observe/降级 → NoopSender
+// （零网络）；enforce → 注入的真实 sender；未注入则告警一次并按 observe 演练。
+func (w *Watcher) sendWaitBeat(st *ledger.SessionState, mode string,
+	openedTS float64, beatIdx int, beatTS float64) beat.BeatResult {
+	w.Ledger.Mu().Lock()
+	plan := beat.BeatPlan{
+		Agent: st.Agent, SessionID: st.SessionID,
+		TranscriptPath: st.TranscriptPath,
+		OpenedTS:       openedTS, // 等待窗 OpenedTS（非台账 QWatchOpenedTS）
+		LastWrite:      st.LastWrite,
+		Size:           st.Size,
+		BeatIndex:      beatIdx,
+		BeatTS:         beatTS,
+	}
+	w.Ledger.Mu().Unlock()
+	if mode == "enforce" && w.BeatSender != nil {
+		var r beat.BeatResult
+		func() { // 发送器炸掉按一跳 ERROR 记（sendBeat 同口径）
+			defer func() {
+				if p := recover(); p != nil {
+					r = beat.BeatResult{Sent: true, OK: false,
+						Err: fmt.Sprintf("sender-raise:%T", p)}
+				}
+			}()
+			r = w.BeatSender.Send(plan)
+		}()
+		return r
+	}
+	if mode == "enforce" && !w.waitDrillWarned.Swap(true) { // 只告警一次
+		fmt.Printf("[wait] ⚠ mode=enforce 但未注入真实 BeatSender（渡口未起）" +
+			"——等待窗心跳按 observe 演练记账\n")
+	}
+	return w.noopSender.Send(plan)
+}
+
+// settleWaitBeat 结账：逐跳入账（lane=wait）→ 窗口级熔断（F9 按窗计，与问询
+// 守望的全局 Breaker 互不相干）：1 MISS→停本窗剩余跳＋告警（建议复测 TTL，
+// 不自改配置）；连续 3 transport-ERROR→停本窗。记账在 windowsMu 下、
+// ledgerMu 之外（recordWindowLocked 同款合规；bookBeat 内部短暂取台账锁为
+// windowsMu→ledgerMu 正序）。
+func (w *Watcher) settleWaitBeat(st *ledger.SessionState,
+	rec *waitLaneRec, result beat.BeatResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[wait] 等待窗心跳结账异常（忽略）: %v\n", r)
+		}
+	}()
+	outcome := beat.Classify(result)
+	w.bookBeat(st, outcome, result, "wait")
+	alertTitle, alertMsg := "", ""
+	w.Daemon.windowsMu.Lock()
+	rec.costActual += result.CostActual
+	switch outcome {
+	case beat.OutMiss:
+		rec.stopped = true // F9：1 MISS 即停本窗剩余跳
+		alertTitle = "等待窗心跳熔断"
+		alertMsg = fmt.Sprintf("%s 1 跳 MISS：停本窗剩余跳——建议复测 TTL"+
+			"（experiments/cache-ttl 套件），配置不自改", runeCap8(st.SessionID))
+	case beat.OutError:
+		rec.errStreak++
+		if rec.errStreak >= beat.ErrorLimit {
+			rec.stopped = true
+			alertTitle = "等待窗心跳错误熔断"
+			alertMsg = fmt.Sprintf("%s 连续 %d 跳 transport-ERROR：停本窗剩余跳",
+				runeCap8(st.SessionID), beat.ErrorLimit)
+		}
+	default:
+		rec.errStreak = 0 // hit/observe：能拿到结论即清 ERROR 连击（Breaker 同语义）
+	}
+	w.Daemon.windowsMu.Unlock()
+	if alertTitle != "" {
+		w.qwatchAlert(alertTitle, alertMsg)
+	}
+}
+
+// settleWaitLaneLocked 等待窗泳道收尾：结算一行 wait_close（泳道汇总；主会话
+// 未回归且已跳＝无效保温，标 useless_warm——spec「无效保温单列入账」）。
+// 须持 windowsMu 调用；记账（accounts I/O）在 windowsMu 下、ledgerMu 之外
+// ——recordWindowLocked 同款合规。
+func (w *Watcher) settleWaitLaneLocked(st *ledger.SessionState, rec *waitLaneRec,
+	lastWrite float64, reason string) {
+	if rec.fired <= 0 {
+		return // 未跳过（策略缺失/前缀不足/未到点）：窗口流水已有 window 科目，不另记
+	}
+	// 主会话回归判据：last_write 越过建泳道基线（恢复写入经 Touch 入账）。
+	mainResumed := lastWrite > rec.anchorWrite
+	now := clock.Now()
+	ff := accounts.Fields{
+		"lane":         "wait",
+		"opened_ts":    mathx.Round(rec.windowTS, 3),
+		"closed_ts":    mathx.Round(now, 3),
+		"dur_s":        mathx.Round(math.Max(0.0, now-rec.windowTS), 1),
+		"beats_fired":  rec.fired,
+		"cost_actual":  mathx.Round(rec.costActual, 6),
+		"main_resumed": mainResumed,
+		"useless_warm": !mainResumed, // 无效保温：跳了、主会话没回来（恒写——白名单必填语义）
+		"close_reason": reason,
+	}
+	w.bookQwatch("wait_close", st, ff)
+}
+
+// defaultWaitPolicy 生产策略缝实现：只调 policy.Compute（公式单源红线）。
+// 输入：前缀＝peak_ctx（懒富化）、TTL＝[heartbeat].ttl_s（实测值）、价格本＝
+// [prices.*]（NewWatcher 一次读盘）按 FerryProvider 选——report.bookFor 同
+// 口径：key 命中→取之，否则仅一本→取唯一本，再否则不可算（Q16 不造数）；
+// 版本＝At(now)，早于一切版本回落末版（report 同款）。
+func (w *Watcher) defaultWaitPolicy(prefixTokens int) (policy.HeartbeatPolicy, error) {
+	ttl := w.Cfg.Heartbeat.TTLS
+	if ttl <= 0 {
+		return policy.HeartbeatPolicy{}, policy.ErrTTLUnset
+	}
+	var book *prices.PriceBook
+	if b, ok := w.waitBooks[w.Cfg.FerryProvider]; ok {
+		book = &b
+	} else if len(w.waitBooks) == 1 {
+		for _, b := range w.waitBooks {
+			book = &b
+		}
+	}
+	if book == nil || len(book.Versions) == 0 {
+		return policy.HeartbeatPolicy{}, fmt.Errorf(
+			"无可用品价格表（[prices.*]，provider=%q）", w.Cfg.FerryProvider)
+	}
+	pv := book.At(clock.Now())
+	if pv == nil {
+		pv = &book.Versions[len(book.Versions)-1]
+	}
+	return policy.Compute(*book, *pv, ttl, prefixTokens, policy.DefaultBeatOutTokens,
+		policy.DefaultSafety, policy.DefaultGraceS, policy.DefaultMinPrefixTokens)
+}
+
+// reconcilePins 两泳道快照 Pin 对账（F4 不变式的落地）：等待窗（泳道开启时）
+// 或问询窗开着 → Pin(sessionID)；两窗皆闭且最后一跳已结算（对账点在
+// maybeFireBeats/maybeWaitBeats 之后，fire 同步结算）→ Unpin。每轮幂等；
+// 渡口关（句柄 nil）时 dockPin/dockUnpin 安全跳过。只处理 cc（快照按 CC
+// 会话归档）。锁序：windowsMu 探测与 ledgerMu 读各自独立短暂获取，绝不嵌套。
+func (w *Watcher) reconcilePins(st *ledger.SessionState) {
+	if w.Daemon == nil || st.Agent != "cc" {
+		return
+	}
+	key := winKey{st.Agent, st.SessionID}
+	w.Daemon.windowsMu.Lock()
+	_, waitOpen := w.Daemon.waitWindowOpenLocked(st.Agent, st.SessionID)
+	w.Daemon.windowsMu.Unlock()
+	if waitOpen && w.Cfg.WaitWindow.Mode == "off" {
+		waitOpen = false // 泳道关＝无心跳读者，不占快照（mode 三元里 off 才免钉）
+	}
+	w.Ledger.Mu().Lock()
+	qwatchOpen := st.QWatchOpenedTS != nil
+	w.Ledger.Mu().Unlock()
+	shouldPin := waitOpen || qwatchOpen
+	w.stampMu.Lock()
+	pinned := w.lanePins[key]
+	if shouldPin == pinned {
+		w.stampMu.Unlock()
+		return
+	}
+	if shouldPin {
+		w.lanePins[key] = true
+	} else {
+		delete(w.lanePins, key)
+	}
+	w.stampMu.Unlock()
+	if shouldPin {
+		w.dockPin(st.SessionID)
+	} else {
+		w.dockUnpin(st.SessionID)
+	}
 }
 
 // ---- 懒富化与用量采集（daemon.py:441-490 逐字） ----

@@ -32,8 +32,10 @@ var kindFields = map[string][]string{
 		"completion_tokens", "outcome", "wall_s"},
 	// 心跳（T41 占坑，T51 票03 起有生产者）：三态 outcome ∈ hit|miss|error
 	// + observe（演练跳未真发）。T41 的 hit 布尔被三态取代（当时无生产者）。
+	// lane 泳道标记（票04 双泳道：qwatch|wait）——Go 版在 Python 白名单之上
+	// 追加，唯一生产者 bookBeat 恒写。
 	"beat": {"provider", "model", "price_ver", "prefix_tokens", "cache_read",
-		"outcome", "cost_pred", "cost_actual"},
+		"outcome", "cost_pred", "cost_actual", "lane"},
 	"block":  {"prefix_tokens", "idle_s"},
 	"inject": {"tokens", "handoff_id"},
 	"bypass": {"prefix_tokens"},
@@ -47,14 +49,20 @@ var kindFields = map[string][]string{
 	"qwatch_open": {"unit_count", "prefix_tokens"},
 	"qwatch_close": {"opened_ts", "closed_ts", "dur_s", "beats_fired",
 		"close_reason"},
+	// 等待窗泳道收尾（票04，Go 版新增科目——Python 白名单无此节）：泳道
+	// 汇总一行；主会话未回归且已跳＝无效保温（useless_warm=true，spec
+	// 「无效保温单列入账」）。只记元数据与金额（隐私铁律）。
+	"wait_close": {"lane", "opened_ts", "closed_ts", "dur_s", "beats_fired",
+		"cost_actual", "main_resumed", "useless_warm", "close_reason"},
 	// 逐次请求的用量遥测（设计 §3.7；会话文件 30 天清理后的审计地基）
 	"usage": {"model", "title", "input_tokens", "cache_read_tokens",
 		"cache_creation_tokens", "output_tokens", "offset"},
 }
 
 // kindOrder 科目顺序 = Python dict 插入序（KINDS 元组），未知科目报错文案用。
+// wait_close 为 Go 版新增（票04），列于 qwatch 系之后。
 var kindOrder = []string{"handoff", "beat", "block", "inject", "bypass", "window",
-	"qwatch_hit", "qwatch_open", "qwatch_close", "usage"}
+	"qwatch_hit", "qwatch_open", "qwatch_close", "wait_close", "usage"}
 
 // commonFields 公共字段（模块盖章；白名单校验不拒，但不随传入 Fields 覆盖）。
 var commonFields = map[string]bool{
