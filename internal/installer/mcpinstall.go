@@ -60,7 +60,9 @@ func classifyMCPEntry(entry map[string]any) (own bool, reason string) {
 	// 基名判定兼容两种分隔形（JSON 里反斜杠转义/正斜杠都可能出现）。
 	base := path.Base(strings.ReplaceAll(cmd, "\\", "/"))
 	if base != "ferryman" && base != "ferryman.exe" {
-		return false, fmt.Sprintf("command %q 非 ferryman 可执行（外部条目）", cmd)
+		// R1：reason 不输出 command 原值（旗标/查询串可搭载凭据）——只给净化基名。
+		return false, fmt.Sprintf("command <%s> 非 ferryman 可执行（外部条目）",
+			sanitizedBase(base))
 	}
 	for _, a := range asList(entry["args"]) {
 		if s, ok := a.(string); ok && s == "mcp" {
@@ -70,15 +72,26 @@ func classifyMCPEntry(entry map[string]any) (own bool, reason string) {
 	return false, "args 不含 \"mcp\"（形态不兼容）"
 }
 
-// maskedMCPSummary F6 ③④ 条目脱敏摘要：白名单＝command/args 形状；其余键
-// （env/headers/type/…）一律掩码为「<已隐藏 N 键>」——值绝不输出。
+// sanitizedBase 基名净化：剥首个 '?' 或空白起的旗标/查询串段——该段可搭载
+// 凭据（评审反例：ferryman.exe?token=sk-…），任何回显路径只输出净化基名。
+func sanitizedBase(base string) string {
+	if i := strings.IndexAny(base, "? \t"); i >= 0 {
+		return base[:i]
+	}
+	return base
+}
+
+// maskedMCPSummary F6 ③④ 条目脱敏摘要：形状级——command 只出净化基名，args
+// 只出元素计数（元素值/嵌套对象一律不输出——R1：值级回显可漏 --token 类凭据）；
+// 其余键（env/headers/type/…）一律掩码为「<已隐藏 N 键>」。任何值都不出。
 func maskedMCPSummary(entry map[string]any) string {
 	var parts []string
 	if cmd, ok := entry["command"].(string); ok && cmd != "" {
-		parts = append(parts, fmt.Sprintf("command=%q", cmd))
+		parts = append(parts, fmt.Sprintf("command=<%s>",
+			sanitizedBase(path.Base(strings.ReplaceAll(cmd, "\\", "/")))))
 	}
 	if args := asList(entry["args"]); len(args) > 0 {
-		parts = append(parts, fmt.Sprintf("args=%v", args))
+		parts = append(parts, fmt.Sprintf("args=<%d 元素>", len(args)))
 	}
 	hidden := 0
 	for k := range entry {
@@ -133,8 +146,9 @@ func InstallMCP(configPath, exe string, force bool) int {
 		data["mcpServers"] = servers
 	}
 
-	// F6 冲突判定（既有 ferryman 键才走；其余键一概不惊动）。
-	if existing, exists := servers[mcpServerKey]; exists && existing != nil {
+	// F6 冲突判定（既有 ferryman 键才走；其余键一概不惊动）。null 限值视同
+	// 占位（R1：与 doctor 的非对象判定对齐——默认拒绝，仅 --force 覆盖）。
+	if existing, exists := servers[mcpServerKey]; exists {
 		if entry, isObj := existing.(map[string]any); isObj {
 			if own, reason := classifyMCPEntry(entry); !own {
 				// ② 外部/不兼容：默认拒绝＋原因＋脱敏摘要；仅 --force 覆盖

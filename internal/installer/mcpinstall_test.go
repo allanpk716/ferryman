@@ -246,9 +246,16 @@ func TestInstallMCPNoPlaintextCredInAnyEchoPath(t *testing.T) {
 	exe := filepath.Join(tmp, "ferryman.exe")
 	fakeEnv := "sk-fake-env-4b7e21"
 	fakeHdr := "Bearer sk-fake-hdr-8c2d90"
+	// R1 反例补强：凭据搭在 args（旗标值/嵌套对象）与 command 查询串里的
+	// 三种形态——值级回显一律不得漏（票06 评审三个实测反例）。
+	fakeArgFlag := "sk-fake-args-77aa"
+	fakeArgMap := "sk-fake-argmap-5c1b"
+	fakeCmdQ := "sk-fake-cmd-9d3e"
 	writeJSONFile(t, cfg, map[string]any{"mcpServers": map[string]any{
 		"ferryman": map[string]any{
-			"type": "stdio", "command": "npx", "args": []any{"-y", "x"},
+			"type": "stdio", "command": "npx",
+			"args": []any{"-y", "x", "--token", fakeArgFlag,
+				map[string]any{"Authorization": "Bearer " + fakeArgMap}},
 			"env":     map[string]any{"FAKE_API_TOKEN": fakeEnv},
 			"headers": map[string]any{"Authorization": fakeHdr},
 		},
@@ -262,6 +269,9 @@ func TestInstallMCPNoPlaintextCredInAnyEchoPath(t *testing.T) {
 	}
 	if !strings.Contains(out, "已隐藏") {
 		t.Fatalf("脱敏摘要应带「<已隐藏 N 键>」式掩码:\n%s", out)
+	}
+	if !strings.Contains(out, "args=<5 元素>") {
+		t.Fatalf("args 摘要应为形状级（元素计数）:\n%s", out)
 	}
 	// 回显路径二：--force 覆盖前被替换条目的脱敏摘要。
 	_, out = runInstallMCP(t, cfg, exe, true)
@@ -283,6 +293,56 @@ func TestInstallMCPNoPlaintextCredInAnyEchoPath(t *testing.T) {
 	_, out = runInstallMCP(t, cfg, exe, false)
 	if strings.Contains(out, fakeEnv) || strings.Contains(out, "sk-fake") {
 		t.Fatalf("成功回显不得泄漏旧条目 env 凭据:\n%s", out)
+	}
+	// 回显路径四（R1）：command 查询串搭凭据的外部条目——拒绝 reason 与摘要
+	// 只出净化基名，凭据不得出现。
+	writeJSONFile(t, cfg, map[string]any{"mcpServers": map[string]any{
+		"ferryman": map[string]any{
+			"type": "stdio",
+			"command": "C:/tools/ferryman.exe?token=" + fakeCmdQ,
+			"args":   []any{"mcp"},
+		},
+	}})
+	_, out = runInstallMCP(t, cfg, exe, false)
+	if strings.Contains(out, "sk-fake") || strings.Contains(out, fakeCmdQ) {
+		t.Fatalf("command 查询串凭据不得进回显:\n%s", out)
+	}
+	if !strings.Contains(out, "ferryman.exe") { // 净化基名仍在（可辨识）
+		t.Fatalf("净化基名应保留（辨识用）:\n%s", out)
+	}
+	// doctor 面同判据：外部条目的失败 Detail（agent 可见）不含任何 canary。
+	ch := CheckMCPRegistration(cfg)
+	if ch.OK {
+		t.Fatal("查询串 command 应判外部（基名不匹配）")
+	}
+	for _, bad := range []string{fakeCmdQ, "sk-fake"} {
+		if strings.Contains(ch.Msg, bad) {
+			t.Fatalf("doctor Detail 泄漏 %q: %s", bad, ch.Msg)
+		}
+	}
+}
+
+// TestInstallMCPNullEntryRequiresForce R1：null 限值视同占位（与 doctor 非对象
+// 判定对齐）——默认拒绝、字节原样；--force 才覆盖。
+func TestInstallMCPNullEntryRequiresForce(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, ".claude.json")
+	exe := filepath.Join(tmp, "ferryman.exe")
+	writeJSONFile(t, cfg, map[string]any{"mcpServers": map[string]any{"ferryman": nil}})
+	before := readWhole(t, cfg)
+	code, out := runInstallMCP(t, cfg, exe, false)
+	if code != 1 || !strings.Contains(out, "拒绝") {
+		t.Fatalf("null 条目默认应拒绝, got code=%d:\n%s", code, out)
+	}
+	if string(before) != string(readWhole(t, cfg)) {
+		t.Fatal("拒绝路径配置字节必须原样不动")
+	}
+	code, _ = runInstallMCP(t, cfg, exe, true)
+	if code != 0 {
+		t.Fatalf("--force 覆盖 null 应成功, got %d", code)
+	}
+	if ch := CheckMCPRegistration(cfg); !ch.OK {
+		t.Fatalf("force 覆盖后应判在位: %s", ch.Msg)
 	}
 }
 
