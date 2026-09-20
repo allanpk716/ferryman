@@ -29,9 +29,9 @@ type queryEndpoint func(d *Daemon, w http.ResponseWriter, r *http.Request)
 var queryEndpoints = map[string]queryEndpoint{
 	"/sessions":   handleSessions,
 	"/session":    handleSessionDetail,
-	"/gate_check": stubNotImplemented, // 后续票替换
-	"/report":     stubNotImplemented, // 后续票替换
-	"/beats":      stubNotImplemented, // 后续票替换
+	"/gate_check": handleGateCheck,
+	"/report":     stubNotImplemented, // 票03 实现（query_report.go）
+	"/beats":      stubNotImplemented, // 票03 实现（query_beats.go）
 }
 
 // dispatchQuery 查询面分派入口（httpapi.doGet default 分支的单块接线点）：

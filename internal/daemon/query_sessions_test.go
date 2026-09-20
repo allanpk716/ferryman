@@ -391,20 +391,12 @@ func TestQuerySessionNotFoundAndMissingID(t *testing.T) {
 	}
 }
 
-// ---- stub 端点注册在位 ----
+// ---- 未知路径 404 语义在位（票01 的五 stub 已全部被后续票替换为实现：
+// /sessions、/session、/gate_check、/report、/beats 各有验收测试，501 清单
+// 随之退役——本钉子只留未知路径语义） ----
 
 func TestQueryStubsReturnNotImplemented(t *testing.T) {
 	e := newQueryEnv(t)
-	for _, path := range []string{"/gate_check", "/report", "/beats"} {
-		code, raw := getRaw(t, e.port, path, e.token)
-		if code != 501 {
-			t.Fatalf("GET %s = %d %q, want 501（stub）", path, code, raw)
-		}
-		var body map[string]any
-		if err := json.Unmarshal(raw, &body); err != nil || body["error"] != "not implemented" {
-			t.Fatalf("%s stub 应明确「未实现」: %q", path, raw)
-		}
-	}
 	// 查询面之外的未知路径仍 404（既有语义不动）。
 	if code, raw := getRaw(t, e.port, "/definitely-not", e.token); code != 404 ||
 		string(raw) != `{"error":"not found"}` {
