@@ -645,3 +645,39 @@ func TestSelfRelayCopyInResidueDomain(t *testing.T) {
 		t.Fatal("supervisor-copy 应被清扫域收走")
 	}
 }
+
+// TestStopDaemonWaitsForProcessExit 端口释放后还须等进程真正退出(v0.1.1
+// 演练实证的镜像解锁竞态:优雅停机里监听口先关、进程后走,swap 抢跑会
+// Access denied)。procAlive 前两轮活、之后死 → stopDaemon 应轮询到死才返回。
+func TestStopDaemonWaitsForProcessExit(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.PortWait = 2 * time.Second
+	})
+	// 世界没起守护,端口天然空;daemon.pid 指向一个"活着的"旧 PID。
+	if err := os.WriteFile(filepath.Join(w.dataDir, "daemon.pid"),
+		[]byte(`{"pid":424242,"port":7311}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var alive int32
+	sup.procAlive = func(pid int) bool { return atomic.AddInt32(&alive, 1) <= 2 }
+
+	if err := sup.stopDaemon(w.exePath, "测试停旧"); err != nil {
+		t.Fatalf("stopDaemon = %v", err)
+	}
+	if n := atomic.LoadInt32(&alive); n < 3 {
+		t.Fatalf("应轮询到进程退出(≥3 次判定), got %d——端口释放后没等镜像解锁", n)
+	}
+}
+
+// TestWaitProcessExitBudgetExhausted 等满预算如实放弃(pid 恒活),不留死等。
+func TestWaitProcessExitBudgetExhausted(t *testing.T) {
+	_, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.PortWait = 300 * time.Millisecond
+	})
+	sup.procAlive = func(int) bool { return true }
+	start := time.Now()
+	sup.waitProcessExit(999, sup.cfg.PortWait)
+	if el := time.Since(start); el < 250*time.Millisecond {
+		t.Fatalf("应等满预算: elapsed=%v", el)
+	}
+}

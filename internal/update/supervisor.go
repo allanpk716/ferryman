@@ -463,14 +463,21 @@ func (s *Supervisor) recoverPostSwap(j journal, targetExe string) (string, error
 // ---- 停旧与守护面探活 ----
 
 // stopDaemon 停守护(规格 §C 第5条):① 优雅 POST /shutdown(票04:loopback
-// + Bearer)→ ② 等端口释放(≤PortWait)→ ③ 端口仍被占且是本守护在跑 →
-// 兜底 kill:读 daemon.pid,验证 PID 映像路径 == 换装目标(seam B),不匹配/
-// 不可查一律拒杀并报错。
+// + Bearer)→ ② 等端口释放(≤PortWait)→ ②b 等旧进程真正退出(端口先释、
+// 进程后出:swap 撞上还活着的旧镜像会 Access denied——v0.1.1 演练实证)→
+// ③ 端口仍被占且是本守护在跑 → 兜底 kill:读 daemon.pid,验证 PID 映像路径
+// == 换装目标(seam B),不匹配/不可查一律拒杀并报错。
 func (s *Supervisor) stopDaemon(targetExe, what string) error {
+	// 先记旧 PID(shutdown 过程会删 pid 文件,读晚了就没了)。
+	oldPID := 0
+	if pid, err := s.readDaemonPID(); err == nil {
+		oldPID = pid
+	}
 	if err := s.postShutdown(); err != nil {
 		s.logf("%s:/shutdown 端点未应(%v)——走兜底判定", what, err)
 	}
 	if s.waitPortFree(s.cfg.PortWait) {
+		s.waitProcessExit(oldPID, s.cfg.PortWait)
 		return nil
 	}
 	if !s.probeDaemonAny() {
@@ -496,8 +503,28 @@ func (s *Supervisor) stopDaemon(targetExe, what string) error {
 	if !s.waitPortFree(s.cfg.PortWait) {
 		return fmt.Errorf("%s:kill 后端口 %d 仍未释放", what, s.cfg.Port)
 	}
+	s.waitProcessExit(pid, s.cfg.PortWait)
 	s.logf("%s:兜底 kill PID %d(映像已核 == 换装目标)", what, pid)
 	return nil
+}
+
+// waitProcessExit 等进程真正退出(≤budget)。/shutdown 优雅停机里监听口先关、
+// 进程后走——端口释放 ≠ 镜像解锁,swap 若抢跑会 Access denied(v0.1.1 演练
+// 实证)。超时如实放弃并留日志:不静默假装等过,后续步骤撞锁会再如实报错。
+func (s *Supervisor) waitProcessExit(pid int, budget time.Duration) {
+	if pid <= 0 || budget <= 0 {
+		return
+	}
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if !s.procAlive(pid) {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if s.procAlive(pid) {
+		s.logf("PID %d 端口已释但进程未退(等满 %v 放弃;若后续撞锁将如实报错)", pid, budget)
+	}
 }
 
 // postShutdown POST /shutdown(票04 端点);非 200/网络错都算未应。
