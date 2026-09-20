@@ -146,8 +146,9 @@ func handleReport(d *Daemon, w http.ResponseWriter, r *http.Request) {
 }
 
 // savingsComputability 可算性标注（report.StrategyTable 的 skip 口径同源）：
-// 无价格表 / 无版本 / 末版缺 p_cache → 不可算＋如实文案；此时 SavingsV1 的
-// 毛节省逐行跳过恒为 0——不硬算。
+// 无价格表 / 无版本 / 末版缺 p_cache → 不可算＋如实文案——末版缺 p_cache 时
+// 按 report 包口径整表标注不可算（多版本价格本的旧版含 p_cache 且 block 行
+// 落旧版生效窗时，SavingsV1 仍可能算出非零毛节省，与标注并存是既有口径，非本地硬算）。
 func savingsComputability(econBook *prices.PriceBook) (bool, string) {
 	switch {
 	case econBook == nil:

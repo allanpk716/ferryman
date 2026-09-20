@@ -26,7 +26,7 @@ import (
 // queryEndpoint 查询面 handler 形状（端点注册表的值类型）。
 type queryEndpoint func(d *Daemon, w http.ResponseWriter, r *http.Request)
 
-// queryEndpoints 只读 GET 端点注册表（票01：两实现＋三 stub）。
+// queryEndpoints 只读 GET 端点注册表（五端点全部为真实现，见票间路径互斥注）。
 var queryEndpoints = map[string]queryEndpoint{
 	"/sessions":   handleSessions,
 	"/session":    handleSessionDetail,
@@ -36,7 +36,7 @@ var queryEndpoints = map[string]queryEndpoint{
 }
 
 // dispatchQuery 查询面分派入口（httpapi.doGet default 分支的单块接线点）：
-// 路径命中注册表则回话（含 200/400/404/501 一切查询面回话）并返回 true；
+// 路径命中注册表则回话（含 200/400/404 一切查询面回话）并返回 true；
 // 未命中返回 false 由调用方走 notFound。DaemonLike 非 *Daemon（测试替身）时
 // 视同未命中——查询面只在真 Daemon 上存在。
 func dispatchQuery(dl DaemonLike, w http.ResponseWriter, r *http.Request) bool {
