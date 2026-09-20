@@ -326,6 +326,84 @@ func TestAPI(t *testing.T) {
 
 func near(a, b float64) bool { return math.Abs(a-b) <= 1e-6 }
 
+// TestSubagentAPI 票02 API 契约（rev1·F8）：
+//   - /api/sessions 的 SessionSummary 新增主/子两个 token 桶（main_tokens/
+//     sub_tokens，口径 input+cache_read+creation），既有合计字段（含子行）不动；
+//   - /api/timeline 的 usage 行携带子标记字段 subagent（值=文件 stem，主行空串），
+//     既有键集不增删（扁平 Entry 形状沿用）。
+func TestSubagentAPI(t *testing.T) {
+	dir := t.TempDir()
+	var b strings.Builder
+	// lin-s：主 usage×1 + 子 usage×1（subagent=agent-x，同族系随父入账）
+	b.WriteString(`{"v":1,"kind":"usage","ts":100,"agent":"cc","lineage_id":"lin-s","project":"P","title":"T","input_tokens":100,"cache_read_tokens":10,"cache_creation_tokens":5,"output_tokens":50,"subagent":""}` + "\n")
+	b.WriteString(`{"v":1,"kind":"usage","ts":150,"agent":"cc","session_id":"sess-s","lineage_id":"lin-s","project":"P","model":"glm-4.7","input_tokens":1000,"cache_read_tokens":100,"cache_creation_tokens":50,"output_tokens":500,"offset":3,"subagent":"agent-x"}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "202609.jsonl"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ts := serve(t, dir)
+
+	// ---- /api/sessions：主/子桶 + 既有字段 ----
+	status, body := call(t, ts, http.MethodGet, "/api/sessions", "")
+	if status != 200 {
+		t.Fatalf("sessions status = %d\n%s", status, body)
+	}
+	m := decode(t, body)
+	ss := arr(t, m, "sessions")
+	if len(ss) != 1 {
+		t.Fatalf("sessions 行数 = %d, want 1", len(ss))
+	}
+	s0 := ss[0].(map[string]any)
+	// 新增两桶：主 100+10+5=115；子 1000+100+50=1150
+	if fnum(t, s0, "main_tokens") != 115 {
+		t.Fatalf("main_tokens = %v, want 115", s0["main_tokens"])
+	}
+	if fnum(t, s0, "sub_tokens") != 1150 {
+		t.Fatalf("sub_tokens = %v, want 1150", s0["sub_tokens"])
+	}
+	// 既有字段零改动（合计含子行）：input=1100 cache_read=110 creation=55 output=550 requests=2
+	for k, want := range map[string]float64{
+		"input": 1100, "cache_read": 110, "cache_creation": 55, "output": 550,
+		"requests": 2, "first_ts": 100, "last_ts": 150,
+	} {
+		if got := fnum(t, s0, k); got != want {
+			t.Fatalf("sessions.%s = %v, want %v（既有字段不得漂移）", k, got, want)
+		}
+	}
+	if s0["lineage_id"] != "lin-s" || s0["title"] != "T" || s0["project"] != "P" || s0["agents"] != "cc" {
+		t.Fatalf("sessions 既有字符串字段漂移: %v", s0)
+	}
+
+	// ---- /api/timeline：usage 行携带 subagent，主行空串、子行=stem ----
+	status, body = call(t, ts, http.MethodGet, "/api/timeline?lineage=lin-s", "")
+	if status != 200 {
+		t.Fatalf("timeline status = %d\n%s", status, body)
+	}
+	m = decode(t, body)
+	reqs := arr(t, m, "requests")
+	if len(reqs) != 2 {
+		t.Fatalf("requests 长度 = %d, want 2", len(reqs))
+	}
+	r0 := reqs[0].(map[string]any)
+	r1 := reqs[1].(map[string]any)
+	if r0["subagent"] != "" {
+		t.Fatalf("主会话行 subagent = %v, want 空串", r0["subagent"])
+	}
+	if r1["subagent"] != "agent-x" {
+		t.Fatalf("子代理行 subagent = %v, want agent-x", r1["subagent"])
+	}
+	// 既有键零漂移（扁平 Entry 的代表性键集）
+	for _, k := range []string{"v", "kind", "ts", "agent", "session_id", "lineage_id",
+		"model", "title", "input_tokens", "cache_read_tokens", "cache_creation_tokens",
+		"output_tokens", "offset"} {
+		if _, ok := r1[k]; !ok {
+			t.Fatalf("子代理 usage 行缺既有键 %q: %v", k, r1)
+		}
+	}
+	if r1["input_tokens"] != float64(1000) || r1["ts"] != float64(150) {
+		t.Fatalf("子代理行既有数值漂移: %v", r1)
+	}
+}
+
 // TestNote 服务端提示条：SetNote 后 sessions/timeline 都带 note 键且值正确；
 // 未 SetNote 且目录存在时不得出现 note 键；目录缺失提示与演示标注并存时用
 // "；"连接、演示标注在后（前端展示顺序：先讲数据为何为空，再讲这是演示）。

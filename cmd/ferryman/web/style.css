@@ -284,6 +284,73 @@ body {
 }
 .tl-lg .chip.chip-dead:not(.off) { border-color: #6b3a3a; }
 
+/* ---------- 子代理甘特（票02 D 形态）：图区下方逐 agent 一行 ----------
+   行=名称 + 轨道（条=首末请求跨度、刻点=每次请求）+ 尾标（tokens/时长/请求数）；
+   点击行在上方两道打同色参考线。横轴百分比对齐图区全时间范围。 */
+#tl-gantt {
+  margin-top: 8px;
+  padding: 8px 12px 10px;
+  background: #151515;
+  border: 1px solid #262626;
+  border-radius: 6px;
+}
+#tl-gantt .g-title {
+  font-size: 12px;
+  color: #aaa;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+#tl-gantt .grow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  cursor: pointer;
+}
+#tl-gantt .grow:hover .gname { color: #fff; }
+#tl-gantt .gname {
+  width: 150px;
+  flex: none;
+  font-size: 11px;
+  color: #999;
+  text-align: right;
+  font-family: Consolas, "Courier New", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#tl-gantt .grow.sel .gname { color: #fff; font-weight: 600; }
+#tl-gantt .gtrack {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  background: #1e1e1e;
+  border-radius: 4px;
+}
+#tl-gantt .gbar {
+  position: absolute;
+  top: 3px;
+  height: 14px;
+  border-radius: 4px;
+}
+#tl-gantt .gtick {
+  position: absolute;
+  top: 5px;
+  width: 2.5px;
+  height: 10px;
+  background: rgba(17, 17, 17, 0.55);
+  border-radius: 1px;
+}
+#tl-gantt .gmeta {
+  width: 190px;
+  flex: none;
+  font-size: 11.5px;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* ---------- 详情面板（点柱/事件/窗口/断缓存区填充） ---------- */
 #tl-detail {
   width: 300px;

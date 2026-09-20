@@ -23,6 +23,46 @@ function fmtTS(ts, withSec) {
   return withSec ? s + ':' + p(d.getSeconds()) : s;
 }
 
+// fmtMD unix 秒 → 本地 MM-DD（票02 兜底链的"月日"=族系最后活动时间，与列表
+// 按最后活动倒序的语义对齐）；0 或非法值返回空串（兜底链里省略该段）。
+function fmtMD(ts) {
+  if (!ts) return '';
+  var d = new Date(ts * 1000);
+  if (isNaN(d.getTime())) return '';
+  function p(n) { return String(n).padStart(2, '0'); }
+  return p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+// pathTail 路径串按 / 与 \ 切分取末段（空串安全）；去 .jsonl 扩展名。
+function pathTail(p) {
+  var segs = String(p || '').split(/[\/\\]/).filter(Boolean);
+  var tail = segs.length ? segs[segs.length - 1] : String(p || '');
+  return tail.replace(/\.jsonl$/i, '');
+}
+
+// listTitle 列表页标题兜底链（票02）：ai-title → 「项目尾段 · agent · 月日」
+// → project 也缺时「agent · 月日 · <会话号前8>」（会话号=lineage 尾段文件名
+// 前 8 位）。project/agents/月日缺哪段省哪段；全缺回退 lineage 前 24 字符
+// （现状行为）。修复"无 ai-title 会话显示转录路径前 24 字符"不可辨认问题。
+function listTitle(s) {
+  if (s.title) return s.title;
+  var agent = (s.agents || '').split(',')[0].trim();
+  var md = fmtMD(s.last_ts);
+  var parts = [];
+  if (s.project) {
+    var segs = String(s.project).split(/[\/\\]/).filter(Boolean);
+    if (segs.length) parts.push(segs[segs.length - 1]);
+  }
+  if (agent) parts.push(agent);
+  if (md) parts.push(md);
+  if (!s.project) {
+    var u8 = pathTail(s.lineage_id).slice(0, 8);
+    if (u8) parts.push(u8);
+  }
+  if (parts.length) return parts.join(' · ');
+  return s.lineage_id ? s.lineage_id.slice(0, 24) : '(无 lineage)';
+}
+
 // fmtK token 数：>=1w 用 x.xw（1.2w=12000），否则千分位。
 function fmtK(n) {
   if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + 'w';
@@ -108,9 +148,9 @@ var PIN = 6.9, PC = 1.7, PO = 24, PER = 10000;
 // ---------- 列表页 ----------
 
 // renderList GET /api/sessions → 会话表格（后端已按最后活动倒序）。
-// 列：标题（无则 lineage 前 24 字符）、项目目录、开始时间、最后活动、
-// 请求数、tokens 合计（input+cache_read+creation）、窗口数、心跳数、交接数。
-// 行点击进入该 lineage 的时序页。
+// 列：标题（兜底链 listTitle：项目尾段·agent·月日 → agent·月日·会话号前8）、
+// 项目目录、开始时间、最后活动、请求数、tokens 主/子内联拆分（不含 output）、
+// 窗口数、心跳数、交接数。行点击进入该 lineage 的时序页。
 async function renderList() {
   var app = document.getElementById('app');
   var seq = ++navSeq; // 竞态守卫：列表页与时序页共用 navSeq，跨页慢响应同样不互踩
@@ -130,15 +170,23 @@ async function renderList() {
 
   var sessions = data.sessions || [];
   var rows = sessions.map(function (s) {
-    var title = s.title || (s.lineage_id ? s.lineage_id.slice(0, 24) : '(无 lineage)');
-    var tokens = (s.input || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
+    var title = listTitle(s);
+    // tokens 主/子内联拆分（票02）：口径不动=输入+缓存读+建缓存（不含 output）；
+    // 子=0 只显主数，子>0 显「主+子」。防御：响应缺新键时回退既有合计。
+    var mainTok = s.main_tokens, subTok = s.sub_tokens;
+    if (mainTok == null && subTok == null) {
+      mainTok = (s.input || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
+      subTok = 0;
+    }
+    mainTok = mainTok || 0; subTok = subTok || 0;
+    var tokens = subTok > 0 ? fmtK(mainTok) + '+' + fmtK(subTok) : fmtK(mainTok);
     return '<tr data-lineage="' + esc(s.lineage_id) + '">' +
       '<td class="cell-title">' + esc(title) + '</td>' +
       '<td class="cell-project">' + esc(s.project || '-') + '</td>' +
       '<td>' + fmtTS(s.first_ts) + '</td>' +
       '<td>' + fmtTS(s.last_ts) + '</td>' +
       '<td class="num">' + (s.requests || 0) + '</td>' +
-      '<td class="num">' + fmtK(tokens) + '</td>' +
+      '<td class="num" title="主 ' + fmtK(mainTok) + ' · 子 ' + fmtK(subTok) + '（口径=输入+缓存读+建缓存，不含输出）">' + tokens + '</td>' +
       '<td class="num">' + (s.windows || 0) + '</td>' +
       '<td class="num">' + (s.beats || 0) + '</td>' +
       '<td class="num">' + (s.handoffs || 0) + '</td>' +
@@ -148,7 +196,7 @@ async function renderList() {
   app.innerHTML =
     '<table id="session-table"><thead><tr>' +
     '<th>标题</th><th>项目目录</th><th>开始时间</th><th>最后活动</th>' +
-    '<th class="num">请求数</th><th class="num">tokens</th>' +
+    '<th class="num">请求数</th><th class="num" title="主+子拆分，口径=输入+缓存读+建缓存（不含输出）">tokens（主+子）</th>' +
     '<th class="num">窗口</th><th class="num">心跳</th><th class="num">交接</th>' +
     '</tr></thead><tbody>' +
     (rows || '<tr><td colspan="9" class="empty">暂无会话数据</td></tr>') +
@@ -184,13 +232,23 @@ function niceCeil(v) {
   return step * base;
 }
 
+// SUBCOLORS 子代理紫系色板（原型 D 变体）；subColorOf 按 stem 稳定取色
+//（charCode 杂凑 → 色板下标：同一 agent 跨刷新/跨缩放同色，与出现序无关）。
+var SUBCOLORS = ['#ba68c8', '#9575cd', '#7986cb'];
+function subColorOf(stem) {
+  var h = 0;
+  for (var i = 0; i < stem.length; i++) h = (h * 31 + stem.charCodeAt(i)) >>> 0;
+  return SUBCOLORS[h % SUBCOLORS.length];
+}
+
 // numOrDash 反跑结果数值兜底：非有限数显示 -（后端字段理论上恒为数，防畸形账本连带崩卡）。
 function numOrDash(v, suffix) {
   return isFinite(v) ? String(Math.round(v * 10) / 10) + (suffix || '') : '-';
 }
 
 // 时序页静态骨架：零数据插值（账本数据全部经 createElement/textContent/setAttribute 进 DOM）。
-// 布局：页头 → 保活计划卡 → 统计卡行 → 图例行 → 图区（SVG+详情面板）→ 控制条 → 反跑结果卡。
+// 布局：页头 → 保活计划卡 → 统计卡行 → 图例行 → 图区（SVG+详情面板）→
+// 子代理甘特（票02，有子行才显示）→ 控制条 → 反跑结果卡。
 var TL_SCAFFOLD =
   '<div id="tl-head">' +
   '<a href="#/">← 返回会话列表</a>' +
@@ -204,7 +262,7 @@ var TL_SCAFFOLD =
   '<div id="tl-lg" class="tl-lg"></div>' +
   '<div class="tl-chart">' +
   '<div id="tl-wrap">' +
-  '<svg id="tl-svg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="单会话 token 时序图"></svg>' +
+  '<svg id="tl-svg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="单会话 token 时序图（上道主会话、下道子代理合计）"></svg>' +
   '<div id="tl-tooltip" hidden>' +
   '<div class="tip-time"></div>' +
   '<div class="tip-model"></div>' +
@@ -214,6 +272,7 @@ var TL_SCAFFOLD =
   '</div>' +
   '<div id="tl-detail"></div>' +
   '</div>' +
+  '<div id="tl-gantt" hidden></div>' +
   '<div id="tl-ctrl">' +
   '<button id="tl-play" type="button" title="回放播放/暂停" aria-label="回放播放/暂停">▶</button>' +
   '<input id="tl-cursor" type="range" aria-label="回放游标">' +
@@ -280,11 +339,13 @@ async function renderTimeline(lineage) {
 }
 
 // deriveReqs 每条 usage 派生花费字段（GLM 口径）与累计；并给行编全局下标 idx。
+// sub=子代理标记（票01 字段：stem，主行空串）、subColor=紫系稳定取色（票02）。
 function deriveReqs(requests) {
   var rs = requests.map(function (r) {
     var cr = r.cache_read_tokens || 0;
     var red = (r.input_tokens || 0) + (r.cache_creation_tokens || 0);
     var out = r.output_tokens || 0;
+    var sub = r.subagent || '';
     return {
       ts: r.ts, m: r.model || '', t: r.title || '',
       in: r.input_tokens || 0, cr: cr,
@@ -292,6 +353,7 @@ function deriveReqs(requests) {
       red: red,
       cCr: cr * PC / PER, cRed: red * PIN / PER, cOut: out * PO / PER,
       tokTot: cr + red + out,
+      sub: sub, subColor: sub ? subColorOf(sub) : '',
     };
   });
   var cum = 0;
@@ -309,6 +371,8 @@ function deriveReqs(requests) {
 // 不算覆盖——T51 票04）；相邻覆盖源间隔 > TTL
 // 且下一个是请求（不是 beat——beat 已把缓存焐热，无重付）→ 一段死亡区。
 // 损失估算 = 下一条请求的新输入 × (全价 − 缓存价)。TTL 变更后须重算。
+// 票02：调用方只喂主会话请求（mainReqs）——子代理请求走子代理自己的转录与
+// 缓存，不参与主会话断缓存判定；TTL 绿带同理只由主请求∪心跳续命。
 function deriveZones(reqs, events, ttl) {
   var cov = [];
   reqs.forEach(function (r) { cov.push({ ts: r.ts, req: r }); });
@@ -330,7 +394,8 @@ function deriveZones(reqs, events, ttl) {
 }
 
 // 图区几何（viewBox 0 0 1200 560）：事件行 y=24 基线；TTL 存活带 y=46..62；
-// 柱区 y=78..470；x 轴刻度 470 以下；绘图区 x 46..1160。
+// 单道柱区 y=78..470；双道（票02 D 形态，draw 内现算）：主道 78..268、子道
+// 296..470，窗口带/斜纹/游标/x 轴贯穿两道（底=470）；绘图区 x 46..1160。
 var X0 = 46, X1 = 1160, YTOP = 78, YBOT = 470, BAND_Y = 46, BAND_H = 16, EV_Y = 24;
 
 // buildTimelinePage 搭骨架 → 派生数据 → 统计卡/图例/详情面板 → 挂交互 → draw()。
@@ -339,9 +404,21 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
 
   var reqs = deriveReqs(requests);
 
-  // 页头标题：usage 行最后一个非空 title，缺省 lineage 前 24 字符；悬停显全量 lineage
+  // 主/子分道（票02 D 形态）：usage 行按 subagent 标记分组——主道语义（断缓存/
+  // TTL/标题/计划卡 prefix）只吃 mainReqs；子代理请求进子道与甘特。reqs 保持
+  // 全量（全局 idx/累计/统计卡的族系总账口径不变）。
+  var mainReqs = reqs.filter(function (r) { return !r.sub; });
+  var subReqs = reqs.filter(function (r) { return r.sub; });
+  var hasSub = subReqs.length > 0;
+  var subStems = []; // 子代理 stem 首现序（甘特行序）
+  subReqs.forEach(function (r) {
+    if (subStems.indexOf(r.sub) < 0) subStems.push(r.sub);
+  });
+
+  // 页头标题：主会话 usage 行最后一个非空 title（子行 title 不抢主会话标题），
+  // 缺省 lineage 前 24 字符；悬停显全量 lineage
   var title = '';
-  reqs.forEach(function (r) { if (r.t) title = r.t; });
+  mainReqs.forEach(function (r) { if (r.t) title = r.t; });
   var titleEl = document.getElementById('tl-title');
   titleEl.textContent = title || lineage.slice(0, 24);
   titleEl.title = lineage;
@@ -351,6 +428,8 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     ttl: 600,      // TTL 存活秒数（图例行输入可改，改后断缓存区重算）
     view: 'token', // 'token' | 'cost' 柱高口径
     seg: { cr: true, red: true, out: true }, // 图例科目开关
+    showSub: true, // 子代理泳道+甘特显隐（"子代理请求" chip）
+    selAg: null,   // 甘特选中的子代理 stem（两道同色参考线；null=无）
     t0: 0, t1: 0,           // 当前可视时间窗（缩放/平移改变）
     full0: 0, full1: 0,     // 全时间范围（复位用）
     cursor: 0,              // 回放游标（缺省拉满 = 显示全部）
@@ -378,7 +457,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   state.cursor = state.full1;
   recomputeZones();
 
-  function recomputeZones() { state.zones = deriveZones(reqs, events, state.ttl); }
+  function recomputeZones() { state.zones = deriveZones(mainReqs, events, state.ttl); }
 
   // ---- 元素引用 ----
   var svg = document.getElementById('tl-svg');
@@ -401,8 +480,9 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   slider.step = String((state.full1 - state.full0) / 500);
   slider.value = String(state.cursor);
 
-  // 保活计划卡（策略计算器）：独立于图区状态，只依赖 requests 与 lineage
-  buildPlanCard(requests);
+  // 保活计划卡（策略计算器）：独立于图区状态，只依赖主会话 requests 与 lineage
+  //（子代理请求的前缀与主会话缓存无关——prefix S 取主会话末次请求）
+  buildPlanCard(requests.filter(function (r) { return !r.subagent; }));
 
   // ---- 坐标 ----
   function xOf(ts) {
@@ -421,7 +501,17 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   }
   function yMax() {
     var mx = 0;
-    reqs.forEach(function (r) {
+    mainReqs.forEach(function (r) {
+      var v = state.view === 'cost' ? r.cTot : r.tokTot;
+      if (v > mx) mx = v;
+    });
+    return niceCeil(mx);
+  }
+  // subYMax 子道独立 y 轴上限（票02 D 形态）：子代理请求自己的量纲，不与主道
+  // 抢刻度（子柱矮小时仍可辨）。
+  function subYMax() {
+    var mx = 0;
+    subReqs.forEach(function (r) {
       var v = state.view === 'cost' ? r.cTot : r.tokTot;
       if (v > mx) mx = v;
     });
@@ -467,7 +557,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   function tipReq(r) {
     var m = r.m && !/glm/i.test(r.m) ? r.m + '（价目未配，按 GLM 估）' : r.m;
     var gapPrev = r.idx > 0 ? r.ts - reqs[r.idx - 1].ts : 0;
-    tipFill('请求 #' + (r.idx + 1) + ' · ' + fmtTS(r.ts, true), m, [
+    tipFill((r.sub ? '子代理 ' + r.sub : '请求 #' + (r.idx + 1)) + ' · ' + fmtTS(r.ts, true), m, [
       ['缓存读(绿)', fmtK(r.cr) + ' → ' + fmtCost(r.cCr) + ' 积分'],
       ['新输入+建缓存(红)', fmtK(r.red) + ' → ' + fmtCost(r.cRed) + ' 积分'],
       ['输出(蓝)', fmtK(r.out) + ' → ' + fmtCost(r.cOut) + ' 积分'],
@@ -573,7 +663,8 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   function renderCards() {
     var m = sums();
     cardsEl.textContent = '';
-    cardsEl.appendChild(mkCard('请求数', String(m.n), fmtTS(m.t0) + ' ~ ' + fmtTS(m.t1)));
+    cardsEl.appendChild(mkCard('请求数', String(m.n),
+      fmtTS(m.t0) + ' ~ ' + fmtTS(m.t1) + (hasSub ? ' · 含子代理 ' + subReqs.length + ' 条' : '')));
     cardsEl.appendChild(mkCard('总 tokens', fmtK(m.tokens),
       '输入+缓存读+建缓存+输出'));
     cardsEl.appendChild(mkCard('总花费', fmtCost(m.cost) + ' 积分', '按 GLM 价目估算'));
@@ -627,6 +718,26 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       });
       lgEl.appendChild(c);
     });
+
+    // 子代理请求 chip（票02）：控制子道+甘特显隐（沿用科目 chips 形态）；
+    // 纯主会话/纯 codex 会话无子行 → 不渲染本 chip（布局不塌）。
+    if (hasSub) {
+      var subChip = document.createElement('span');
+      subChip.className = 'chip' + (state.showSub ? '' : ' off');
+      var subSw = document.createElement('i');
+      subSw.className = 'sw';
+      subSw.style.background = '#ba68c8';
+      subChip.appendChild(subSw);
+      subChip.appendChild(document.createTextNode('子代理请求' + (state.showSub ? '' : '（已隐藏）')));
+      subChip.title = '点击显示/隐藏子代理泳道与下方甘特（上道主会话不受影响）';
+      subChip.addEventListener('click', function () {
+        state.showSub = !state.showSub;
+        renderLegend();
+        renderGantt();
+        draw();
+      });
+      lgEl.appendChild(subChip);
+    }
 
     // TTL 输入：改后存活带与断缓存区重算（统计卡同步）
     var ttlLabel = document.createElement('label');
@@ -726,6 +837,78 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     lgEl.appendChild(evs);
   }
 
+  // ---- 子代理甘特（票02 D 形态）：每 agent 一行 ----
+  // 条=首末请求跨度、竖刻点=每次请求、尾标 tokens/时长/请求数；点击行在上方
+  // 两道打该 agent 首末请求的同色参考线（再点取消）。横轴百分比对齐图区全时间
+  // 范围（full0..full1）——与泳道共用同一时间轴。无子行或 chip 隐藏时整区不渲染。
+  function renderGantt() {
+    var gEl = document.getElementById('tl-gantt');
+    if (!gEl) return;
+    gEl.textContent = '';
+    if (!hasSub || !state.showSub) {
+      gEl.hidden = true;
+      return;
+    }
+    gEl.hidden = false;
+    var headEl = document.createElement('div');
+    headEl.className = 'g-title';
+    headEl.textContent = '子代理甘特 · 每 agent 一行（条=首末请求跨度 · 刻点=每次请求 · 点击行在上方两道打同色参考线）';
+    gEl.appendChild(headEl);
+    var full = state.full1 - state.full0;
+    function pct(t) { return Math.max(0, Math.min(100, (t - state.full0) / full * 100)); }
+    subStems.forEach(function (ag) {
+      var rs = subReqs.filter(function (r) { return r.sub === ag; });
+      var lo = Infinity, hi = -Infinity, tk = 0;
+      rs.forEach(function (r) {
+        if (r.ts < lo) lo = r.ts;
+        if (r.ts > hi) hi = r.ts;
+        tk += r.tokTot;
+      });
+      var row = document.createElement('div');
+      row.className = 'grow' + (state.selAg === ag ? ' sel' : '');
+      row.title = '点击在两道打 ' + ag + ' 首末请求的参考线（再点取消）';
+      var nm = document.createElement('span');
+      nm.className = 'gname';
+      nm.textContent = ag;
+      var tr = document.createElement('div');
+      tr.className = 'gtrack';
+      var barEl = document.createElement('div');
+      barEl.className = 'gbar';
+      barEl.style.left = pct(lo) + '%';
+      barEl.style.width = Math.max(0.6, pct(hi) - pct(lo)) + '%';
+      barEl.style.background = subColorOf(ag);
+      barEl.style.opacity = state.selAg && state.selAg !== ag ? 0.35 : 0.85;
+      tr.appendChild(barEl);
+      rs.forEach(function (r) {
+        var tick = document.createElement('div');
+        tick.className = 'gtick';
+        tick.style.left = pct(r.ts) + '%';
+        tick.title = ag + ' · ' + fmtTS(r.ts, true) + ' · 输出 ' + fmtK(r.out) + ' · 合计 ' + fmtK(r.tokTot);
+        tr.appendChild(tick);
+      });
+      var mt = document.createElement('span');
+      mt.className = 'gmeta';
+      mt.textContent = fmtK(tk) + ' tok · ' + fmtDur(hi - lo) + ' · ' + rs.length + ' 请求';
+      row.appendChild(nm);
+      row.appendChild(tr);
+      row.appendChild(mt);
+      row.addEventListener('click', function () {
+        var wasSel = state.selAg === ag;
+        state.selAg = wasSel ? null : ag;
+        if (!wasSel && (lo < state.t0 || hi > state.t1)) {
+          // 参考线必须看得见：当前视窗不含首末就扩到含（留 15% 余量）
+          var margin = (hi - lo) * 0.15 + 30;
+          state.t0 = Math.min(state.t0, lo - margin);
+          state.t1 = Math.max(state.t1, hi + margin);
+          clampView();
+        }
+        renderGantt();
+        draw();
+      });
+      gEl.appendChild(row);
+    });
+  }
+
   // ---- 选中与详情面板 ----
   function pick(sel) {
     state.sel = state.sel && sel && state.sel.type === sel.type && state.sel.i === sel.i
@@ -790,8 +973,9 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
 
     if (sel.type === 'req') {
       var r = reqs[sel.i];
-      ht.textContent = '请求 #' + (sel.i + 1);
+      ht.textContent = r.sub ? '子代理 ' + r.sub + ' · 请求' : '请求 #' + (sel.i + 1);
       detail.appendChild(dRow('时间', fmtTS(r.ts, true)));
+      if (r.sub) detail.appendChild(dRow('子代理', r.sub));
       if (r.m) detail.appendChild(dRow('模型', r.m));
       if (sel.i > 0) {
         var gap = r.ts - reqs[sel.i - 1].ts;
@@ -1305,8 +1489,15 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   // ---- 主重绘：每次全量重建 SVG 子节点（断缓存区/窗口/TTL 带/柱/事件/游标/轴）----
   function draw() {
     svg.textContent = '';
+    // 泳道几何（票02 D 形态）：有子代理请求且未被 chip 隐藏 → 双道（主上/子下
+    // 共用时间轴、各自 y 轴）；否则单道（几何与既往逐像素一致——纯主会话/
+    // 纯 codex 会话零回归）。窗口带/断缓存斜纹/游标/x 轴贯穿两道（高度=两道全高）。
+    var dual = hasSub && state.showSub;
+    var botMain = dual ? 268 : YBOT; // 主道底（双道时让出下半场）
+    var topSub = 296, botSub = YBOT; // 子道（dual 才启用）
+    var botAll = dual ? botSub : botMain; // 贯穿元素的底
     var ym = yMax();
-    function yOf(v) { return YBOT - v / ym * (YBOT - YTOP); }
+    function yOf(v) { return botMain - v / ym * (botMain - YTOP); }
     function inView(ts) { return ts >= state.t0 && ts <= state.t1; }
     function past(ts) { return ts <= state.cursor; }
 
@@ -1321,7 +1512,8 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     defs.appendChild(pat);
     svg.appendChild(defs);
 
-    // TTL 存活带：请求∪心跳各续 ttl 秒（游标左侧才画；ttl<=0 不画）
+    // TTL 存活带：主会话请求∪心跳各续 ttl 秒（游标左侧才画；ttl<=0 不画；
+    // 子代理请求走自己的转录与缓存，不续主会话的带——票02）
     var gBand = svgEl('g', { 'pointer-events': 'none' });
     if (state.ttl > 0) {
       var bandNote = false;
@@ -1332,7 +1524,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
         gBand.appendChild(svgEl('rect', { x: x1, y: BAND_Y, width: x2 - x1, height: BAND_H, fill: 'rgba(76,175,80,0.22)' }));
         bandNote = true;
       }
-      reqs.forEach(function (r) { bandRect(r.ts); });
+      mainReqs.forEach(function (r) { bandRect(r.ts); });
       events.forEach(function (e) { if (e.kind === 'beat') bandRect(e.ts); });
       if (bandNote) {
         var bandLab = svgEl('text', { x: X0 + 4, y: BAND_Y + BAND_H - 4, 'font-size': '10', fill: '#7fa97f' });
@@ -1342,7 +1534,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     }
     svg.appendChild(gBand);
 
-    // 断缓存区（斜纹全高，可点可选）
+    // 断缓存区（斜纹贯穿两道全高，可点可选）
     var gDead = svgEl('g');
     state.zones.forEach(function (z, zi) {
       if (z.to > state.cursor || z.to < state.t0 || z.from > state.t1) return;
@@ -1350,7 +1542,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       var x2 = Math.min(xOf(Math.min(z.to, state.t1)), X1);
       if (x2 - x1 < 1) return;
       var rect = svgEl('rect', {
-        x: x1, y: YTOP - 6, width: x2 - x1, height: YBOT - YTOP + 6,
+        x: x1, y: YTOP - 6, width: x2 - x1, height: botAll - YTOP + 6,
         fill: 'url(#dead)', cursor: 'pointer',
         stroke: 'rgba(229,115,115,0.55)', 'stroke-width': '0.8',
       });
@@ -1368,7 +1560,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       } else {
         // 窄区放不下整句：中央一个大「断」字占位（区内没有柱，不遮数据）
         var tag = svgEl('text', {
-          x: (x1 + x2) / 2, y: (YTOP + YBOT) / 2 + 4, 'text-anchor': 'middle',
+          x: (x1 + x2) / 2, y: (YTOP + botAll) / 2 + 4, 'text-anchor': 'middle',
           'font-size': '11', 'font-weight': 'bold', fill: '#e57373', 'pointer-events': 'none',
         });
         tag.textContent = '断';
@@ -1377,7 +1569,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     });
     svg.appendChild(gDead);
 
-    // 等待窗口带（子代理在飞，可点选中）
+    // 等待窗口带（子代理在飞，贯穿两道全高，可点选中）
     var gWin = svgEl('g');
     windows.forEach(function (w, wi) {
       if (w.closed_ts < state.t0 || w.opened_ts > state.t1) return;
@@ -1385,7 +1577,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       var x2 = Math.min(xOf(w.closed_ts), X1);
       if (x2 - x1 < 0.5) return;
       var rect = svgEl('rect', {
-        x: x1, y: YTOP - 6, width: Math.max(x2 - x1, 1), height: YBOT - YTOP + 6,
+        x: x1, y: YTOP - 6, width: Math.max(x2 - x1, 1), height: botAll - YTOP + 6,
         fill: 'rgba(100,181,246,0.07)', cursor: 'pointer',
       });
       if (state.sel && state.sel.type === 'win' && state.sel.i === wi) {
@@ -1405,68 +1597,89 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
 
     // token 柱：三段堆叠自底向上 绿 cache_read / 红 input+creation / 蓝 output。
     // 柱宽随可视间距现算；每柱带透明命中矩形（细柱也点得到）。
-    var visible = reqs.filter(function (r) { return inView(r.ts) && past(r.ts); });
-    var xs = visible.map(function (r) { return xOf(r.ts); });
+    // 票02 D 形态：主请求画主道、子代理请求画子道（各自 y 轴）；子柱带 agent
+    // 色虚线描边 + ▼ 角标（悬停/详情可辨 agentId）。
     var gBars = svgEl('g');
-    visible.forEach(function (r, i) {
-      var gapL = i > 0 ? xs[i] - xs[i - 1] : Infinity;
-      var gapR = i < xs.length - 1 ? xs[i + 1] - xs[i] : Infinity;
-      var sp = Math.min(gapL, gapR);
-      if (!isFinite(sp)) sp = 24;
-      var w = Math.min(Math.max(2, sp * 0.6), 18);
+    function drawLane(list, yT, yB, ymLane, sub) {
+      function yOfLane(v) { return yB - v / ymLane * (yB - yT); }
+      var visible = list.filter(function (r) { return inView(r.ts) && past(r.ts); });
+      var xs = visible.map(function (r) { return xOf(r.ts); });
+      visible.forEach(function (r, i) {
+        var gapL = i > 0 ? xs[i] - xs[i - 1] : Infinity;
+        var gapR = i < xs.length - 1 ? xs[i + 1] - xs[i] : Infinity;
+        var sp = Math.min(gapL, gapR);
+        if (!isFinite(sp)) sp = 24;
+        var w = Math.min(Math.max(2, sp * 0.6), sub ? 14 : 18);
 
-      var vCr = state.seg.cr ? (state.view === 'cost' ? r.cCr : r.cr) : 0;
-      var vRed = state.seg.red ? (state.view === 'cost' ? r.cRed : r.red) : 0;
-      var vOut = state.seg.out ? (state.view === 'cost' ? r.cOut : r.out) : 0;
-      var yG = yOf(vCr), yR = yOf(vCr + vRed), yB = yOf(vCr + vRed + vOut);
+        var vCr = state.seg.cr ? (state.view === 'cost' ? r.cCr : r.cr) : 0;
+        var vRed = state.seg.red ? (state.view === 'cost' ? r.cRed : r.red) : 0;
+        var vOut = state.seg.out ? (state.view === 'cost' ? r.cOut : r.out) : 0;
+        var yG = yOfLane(vCr), yR = yOfLane(vCr + vRed), yTopB = yOfLane(vCr + vRed + vOut);
 
-      var g = svgEl('g', { cursor: 'pointer' });
-      function seg(y, h, color) {
-        if (h > 0.5) g.appendChild(svgEl('rect', { x: xs[i] - w / 2, y: y, width: w, height: h, fill: color }));
-      }
-      seg(yG, YBOT - yG, '#4caf50');
-      seg(yR, yG - yR, '#e57373');
-      seg(yB, yR - yB, '#64b5f6');
-      // 重付柱红描边整柱：比 ↯ 更显眼——"这根=缓存死过，上下文全价重交了一遍"
-      if (r.repaid) {
-        var ry = Math.min(yB - 1.5, YBOT - 7);
-        g.appendChild(svgEl('rect', {
-          x: xs[i] - w / 2 - 1.5, y: ry, width: w + 3, height: YBOT - ry,
-          fill: 'none', stroke: '#e57373', 'stroke-width': '1.5', 'pointer-events': 'none',
-        }));
-      }
-      if (state.sel && state.sel.type === 'req' && state.sel.i === r.idx) {
-        g.appendChild(svgEl('rect', {
-          x: xs[i] - w / 2 - 2, y: yB - 2, width: w + 4,
-          height: YBOT - yB + 2, fill: 'none', stroke: '#fff', 'stroke-width': '1.5',
-        }));
-      }
-      var hit = svgEl('rect', {
-        x: xs[i] - Math.max(w, 10) / 2, y: YTOP - 6,
-        width: Math.max(w, 10), height: YBOT - YTOP + 6, fill: 'transparent',
+        var g = svgEl('g', { cursor: 'pointer' });
+        function seg(y, h, color) {
+          if (h > 0.5) g.appendChild(svgEl('rect', { x: xs[i] - w / 2, y: y, width: w, height: h, fill: color }));
+        }
+        seg(yG, yB - yG, '#4caf50');
+        seg(yR, yG - yR, '#e57373');
+        seg(yTopB, yR - yTopB, '#64b5f6');
+        if (sub) {
+          // 子柱：agent 色虚线描边整柱 + ▼ 角标（原型 D 的区分记号）
+          var sy = Math.min(yTopB - 1.5, yB - 6);
+          g.appendChild(svgEl('rect', {
+            x: xs[i] - w / 2 - 1.5, y: sy, width: w + 3, height: yB - sy,
+            fill: 'none', stroke: r.subColor, 'stroke-width': '1.3',
+            'stroke-dasharray': '3 2', 'pointer-events': 'none',
+          }));
+          var mk = svgEl('text', {
+            x: xs[i], y: yTopB - 5, 'font-size': '9.5', 'text-anchor': 'middle',
+            fill: r.subColor, 'pointer-events': 'none',
+          });
+          mk.textContent = '▼';
+          g.appendChild(mk);
+        } else if (r.repaid) {
+          // 重付柱红描边整柱：比 ↯ 更显眼——"这根=缓存死过，上下文全价重交了一遍"
+          var ry = Math.min(yTopB - 1.5, yB - 7);
+          g.appendChild(svgEl('rect', {
+            x: xs[i] - w / 2 - 1.5, y: ry, width: w + 3, height: yB - ry,
+            fill: 'none', stroke: '#e57373', 'stroke-width': '1.5', 'pointer-events': 'none',
+          }));
+        }
+        if (state.sel && state.sel.type === 'req' && state.sel.i === r.idx) {
+          g.appendChild(svgEl('rect', {
+            x: xs[i] - w / 2 - 2, y: yTopB - 2, width: w + 4,
+            height: yB - yTopB + 2, fill: 'none', stroke: '#fff', 'stroke-width': '1.5',
+          }));
+        }
+        var hit = svgEl('rect', {
+          x: xs[i] - Math.max(w, 10) / 2, y: yT - 6,
+          width: Math.max(w, 10), height: yB - yT + 6, fill: 'transparent',
+        });
+        g.appendChild(hit);
+        attachTip(g, function () { tipReq(r); });
+        g.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'req', i: r.idx }); });
+        gBars.appendChild(g);
+
+        // 断缓存后的第一根柱：↯ 角标（可点可悬停）——主道专属
+        if (!sub && r.repaid) {
+          var zap = svgEl('text', {
+            x: xs[i], y: yTopB - 6, 'text-anchor': 'middle', 'font-size': '12',
+            fill: '#e57373', cursor: 'pointer',
+          });
+          zap.textContent = '↯';
+          attachTip(zap, function () {
+            tipFill('↯ 全额重付', null, [
+              ['与上一条间隔', '超过 TTL，缓存已死'],
+              ['本条新输入', fmtK(r.in) + ' 按 6.9 全价'],
+            ], '多付约 ' + fmtCost(r.in * (PIN - PC) / PER) + ' 积分（估算）', true);
+          });
+          zap.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'req', i: r.idx }); });
+          gBars.appendChild(zap);
+        }
       });
-      g.appendChild(hit);
-      attachTip(g, function () { tipReq(r); });
-      g.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'req', i: r.idx }); });
-      gBars.appendChild(g);
-
-      // 断缓存后的第一根柱：↯ 角标（可点可悬停）
-      if (r.repaid) {
-        var zap = svgEl('text', {
-          x: xs[i], y: yB - 6, 'text-anchor': 'middle', 'font-size': '12',
-          fill: '#e57373', cursor: 'pointer',
-        });
-        zap.textContent = '↯';
-        attachTip(zap, function () {
-          tipFill('↯ 全额重付', null, [
-            ['与上一条间隔', '超过 TTL，缓存已死'],
-            ['本条新输入', fmtK(r.in) + ' 按 6.9 全价'],
-          ], '多付约 ' + fmtCost(r.in * (PIN - PC) / PER) + ' 积分（估算）', true);
-        });
-        zap.addEventListener('click', function (ev) { ev.stopPropagation(); pick({ type: 'req', i: r.idx }); });
-        gBars.appendChild(zap);
-      }
-    });
+    }
+    drawLane(mainReqs, YTOP, botMain, ym, false);
+    if (dual) drawLane(subReqs, topSub, botSub, subYMax(), true);
     svg.appendChild(gBars);
 
     // 事件行 y=24 基线，符号按 kind；带透明命中圈（小符号也点得到）
@@ -1521,15 +1734,15 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       svg.appendChild(noEv);
     }
 
-    // 回放游标竖线（在可视窗内才画）
+    // 回放游标竖线（在可视窗内才画；贯穿两道）
     if (state.cursor >= state.t0 && state.cursor <= state.t1) {
       svg.appendChild(svgEl('line', {
-        x1: xOf(state.cursor), y1: 12, x2: xOf(state.cursor), y2: YBOT,
+        x1: xOf(state.cursor), y1: 12, x2: xOf(state.cursor), y2: botAll,
         stroke: 'rgba(255,255,255,0.25)', 'stroke-width': '1',
       }));
     }
 
-    // y 轴网格 + 刻度（token / 积分 两口径）
+    // y 轴网格 + 刻度（token / 积分 两口径；主道范围）
     var gGrid = svgEl('g', { 'pointer-events': 'none' });
     for (var gi = 0; gi <= 4; gi++) {
       var v = ym * gi / 4, gy = yOf(v);
@@ -1543,14 +1756,59 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     gGrid.appendChild(yUnit);
     svg.appendChild(gGrid);
 
-    // x 轴：基线 + 6 等分 7 刻度（短跨度带秒）
+    // 子道 y 轴 + 泳道分隔线 + 两道标注 + 甘特参考线（票02 D 形态，dual 才有）
+    if (dual) {
+      var ym2 = subYMax();
+      var gSub = svgEl('g', { 'pointer-events': 'none' });
+      [0, 0.5, 1].forEach(function (f) {
+        var gy2 = topSub + f * (botSub - topSub);
+        gSub.appendChild(svgEl('line', { x1: X0, y1: gy2, x2: X1, y2: gy2, stroke: '#222' }));
+        var sv = ym2 * (1 - f);
+        var sl = svgEl('text', { x: X0 - 6, y: gy2 + 4, 'text-anchor': 'end', 'font-size': '10.5', fill: '#888' });
+        sl.textContent = state.view === 'cost' ? fmtCost(sv) : (sv >= 10000 ? fmtK(sv) : String(Math.round(sv)));
+        gSub.appendChild(sl);
+      });
+      svg.appendChild(gSub);
+      // 泳道分隔虚线
+      svg.appendChild(svgEl('line', {
+        x1: X0, y1: (botMain + topSub) / 2, x2: X1, y2: (botMain + topSub) / 2,
+        stroke: '#3a3a3a', 'stroke-dasharray': '2 4', 'pointer-events': 'none',
+      }));
+      var labMain = svgEl('text', { x: X0 + 4, y: YTOP - 6, 'font-size': '10.5', fill: '#9ab', 'pointer-events': 'none' });
+      labMain.textContent = '主会话（子代理在跑时本道照常对话，始终可见）';
+      svg.appendChild(labMain);
+      var labSub = svgEl('text', { x: X0 + 4, y: topSub - 6, 'font-size': '10.5', fill: '#ba8', 'pointer-events': 'none' });
+      labSub.textContent = '子代理合计（' + subStems.length + ' 个 · ' + subReqs.length + ' 请求 · 独立 y 轴，逐个见下方甘特）';
+      svg.appendChild(labSub);
+      // 甘特选中 agent 的首末请求参考线：贯穿两道，同色虚线（点击甘特行触发）
+      if (state.selAg) {
+        var lo = Infinity, hi = -Infinity;
+        subReqs.forEach(function (r) {
+          if (r.sub !== state.selAg) return;
+          if (r.ts < lo) lo = r.ts;
+          if (r.ts > hi) hi = r.ts;
+        });
+        if (isFinite(lo)) {
+          [lo, hi].forEach(function (t) {
+            if (t < state.t0 || t > state.t1) return;
+            svg.appendChild(svgEl('line', {
+              x1: xOf(t), y1: YTOP - 4, x2: xOf(t), y2: botAll,
+              stroke: subColorOf(state.selAg), 'stroke-dasharray': '4 3',
+              'stroke-width': '1.2', 'pointer-events': 'none',
+            }));
+          });
+        }
+      }
+    }
+
+    // x 轴：基线 + 6 等分 7 刻度（短跨度带秒）；两道共用，画在最底道之下
     var gAx = svgEl('g', { 'pointer-events': 'none' });
-    gAx.appendChild(svgEl('line', { x1: X0, y1: YBOT, x2: X1, y2: YBOT, stroke: '#333' }));
+    gAx.appendChild(svgEl('line', { x1: X0, y1: botAll, x2: X1, y2: botAll, stroke: '#333' }));
     var span = state.t1 - state.t0;
     for (var ai = 0; ai <= 6; ai++) {
       var ts = state.t0 + span * ai / 6, tx = xOf(ts);
-      gAx.appendChild(svgEl('line', { x1: tx, y1: YBOT, x2: tx, y2: YBOT + 6, stroke: '#444' }));
-      var al = svgEl('text', { x: tx, y: YBOT + 18, 'text-anchor': 'middle', 'font-size': '10.5', fill: '#888' });
+      gAx.appendChild(svgEl('line', { x1: tx, y1: botAll, x2: tx, y2: botAll + 6, stroke: '#444' }));
+      var al = svgEl('text', { x: tx, y: botAll + 18, 'text-anchor': 'middle', 'font-size': '10.5', fill: '#888' });
       al.textContent = span > 6 * 3600 ? fmtTS(ts) : fmtTS(ts, span < 900);
       gAx.appendChild(al);
     }
@@ -1647,6 +1905,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
 
   renderCards();
   renderLegend();
+  renderGantt();
   renderDetail();
   draw();
 }

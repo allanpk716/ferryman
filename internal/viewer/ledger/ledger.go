@@ -34,6 +34,10 @@ type Entry struct {
 	CacheCreationTokens int64  `json:"cache_creation_tokens"`
 	OutputTokens        int64  `json:"output_tokens"`
 	Offset              int64  `json:"offset"`
+	// Subagent 子代理标记（票01/ADR-0008）：值=子代理转录文件 stem
+	//（agent-<agentId>）；主会话行空串（白名单必填语义）。缺键（旧账本）解码
+	// 为零值 ""，按主会话行对待。
+	Subagent string `json:"subagent"`
 
 	// window
 	OpenedTS     float64 `json:"opened_ts"`
@@ -77,11 +81,16 @@ type SessionSummary struct {
 	CacheRead int64   `json:"cache_read"`
 	Creation  int64   `json:"cache_creation"`
 	Output    int64   `json:"output"`
-	Requests  int     `json:"requests"` // usage 行数
-	Windows   int     `json:"windows"`
-	Beats     int     `json:"beats"`
-	Handoffs  int     `json:"handoffs"`
-	Blocks    int     `json:"blocks"`
+	Requests  int     `json:"requests"` // usage 行数（票01 起含子代理行——族系总账）
+	// MainTokens/SubTokens 主/子 token 桶（票02）：按 usage 行 subagent 标记
+	// 拆两桶，口径 input+cache_read+cache_creation（不含 output，与列表页
+	// tokens 列一致——改口径另立票）。既有四列合计字段保留不动（含子行）。
+	MainTokens int64 `json:"main_tokens"`
+	SubTokens  int64 `json:"sub_tokens"`
+	Windows    int   `json:"windows"`
+	Beats      int   `json:"beats"`
+	Handoffs   int   `json:"handoffs"`
+	Blocks     int   `json:"blocks"`
 }
 
 // Load 读 dir 下按文件名排序的全部 *.jsonl，逐行解码为 Entry。
@@ -175,7 +184,8 @@ func (a *agg) addAgent(name string) {
 }
 
 // Summarize 把账本行按 lineage_id 聚合成列表页行：
-// usage 行累加四类 token；Title 取最后一个非空；FirstTS/LastTS 取全 kind 最小/最大 ts。
+// usage 行累加四类 token，并按 subagent 标记拆主/子两个 token 桶（票02）；
+// Title 取最后一个非空；FirstTS/LastTS 取全 kind 最小/最大 ts。
 // 输出按 LastTS 倒序（同 ts 按 lineage_id 升序保证稳定）。
 func Summarize(entries []Entry) []SessionSummary {
 	byLin := map[string]*agg{}
@@ -207,6 +217,13 @@ func Summarize(entries []Entry) []SessionSummary {
 			a.sum.Creation += e.CacheCreationTokens
 			a.sum.Output += e.OutputTokens
 			a.sum.Requests++
+			// 主/子桶（票02）：同口径 input+cache_read+creation，按 subagent 标记分流
+			bucket := e.InputTokens + e.CacheReadTokens + e.CacheCreationTokens
+			if e.Subagent != "" {
+				a.sum.SubTokens += bucket
+			} else {
+				a.sum.MainTokens += bucket
+			}
 			if e.Title != "" {
 				a.sum.Title = e.Title
 			}

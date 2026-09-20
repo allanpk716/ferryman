@@ -147,6 +147,9 @@ func TestSummarize(t *testing.T) {
 		}
 	}
 
+	// mainTok/subTok 列（票02）：主/子桶口径=input+cache_read+creation（不含
+	// output，与列表页 tokens 列一致）。sample 无 subagent 行 → 子桶恒 0、
+	// 主桶=既有四列里三列之和（既有字段零回归锚点）。
 	cases := []struct {
 		lin      string
 		title    string
@@ -158,10 +161,12 @@ func TestSummarize(t *testing.T) {
 		creation int64
 		output   int64
 		requests int
+		mainTok  int64
+		subTok   int64
 	}{
-		{"lin-gamma", "Gamma 会话", "cc", 1780002000.1, 1780002000.5, 10, 1, 0, 5, 1},
-		{"lin-beta", "Beta 会话", "cc,codex", 1780001000.1, 1780001000.6, 3000, 300, 150, 600, 2},
-		{"lin-alpha", "Alpha 会话", "cc", 1780000000.1, 1780000000.7, 600, 60, 30, 180, 3},
+		{"lin-gamma", "Gamma 会话", "cc", 1780002000.1, 1780002000.5, 10, 1, 0, 5, 1, 11, 0},
+		{"lin-beta", "Beta 会话", "cc,codex", 1780001000.1, 1780001000.6, 3000, 300, 150, 600, 2, 3450, 0},
+		{"lin-alpha", "Alpha 会话", "cc", 1780000000.1, 1780000000.7, 600, 60, 30, 180, 3, 690, 0},
 	}
 	for _, tc := range cases {
 		var s *SessionSummary
@@ -189,6 +194,10 @@ func TestSummarize(t *testing.T) {
 		if s.Requests != tc.requests {
 			t.Errorf("%s Requests = %d, want %d", tc.lin, s.Requests, tc.requests)
 		}
+		if s.MainTokens != tc.mainTok || s.SubTokens != tc.subTok {
+			t.Errorf("%s 主/子桶 = (main %d, sub %d), want (%d, %d)",
+				tc.lin, s.MainTokens, s.SubTokens, tc.mainTok, tc.subTok)
+		}
 		// gamma 多一行 beat observe 样例（T51 票04）→ 2 跳
 		wantBeats := map[string]int{"lin-alpha": 1, "lin-beta": 1, "lin-gamma": 2}[tc.lin]
 		if s.Windows != 1 || s.Beats != wantBeats || s.Handoffs != 1 || s.Blocks != 1 {
@@ -200,6 +209,78 @@ func TestSummarize(t *testing.T) {
 		}
 	}
 }
+
+// TestSummarizeSubagentBuckets 票02：usage 行的 subagent 标记（票01 字段，值=
+// 子代理文件 stem，主行空串）→ Summarize 拆主/子两个 token 桶（口径
+// input+cache_read+creation）。手算期望见 testdata/subagent.jsonl：
+//   - lin-sub：主 (100+10+5)+(200+20+10)=345；子 agent-aaa 两行
+//     (1000+100+50)+(2000+200+100)=3450；LastTS=次日子行（跨日族系月日锚点）。
+//   - 尾段路径 lineage 的 inject-only 行（codex case）：无 usage → 双桶皆 0、
+//     Agents/LastTS 仍由 inject 行供给（列表兜底链的数据面）。
+// 同时锚 Entry 对 subagent 键的解码：显式空串、缺键（旧账本）、stem 三形态。
+func TestSummarizeSubagentBuckets(t *testing.T) {
+	entries, err := loadOne(t, "subagent.jsonl")
+	if err != nil {
+		t.Fatalf("Load(subagent): %v", err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("Load(subagent) 条数 = %d, want 5", len(entries))
+	}
+	// Entry 解码三形态：显式空串 / 缺键（旧账本行）/ stem
+	if entries[0].Subagent != "" {
+		t.Errorf("主行(显式空串) Subagent = %q, want \"\"", entries[0].Subagent)
+	}
+	if entries[1].Subagent != "" {
+		t.Errorf("主行(旧账本缺键) Subagent = %q, want \"\"", entries[1].Subagent)
+	}
+	if entries[2].Subagent != "agent-aaa" || entries[3].Subagent != "agent-aaa" {
+		t.Errorf("子行 Subagent = %q, %q, want agent-aaa, agent-aaa",
+			entries[2].Subagent, entries[3].Subagent)
+	}
+	if entries[4].Kind != "inject" || entries[4].Subagent != "" {
+		t.Errorf("inject 行 = (%s, subagent %q), want (inject, \"\")", entries[4].Kind, entries[4].Subagent)
+	}
+
+	sums := Summarize(entries)
+	if len(sums) != 2 {
+		t.Fatalf("Summarize 行数 = %d, want 2", len(sums))
+	}
+	// fixture 的 inject-only 族系键是路径形态（codex case）——与 lin-sub 区分取行
+	injLin := "C:/users/allan716/.codex/sessions/2026/09/18/rollout-2026-09-18T09-00-00-abcdef12.jsonl"
+	// LastTS 倒序：inj(1780090000.1) > lin-sub(1780086500.4)
+	if sums[0].LineageID != injLin {
+		byLin := map[string]*SessionSummary{}
+		for i := range sums {
+			byLin[sums[i].LineageID] = &sums[i]
+		}
+		sums = []SessionSummary{*byLin[injLin], *byLin["lin-sub"]}
+	}
+	inj, sub := &sums[0], &sums[1]
+	if !strings.HasSuffix(inj.LineageID, ".jsonl") || !strings.Contains(inj.LineageID, "/") {
+		t.Fatalf("inject lineage 应为路径形态（列表兜底链的 uuid 尾段取自此）: %q", inj.LineageID)
+	}
+	if inj.Agents != "codex" || inj.Project != "" || inj.Title != "" || inj.Requests != 0 ||
+		inj.MainTokens != 0 || inj.SubTokens != 0 || inj.LastTS != 1780090000.1 {
+		t.Errorf("inject-only 族系汇总不符: %+v", *inj)
+	}
+	if sub.Agents != "cc" || sub.Title != "主会话标题" || sub.Requests != 4 ||
+		sub.FirstTS != 1780000000.1 || sub.LastTS != 1780086500.4 {
+		t.Errorf("lin-sub 基本汇总不符: %+v", *sub)
+	}
+	// 主/子桶手算（口径 input+cache_read+creation，不含 output）
+	if sub.MainTokens != 345 {
+		t.Errorf("lin-sub MainTokens = %d, want 345 (115+230)", sub.MainTokens)
+	}
+	if sub.SubTokens != 3450 {
+		t.Errorf("lin-sub SubTokens = %d, want 3450 (1150+2300)", sub.SubTokens)
+	}
+	// 既有合计字段含子行（族系总账语义不变）：input=3300 cache_read=330 creation=165
+	if sub.Input != 3300 || sub.CacheRead != 330 || sub.Creation != 165 || sub.Output != 1410 {
+		t.Errorf("lin-sub 既有合计 = (in %d, rd %d, cr %d, out %d), want (3300, 330, 165, 1410)",
+			sub.Input, sub.CacheRead, sub.Creation, sub.Output)
+	}
+}
+
 
 func TestLoadOverlongLine(t *testing.T) {
 	dir := t.TempDir()
