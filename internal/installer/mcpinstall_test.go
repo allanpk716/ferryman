@@ -298,9 +298,9 @@ func TestInstallMCPNoPlaintextCredInAnyEchoPath(t *testing.T) {
 	// 只出净化基名，凭据不得出现。
 	writeJSONFile(t, cfg, map[string]any{"mcpServers": map[string]any{
 		"ferryman": map[string]any{
-			"type": "stdio",
+			"type":    "stdio",
 			"command": "C:/tools/ferryman.exe?token=" + fakeCmdQ,
-			"args":   []any{"mcp"},
+			"args":    []any{"mcp"},
 		},
 	}})
 	_, out = runInstallMCP(t, cfg, exe, false)
