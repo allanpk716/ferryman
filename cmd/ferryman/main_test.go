@@ -120,3 +120,21 @@ func TestPanelMuxAPIVersion(t *testing.T) {
 		t.Fatalf("version = %v, want v9.9.9-test", body["version"])
 	}
 }
+
+// TestCmdUpdate update 子命令（票03 只读路径）：无 --check = 升级执行器尚未
+// 接线（票05），诚实退 1；多余位置参数退 2。--check 的联网行为在 internal/update
+// 里用 httptest 全覆盖，这里只测分发边界，不外呼。
+func TestCmdUpdate(t *testing.T) {
+	var buf bytes.Buffer
+	if code := cmdUpdate(nil, &buf); code != 1 {
+		t.Fatalf("无 --check 退出码 = %d, want 1（执行器票05 才接线）", code)
+	}
+	if out := buf.String(); !strings.Contains(out, "升级执行器尚未接线") {
+		t.Fatalf("无 --check 输出 = %q, want 含「升级执行器尚未接线」", out)
+	}
+
+	buf.Reset()
+	if code := cmdUpdate([]string{"--check", "v0.1.0", "extra"}, &buf); code != 2 {
+		t.Fatalf("多余位置参数退出码 = %d, want 2", code)
+	}
+}

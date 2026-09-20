@@ -6,6 +6,8 @@
 //	ferryman serve               # 同上（点火脚本 start-daemon.cmd 调它）
 //	ferryman doctor              # 一键体检
 //	ferryman version             # 版本号（dev = 非 release 构建）
+//	ferryman update --check [vX.Y.Z] [--prerelease]   # 检查更新（只报告不动手；
+//	                                   # 显式版本支持降级；执行器票05 接线）
 //	ferryman install-cc [--events E1,E2,…]
 //	ferryman install-ccswitch
 //	ferryman install-codex [--events E1,E2,…]
@@ -50,6 +52,7 @@ import (
 	"ferryman/internal/installer"
 	"ferryman/internal/mcp"
 	"ferryman/internal/report"
+	"ferryman/internal/update"
 	"ferryman/internal/viewer/demo"
 	"ferryman/internal/viewer/server"
 )
@@ -141,6 +144,8 @@ func run(args []string) int {
 		return installer.RunDoctor(version) // 版本经装配参数进（票02，规格 §A）
 	case "version":
 		return cmdVersion(args[1:], os.Stdout)
+	case "update":
+		return cmdUpdate(args[1:], os.Stdout)
 	case "install-cc":
 		return cmdInstallCC(args[1:])
 	case "install-ccswitch":
@@ -460,6 +465,40 @@ func cmdVersion(args []string, w io.Writer) int {
 		return 0
 	}
 	fmt.Fprintln(w, version)
+	return 0
+}
+
+// ---- update（发布链票03：--check 只读检查；升级执行器票05 接线） ----
+
+// cmdUpdate `ferryman update`：--check 解析目标版本并与当前版本比较（已是最新/
+// 发现新版/显式降级注明；dev 等非 semver 如实提示无从比较），只报告不动手
+// （D6：升级纯手动；D8：网络走环境代理；D11：固定产物名）。无 --check 时
+// 升级执行器尚未接线，如实提示并退 1——不装已完成（票05）。
+func cmdUpdate(args []string, w io.Writer) int {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "只检查并报告，不下载不换文件")
+	pre := fs.Bool("prerelease", false, "检查纳入预发布版（rc/beta；缺省只看稳定版）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(os.Stderr, "用法: ferryman update --check [vX.Y.Z] [--prerelease]")
+		return 2
+	}
+	spec := ""
+	if fs.NArg() == 1 {
+		spec = fs.Arg(0)
+	}
+	if !*check {
+		fmt.Fprintln(w, "升级执行器尚未接线（票05）：当前只支持 ferryman update --check")
+		return 1
+	}
+	out, err := update.Check(update.Endpoints{}, version, spec, *pre)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "检查更新失败: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(w, out)
 	return 0
 }
 
