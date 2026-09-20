@@ -10,6 +10,13 @@ body {
     "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+/* ---------- 动效 token：全仓唯一曲线源（值出自 emil 动效审计手册，禁止近似） ----------
+   降动效原则：transform 位移类 reduce 下停（瞬达），opacity/颜色类保留（助理解非运动）。 */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);     /* 入场/退出：先快后缓 */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1); /* 屏内移动：两端缓 */
+}
+
 /* 顶部固定工具条：左标题，右数据目录说明 */
 #toolbar {
   position: sticky;
@@ -136,7 +143,9 @@ body {
 }
 #tl-svg.dragging { cursor: grabbing; }
 
-/* 柱悬停明细浮层：跟随鼠标，绝不接收指针事件（不挡图） */
+/* 柱悬停明细浮层：跟随鼠标，绝不接收指针事件（不挡图）。
+   显隐走 .show 类的纯 opacity 渐变（125ms 近不可察级）；位置跟鼠标必须即时——
+   绝不对 left/top 加 transition。 */
 #tl-tooltip {
   position: absolute;
   z-index: 5;
@@ -148,7 +157,10 @@ body {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
   font-size: 12px;
   color: #ddd;
+  opacity: 0;
+  transition: opacity 125ms ease;
 }
+#tl-tooltip.show { opacity: 1; }
 #tl-tooltip .tip-time { color: #ddd; font-weight: 600; font-variant-numeric: tabular-nums; }
 #tl-tooltip .tip-model { color: #64b5f6; margin-bottom: 3px; }
 #tl-tooltip .tip-row {
@@ -534,6 +546,13 @@ body {
   border: 1px solid #262626;
 }
 #tl-bt-result .bt-fill { height: 100%; }
+/* 反跑三线生长：scaleX 而非 width（不触发布局）；错峰由 JS 逐行加 animation-delay；
+   结果卡每次重建（textContent=''），keyframes 随新元素天然重播 */
+#tl-bt-result .bt-fill {
+  transform-origin: left center;
+  animation: bt-grow 280ms var(--ease-out) both;
+}
+@keyframes bt-grow { from { transform: scaleX(0); } }
 #tl-bt-result .bt-fill-green { background: #4caf50; }
 #tl-bt-result .bt-fill-actual { background: #9e9e9e; }
 #tl-bt-result .bt-fill-red { background: #e57373; }
@@ -733,4 +752,47 @@ table.cfg-table {
   color: #666;
   font-size: 11.5px;
   margin-top: 4px;
+}
+
+/* ---------- 交互反馈（按压 / hover 过渡 / 页面淡入；plans/005） ----------
+   表格行与甘特行不加按压缩放：行点击即跳页按压态不可见 / 整行缩放违和（审计拒绝清单）。 */
+#session-table tbody tr[data-lineage] { transition: background-color 130ms ease; }
+#tl-gantt .grow .gname { transition: color 130ms ease; }
+
+/* 留页可点元素：颜色过渡（悬停/态变柔化）+ 按压缩放（"界面听到了"） */
+.tl-lg .chip,
+.tl-lg .segview button,
+.tl-cards .card.clickable,
+#tl-play,
+#tl-detail .d-close,
+#tl-bt-result .bt-close,
+#tl-detail .win-backtest,
+#tl-detail .bt-go,
+.plan-card .bt-go,
+.plan-card summary {
+  transition: background-color 130ms ease, border-color 130ms ease, color 130ms ease,
+    transform 160ms var(--ease-out), opacity 130ms ease;
+}
+.tl-lg .chip:active, .tl-lg .segview button:active, .tl-cards .card.clickable:active,
+#tl-play:active, #tl-detail .d-close:active, #tl-bt-result .bt-close:active,
+#tl-detail .win-backtest:active, #tl-detail .bt-go:active, .plan-card .bt-go:active,
+.plan-card summary:active { transform: scale(0.97); }
+
+/* 页面内容淡入：renderXxx 成功后由 fadeIn() 触发；纯 opacity 不拦点击 */
+@keyframes app-fade { from { opacity: 0; } }
+.fade-in { animation: app-fade 150ms var(--ease-out); }
+
+/* 降动效：位移类停（瞬达），颜色/透明度保留——反馈仍在、运动消失 */
+@media (prefers-reduced-motion: reduce) {
+  .tl-lg .chip, .tl-lg .segview button, .tl-cards .card.clickable, #tl-play,
+  #tl-detail .d-close, #tl-bt-result .bt-close, #tl-detail .win-backtest,
+  #tl-detail .bt-go, .plan-card .bt-go, .plan-card summary {
+    transition: background-color 130ms ease, border-color 130ms ease, color 130ms ease, opacity 130ms ease;
+  }
+  .tl-lg .chip:active, .tl-lg .segview button:active, .tl-cards .card.clickable:active,
+  #tl-play:active, #tl-detail .d-close:active, #tl-bt-result .bt-close:active,
+  #tl-detail .win-backtest:active, #tl-detail .bt-go:active, .plan-card .bt-go:active,
+  .plan-card summary:active { transform: none; }
+  .fade-in { animation: none; }
+  #tl-bt-result .bt-fill { animation: none; }
 }
