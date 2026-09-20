@@ -265,7 +265,7 @@ func TestQuerySessionDetailAggregation(t *testing.T) {
 			"agent": "cc", "session_id": sid, "lineage_id": lin, "project": "C:/proj",
 			"model": "glm-5.3", "title": "t",
 			"input_tokens": in, "cache_read_tokens": cr, "cache_creation_tokens": cc,
-			"output_tokens": out, "offset": 0,
+			"output_tokens": out, "offset": 0, "subagent": "",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -279,7 +279,7 @@ func TestQuerySessionDetailAggregation(t *testing.T) {
 		"agent": "cc", "session_id": "sd-2", "lineage_id": pathsx.NormPath(`C:\tmp\sd-2.jsonl`),
 		"project": "C:/proj", "model": "glm-5.3", "title": "t",
 		"input_tokens": 99999, "cache_read_tokens": 0, "cache_creation_tokens": 0,
-		"output_tokens": 0, "offset": 0}); err != nil {
+		"output_tokens": 0, "offset": 0, "subagent": ""}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -454,7 +454,8 @@ func TestQueryStatsHTTPContractUnchanged(t *testing.T) {
 	if !keySetEqual(keys(resp), "gate_calls_total", "gate_calls_by_agent",
 		"last_gate_call_s_ago", "last_transcript_write_s_ago", "subagents_active",
 		"subagent_events_total", "health_alert", "health_msg", "qwatch",
-		"glm_balance") {
+		"glm_balance",
+		"version") { // 票02（规格 §A）：版本可见——Go 侧增量字段（同 glm_balance 先例）
 		t.Fatalf("/stats 字段集漂移: %v", keys(resp))
 	}
 }

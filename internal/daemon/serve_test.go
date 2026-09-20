@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func TestServeUniqueifySkipsWhenHealthyInstanceRunning(t *testing.T) {
 	cfg := serveTestCfg(t, port, dataDir)
 
 	read := captureStdout(t)
-	code := serveConfig(cfg, context.Background())
+	code := serveConfig(cfg, context.Background(), "dev")
 	out := read()
 	if code != 0 {
 		t.Fatalf("唯一化应 return 0, got %d", code)
@@ -90,7 +91,7 @@ func TestServePortTakenByForeignProcessReturns1(t *testing.T) {
 	cfg := serveTestCfg(t, port, filepath.Join(tmp, "data"))
 
 	read := captureStdout(t)
-	code := serveConfig(cfg, context.Background())
+	code := serveConfig(cfg, context.Background(), "dev")
 	out := read()
 	if code != 1 {
 		t.Fatalf("被他人占用应 return 1, got %d", code)
@@ -113,7 +114,7 @@ func TestServePidBannerAndGracefulStop(t *testing.T) {
 	col := startStdoutCapture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	codeCh := make(chan int, 1)
-	go func() { codeCh <- serveConfig(cfg, ctx) }()
+	go func() { codeCh <- serveConfig(cfg, ctx, "dev") }()
 
 	pidPath := filepath.Join(dataDir, "daemon.pid")
 	pidRaw := waitPidFile(t, pidPath, 10*time.Second)
@@ -156,6 +157,57 @@ func TestServePidBannerAndGracefulStop(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("优雅停后 pid 文件未删除")
+}
+
+// TestServeConfigStatsCarriesVersion 版本装配链（票02，规格 §A）：main 的版本
+// 经 ServeContext→serveConfig 注入 Daemon，/stats JSON 顶层 version 原样上报
+// （面板页脚与升级探活校验的数据源）。
+func TestServeConfigStatsCarriesVersion(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	port := freePort(t)
+	cfg := serveTestCfg(t, port, dataDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- serveConfig(cfg, ctx, "test-ver-02") }()
+
+	// 等 token 落盘 + /stats 健康（守护起完），再验 version 字段
+	var token string
+	waitForCond(t, 10*time.Second, func() bool {
+		select {
+		case code := <-codeCh:
+			t.Fatalf("serveConfig 提前退出: %d", code)
+		default:
+		}
+		b, err := os.ReadFile(filepath.Join(dataDir, "daemon.token"))
+		if err != nil {
+			return false
+		}
+		token = strings.TrimSpace(string(b))
+		return token != "" && AlreadyRunning(port, token)
+	})
+	code, body := getRaw(t, port, "/stats", token)
+	if code != 200 {
+		t.Fatalf("GET /stats = %d %q, want 200", code, body)
+	}
+	var stats map[string]any
+	if err := json.Unmarshal(body, &stats); err != nil {
+		t.Fatalf("/stats 非 JSON: %v (%q)", err, body)
+	}
+	if v, _ := stats["version"].(string); v != "test-ver-02" {
+		t.Fatalf("/stats version = %v, want test-ver-02", stats["version"])
+	}
+
+	cancel()
+	select {
+	case code := <-codeCh:
+		if code != 0 {
+			t.Fatalf("优雅停应 return 0, got %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveConfig 未在 ctx 取消后返回")
+	}
 }
 
 // containsLine 行级包含（横幅是整行打印）。

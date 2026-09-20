@@ -37,6 +37,10 @@ const testT0 = 1_800_000_000.0
 // testToken 夹具 token（反向断言对象：任何响应/错误文本不得出现它）。
 const testToken = "mcp-e2e-token-7f3a9c"
 
+// testVersion 夹具版本（票02，规格 §A）：经装配参数注入 Server（New/Run 的
+// version 形参），doctor 响应 version 字段的断言锚。
+const testVersion = "test-ver-02"
+
 // prodPorts 生产端口全集：渡口双轨 15722/15724、上游 cc-switch 15721、守护
 // 7311、面板 15900。测试端口必须避开（验收钉子显式覆盖 15722/15724）。
 var prodPorts = map[int]bool{15721: true, 15722: true, 15724: true, 7311: true, 15900: true}
@@ -175,6 +179,9 @@ func (e *mcpEnv) seedAccounts(t *testing.T, acc *accounts.Accounts) {
 			"model": "glm-5.3", "title": "t",
 			"input_tokens": in, "cache_read_tokens": cr, "cache_creation_tokens": cc,
 			"output_tokens": out, "offset": 0,
+			// bd1d3ef 起 subagent 为 usage 必填标记字段（ADR-0008；主会话行空串
+			// 合法）——夹具同步，补法同 daemon 侧 query_report_test.go 票04。
+			"subagent": "",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -200,7 +207,7 @@ func startPipes(t *testing.T, cfg *config.Config) *mcpPipes {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	p := &mcpPipes{t: t, inW: inW, out: bufio.NewReader(outR), done: make(chan error, 1)}
-	go func() { p.done <- New(cfg).Serve(context.Background(), inR, outW) }()
+	go func() { p.done <- New(cfg, testVersion).Serve(context.Background(), inR, outW) }()
 	t.Cleanup(func() { _ = inW.Close() })
 	return p
 }

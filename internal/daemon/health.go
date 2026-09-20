@@ -5,7 +5,8 @@ package daemon
 // last_gate_call_s_ago / last_transcript_write_s_ago / subagents_active /
 // subagent_events_total / health_alert / health_msg / qwatch（含
 // miss_signals 与 mode 活值）。glm_balance 为票07 Go 侧增量字段（余额展示行，
-// 按需查询一次；Python 契约字段不动）。
+// 按需查询一次；Python 契约字段不动）；version 为票02 Go 侧增量字段（发布与
+// 自升级规格 §A：版本可见）。
 
 import (
 	"errors"
@@ -68,7 +69,14 @@ func (d *Daemon) Health() map[string]any {
 	case inGrace:
 		msg = "启动宽限中"
 	}
+	// 版本可见（票02，规格 §A）：/stats 顶层 version——面板页脚显示、兼作
+	// 升级探活校验；装配未注入（空串）回落 dev，与 `ferryman version` 缺省同位。
+	ver := d.Version
+	if ver == "" {
+		ver = "dev"
+	}
 	return map[string]any{
+		"version":                     ver,
 		"gate_calls_total":            total,
 		"gate_calls_by_agent":         byAgent,
 		"last_gate_call_s_ago":        lastCallAgo,

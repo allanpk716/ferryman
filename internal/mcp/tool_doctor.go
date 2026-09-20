@@ -59,9 +59,12 @@ func (s *Server) handleInProcessTool(id json.RawMessage, tool *Tool, args map[st
 		checks = []installer.CheckResult{}
 	}
 	resp := struct {
+		// Version 版本号（票02，规格 §A）：装配时经 Run→New 注入（Server.version），
+		// 顶层随 checks/summary 一起下发。
+		Version string                 `json:"version"`
 		Checks  []installer.CheckResult `json:"checks"`
 		Summary doctorSummary           `json:"summary"`
-	}{Checks: checks}
+	}{Version: s.version, Checks: checks}
 	for _, c := range checks {
 		resp.Summary.Total++
 		switch c.Status {
