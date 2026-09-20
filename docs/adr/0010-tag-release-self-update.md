@@ -30,4 +30,4 @@ Ferryman 是单机守护、又被 AI agent 高频触碰,但一直没有版本号
 
 ## 后果
 
-发布收敛到打 tag 一个动作,每次发布有据可查;本地编译产物与 Release 可能版本漂移,版本报告以注入值(`ferryman version`)为准,`dev` 值即提示非正式渠道产物。自升级只覆盖 Windows amd64;原子性以 NTFS 日志为据,磁盘级损坏等更极端假设不在设防范围。停旧→拉起段仍存在看门竞态窗,由复停重试收敛,验收含抢跑演练。agent 面动词面零变化。随本决策落地的工作区清理(D13):删 `viewer/ferryman-timeline.exe`(空目录一并)与两个 `ferryman.exe.old-20260920*` 手工备份,`.gitignore` 的 `ferryman-timeline` 行随之删除(该文件本就被跟踪,ignore 行是冗余)。update 与 cutover 互不共用:版本轴升降走 update,语言栈往返仍走 `ferryman cutover`。
+发布收敛到打 tag 一个动作,每次发布有据可查;本地编译产物与 Release 可能版本漂移,版本报告以注入值(`ferryman version`)为准,`dev` 值即提示非正式渠道产物。自升级只覆盖 Windows amd64;原子性以 NTFS 日志为据,磁盘级损坏等更极端假设不在设防范围。停旧→拉起段仍存在看门竞态窗,由复停重试收敛,验收含抢跑演练。agent 面动词面零变化。随本决策落地的工作区清理(D13):删 `viewer/ferryman-timeline.exe`(空目录一并)与两个 `ferryman.exe.old-20260920*` 手工备份,`.gitignore` 的 `ferryman-timeline` 行随之删除(该文件从未被 git 跟踪,`*.exe` 行已覆盖,此行本就冗余)。update 与 cutover 互不共用:版本轴升降走 update,语言栈往返仍走 `ferryman cutover`。
