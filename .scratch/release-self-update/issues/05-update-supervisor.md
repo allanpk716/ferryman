@@ -15,16 +15,16 @@
 10. 结果通知(seam F):升级结果经既有 internal/notify 通道推送;CLI 同时 stdout
 
 **验收标准**:
-- [ ] 全流程 httptest+替身 exe 演练:成功路径换文件+备份+新版校验通过
-- [ ] SHA256 失败 → 拒绝替换,现场原样
-- [ ] 新版探活/版本校验失败 → 自动回滚,旧版重新服务
-- [ ] 并发取锁:双 update 仅一胜,败者收「升级进行中」;陈旧锁接管演练
-- [ ] kill 身份校验:假 PID 指向无关映像 → 拒杀(测试桩)
-- [ ] 看门抢跑演练:verify 期模拟旧版被重拉 → 复停重试路径命中
-- [ ] journal 崩溃恢复:staging 中断/swap 后中断/verify 中断三态各有断言
-- [ ] 备份保留 2 份自动清理;.new/.swap-tmp 无残留
-- [ ] `go test ./internal/update/ ./internal/daemon/ ./internal/notify/` 绿;`internal/mcp` 零触碰
-- [ ] 测试不碰生产 7311 口、不碰仓库根 ferryman.exe(替身 exe 用 `$env:TEMP`)
+- [x] 全流程 httptest+替身 exe 演练:成功路径换文件+备份+新版校验通过
+- [x] SHA256 失败 → 拒绝替换,现场原样
+- [x] 新版探活/版本校验失败 → 自动回滚,旧版重新服务
+- [x] 并发取锁:双 update 仅一胜,败者收「升级进行中」;陈旧锁接管演练
+- [x] kill 身份校验:假 PID 指向无关映像 → 拒杀(测试桩)
+- [x] 看门抢跑演练:verify 期模拟旧版被重拉 → 复停重试路径命中
+- [x] journal 崩溃恢复:staging 中断/swap 后中断/verify 中断三态各有断言
+- [x] 备份保留 2 份自动清理;.new/.swap-tmp 无残留
+- [x] `go test ./internal/update/ ./internal/daemon/ ./internal/notify/` 绿;`internal/mcp` 零触碰
+- [x] 测试不碰生产 7311 口、不碰仓库根 ferryman.exe(替身 exe 用 `$env:TEMP`)
 
 **Blocked by**: 03, 04
 **涉及路径**: internal/update/, internal/notify/(若需最小接线), cmd/ferryman/main.go

@@ -6,10 +6,10 @@
 3. `.gitignore` 删除 `ferryman-timeline` 行(被跟踪文件,入本链提交)。
 
 **验收标准**:
-- [ ] ADR 落盘,含上述全部要点,术语遵守 CONTEXT.md(update=自升级/cutover=切换)
-- [ ] 三个清单文件与空 viewer/ 目录已从工作区消失;其他脏区文件(CONTEXT.md、docs/*、experiments/* 等)原样未动
-- [ ] `.gitignore` 无 `ferryman-timeline` 行;该改动随本票提交
-- [ ] `git status --porcelain` 复核:除清单三文件消失外,脏区与 start 底账一致
+- [x] ADR 落盘,含上述全部要点,术语遵守 CONTEXT.md(update=自升级/cutover=切换)
+- [x] 三个清单文件与空 viewer/ 目录已从工作区消失;其他脏区文件(CONTEXT.md、docs/*、experiments/* 等)原样未动
+- [x] `.gitignore` 无 `ferryman-timeline` 行;该改动随本票提交
+- [x] `git status --porcelain` 复核:除清单三文件消失外,脏区与 start 底账一致
 
 **Blocked by**: 无,可立即开始
 **涉及路径**: docs/adr/0010-tag-release-self-update.md(新), .gitignore, (工作区删除: viewer/ferryman-timeline.exe, ferryman.exe.old-20260920, ferryman.exe.old-20260920-premerge)
