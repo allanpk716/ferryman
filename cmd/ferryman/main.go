@@ -8,6 +8,7 @@
 //	ferryman install-cc [--events E1,E2,…]
 //	ferryman install-ccswitch
 //	ferryman install-codex [--events E1,E2,…]
+//	ferryman install-mcp [--force]
 //	ferryman account report [--since …] [--until …] [--project …] [--session …]
 //	                        [--kind …] [--provider …] [--json]
 //
@@ -82,6 +83,8 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman install-cc [--events 事件1,事件2,…]
   ferryman install-ccswitch
   ferryman install-codex [--events 事件1,事件2,…]
+  ferryman install-mcp [--force]    # agent 面 MCP server 注册进 CC 用户级配置
+                                   # （幂等；外部/不兼容同名条目默认拒绝，--force 覆盖）
   ferryman autostart install|uninstall|status  # 登录自启 Run 键（票02 常驻保障）
   ferryman watchdog             # 看门单次探活：无监听拉起 daemon（票02，schtasks 每 5 分钟调它）
   ferryman watchdog install|uninstall|status   # 看门计划任务三操作
@@ -133,6 +136,8 @@ func run(args []string) int {
 		return cmdInstallCCSwitch()
 	case "install-codex":
 		return cmdInstallCodex(args[1:])
+	case "install-mcp":
+		return cmdInstallMCP(args[1:])
 	case "autostart":
 		return cmdAutostart(args[1:])
 	case "watchdog":
@@ -344,6 +349,18 @@ func cmdInstallCodex(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// cmdInstallMCP `ferryman install-mcp`：把 agent 面 MCP server 注册进 CC
+// 用户级 MCP 配置（claude mcp add --scope user 等效；幂等——自有旧条目直接
+// 刷新，外部/不兼容同名条目默认拒绝并说明原因，仅 --force 覆盖）。
+func cmdInstallMCP(args []string) int {
+	fs := flag.NewFlagSet("install-mcp", flag.ExitOnError)
+	force := fs.Bool("force", false, "覆盖 mcpServers.ferryman 下的外部/不兼容条目（默认拒绝并说明原因）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	return installer.InstallMCP("", "", *force)
 }
 
 // ---- 常驻保障（票02）：自启 Run 键 + 看门 ----

@@ -394,6 +394,43 @@ func CheckWatchdogTask(f func() (TaskStatus, error)) Check {
 	return Check{true, fmt.Sprintf("看门计划任务在位（下次运行: %s）", st.NextRun)}
 }
 
+// CheckMCPRegistration "MCP 注册在位"（票06）：用户级 MCP 配置（与
+// install-mcp 同 scope：<home>/.claude.json）里 mcpServers.ferryman 条目在位
+// 且形态自洽。判定复用 classifyMCPEntry（F6 ① 单源——install-mcp 的覆盖
+// 豁免与 doctor 的在位认定是同一套形状匹配，绝不两套判据）。CC 配置被外部
+// 工具重写抹掉注册时由此暴露（静默失效同族）。
+func CheckMCPRegistration(configPath string) Check {
+	rawData, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Check{false, fmt.Sprintf("MCP 注册不在位（%s 不存在——跑 ferryman install-mcp）",
+				configPath)}
+		}
+		return Check{false, fmt.Sprintf("%s 读取失败: %v", configPath, err)}
+	}
+	var root map[string]any
+	if err := json.Unmarshal(rawData, &root); err != nil {
+		return Check{false, fmt.Sprintf(".claude.json 解析失败: %v（MCP 注册状态未知）", err)}
+	}
+	servers, ok := root["mcpServers"].(map[string]any)
+	if root["mcpServers"] != nil && !ok {
+		return Check{false, "MCP 注册不在位（mcpServers 非对象——配置异常，人工核）"}
+	}
+	if !ok {
+		return Check{false, "MCP 注册不在位（无 mcpServers.ferryman——跑 ferryman install-mcp）"}
+	}
+	entry, isObj := servers[mcpServerKey].(map[string]any)
+	if servers[mcpServerKey] == nil || !isObj {
+		return Check{false, "MCP 注册不在位（mcpServers.ferryman 缺失或非对象——跑 ferryman install-mcp）"}
+	}
+	if own, reason := classifyMCPEntry(entry); !own {
+		return Check{false, fmt.Sprintf("mcpServers.ferryman 条目非 Ferryman 自建形态（%s；%s）"+
+			"——install-mcp 默认拒绝覆盖，--force 可强制", reason, maskedMCPSummary(entry))}
+	}
+	cmd, _ := entry["command"].(string)
+	return Check{true, fmt.Sprintf("MCP 注册在位（用户级 mcpServers.ferryman → %q mcp）", cmd)}
+}
+
 // CheckLauncher 点火脚本在位且其 exe 路径有效（钩子自举的地基；doctor.py
 // check_launcher 的 Go 新形态：脚本内启动行的 exe 路径存在）。
 func CheckLauncher(path string) Check {
@@ -519,6 +556,9 @@ func doctorResults(d doctorDeps) []CheckResult {
 	} else {
 		out = append(out, CheckWatchdogTask(d.WatchdogTask).named("watchdog_task"))
 	}
+	// 票06：MCP 注册在位（用户级 .claude.json——与 install-mcp 同 scope）。
+	// 追加在末位：既有检查项的顺序零漂移，CLI 人面仅多一行（预期行为）。
+	out = append(out, CheckMCPRegistration(UserMCPConfigPath(d.Home)).named("mcp_registration"))
 	return out
 }
 

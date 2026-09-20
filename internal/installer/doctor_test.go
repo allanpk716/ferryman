@@ -459,6 +459,8 @@ func greenDoctorDeps(t *testing.T, probe func() map[string]any) (doctorDeps, str
 	// CC Switch 库在位且快照为子集（骑手 M2：CheckCCSwitch 闸门豁免）
 	db := filepath.Join(tmp, "cc-switch.db")
 	makeDB(t, db, [][3]string{{"claude", "P1", subsetSnapshot(t)}})
+	// 票06：MCP 注册在位（用户级 .claude.json 装态——mcp_registration 全绿前提）
+	InstallMCP(filepath.Join(home, ".claude.json"), filepath.Join(repo, "ferryman.exe"), false)
 	read()
 	cfg := config.Default()
 	cfg.FerryProvider = "glm"
@@ -529,9 +531,9 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	deps.Out = &out
 	_ = runDoctor(deps)
 	got := out.String()
-	// 票02 起：+2 = Run 键自启 + 看门计划任务两查
-	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2,
-		1+1+1+1+len(doctorScriptNames())+1+1+2)
+	// 票02 起：+2 = Run 键自启 + 看门计划任务两查；票06 起：+1 = MCP 注册在位
+	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1,
+		1+1+1+1+len(doctorScriptNames())+1+1+2+1)
 	if !strings.Contains(got, want) {
 		t.Fatalf("结论计数不符:\nwant: %s\ngot:\n%s", want, got)
 	}
@@ -664,6 +666,7 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		"hook_script:ferryman-gate-codex.ps1", "hook_script:ferryman-restore-codex.ps1",
 		"hook_script:ferryman-subagent-codex.ps1",
 		"codex_hooks", "daemon_liveness", "autostart", "watchdog_task",
+		"mcp_registration", // 票06：追加在末位（既有项顺序零漂移）
 	}
 	if len(got) != len(want) {
 		t.Fatalf("项数 = %d, want %d: %+v", len(got), len(want), got)

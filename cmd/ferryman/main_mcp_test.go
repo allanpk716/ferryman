@@ -213,7 +213,7 @@ func TestMCPSubprocessFullChain(t *testing.T) {
 	// 通知静默。
 	send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 
-	// ② tools/list：恰好五件。
+	// ② tools/list：恰好六件（票05 起 doctor 入列——本测试同步遗留的五件断言）。
 	listRes, ok := call("tools/list", nil)["result"].(map[string]any)
 	if !ok {
 		t.Fatal("tools/list 无 result")
@@ -226,7 +226,7 @@ func TestMCPSubprocessFullChain(t *testing.T) {
 		names[n] = true
 	}
 	want := []string{"sessions", "session_detail", "gate_check", "cost_report",
-		"heartbeat_status"}
+		"heartbeat_status", "doctor"}
 	if len(names) != len(want) {
 		t.Fatalf("工具数 = %d, want %d: %v", len(names), len(want), names)
 	}

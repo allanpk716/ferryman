@@ -208,7 +208,7 @@ func ferrymanTools() []Tool {
 		},
 		{
 			Name: "doctor",
-			Description: `一键体检：进程内复用 CLI doctor 同一套检查，逐项返回结构化结论（名称/状态/说明三要素）——钩子在位、点火脚本、CC Switch 快照覆盖、摆渡 provider、渡口改写、钩子脚本 BOM/控制字符、Codex 钩子与旗标、daemon 活性、Run 键自启、看门计划任务，以便发现静默失效（出问题时表面毫无异常的失效形态）。
+			Description: `一键体检：进程内复用 CLI doctor 同一套检查，逐项返回结构化结论（名称/状态/说明三要素）——钩子在位、点火脚本、CC Switch 快照覆盖、摆渡 provider、渡口改写、钩子脚本 BOM/控制字符、Codex 钩子与旗标、daemon 活性、Run 键自启、看门计划任务、agent 面 MCP 注册在位（用户级），以便发现静默失效（出问题时表面毫无异常的失效形态）。
 
 daemon 不可达/超时时照常返回完整结构化结果，daemon 活性项记 fail——不缓存（每次调用独立重算）、不伪造、不自举 daemon。
 
