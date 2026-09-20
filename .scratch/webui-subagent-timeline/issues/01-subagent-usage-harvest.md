@@ -25,9 +25,9 @@
 
 ## 涉及路径
 
-- internal/daemon/watcher.go（pollCC 分流＋记账点）
-- internal/harvest/（采集扩展＋复合键＋恢复）
-- internal/accounts/accounts.go（usage 白名单追加标记字段）
+- internal/daemon/（pollCC 分流＋记账点；含新增 *_test.go）
+- internal/harvest/（采集扩展＋复合键＋恢复；含测试）
+- internal/accounts/（usage 白名单追加标记字段；含测试）
 
 ## 副作用声明
 

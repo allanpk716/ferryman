@@ -24,10 +24,8 @@
 
 ## 涉及路径
 
-- cmd/ferryman/web/app.js（列表页+时序页）
-- cmd/ferryman/web/style.css（泳道/甘特样式）
-- internal/viewer/ledger/ledger.go（Summarize 拆桶）
-- internal/viewer/server/（响应字段，如需）
+- cmd/ferryman/web/（列表页+时序页+样式）
+- internal/viewer/（ledger 拆桶与 Entry 子标记、server 响应；含测试）
 
 ## 副作用声明
 
