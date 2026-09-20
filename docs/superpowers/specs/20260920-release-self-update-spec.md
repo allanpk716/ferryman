@@ -10,7 +10,7 @@ Ferryman 目前没有版本号、没有发布通道、没有升级机制:exe 靠
 
 ## Solution(用户视角)
 
-- 你给仓库打一个语义化 tag(如 `v0.1.0`),几分钟后 GitHub 上出现一个 Release,里面是编译好的 `ferryman-windows_amd64.exe` 和校验文件——这是唯一正式发布口。
+- 你给仓库打一个语义化 tag(如 `v0.1.0`),几分钟后 GitHub 上出现一个 Release,里面是编译好的 `ferryman_windows_amd64.exe` 和校验文件——这是唯一正式发布口。
 - 你在任何地方能看到当前版本:`ferryman version`、`ferryman doctor`、面板页脚、托盘菜单第一项。
 - 你在托盘右键选「立即升级」,或敲 `ferryman update`:程序自己下载→校验→换文件→重启守护,升完托盘/doctor 显示新版本;中途任何一步失败,自动回滚旧版本,服务不断。
 - 「检查更新」只看不动手;升级永远手动触发,程序绝不自己偷偷升级;预发布版(rc/beta)默认不进更新通道。
@@ -30,7 +30,7 @@ Ferryman 目前没有版本号、没有发布通道、没有升级机制:exe 靠
 
 ### A. 版本与注入
 - main 包持可注入版本变量,缺省 `dev`;CI 与 `build.ps1 -Release` 以 `-ldflags -X` 注入(本地值取 `git describe --tags --always`,无 tag 即 dev)。
-- 版本暴露五处:`ferryman version` 子命令;doctor 结论行;agent 面 MCP doctor 工具响应加 `version` 字段(仍只读,动词面零变化);daemon `/stats` JSON 加 `version`(面板页脚显示,兼作升级探活校验);托盘菜单首项「版本 vX.Y.Z」(disabled 展示项)。
+- 版本暴露五处:`ferryman version` 子命令;doctor 结论行;agent 面 MCP doctor 工具响应加 `version` 字段(仍只读,动词面零变化);daemon `/stats` JSON 加 `version`(兼作升级探活校验;实施订正:面板页脚数据源为面板装配层 `GET /api/version`——同 main.version 单源,免面板跨口取守护 /stats);托盘菜单首项「版本 vX.Y.Z」(disabled 展示项)。
 
 ### B. 发布流水线(CI)
 - 新 workflow,触发 `push: tags: ['v*']`;`permissions: contents: write`;runner `windows-latest`(本仓 installer 无条件依赖 Windows registry,Linux 无法编译/测试——实测);每个 run 步骤显式 `shell: bash`。
