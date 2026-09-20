@@ -15,8 +15,9 @@ package daemon
 // 产品）；/stats 既有字段名逐字契约不动。
 //
 // 票间路径互斥：每端点一个独立 handler 文件。票01 落地 /sessions+/session
-// （query_sessions.go），/gate_check、/report、/beats 在本文件留 stub——后续
-// 票逐个替换时只动本注册表与各自新文件，stub 与实现不得同文件。
+// （query_sessions.go），票02 落地 /gate_check（query_gate_check.go），票03
+// 落地 /report+/beats（query_report.go / query_beats.go）——五端点全部为真实现，
+// 票01 的 stubNotImplemented 已随最后一个 stub 的替换退役删除。
 
 import (
 	"net/http"
@@ -30,8 +31,8 @@ var queryEndpoints = map[string]queryEndpoint{
 	"/sessions":   handleSessions,
 	"/session":    handleSessionDetail,
 	"/gate_check": handleGateCheck,
-	"/report":     stubNotImplemented, // 票03 实现（query_report.go）
-	"/beats":      stubNotImplemented, // 票03 实现（query_beats.go）
+	"/report":     handleReport, // 票03 实现（query_report.go）
+	"/beats":      handleBeats,  // 票03 实现（query_beats.go）
 }
 
 // dispatchQuery 查询面分派入口（httpapi.doGet default 分支的单块接线点）：
@@ -49,13 +50,4 @@ func dispatchQuery(dl DaemonLike, w http.ResponseWriter, r *http.Request) bool {
 	}
 	h(d, w, r)
 	return true
-}
-
-// stubNotImplemented 票01 占位：501＋明确「未实现」JSON（后续票逐端点替换，
-// 替换时只改 queryEndpoints 表项并新增各自 handler 文件）。
-func stubNotImplemented(d *Daemon, w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"error":    "not implemented",
-		"endpoint": r.URL.Path,
-	})
 }
