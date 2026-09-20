@@ -8,3 +8,7 @@ dist/
 eval/
 .superpowers/
 *.exe
+
+# 过夜压测与升级遗物
+.playwright-cli/
+ferryman.exe.old-*

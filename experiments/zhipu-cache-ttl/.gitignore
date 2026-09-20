@@ -1,0 +1,3 @@
+# 探针运行产物：含前缀全文与运行记录，勿提交
+results/
+state_ladder.json

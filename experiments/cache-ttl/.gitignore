@@ -1,0 +1,6 @@
+# 运行产物（含前缀全文与会话记录），勿提交
+results/
+pi-sessions/
+cc-workspaces/
+state_pi_*.json
+state_cc_*.json
