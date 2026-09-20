@@ -8,6 +8,7 @@
 //	ferryman install-cc [--events E1,E2,…]
 //	ferryman install-ccswitch
 //	ferryman install-codex [--events E1,E2,…]
+//	ferryman install-mcp [--force]
 //	ferryman account report [--since …] [--until …] [--project …] [--session …]
 //	                        [--kind …] [--provider …] [--json]
 //
@@ -44,6 +45,7 @@ import (
 	"ferryman/internal/cutover"
 	"ferryman/internal/daemon"
 	"ferryman/internal/installer"
+	"ferryman/internal/mcp"
 	"ferryman/internal/report"
 	"ferryman/internal/viewer/demo"
 	"ferryman/internal/viewer/server"
@@ -81,11 +83,15 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman install-cc [--events 事件1,事件2,…]
   ferryman install-ccswitch
   ferryman install-codex [--events 事件1,事件2,…]
+  ferryman install-mcp [--force]    # agent 面 MCP server 注册进 CC 用户级配置
+                                   # （幂等；外部/不兼容同名条目默认拒绝，--force 覆盖）
   ferryman autostart install|uninstall|status  # 登录自启 Run 键（票02 常驻保障）
   ferryman watchdog             # 看门单次探活：无监听拉起 daemon（票02，schtasks 每 5 分钟调它）
   ferryman watchdog install|uninstall|status   # 看门计划任务三操作
   ferryman account report [--since 日] [--until 日] [--project 名] [--session id]
                       [--kind 类型] [--provider 键] [--json]
+  ferryman mcp [--config 路径]      # stdio MCP server（agent 面只读工具，票04；
+                                  # CC 等 MCP 客户端把本命令注册为 server 用）
   ferryman cutover backup [--data 目录] [--dest 目录]
   ferryman cutover rollback-write [--repo 目录] [--data 目录]
   ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
@@ -130,6 +136,8 @@ func run(args []string) int {
 		return cmdInstallCCSwitch()
 	case "install-codex":
 		return cmdInstallCodex(args[1:])
+	case "install-mcp":
+		return cmdInstallMCP(args[1:])
 	case "autostart":
 		return cmdAutostart(args[1:])
 	case "watchdog":
@@ -138,6 +146,8 @@ func run(args []string) int {
 		return cmdAccount(args[1:])
 	case "cutover":
 		return cmdCutover(args[1:])
+	case "mcp":
+		return cmdMCP(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
@@ -341,6 +351,18 @@ func cmdInstallCodex(args []string) int {
 	return 0
 }
 
+// cmdInstallMCP `ferryman install-mcp`：把 agent 面 MCP server 注册进 CC
+// 用户级 MCP 配置（claude mcp add --scope user 等效；幂等——自有旧条目直接
+// 刷新，外部/不兼容同名条目默认拒绝并说明原因，仅 --force 覆盖）。
+func cmdInstallMCP(args []string) int {
+	fs := flag.NewFlagSet("install-mcp", flag.ExitOnError)
+	force := fs.Bool("force", false, "覆盖 mcpServers.ferryman 下的外部/不兼容条目（默认拒绝并说明原因）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	return installer.InstallMCP("", "", *force)
+}
+
 // ---- 常驻保障（票02）：自启 Run 键 + 看门 ----
 
 // cmdAutostart Run 键自启三操作（缺省 = status——只读最安全）。
@@ -399,6 +421,20 @@ func cmdAccount(args []string) int {
 		Since: *since, Until: *until, Project: *project, Session: *session,
 		Kind: *kind, Provider: *provider, JSON: *asJSON,
 	})
+}
+
+// ---- mcp（票04：agent 面 stdio MCP server） ----
+
+// cmdMCP `ferryman mcp`：stdio JSON-RPC 2.0 的 MCP server（六件只读工具中的
+// 五件转发 daemon 查询端点；doctor 在票05）。stdout 专留给 JSON-RPC，任何
+// 诊断只走 stderr；--config 缺省时走 FERRYMAN_CONFIG 或默认路径。
+func cmdMCP(args []string) int {
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "配置文件路径（缺省 = FERRYMAN_CONFIG 环境变量或 ~/ferryman/config.toml）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	return mcp.Run(*cfgPath)
 }
 
 // ---- cutover 族（票23：切换工具，不执行生产切换） ----
