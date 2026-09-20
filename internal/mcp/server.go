@@ -25,6 +25,7 @@ import (
 	"slices"
 
 	"ferryman/internal/config"
+	"ferryman/internal/installer"
 )
 
 const (
@@ -54,15 +55,19 @@ const (
 	codeInternalError  = -32603
 )
 
-// Server stdio MCP server：工具注册表＋daemon 转发客户端。
+// Server stdio MCP server：工具注册表＋daemon 转发客户端＋doctor 进程内检查。
 type Server struct {
 	client *DaemonClient
 	tools  []Tool
+	// doctor 进程内结构化体检（票05；New 注入真实装配，测试可整体替换——
+	// 生产默认面向 HOME/exe/config 解析目标，测试面向临时环境）。
+	doctor func() []installer.CheckResult
 }
 
 // New 以既有配置解析产物装配（cfg 来自 config.Load——鉴权信息即由此取得）。
 func New(cfg *config.Config) *Server {
-	return &Server{client: NewDaemonClient(cfg), tools: ferrymanTools()}
+	return &Server{client: NewDaemonClient(cfg), tools: ferrymanTools(),
+		doctor: defaultDoctorFunc(cfg)}
 }
 
 // Run `ferryman mcp` 子命令主体：configPath 显式参数 > FERRYMAN_CONFIG > 默认
@@ -248,6 +253,11 @@ func (s *Server) handleToolsCall(req rpcRequest) *rpcResponse {
 	if tool == nil {
 		return errResp(req.ID, codeInvalidParams,
 			fmt.Sprintf("unknown tool: %s（可用：%v）", p.Name, s.toolNames()))
+	}
+	// 票05：进程内工具（Endpoint 空＝doctor）不经 HTTP、不走 daemon 转发——
+	// 在 buildQuery/Get 之前分派。
+	if tool.Endpoint == "" {
+		return s.handleInProcessTool(req.ID, tool, p.Arguments)
 	}
 	q, err := tool.buildQuery(p.Arguments) // arguments 缺省＝无参调用
 	if err != nil {

@@ -1,16 +1,16 @@
 package mcp
 
-// tools.go — 票04：工具注册表＋五件只读工具（sessions、session_detail、
-// gate_check、cost_report、heartbeat_status——第六件 doctor 在票05，进程内
-// 复用检查函数不经 HTTP，不注册转发表）。
+// tools.go — 票04/票05：工具注册表＋六件只读工具（sessions、session_detail、
+// gate_check、cost_report、heartbeat_status 五件转发 daemon 只读 GET 端点；
+// doctor 进程内复用检查函数不经 HTTP，不注册转发表——tool_doctor.go）。
 //
 // D12 命名纪律：名称/参数英文；描述中文并直接引用 CONTEXT.md 词条原文
 // （台账、凉会话、拦截阈值、有效交接、成效账、等待窗口、等答复窗口（问询窗）、
 // 心跳），不造第二套翻译。
 //
 // 红线（规格「红线」节）：工具面不存在任何写操作工具——五件全部转发 daemon
-// 只读 GET 端点，参数透传（limit/过滤/scope/key），响应 JSON 原样透传；响应
-// 不含消息内容/凭据/token（daemon 侧已守，本层只透传不改写）。
+// 只读 GET 端点，参数透传（limit/过滤/scope/key），响应 JSON 原样透传；doctor
+// 进程内只读检查（文件/注册表/一次 GET /stats）；响应不含消息内容/凭据/token。
 
 import (
 	"fmt"
@@ -34,7 +34,8 @@ type Tool struct {
 	Name        string
 	Description string
 	InputSchema map[string]any
-	// Endpoint 转发的 daemon 只读 GET 端点路径。
+	// Endpoint 转发的 daemon 只读 GET 端点路径（空＝进程内工具——doctor，
+	// 不经 HTTP，走 Server.doctor 注入的检查函数）。
 	Endpoint string
 	// Params 参数透传规格（空＝无参工具）。
 	Params []ParamSpec
@@ -115,7 +116,7 @@ func intProp(desc string) map[string]any {
 	return map[string]any{"type": "integer", "minimum": 1, "description": desc}
 }
 
-// ferrymanTools 五件只读工具注册表（doctor 在票05）。
+// ferrymanTools 六件只读工具注册表（doctor 票05：进程内复用，非转发件）。
 func ferrymanTools() []Tool {
 	return []Tool{
 		{
@@ -201,6 +202,17 @@ func ferrymanTools() []Tool {
 等待窗口（wait window）：主会话因等待在飞子代理而闲置的起止区间——起于"主会话闲置且存在在飞子代理"，止于**最后一个子代理完成**（主会话自动续跑，无需人在场）、主会话提前恢复写入，或异步等待的停车收尾（见下）；心跳触发、节律与策略对比的分析单元。
 
 等答复窗口（answer window，问询窗）：问询守望命中后挂在会话上的窗口态：窗口内摆渡推迟但带硬死线（拦截阈值前 8 分钟强制入队，失败走既有骨架降级），闸门语义不动；随任何新写入立即关闭。与等待窗口（机器等机器）互为兄弟结构、两窗互斥、先开者赢。
+
+只读。无参数。`,
+			InputSchema: objSchema(map[string]any{}),
+		},
+		{
+			Name: "doctor",
+			Description: `一键体检：进程内复用 CLI doctor 同一套检查，逐项返回结构化结论（名称/状态/说明三要素）——钩子在位、点火脚本、CC Switch 快照覆盖、摆渡 provider、渡口改写、钩子脚本 BOM/控制字符、Codex 钩子与旗标、daemon 活性、Run 键自启、看门计划任务，以便发现静默失效（出问题时表面毫无异常的失效形态）。
+
+daemon 不可达/超时时照常返回完整结构化结果，daemon 活性项记 fail——不缓存（每次调用独立重算）、不伪造、不自举 daemon。
+
+agent 面：Ferryman 暴露给 AI agent 的 MCP 工具面；只读起步，一切读经 daemon 端点——doctor 是唯一例外（进程内检查，不经 HTTP）。
 
 只读。无参数。`,
 			InputSchema: objSchema(map[string]any{}),

@@ -42,6 +42,35 @@ type Check struct {
 	Msg string
 }
 
+// CheckStatus 结构化检查项状态（票05 agent 面结构化出口）：pass/fail/
+// not_checked 三态。not_checked = 检查目标未装配或按策略跳过——如实标注，
+// 绝不伪造通过/失败（CLI 面按非 fail 信息行打印、不计入失败数）。
+type CheckStatus string
+
+const (
+	StatusPass       CheckStatus = "pass"
+	StatusFail       CheckStatus = "fail"
+	StatusNotChecked CheckStatus = "not_checked"
+)
+
+// CheckResult 结构化检查项三要素（票05）：名称/状态/一句话说明——agent 面
+// MCP doctor 工具响应的逐项形状；CLI 面打印同一份计算的 Detail。
+type CheckResult struct {
+	Name   string      `json:"name"`
+	Status CheckStatus `json:"status"`
+	Detail string      `json:"detail"`
+}
+
+// named Check → CheckResult 换装（name 为稳定检查项名；CLI 面结论语义不变：
+// OK→pass、!OK→fail——人面 tag 打印与退出码零漂移）。
+func (c Check) named(name string) CheckResult {
+	st := StatusFail
+	if c.OK {
+		st = StatusPass
+	}
+	return CheckResult{Name: name, Status: st, Detail: c.Msg}
+}
+
 // HttpBeatNotice HttpBeatSender 功能退化声明（评审附录#14）：心跳真实发送
 // 未实装（Q14 未授权），enforce 模式自动回落 observe 演练。信息行，不计入
 // 检查项、不判 FAIL。
@@ -397,20 +426,36 @@ type doctorDeps struct {
 	Out          io.Writer
 }
 
+// HomeDir / RepoRoot 目标解析导出面（票05：agent 面 MCP doctor 经此取 HOME/
+// exe 面目标——与 CLI RunDoctor 同缝；repoRoot 是包级测试缝，wrapper 透传
+// 即测试可整体替换）。
+func HomeDir() string { return homeDir() }
+
+// RepoRoot 见 HomeDir 注（同一导出面）。
+func RepoRoot() string { return repoRoot() }
+
 // RunDoctor 一键体检真实入口（HOME/exe 面）；返回进程退出码（有 FAIL → 1）。
 func RunDoctor() int {
 	home := homeDir()
+	// 票05：daemon 活性目标经 config 解析（config.Load 优先级：显式参数 >
+	// FERRYMAN_CONFIG > 默认路径）；加载失败回落内置默认口（探针目标与既有
+	// 行为同位），配置坏本身由体检项如实报出。
+	cfg, cfgErr := config.Load("", false)
+	port := config.Default().Server.Port
+	if cfgErr == nil {
+		port = cfg.Server.Port
+	}
 	return runDoctor(doctorDeps{
 		Home:        home,
 		Repo:        repoRoot(),
 		CCSwitchDB:  CCSwitchDBPath(home),
 		CodexHooks:  CodexHooksPath(home),
 		CodexConfig: CodexConfigPath(home),
-		LoadCfg:     func() (*config.Config, error) { return config.Load("", false) },
+		LoadCfg:     func() (*config.Config, error) { return cfg, cfgErr },
 		LoadProviders: func() (map[string]ferry.Provider, error) {
 			return ferry.LoadProviders("")
 		},
-		Probe: realStatsProbe(filepath.Join(home, "ferryman")),
+		Probe: realStatsProbe(filepath.Join(home, "ferryman"), port),
 		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
 		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
 		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
@@ -426,24 +471,28 @@ func doctorScriptNames() []string {
 		"ferryman-restore-codex.ps1", "ferryman-subagent-codex.ps1"}
 }
 
-// runDoctor 聚合检查并打印（doctor.py run_doctor 逐字 + 附录#14 声明行）。
-func runDoctor(d doctorDeps) int {
+// doctorResults 全项结构化体检（票05）：CLI 面 runDoctor 与 agent 面 MCP
+// doctor 工具共用同一份计算（公式单源——CONTEXT.md 词条：同一检查全仓只许
+// 一份实现）；项目名称稳定、顺序＝CLI 打印序。deps 检查字段 nil＝该项目标
+// 未装配 → 显式 not_checked（如实标注，绝不伪造通过/失败）。纯只读：不打印、
+// 不写盘、不拉起 daemon；每次调用独立重算（无缓存）。
+func doctorResults(d doctorDeps) []CheckResult {
 	dataDir := filepath.Join(d.Home, "ferryman")
-	results := []Check{}
-	results = append(results, CheckCCHooks(filepath.Join(d.Home, ".claude", "settings.json")))
-	results = append(results, CheckLauncher(filepath.Join(dataDir, LauncherName)))
-	results = append(results, CheckCCSwitch(d.CCSwitchDB))
+	out := []CheckResult{}
+	out = append(out, CheckCCHooks(filepath.Join(d.Home, ".claude", "settings.json")).named("cc_hooks"))
+	out = append(out, CheckLauncher(filepath.Join(dataDir, LauncherName)).named("launcher"))
+	out = append(out, CheckCCSwitch(d.CCSwitchDB).named("ccswitch_snapshots"))
 	// 配置坏要让 doctor 报出来而非崩（Python try/except 同形）
 	cfg, err := d.LoadCfg()
 	if err != nil {
-		results = append(results, Check{false, fmt.Sprintf("摆渡配置加载失败: %v", err)})
+		out = append(out, Check{false, fmt.Sprintf("摆渡配置加载失败: %v", err)}.named("ferry_provider"))
 	} else if providers, err := d.LoadProviders(); err != nil {
-		results = append(results, Check{false, fmt.Sprintf("摆渡配置加载失败: %v", err)})
+		out = append(out, Check{false, fmt.Sprintf("摆渡配置加载失败: %v", err)}.named("ferry_provider"))
 	} else {
-		results = append(results, CheckFerryProvider(cfg.FerryProvider, providers))
+		out = append(out, CheckFerryProvider(cfg.FerryProvider, providers).named("ferry_provider"))
 		// 票06：渡口配置了才查（无 [dock] 的存量用户零新增检查行）
 		if cfg.Dock != nil {
-			results = append(results, CheckDockRewrite(cfg.Dock))
+			out = append(out, CheckDockRewrite(cfg.Dock).named("dock_rewrite"))
 		}
 	}
 
@@ -451,22 +500,75 @@ func runDoctor(d doctorDeps) int {
 	for _, n := range doctorScriptNames() {
 		scripts = append(scripts, filepath.Join(d.Repo, "hooks", n))
 	}
-	results = append(results, CheckHookScripts(scripts)...)
-	results = append(results, CheckCodex(d.CodexHooks, d.CodexConfig))
-	results = append(results, CheckDaemon(d.Probe, filepath.Join(dataDir, "daemon.pid")))
-	// 票02：常驻保障两查——缺失/值不符照旧 FAIL（缺了＝常驻保障缺位，与钩子
-	// 缺失同级；修法各印在文案里）
-	results = append(results, CheckAutostart(d.Autostart))
-	results = append(results, CheckWatchdogTask(d.WatchdogTask))
+	for i, c := range CheckHookScripts(scripts) {
+		out = append(out, c.named("hook_script:"+filepath.Base(scripts[i])))
+	}
+	out = append(out, CheckCodex(d.CodexHooks, d.CodexConfig).named("codex_hooks"))
+	out = append(out, CheckDaemon(d.Probe, filepath.Join(dataDir, "daemon.pid")).named("daemon_liveness"))
+	// 票02 常驻保障两查：deps 未装配（agent 面测试密闭形态）→ not_checked；
+	// CLI 面恒装配，人面输出不变。
+	if d.Autostart == nil {
+		out = append(out, CheckResult{Name: "autostart", Status: StatusNotChecked,
+			Detail: "Run 键自启未检查（检查目标未装配——如实标注不伪造）"})
+	} else {
+		out = append(out, CheckAutostart(d.Autostart).named("autostart"))
+	}
+	if d.WatchdogTask == nil {
+		out = append(out, CheckResult{Name: "watchdog_task", Status: StatusNotChecked,
+			Detail: "看门计划任务未检查（检查目标未装配——如实标注不伪造）"})
+	} else {
+		out = append(out, CheckWatchdogTask(d.WatchdogTask).named("watchdog_task"))
+	}
+	return out
+}
 
+// DoctorStructured 票05：结构化体检导出入口——agent 面 MCP doctor 工具进程内
+// 复用（D6：不经 HTTP）；与 CLI runDoctor 同一套检查函数与聚合序（公式单源）。
+//
+// 目标解析面（测试传临时目录/临时 config，绝不读真实用户目录）：
+//   - home/repo：用户目录与仓库根相关检查的目标（同 RunDoctor 的 HOME/exe 面）；
+//   - cfg：已解析配置（config.Load 优先级的产物；daemon 活性目标 =
+//     cfg.DataDir()/cfg.Server.Port，本函数不二次解析）；非 nil 契约；
+//   - cfgPath：providers 解析路径（"" = 默认路径 ~/ferryman/config.toml——与
+//     CLI doctor 同位的既有行为）；测试传临时 config；
+//   - residency：常驻保障两查（Run 键自启＋看门任务）——true 走真探测（只读
+//     注册表 / schtasks /Query，无写副作用）；false 两项显式 not_checked
+//     （零子进程、零注册表读——测试密闭形态）。
+//
+// 纯只读：不打印、不写盘、不拉起 daemon；每次调用独立重算（无缓存）。
+func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, residency bool) []CheckResult {
+	d := doctorDeps{
+		Home:        home,
+		Repo:        repo,
+		CCSwitchDB:  CCSwitchDBPath(home),
+		CodexHooks:  CodexHooksPath(home),
+		CodexConfig: CodexConfigPath(home),
+		LoadCfg:     func() (*config.Config, error) { return cfg, nil },
+		LoadProviders: func() (map[string]ferry.Provider, error) {
+			return ferry.LoadProviders(cfgPath)
+		},
+		Probe: realStatsProbe(cfg.DataDir(), cfg.Server.Port),
+	}
+	if residency {
+		d.Autostart = func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) }
+		d.WatchdogTask = func() (TaskStatus, error) { return queryTask(realTaskDeps()) }
+	}
+	return doctorResults(d)
+}
+
+// runDoctor 聚合检查并打印（doctor.py run_doctor 逐字 + 附录#14 声明行）。
+// 票05 起结论计算单源 doctorResults——本函数只负责人面打印与退出码，格式
+// 与拆分前逐字一致（tag/空行/声明行/结论行）。
+func runDoctor(d doctorDeps) int {
+	results := doctorResults(d)
 	fails := 0
 	for _, r := range results {
 		tag := "[FAIL] "
-		if r.OK {
+		if r.Status != StatusFail {
 			tag = "[OK]   "
 		}
-		fmt.Fprintln(d.Out, tag+r.Msg)
-		if !r.OK {
+		fmt.Fprintln(d.Out, tag+r.Detail)
+		if r.Status == StatusFail {
 			fails++
 		}
 	}
@@ -484,14 +586,16 @@ func runDoctor(d doctorDeps) int {
 }
 
 // realStatsProbe /stats 探针：Bearer token 读 data_dir，2s 超时；任何失败 → nil
-// （doctor.py real_probe 逐字；端口 7311 硬编码同 Python）。
-func realStatsProbe(dataDir string) func() map[string]any {
+// （doctor.py real_probe 逐字；端口票05 起由调用方经 config 解析传入——同
+// internal/config 优先级，默认 7311 与 Python 硬编码同位）。
+func realStatsProbe(dataDir string, port int) func() map[string]any {
 	return func() map[string]any {
 		tokenRaw, err := os.ReadFile(filepath.Join(dataDir, "daemon.token"))
 		if err != nil {
 			return nil
 		}
-		req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:7311/stats", nil)
+		req, err := http.NewRequest(http.MethodGet,
+			fmt.Sprintf("http://127.0.0.1:%d/stats", port), nil)
 		if err != nil {
 			return nil
 		}

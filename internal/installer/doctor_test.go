@@ -7,8 +7,13 @@ package installer
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -595,5 +600,193 @@ func TestRunDoctorAutostartWatchdogFailVisible(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "Run 键自启缺失") || !strings.Contains(got, "看门计划任务缺失") {
 		t.Fatalf("缺两查失败行:\n%s", got)
+	}
+}
+
+// ---- 票05：结构化出口（doctorResults / DoctorStructured / realStatsProbe 端口） ----
+
+// notProdPort 结构化出口测试的端口验收钉子（生产端口全集：渡口双轨/上游/
+// 守护/面板——测试一律临时口）。
+func notProdPort(t *testing.T, port int) {
+	t.Helper()
+	for _, p := range []int{15721, 15722, 15724, 7311, 15900} {
+		if port == p {
+			t.Fatalf("测试撞生产端口 %d——换口", port)
+		}
+	}
+}
+
+// freeListenPort 绑 0 取空闲口即关（竞窗接受，测试夹具同 mcp 包惯例）。
+func freeListenPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	notProdPort(t, port)
+	return port
+}
+
+// statsTestServer 临时 /stats 端点（恒回 {}）；返回端口（非生产端口已断言）。
+func statsTestServer(t *testing.T) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "{}")
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notProdPort(t, port)
+	return port
+}
+
+// TestDoctorResultsThreeFieldsAndOrder 结构化出口三要素：名称稳定、状态合法、
+// 说明非空；项目顺序 = CLI 打印序（夹具 cfg.Dock 缺 → 无 dock_rewrite 项）。
+func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	got := doctorResults(deps)
+	if len(got) == 0 {
+		t.Fatal("结构化结果为空")
+	}
+	legal := map[CheckStatus]bool{StatusPass: true, StatusFail: true, StatusNotChecked: true}
+	want := []string{
+		"cc_hooks", "launcher", "ccswitch_snapshots", "ferry_provider",
+		"hook_script:ferryman-gate.ps1", "hook_script:ferryman-restore.ps1",
+		"hook_script:ferryman-subagent.ps1", "hook_script:ferryman-ensure.ps1",
+		"hook_script:ferryman-gate-codex.ps1", "hook_script:ferryman-restore-codex.ps1",
+		"hook_script:ferryman-subagent-codex.ps1",
+		"codex_hooks", "daemon_liveness", "autostart", "watchdog_task",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("项数 = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i, r := range got {
+		if r.Name != want[i] {
+			t.Fatalf("第 %d 项名称 = %q, want %q（顺序=CLI 打印序）", i, r.Name, want[i])
+		}
+		if r.Detail == "" || !legal[r.Status] {
+			t.Fatalf("三要素不齐: %+v", r)
+		}
+		if r.Status != StatusPass {
+			t.Fatalf("全绿夹具应全 pass: %+v", r)
+		}
+	}
+}
+
+// TestDoctorResultsMatchCLILines 人面零漂移钉子：CLI 打印行与结构化结果一一
+// 对应——tag 与 Status 同相（fail→[FAIL]、其余→[OK]），退出码随 fail 数。
+func TestDoctorResultsMatchCLILines(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return nil }) // daemon 死 → 必有 fail
+	var out strings.Builder
+	deps.Out = &out
+	code := runDoctor(deps)
+	got := doctorResults(deps) // 同 deps 再算一遍：CLI 面与结构化出口同源
+	fails := 0
+	for _, r := range got {
+		wantTag := "[OK]   "
+		if r.Status == StatusFail {
+			wantTag = "[FAIL] "
+			fails++
+		}
+		if !strings.Contains(out.String(), wantTag+r.Detail) {
+			t.Fatalf("CLI 行与结构化结果不对应: %s%q\n输出:\n%s", wantTag, r.Detail, out.String())
+		}
+	}
+	if fails == 0 {
+		t.Fatal("夹具 daemon 死应至少一项 fail")
+	}
+	if code != 1 {
+		t.Fatalf("有 fail 应退出 1, got %d", code)
+	}
+}
+
+// TestRealStatsProbeUsesConfigPort 票05：daemon 活性目标经 config 解析的端口
+// （7311 硬编码成历史）——活口真探通、死口真失败。
+func TestRealStatsProbeUsesConfigPort(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "daemon.token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	port := statsTestServer(t)
+	if got := realStatsProbe(dataDir, port)(); got == nil {
+		t.Fatalf("临时 daemon（端口 %d）应探活成功", port)
+	}
+	deadPort := freeListenPort(t)
+	if got := realStatsProbe(dataDir, deadPort)(); got != nil {
+		t.Fatalf("无人听的口 %d 应探活失败, got %v", deadPort, got)
+	}
+}
+
+// TestDoctorStructuredTempTargets agent 面真实装配（DoctorStructured）：临时
+// HOME/repo/config——用户目录相关检查面向临时目标（不读真实用户目录）；
+// residency=false 时常驻保障两查显式 not_checked（零子进程/零注册表读）；
+// daemon 活性目标经 cfg 解析——临时 daemon 在线 pass、离线 fail 且完整
+// 结构化结果照常返回（不缩水、不是错误）。
+func TestDoctorStructuredTempTargets(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	repo := filepath.Join(tmp, "repo") // 空 repo：脚本缺失 → 逐件 fail（确定性）
+	dataDir := filepath.Join(home, "ferryman")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "daemon.token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// providers 面向临时 config（cfgPath 参数）——绝不读真实 ~/ferryman/config.toml。
+	cfgPath := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[ferry]\nprovider = 'glm'\n"+
+		"[providers.glm]\nbase_url = 'http://x'\nmodel = 'm'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.DataDir = dataDir
+	cfg.Server.Port = statsTestServer(t) // 在线：临时 /stats
+	cfg.FerryProvider = "glm"
+
+	res := DoctorStructured(home, repo, cfg, cfgPath, false)
+	byName := map[string]CheckResult{}
+	for _, r := range res {
+		byName[r.Name] = r
+	}
+	if r := byName["daemon_liveness"]; r.Status != StatusPass {
+		t.Fatalf("临时 daemon 在线（%d）活性应 pass: %+v", cfg.Server.Port, r)
+	}
+	if r := byName["ferry_provider"]; r.Status != StatusPass {
+		t.Fatalf("providers 面向临时 config 应 pass: %+v", r)
+	}
+	if r := byName["ccswitch_snapshots"]; r.Status != StatusPass {
+		t.Fatalf("未装 CC Switch 应跳过通过: %+v", r)
+	}
+	for _, n := range []string{"autostart", "watchdog_task"} {
+		if r := byName[n]; r.Status != StatusNotChecked {
+			t.Fatalf("%s 应 not_checked（residency=false 如实标注）: %+v", n, r)
+		}
+	}
+
+	// 离线：换无人听的口——活性 fail，完整结构化结果照常（项数不缩水）。
+	cfg.Server.Port = freeListenPort(t)
+	res2 := DoctorStructured(home, repo, cfg, cfgPath, false)
+	if len(res2) == 0 || len(res2) != len(res) {
+		t.Fatalf("离线应返回完整结构化结果（%d 项）, got %d", len(res), len(res2))
+	}
+	byName2 := map[string]CheckResult{}
+	for _, r := range res2 {
+		byName2[r.Name] = r
+	}
+	if r := byName2["daemon_liveness"]; r.Status != StatusFail {
+		t.Fatalf("daemon 离线活性应 fail: %+v", r)
 	}
 }

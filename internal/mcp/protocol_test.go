@@ -1,8 +1,9 @@
 package mcp
 
-// protocol_test.go — 票04 协议面验收钉子：initialize（capabilities.tools 与
-// serverInfo）、tools/list（恰好五件只读工具＋反向断言无写操作工具）、描述
-// 中文且直接引用 CONTEXT.md 词条原文（D12）、通知静默、协议错误码、参数校验。
+// protocol_test.go — 票04/票05 协议面验收钉子：initialize（capabilities.tools 与
+// serverInfo）、tools/list（恰好六件只读工具——票05 doctor 入列——＋反向断言
+// 无写操作工具）、描述中文且直接引用 CONTEXT.md 词条原文（D12）、通知静默、
+// 协议错误码、参数校验。
 
 import (
 	"strings"
@@ -63,16 +64,17 @@ func TestInitializeWithoutParams(t *testing.T) {
 	}
 }
 
-// TestToolsListExactlyFiveReadOnlyTools 验收钉子：恰好五件（doctor 在票05），
-// 每件有描述与 object inputSchema；反向断言无任何写操作工具。
-func TestToolsListExactlyFiveReadOnlyTools(t *testing.T) {
+// TestToolsListExactlySixReadOnlyTools 验收钉子：恰好六件只读工具（票05 起
+// doctor 入列——进程内件；其余五件走 daemon 转发），每件有描述与 object
+// inputSchema；反向断言无任何写操作工具。
+func TestToolsListExactlySixReadOnlyTools(t *testing.T) {
 	e := newEnv(t, false, false)
 	p := startPipes(t, e.cfg)
 	tools := listedTools(t, p)
 	want := []string{"sessions", "session_detail", "gate_check", "cost_report",
-		"heartbeat_status"}
+		"heartbeat_status", "doctor"}
 	if len(tools) != len(want) {
-		t.Fatalf("工具数 = %d, want %d（doctor 在票05 不在本票）: %v",
+		t.Fatalf("工具数 = %d, want %d: %v",
 			len(tools), len(want), tools)
 	}
 	for _, w := range want {
@@ -88,10 +90,7 @@ func TestToolsListExactlyFiveReadOnlyTools(t *testing.T) {
 			t.Fatalf("工具 %s inputSchema 非 object: %v", w, tm["inputSchema"])
 		}
 	}
-	// 反向断言：doctor 不在本票；工具面不存在写操作工具。
-	if _, ok := tools["doctor"]; ok {
-		t.Fatal("doctor 不应在本票出现（票05）")
-	}
+	// 反向断言：工具面不存在写操作工具。
 	for name := range tools {
 		for _, verb := range []string{"write", "create", "update", "delete",
 			"remove", "install", "stop", "kill", "restart", "push", "patch",
@@ -155,7 +154,7 @@ func TestNotificationSilentlyConsumed(t *testing.T) {
 }
 
 // TestProtocolErrors 协议级错误码：坏 JSON -32700、未知方法 -32601、
-// 未知工具（含 doctor）-32602。
+// 未知工具 -32602（票05 起 doctor 已入列，未知工具探针改用不存在的名字）。
 func TestProtocolErrors(t *testing.T) {
 	e := newEnv(t, false, false)
 	p := startPipes(t, e.cfg)
@@ -172,7 +171,7 @@ func TestProtocolErrors(t *testing.T) {
 	if code := errCode(t, p.call("resources/list", nil)); code != -32601 {
 		t.Fatalf("未知方法应 -32601, got %d", code)
 	}
-	_, _, errObj := p.callTool("doctor", nil)
+	_, _, errObj := p.callTool("no_such_tool", nil)
 	if errObj == nil {
 		t.Fatal("未知工具应有协议级 error")
 	}
