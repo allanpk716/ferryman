@@ -232,8 +232,10 @@ func (d *Daemon) recordWindowLocked(key winKey, w *waitWindow, reason string, cl
 // 不变）；缺位时从账本 usage 实报值回落——开窗前（ts <= opened_ts）该会话最后
 // 一条的 input+cache_read+cache_creation（API 实报的完整请求输入，比提取器估
 // 算准）；开窗前的行一条都没有（时钟毛刺）则退取该会话任意最后一条，再无则 0。
-// 任何异常吞成 0——窗口行绝不因富化失败而丢。须持 windowsMu 调用（Python
-// 版同在 _wlock 下读账本盘；记账富化永不弄断闭窗，与 _acct 同纪律）。
+// 子代理 usage 行（票01起随父 sid 入账）不代言主会话前缀——先滤除再取值，
+// 滤后为空即 0，不得回退未过滤全量。任何异常吞成 0——窗口行绝不因富化失败
+// 而丢。须持 windowsMu 调用（Python 版同在 _wlock 下读账本盘；记账富化永不
+// 弄断闭窗，与 _acct 同纪律）。
 // A 修复（票13 评审 Minor A）：peakCtx 由调用方在 windowsMu→ledger.Mu 同序
 // 双锁下快照传入，本函数不再触碰共享引用。
 func (d *Daemon) windowPrefixLocked(peakCtx int, sid string, openedTS float64) int {
@@ -244,14 +246,21 @@ func (d *Daemon) windowPrefixLocked(peakCtx int, sid string, openedTS float64) i
 		return 0
 	}
 	rows := d.Accounts.Read(accounts.ReadOpts{Kind: "usage", Session: sid})
-	pool := make([]map[string]any, 0, len(rows))
+	main := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
+		if sub, _ := r["subagent"].(string); sub != "" {
+			continue
+		}
+		main = append(main, r)
+	}
+	pool := make([]map[string]any, 0, len(main))
+	for _, r := range main {
 		if acctNum(r, "ts") <= openedTS {
 			pool = append(pool, r)
 		}
 	}
 	if len(pool) == 0 {
-		pool = rows
+		pool = main
 	}
 	if len(pool) == 0 {
 		return 0

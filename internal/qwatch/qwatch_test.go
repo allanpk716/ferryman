@@ -471,3 +471,41 @@ func TestMissSignalNegativeControls(t *testing.T) {
 		t.Errorf("⑥回看窗外: got %d, want 0", got)
 	}
 }
+
+// 终局评审修复①的回归测试（夜链 20260920-114721）：票01 起子代理 usage 行随
+// 父 sid 入账，漏检关联（CorrelateMissSignals）的 usage 序列必须只看主会话
+// 行——否则子行既会打断"真复活对"（真漏检被漏计），又会以子代理自己的
+// cache_read=0 首请求冒充复活（假漏检）。
+
+func subUsageRow(sid string, ts float64, cacheRead float64) map[string]any {
+	r := usageRow(sid, ts, cacheRead)
+	r["subagent"] = "agent-x"
+	return r
+}
+
+func TestMissSignalSubagentInsertDoesNotBreakRevivalPair(t *testing.T) {
+	// 子行插在主行之间：主对 t0 → t0+700（≥600s、cr=0）是真复活；
+	// 未修复时子行(t0+300)成为前驱、表观间隔 400s → 真漏检被漏计。
+	rows := []map[string]any{
+		hitRow("s", t0),
+		usageRow("s", t0, 100),
+		subUsageRow("s", t0+300, 50),
+		usageRow("s", t0+700, 0),
+	}
+	if got := CorrelateMissSignals(rows); got != 1 {
+		t.Errorf("子行插入后 CorrelateMissSignals = %d, want 1（真复活对不得被子行打断）", got)
+	}
+}
+
+func TestMissSignalSubagentRevivalNotCounted(t *testing.T) {
+	// 只有子行呈现"复活"形态（cr=0 且间隔≥600s）：子代理请求不代表主会话
+	// 闲置复活，不得计漏检。
+	rows := []map[string]any{
+		hitRow("s", t0),
+		usageRow("s", t0, 100),
+		subUsageRow("s", t0+700, 0),
+	}
+	if got := CorrelateMissSignals(rows); got != 0 {
+		t.Errorf("子行复活 CorrelateMissSignals = %d, want 0", got)
+	}
+}

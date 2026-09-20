@@ -278,6 +278,9 @@ func CorrelateMissSignals(rows []map[string]any) int {
 		kind, _ := r["kind"].(string)
 		switch {
 		case kind == "usage":
+			if sub, _ := r["subagent"].(string); sub != "" {
+				continue // 子代理行（票01起随父sid入账）不代表主会话请求节奏——排除
+			}
 			if cr, ok := numF(r["cache_read_tokens"]); ok {
 				usage[sid] = append(usage[sid], [2]float64{ts, cr})
 			}
