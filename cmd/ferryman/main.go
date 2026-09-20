@@ -44,9 +44,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/getlantern/systray"
+	"golang.org/x/sys/windows"
 
 	"ferryman/internal/config"
 	"ferryman/internal/cutover"
@@ -313,25 +315,122 @@ func panelMux(dir, note string) *http.ServeMux {
 	return mux
 }
 
-// trayReady 托盘就绪：帆船图标 + 面板地址 tooltip + 菜单（打开面板/退出；
-// 退出 = 停守护——systray.Run 返回后主流程取消 ctx）。
+// trayItem 托盘菜单项描述（纯数据；装配抽成纯函数——systray 本体不可单测，
+// 单测只断言项序与 disabled，票07）。
+type trayItem struct {
+	title    string // 菜单标题
+	tooltip  string // 悬停提示
+	disabled bool   // 置灰纯展示项
+}
+
+// trayMenuItems 托盘菜单装配（票07，规格 §D）：「版本 vX.Y.Z」（disabled 展示，
+// 文本随包级 version——dev 显 dev）→「打开面板」→「检查更新」（只读）→
+// 「立即升级」→「退出」。纯函数：返回项与顺序，trayReady 据此 Add。
+func trayMenuItems(ver, url string) []trayItem {
+	return []trayItem{
+		{title: "版本 " + ver, tooltip: "当前版本", disabled: true},
+		{title: "打开面板", tooltip: url},
+		{title: "检查更新", tooltip: "查询 GitHub 最新版本（只读，不下载）"},
+		{title: "立即升级", tooltip: "后台拉起升级监督者：停守护→换装→重启，完成后通知"},
+		{title: "退出", tooltip: "停守护并退出（面板随之不可访问）"},
+	}
+}
+
+// trayReady 托盘就绪：帆船图标 + 面板地址 tooltip + 菜单（装配见 trayMenuItems；
+// 票07 新增检查更新/立即升级）。退出 = 停守护——systray.Run 返回后主流程取消
+// ctx；检查/升级动作在各自 goroutine 里跑，不堵菜单事件循环。
 func trayReady(url string) {
 	systray.SetIcon(iconICO)
 	systray.SetTooltip("Ferryman 守护+面板 · " + url)
-	open := systray.AddMenuItem("打开面板", url)
+	it := trayMenuItems(version, url)
+	ver := systray.AddMenuItem(it[0].title, it[0].tooltip)
+	ver.Disable() // 版本展示项置灰
+	open := systray.AddMenuItem(it[1].title, it[1].tooltip)
+	check := systray.AddMenuItem(it[2].title, it[2].tooltip)
+	upNow := systray.AddMenuItem(it[3].title, it[3].tooltip)
 	systray.AddSeparator()
-	quit := systray.AddMenuItem("退出", "停守护并退出（面板随之不可访问）")
+	quit := systray.AddMenuItem(it[4].title, it[4].tooltip)
 	go func() {
 		for {
 			select {
 			case <-open.ClickedCh:
 				openBrowser(url)
+			case <-check.ClickedCh:
+				go trayCheckUpdate() // 联网检查不堵事件循环
+			case <-upNow.ClickedCh:
+				go trayUpgradeNow()
 			case <-quit.ClickedCh:
 				systray.Quit()
 				return
 			}
 		}
 	}()
+}
+
+// ---- 托盘升级动作（票07，D5/D6：检查只读、升级纯手动） ----
+
+// updateCheckFlow 「检查更新」动作流：进程内调 update.Check——纯只读（D6：
+// 升级纯手动，不下载不换文件），结论以 Check 的人话串经 push 推出；查询失败
+// 也推（用户点了要有回音）。eps 与 push 均注入：单测用 httptest 假端点 +
+// 通知桩断言「Check 被调且通知发出、release 查询之外零触碰」。
+func updateCheckFlow(eps update.Endpoints, current string, push func(title, msg string)) {
+	out, err := update.Check(eps, current, "", false)
+	if err != nil {
+		push("Ferryman 检查更新", "检查更新失败："+err.Error())
+		return
+	}
+	push("Ferryman 检查更新", out.String())
+}
+
+// trayCheckUpdate 托盘「检查更新」点击入口：真实端点只读检查，结论经
+// NotifyAlert 推送（票05 已接线的双通道）；config 载不动就不推——旁路尽力
+// 而为，与 runUpdateExecute 同纪律。
+func trayCheckUpdate() {
+	var cfg *config.Config
+	if c, err := config.Load("", false); err == nil {
+		cfg = c
+	}
+	updateCheckFlow(update.Endpoints{}, version, func(title, msg string) {
+		if cfg != nil {
+			notify.NotifyAlert(title, msg, cfg)
+		}
+	})
+}
+
+// upgradeLaunchFlow 「立即升级」动作流：detached 隐藏拉起 `ferryman update
+// --supervise`（票05 内部旗标 = 监督者执行，规格 §C 统一监督者）。start 注入
+// ——单测桩断言参数形态，真实 spawn 不在单测里跑。守护自己不退出：监督者会
+// 经 /shutdown 叫停本守护、换装、拉起新守护，生命周期归它，菜单不用管。
+func upgradeLaunchFlow(exe string, start func(exe string, args ...string) error) error {
+	return start(exe, "update", "--supervise")
+}
+
+// trayUpgradeNow 托盘「立即升级」点击入口：detached 隐藏拉起本 exe 的
+// update --supervise。失败只记日志（托盘侧无对话框；notify 是升级结果通道，
+// 拉不起监督者时无结果可报）。
+func trayUpgradeNow() {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("[tray] 立即升级：拿不到 exe 路径，放弃: %v", err)
+		return
+	}
+	if err := upgradeLaunchFlow(exe, spawnDetachedHidden); err != nil {
+		log.Printf("[tray] 立即升级：拉起监督者失败: %v", err)
+	}
+}
+
+// spawnDetachedHidden detached 隐藏拉起（票07）：与 internal/update 的
+// launchCmdImpl 同款 SysProcAttr 形态（该助手非导出不能跨包复用，就地镜像）
+// ——HideWindow 不闪窗，DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP 脱离父
+// 控制台（监督者长命于托盘进程）。Start 不 Wait，拉起即走。Windows 形态：
+// 本程序只发 Windows exe（release.yml 单 windows-latest 流水线，规格 §B）。
+func spawnDetachedHidden(exe string, args ...string) error {
+	c := exec.Command(exe, args...)
+	c.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
+	}
+	return c.Start()
 }
 
 // ---- 子命令 ----
