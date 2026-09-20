@@ -16,6 +16,8 @@
 //   - CheckCCSwitch / CheckCodex 同款闸门豁免（票22 骑手 M2：子集安装后
 //     doctor 全绿）；
 //   - HttpBeatSender 功能退化声明（评审附录#14）：信息行输出，不判 FAIL。
+//   - CheckUpdateResidues 升级事务残留（本票，规格 §C 第9条）：journal/换装
+//     旁路残留 = 上次升级中断现场，提示 `ferryman update` 一键恢复/清理。
 package installer
 
 import (
@@ -34,6 +36,7 @@ import (
 	"ferryman/internal/config"
 	"ferryman/internal/dock"
 	"ferryman/internal/ferry"
+	"ferryman/internal/update"
 )
 
 // Check 单检查项结论。
@@ -431,6 +434,47 @@ func CheckMCPRegistration(configPath string) Check {
 	return Check{true, fmt.Sprintf("MCP 注册在位（用户级 mcpServers.ferryman → %q mcp）", cmd)}
 }
 
+// 升级事务残留命名约定（本票，规格 §C 第9条）：与 internal/update 落地对齐
+// ——journal.go 的 journalName（数据目录在册账）与 saveJournal 的半写临时
+// （journalPath+".tmp"）；swap.go cleanSwapResidues 的清扫域（.new/.new.part/
+// .swap-tmp*）。update 侧常量未导出、本票涉及路径不含该包——同名同值落此，
+// 注释即对齐来源（两包测试各自锁定字面量/行为，漂移双双报红）。.old-* 备份
+// 不在残留域：D9 安全底线里备份留 2 份是回滚保障，不是垃圾。
+const (
+	journalName        = "update-journal.json"     // update.journalName 同名同值
+	journalHalfWritten = "update-journal.json.tmp" // update.saveJournal 半写临时
+)
+
+// updateResiduePatterns exe 旁换装残留清扫域（update.cleanSwapResidues 同域）。
+var updateResiduePatterns = []string{"ferryman.exe.new", "ferryman.exe.new.part", "ferryman.exe.swap-tmp*"}
+
+// CheckUpdateResidues 升级事务残留检查（本票，规格 §C 第9条崩溃恢复，review
+// block F4 配套检测）：journal 在册/半写 + 换装目标 exe 旁 .new/.swap-tmp 残留
+// ——上次升级中断的现场痕迹（出问题时表面毫无异常的静默形态同族）。处置
+// 一行直达：`ferryman update` 启动即读 journal 自动恢复/清理（staging 清残留
+// 续跑；swap/verify 健康清账、不健康按备份回滚）；极端缺位（exe 已不在、仅剩
+// swap-tmp）人工把 swap-tmp 改回正式 exe。
+func CheckUpdateResidues(dataDir, exeDir string) Check {
+	var found []string
+	for _, n := range []string{journalName, journalHalfWritten} {
+		if pathExists(filepath.Join(dataDir, n)) {
+			found = append(found, filepath.Join(dataDir, n))
+		}
+	}
+	for _, pat := range updateResiduePatterns {
+		matches, err := filepath.Glob(filepath.Join(exeDir, pat))
+		if err != nil {
+			continue
+		}
+		found = append(found, matches...)
+	}
+	if len(found) == 0 {
+		return Check{true, "无升级事务残留（journal/.new/.swap-tmp 皆净）"}
+	}
+	return Check{false, fmt.Sprintf("发现升级事务残留: %s（上次升级中断——运行 ferryman update 自动恢复/清理；"+
+		"极端缺位 exe 不在时把 ferryman.exe.swap-tmp 改回 ferryman.exe）", strings.Join(found, ", "))}
+}
+
 // CheckLauncher 点火脚本在位且其 exe 路径有效（钩子自举的地基；doctor.py
 // check_launcher 的 Go 新形态：脚本内启动行的 exe 路径存在）。
 func CheckLauncher(path string) Check {
@@ -565,6 +609,15 @@ func doctorResults(d doctorDeps) []CheckResult {
 	// 票06：MCP 注册在位（用户级 .claude.json——与 install-mcp 同 scope）。
 	// 追加在末位：既有检查项的顺序零漂移，CLI 人面仅多一行（预期行为）。
 	out = append(out, CheckMCPRegistration(UserMCPConfigPath(d.Home)).named("mcp_registration"))
+	// 升级链票06：升级事务残留（规格 §C 第9条）续接末位。残留物落点两处：
+	// journal 在数据目录；.new/.swap-tmp 在换装目标 exe 旁——换装目标与
+	// update 同缝解析（seam E：点火脚本引号 exe 优先，任何失败回落本进程
+	// 映像 update.ResolveSwapTarget），绝不两套判据。
+	exeDir := dataDir
+	if targetExe, err := update.ResolveSwapTarget(filepath.Join(dataDir, LauncherName)); err == nil {
+		exeDir = filepath.Dir(targetExe)
+	}
+	out = append(out, CheckUpdateResidues(dataDir, exeDir).named("update_residues"))
 	return out
 }
 

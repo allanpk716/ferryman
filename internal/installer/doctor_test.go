@@ -531,9 +531,10 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	deps.Out = &out
 	_ = runDoctor(deps)
 	got := out.String()
-	// 票02 起：+2 = Run 键自启 + 看门计划任务两查；票06 起：+1 = MCP 注册在位
-	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1,
-		1+1+1+1+len(doctorScriptNames())+1+1+2+1)
+	// 票02 起：+2 = Run 键自启 + 看门计划任务两查；票06 起：+1 = MCP 注册在位；
+	// 升级链票06 起：+1 = 升级事务残留检查
+	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1,
+		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1)
 	if !strings.Contains(got, want) {
 		t.Fatalf("结论计数不符:\nwant: %s\ngot:\n%s", want, got)
 	}
@@ -636,6 +637,136 @@ func TestRunDoctorAutostartWatchdogFailVisible(t *testing.T) {
 	}
 }
 
+// ---- 票06(规格 §C 第9条崩溃恢复,D9/F4 配套):doctor「升级事务残留」检查 ----
+
+// TestCheckUpdateResiduesNone 无残留 = 常规通过项(不噪声)。
+func TestCheckUpdateResiduesNone(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	exeDir := filepath.Join(tmp, "exe")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(exeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := CheckUpdateResidues(dataDir, exeDir)
+	if !c.OK {
+		t.Fatalf("无残留应通过: %s", c.Msg)
+	}
+}
+
+// TestCheckUpdateResiduesJournal journal 在册 = 失败 + 点名残留物 + 一行处置
+// 建议(运行 ferryman update 自动恢复/清理)。
+func TestCheckUpdateResiduesJournal(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	exeDir := filepath.Join(tmp, "exe")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(exeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "update-journal.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := CheckUpdateResidues(dataDir, exeDir)
+	if c.OK {
+		t.Fatalf("journal 残留应失败: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "update-journal.json") {
+		t.Fatalf("应点名残留物: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "ferryman update") {
+		t.Fatalf("应含一行处置建议(ferryman update 自动恢复/清理): %s", c.Msg)
+	}
+}
+
+// TestCheckUpdateResiduesHalfWritten 半写临时 update-journal.json.tmp 同判残留
+// (update.saveJournal 的临时文件+rename 中断形态)。
+func TestCheckUpdateResiduesHalfWritten(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	exeDir := filepath.Join(tmp, "exe")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(exeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "update-journal.json.tmp"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := CheckUpdateResidues(dataDir, exeDir)
+	if c.OK || !strings.Contains(c.Msg, "update-journal.json.tmp") {
+		t.Fatalf("半写临时应判残留并点名: %+v", c)
+	}
+}
+
+// TestCheckUpdateResiduesSwapDomain exe 旁换装残留 = update.cleanSwapResidues
+// 清扫域(.new/.new.part/.swap-tmp*)逐一对出;.old-* 备份与正式 exe 不在残留
+// 域(备份是 D9 回滚保障,不得误报);处置建议含极端缺位(swap-tmp 改回)提示。
+func TestCheckUpdateResiduesSwapDomain(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	exeDir := filepath.Join(tmp, "exe")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(exeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	residues := []string{"ferryman.exe.new", "ferryman.exe.new.part", "ferryman.exe.swap-tmp", "ferryman.exe.swap-tmp-9"}
+	for _, n := range residues {
+		if err := os.WriteFile(filepath.Join(exeDir, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 诱饵:正式 exe 与备份不在清扫域
+	for _, n := range []string{"ferryman.exe", "ferryman.exe.old-v0.1.0"} {
+		if err := os.WriteFile(filepath.Join(exeDir, n), []byte("MZ"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := CheckUpdateResidues(dataDir, exeDir)
+	if c.OK {
+		t.Fatalf("换装残留应失败: %s", c.Msg)
+	}
+	for _, n := range residues {
+		if !strings.Contains(c.Msg, n) {
+			t.Fatalf("应点名 %s: %s", n, c.Msg)
+		}
+	}
+	if strings.Contains(c.Msg, ".old-") {
+		t.Fatalf("备份不得误报为残留: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "swap-tmp") || !strings.Contains(c.Msg, "改回") {
+		t.Fatalf("应含极端缺位改回提示: %s", c.Msg)
+	}
+}
+
+// TestDoctorResultsUpdateResidueWiring 装配缝:全绿夹具末位 = update_residues
+// 且 pass;数据目录出现 journal 残留 → 该项 fail 行可见 + 退出码 1。
+func TestDoctorResultsUpdateResidueWiring(t *testing.T) {
+	deps, dataDir := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	res := doctorResults(deps)
+	if last := res[len(res)-1]; last.Name != "update_residues" || last.Status != StatusPass {
+		t.Fatalf("末位应为 update_residues 且全绿夹具下 pass: %+v", last)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "update-journal.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	deps.Out = &out
+	if code := runDoctor(deps); code != 1 {
+		t.Fatalf("残留应退出 1, got %d:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "发现升级事务残留") || !strings.Contains(out.String(), "update-journal.json") {
+		t.Fatalf("残留结论行不可见:\n%s", out.String())
+	}
+}
+
 // ---- 票05：结构化出口（doctorResults / DoctorStructured / realStatsProbe 端口） ----
 
 // notProdPort 结构化出口测试的端口验收钉子（生产端口全集：渡口双轨/上游/
@@ -698,6 +829,7 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		"hook_script:ferryman-subagent-codex.ps1",
 		"codex_hooks", "daemon_liveness", "autostart", "watchdog_task",
 		"mcp_registration", // 票06：追加在末位（既有项顺序零漂移）
+		"update_residues",  // 升级事务残留（规格 §C 第9条）：续接末位追加
 	}
 	if len(got) != len(want) {
 		t.Fatalf("项数 = %d, want %d: %+v", len(got), len(want), got)
