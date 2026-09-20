@@ -42,6 +42,21 @@ func TestHealthFieldNamesVerbatim(t *testing.T) {
 	}
 }
 
+// TestHealthVersionField 版本可见（票02，规格 §A）：/stats 顶层 version——
+// 装配时自 main 注入（ServeContext→serveConfig→Daemon.Version，显式传参不做
+// 全局单例）；未装配（直接构造 Daemon 的替身/旧调用）回落 dev——非 release
+// 构建的如实呈现。
+func TestHealthVersionField(t *testing.T) {
+	e := newGateEnv(t)
+	if v := e.d.Health()["version"]; v != "dev" {
+		t.Fatalf("未装配版本应回落 dev: %v", v)
+	}
+	e.d.Version = "v0.1.0-3-gabcdef"
+	if v := e.d.Health()["version"]; v != "v0.1.0-3-gabcdef" {
+		t.Fatalf("注入版本应原样上报: %v", v)
+	}
+}
+
 func TestHealthZeroPlaceholdersWithoutWiring(t *testing.T) {
 	// QWatchStats 未接线 → 全零占位（Python qwatch_stats is None 同支）。
 	e := newGateEnv(t)

@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -87,5 +90,33 @@ func TestCmdVersion(t *testing.T) {
 	}
 	if got := strings.TrimSpace(buf.String()); got != "v0.1.0" {
 		t.Fatalf("注入后输出 = %q, want v0.1.0（注入值原样透出）", got)
+	}
+}
+
+// TestPanelMuxAPIVersion 版本 API（票02，规格 §A）：面板 GET /api/version 回
+// {"version": <main.version>}——页脚版本号的数据源（前端运行时取，不烘焙进
+// 静态资源；测试直接改包级 version 变量，与 TestCmdVersion 同法）。
+func TestPanelMuxAPIVersion(t *testing.T) {
+	orig := version
+	defer func() { version = orig }()
+	version = "v9.9.9-test"
+
+	mux := panelMux(t.TempDir(), "")
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/version = %d, want 200", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("响应非 JSON: %v", err)
+	}
+	if v, _ := body["version"].(string); v != "v9.9.9-test" {
+		t.Fatalf("version = %v, want v9.9.9-test", body["version"])
 	}
 }

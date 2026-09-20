@@ -35,7 +35,7 @@ func TestShutdownEndToEndServeConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan int, 1)
-	go func() { done <- serveConfig(cfg, ctx) }()
+	go func() { done <- serveConfig(cfg, ctx, "dev") }()
 
 	// 等 token 落盘 + /stats 健康（守护起完）
 	var token string

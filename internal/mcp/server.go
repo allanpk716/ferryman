@@ -59,21 +59,26 @@ const (
 type Server struct {
 	client *DaemonClient
 	tools  []Tool
+	// version 版本号（票02，规格 §A）：经装配参数注入（cmd/ferryman 的
+	// main.version → Run → New；internal 包不 import cmd——显式传参不做全局
+	// 单例），doctor 工具响应 version 字段的数据源。
+	version string
 	// doctor 进程内结构化体检（票05；New 注入真实装配，测试可整体替换——
 	// 生产默认面向 HOME/exe/config 解析目标，测试面向临时环境）。
 	doctor func() []installer.CheckResult
 }
 
-// New 以既有配置解析产物装配（cfg 来自 config.Load——鉴权信息即由此取得）。
-func New(cfg *config.Config) *Server {
+// New 以既有配置解析产物装配（cfg 来自 config.Load——鉴权信息即由此取得）；
+// version 经装配参数传入（见 Server.version 注）。
+func New(cfg *config.Config, version string) *Server {
 	return &Server{client: NewDaemonClient(cfg), tools: ferrymanTools(),
-		doctor: defaultDoctorFunc(cfg)}
+		doctor: defaultDoctorFunc(cfg), version: version}
 }
 
 // Run `ferryman mcp` 子命令主体：configPath 显式参数 > FERRYMAN_CONFIG > 默认
-// 路径（config.Load 优先级原样复用）；失败只写 stderr（stdout 专留给
-// JSON-RPC——stdio MCP 纪律），返回进程退出码。
-func Run(configPath string) int {
+// 路径（config.Load 优先级原样复用）；version 版本号经装配参数传入（票02）。
+// 失败只写 stderr（stdout 专留给 JSON-RPC——stdio MCP 纪律），返回进程退出码。
+func Run(configPath, version string) int {
 	// config.Load 的校验警告经 fmt.Printf 写 os.Stdout（config.Validate 两处）
 	// ——stdio 纪律下 stdout 专留给 JSON-RPC，握手前的非 JSON 行可能被客户端
 	// 当传输错误。Load 期间把 stdout 临时换向 stderr（此刻单线程，Serve 尚未
@@ -86,7 +91,7 @@ func Run(configPath string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err := New(cfg).Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
+	if err := New(cfg, version).Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

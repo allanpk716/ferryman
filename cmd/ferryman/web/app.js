@@ -2034,3 +2034,22 @@ function route() {
 
 window.onhashchange = route;
 route(); // script 在 body 末尾，DOM 已就绪，直接首渲染
+
+// ---------- 版本页脚 ----------
+
+// initVersionFooter GET /api/version → 页脚一行版本号（票02，规格 §A）。
+// dev = 非 release 构建，与 `ferryman version` 的提示同款；数据只经
+// textContent 进 DOM；取不到版本就空着页脚——版本展示不承重，失败静默。
+async function initVersionFooter() {
+  var ver;
+  try {
+    var data = await fetchJSON('/api/version');
+    ver = data && data.version;
+  } catch (_) {
+    return;
+  }
+  var footer = document.getElementById('page-footer');
+  if (!footer || !ver) return;
+  footer.textContent = '版本: ' + ver + (ver === 'dev' ? '（非 release 构建）' : '');
+}
+initVersionFooter();

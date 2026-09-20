@@ -454,7 +454,8 @@ func TestQueryStatsHTTPContractUnchanged(t *testing.T) {
 	if !keySetEqual(keys(resp), "gate_calls_total", "gate_calls_by_agent",
 		"last_gate_call_s_ago", "last_transcript_write_s_ago", "subagents_active",
 		"subagent_events_total", "health_alert", "health_msg", "qwatch",
-		"glm_balance") {
+		"glm_balance",
+		"version") { // 票02（规格 §A）：版本可见——Go 侧增量字段（同 glm_balance 先例）
 		t.Fatalf("/stats 字段集漂移: %v", keys(resp))
 	}
 }

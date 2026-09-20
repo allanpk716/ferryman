@@ -43,8 +43,10 @@ func startPipesServer(t *testing.T, s *Server) *mcpPipes {
 	return p
 }
 
-// doctorResp doctor 工具响应形状（checks 逐项三要素 + summary 计数）。
+// doctorResp doctor 工具响应形状（version 顶层版本 + checks 逐项三要素 +
+// summary 计数）。
 type doctorResp struct {
+	Version string `json:"version"`
 	Checks []struct {
 		Name   string `json:"name"`
 		Status string `json:"status"`
@@ -63,6 +65,9 @@ func parseDoctorResp(t *testing.T, text string) doctorResp {
 	t.Helper()
 	var dr doctorResp
 	mustJSON(t, text, &dr)
+	if dr.Version == "" {
+		t.Fatalf("响应缺 version 字段（票02）: %s", text)
+	}
 	if len(dr.Checks) == 0 {
 		t.Fatalf("checks 为空: %s", text)
 	}
@@ -140,7 +145,7 @@ func TestDoctorToolListedAndDescribed(t *testing.T) {
 // 非工具错误。
 func TestDoctorToolStructuredOutputStub(t *testing.T) {
 	e := newEnv(t, false, false)
-	s := New(e.cfg)
+	s := New(e.cfg, testVersion)
 	s.doctor = func() []installer.CheckResult {
 		return []installer.CheckResult{
 			{Name: "cc_hooks", Status: installer.StatusPass, Detail: "settings.json 四钩子在位"},
@@ -170,7 +175,7 @@ func TestDoctorToolStructuredOutputStub(t *testing.T) {
 // 调用次数吐不同 Detail，第二次必须看到第二次的计算结果。
 func TestDoctorToolNoCacheTwoCallsRecompute(t *testing.T) {
 	e := newEnv(t, false, false)
-	s := New(e.cfg)
+	s := New(e.cfg, testVersion)
 	n := 0
 	s.doctor = func() []installer.CheckResult {
 		n++
@@ -192,7 +197,7 @@ func TestDoctorToolNoCacheTwoCallsRecompute(t *testing.T) {
 // TestDoctorToolRejectsUnknownArg doctor 无参数：带未知参数 → isError 明确报错。
 func TestDoctorToolRejectsUnknownArg(t *testing.T) {
 	e := newEnv(t, false, false)
-	s := New(e.cfg)
+	s := New(e.cfg, testVersion)
 	s.doctor = func() []installer.CheckResult {
 		t.Fatal("带未知参数不应执行检查")
 		return nil
@@ -204,6 +209,28 @@ func TestDoctorToolRejectsUnknownArg(t *testing.T) {
 	}
 	if !strings.Contains(text, "verbose") {
 		t.Fatalf("错误文案应点名未知参数: %s", text)
+	}
+}
+
+// TestDoctorToolVersionField 版本字段（票02，规格 §A）：doctor 响应 JSON 顶层
+// 带 version——值经装配参数注入（cmd/ferryman 的 main.version → mcp.Run →
+// New），进程内不自行推导（不做全局单例）。
+func TestDoctorToolVersionField(t *testing.T) {
+	e := newEnv(t, false, false)
+	s := New(e.cfg, testVersion)
+	s.doctor = func() []installer.CheckResult {
+		return []installer.CheckResult{{Name: "daemon_liveness",
+			Status: installer.StatusFail, Detail: "daemon 未运行（钩子自举会拉起，或手动 start-daemon.cmd）"}}
+	}
+	p := startPipesServer(t, s)
+	text, isErr, _ := p.callTool("doctor", nil)
+	if isErr {
+		t.Fatalf("doctor 不应 isError: %s", text)
+	}
+	var raw map[string]any
+	mustJSON(t, text, &raw)
+	if v, _ := raw["version"].(string); v != testVersion {
+		t.Fatalf("doctor 响应 version = %v, want %q: %s", raw["version"], testVersion, text)
 	}
 }
 
@@ -227,7 +254,7 @@ func realDepsDoctor(t *testing.T, cfg *config.Config, cfgPath string) func() []i
 // 无 token/凭据/生产端口串。
 func TestDoctorToolRealDepsDaemonOnline(t *testing.T) {
 	e := newEnv(t, true, true)
-	s := New(e.cfg)
+	s := New(e.cfg, testVersion)
 	s.doctor = realDepsDoctor(t, e.cfg, e.cfgPath)
 	p := startPipesServer(t, s)
 	text, isErr, errObj := p.callTool("doctor", nil)
@@ -249,7 +276,7 @@ func TestDoctorToolRealDepsDaemonOnline(t *testing.T) {
 // （不缓存不伪造）；端口全程无监听（不自举）。
 func TestDoctorToolRealDepsDaemonOffline(t *testing.T) {
 	e := newEnv(t, false, true) // token 在、无 daemon——不可达而非 token 缺失
-	s := New(e.cfg)
+	s := New(e.cfg, testVersion)
 	s.doctor = realDepsDoctor(t, e.cfg, e.cfgPath)
 	p := startPipesServer(t, s)
 	for i := 1; i <= 2; i++ {

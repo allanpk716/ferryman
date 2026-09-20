@@ -460,7 +460,11 @@ type doctorDeps struct {
 	// 票02：常驻保障两查（Run 键三态 + 看门任务在位/缺失）。
 	Autostart    func() (autostartStatus, error)
 	WatchdogTask func() (TaskStatus, error)
-	Out          io.Writer
+	// Version 版本行（票02，规格 §A）：cmd/ferryman 的 main.version 经装配
+	// 参数传入（internal 包不 import cmd——显式传参不做全局单例）；空串/dev
+	// 都按「非 release 构建」呈现。
+	Version string
+	Out     io.Writer
 }
 
 // HomeDir / RepoRoot 目标解析导出面（票05：agent 面 MCP doctor 经此取 HOME/
@@ -472,7 +476,8 @@ func HomeDir() string { return homeDir() }
 func RepoRoot() string { return repoRoot() }
 
 // RunDoctor 一键体检真实入口（HOME/exe 面）；返回进程退出码（有 FAIL → 1）。
-func RunDoctor() int {
+// version 版本号经装配参数传入（cmd/ferryman 的 main.version——票02，规格 §A）。
+func RunDoctor(version string) int {
 	home := homeDir()
 	// 票05：daemon 活性目标经 config 解析（config.Load 优先级：显式参数 >
 	// FERRYMAN_CONFIG > 默认路径）；加载失败回落内置默认口（探针目标与既有
@@ -496,6 +501,7 @@ func RunDoctor() int {
 		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
 		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
 		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
+		Version:      version,
 		Out:          os.Stdout,
 	})
 }
@@ -614,6 +620,13 @@ func runDoctor(d doctorDeps) int {
 	}
 	fmt.Fprintln(d.Out)
 	fmt.Fprintln(d.Out, HttpBeatNotice) // 附录#14：功能退化声明——信息行不判 FAIL
+	// 版本行（票02，规格 §A）：结论清单里报当前版本——信息行不计检查项；
+	// dev/未装配都显「非 release 构建」（与 `ferryman version` 的提示同款）。
+	if d.Version == "" || d.Version == "dev" {
+		fmt.Fprintln(d.Out, "版本: dev（非 release 构建）")
+	} else {
+		fmt.Fprintln(d.Out, "版本: "+d.Version)
+	}
 	conclusion := fmt.Sprintf("体检结论: %d/%d 通过", len(results)-fails, len(results))
 	if fails > 0 {
 		conclusion += "——有问题见上"

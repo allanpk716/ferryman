@@ -43,28 +43,32 @@ type pidFileJSON struct {
 
 // Serve serve()（daemon.py:606-663）：配置→…→优雅停。返回进程退出码
 // （0 = 正常/唯一化跳过；1 = 配置坏/端口被占）。Python config_mod.load 校验
-// 失败未捕获 → traceback + 非零退出；Go 打印错误 + 1。
+// 失败未捕获 → traceback + 非零退出；Go 打印错误 + 1。独立 Serve 形无装配面，
+// 版本缺省 dev（合并 exe 的 serveAll 走 ServeContext 注入真实版本——票02）。
 func Serve(relaxMinGap bool) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt) // KeyboardInterrupt 同位
 	defer stop()
-	return ServeContext(ctx, relaxMinGap)
+	return ServeContext(ctx, relaxMinGap, "dev")
 }
 
 // ServeContext Serve 的 ctx 注入形（票22 合并 exe 停机缝）：托盘退出/Ctrl+C
 // 由调用方取消 ctx ≡ KeyboardInterrupt，serveConfig 走优雅停。CLI `serve`
-// 子命令走 Serve（自带 SIGINT 装配）；合并 exe 的 serveAll 用本形。
-func ServeContext(ctx context.Context, relaxMinGap bool) int {
+// 子命令走 Serve（自带 SIGINT 装配）；合并 exe 的 serveAll 用本形。version
+// 版本号经装配参数传入（票02，规格 §A——cmd/ferryman 的 main.version，
+// internal 包不 import cmd，显式传参不做全局单例）。
+func ServeContext(ctx context.Context, relaxMinGap bool, version string) int {
 	cfg, err := config.Load("", relaxMinGap)
 	if err != nil {
 		fmt.Println(err)
 		return 1
 	}
-	return serveConfig(cfg, ctx)
+	return serveConfig(cfg, ctx, version)
 }
 
 // serveConfig serve() 的可测核心：cfg 由调用方给定（Serve 走 config.Load），
-// ctx 取消 ≡ KeyboardInterrupt（优雅停）。返回退出码。
-func serveConfig(cfg *config.Config, ctx context.Context) int {
+// ctx 取消 ≡ KeyboardInterrupt（优雅停）。version 版本号装配进 Daemon（/stats
+// version 字段；测试传 "" 或 "dev" = 未注入回落态）。返回退出码。
+func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	dataDir := cfg.DataDir()
 	if err := os.MkdirAll(dataDir, 0o755); err != nil { // mkdir(parents=True, exist_ok=True)
 		fmt.Println(err)
@@ -113,6 +117,7 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 		})
 	}
 	d := NewDaemon(cfg, led, st, enqueue, acc, startedAt, qwatchStats)
+	d.Version = version // 票02：/stats version 字段（装配显式传参）
 	// /shutdown（票04，规格 §C 第5条 停旧）：子 ctx 派生——管理端点的 cancel
 	// 与 os.Interrupt 取消同一 Done 源，触发同一优雅停序：面板（srv）与守护
 	// （渡口/watcher/worker/pid）一起收。

@@ -543,6 +543,37 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	}
 }
 
+// ---- 票02（规格 §A）：doctor 版本行（结论清单收尾段） ----
+
+// TestRunDoctorVersionLine 版本行两态：dev（含空串=未装配）显「非 release
+// 构建」提示；注入值（ldflags 注入的 release 值经 cmd/ferryman 装配传入）
+// 原样显摆、不带提示。版本行是信息行——不计检查项、不影响退出码。
+func TestRunDoctorVersionLine(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	var out strings.Builder
+	deps.Out = &out
+	deps.Version = "dev"
+	if code := runDoctor(deps); code != 0 {
+		t.Fatalf("全绿夹具应退出 0:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "版本: dev") ||
+		!strings.Contains(out.String(), "非 release 构建") {
+		t.Fatalf("dev 构建版本行应显 dev 与非 release 提示:\n%s", out.String())
+	}
+	// 注入 release 值：原样显摆、不带非 release 提示
+	var out2 strings.Builder
+	deps.Out = &out2
+	deps.Version = "v0.1.0-3-gabcdef"
+	_ = runDoctor(deps)
+	got2 := out2.String()
+	if !strings.Contains(got2, "版本: v0.1.0-3-gabcdef") {
+		t.Fatalf("注入版本应原样显摆:\n%s", got2)
+	}
+	if strings.Contains(got2, "非 release 构建") {
+		t.Fatalf("release 值不应带非 release 提示:\n%s", got2)
+	}
+}
+
 // ---- 票02：Run 键自启 + 看门计划任务两项检查 ----
 
 // 三态 × 判定（可注入面，fake 返回三态——票面验收④）。

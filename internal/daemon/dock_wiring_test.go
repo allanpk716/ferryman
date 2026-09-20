@@ -82,7 +82,7 @@ func TestServeWithoutDockDoesNotListenOnDockPort(t *testing.T) {
 	before := listeningPortsOf(os.Getpid())
 	ctx, cancel := context.WithCancel(context.Background())
 	codeCh := make(chan int, 1)
-	go func() { codeCh <- serveConfig(cfg, ctx) }()
+	go func() { codeCh <- serveConfig(cfg, ctx, "dev") }()
 	waitPidFile(t, filepath.Join(dataDir, "daemon.pid"), 10*time.Second)
 	time.Sleep(300 * time.Millisecond) // 给潜在误启动留出窗口
 
@@ -150,7 +150,7 @@ func TestServeWithDockSectionForwardsEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	codeCh := make(chan int, 1)
-	go func() { codeCh <- serveConfig(cfg, ctx) }()
+	go func() { codeCh <- serveConfig(cfg, ctx, "dev") }()
 	waitPidFile(t, filepath.Join(dataDir, "daemon.pid"), 10*time.Second)
 	if !waitDial(t, dockAddr, 10*time.Second) {
 		cancel()
@@ -217,7 +217,7 @@ func TestServeWithDockPortTakenWarnsNotCrash(t *testing.T) {
 	read := captureStdout(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	codeCh := make(chan int, 1)
-	go func() { codeCh <- serveConfig(cfg, ctx) }()
+	go func() { codeCh <- serveConfig(cfg, ctx, "dev") }()
 	waitPidFile(t, filepath.Join(dataDir, "daemon.pid"), 10*time.Second)
 	cancel()
 	code := <-codeCh

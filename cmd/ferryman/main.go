@@ -26,6 +26,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -137,7 +138,7 @@ func run(args []string) int {
 	case "serve":
 		return cmdServe(args[1:])
 	case "doctor":
-		return installer.RunDoctor()
+		return installer.RunDoctor(version) // 版本经装配参数进（票02，规格 §A）
 	case "version":
 		return cmdVersion(args[1:], os.Stdout)
 	case "install-cc":
@@ -232,7 +233,7 @@ func serveAll(o serveOpts) int {
 	var daemonCode int
 	done := make(chan struct{})
 	go func() {
-		daemonCode = daemon.ServeContext(ctx, o.smoke)
+		daemonCode = daemon.ServeContext(ctx, o.smoke, version) // 版本经装配参数进（票02，规格 §A）
 		close(done)
 	}()
 
@@ -284,6 +285,17 @@ func panelMux(dir, note string) *http.ServeMux {
 		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Cache-Control", "max-age=86400")
 		_, _ = w.Write([]byte(faviconSVG))
+	})
+	// 版本 API（票02，规格 §A）：页脚版本号的数据源——前端运行时取，不烘焙进
+	// 静态资源；viewer server（路径外）不动，端点在面板装配层就地注册。
+	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		b, err := json.Marshal(map[string]string{"version": version})
+		if err != nil { // map[string]string 不可达，护底线
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(b)
 	})
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
@@ -462,7 +474,7 @@ func cmdMCP(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	return mcp.Run(*cfgPath)
+	return mcp.Run(*cfgPath, version) // 版本经装配参数进（票02，规格 §A）
 }
 
 // ---- cutover 族（票23：切换工具，不执行生产切换） ----

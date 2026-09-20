@@ -184,6 +184,11 @@ type Daemon struct {
 	// "泄漏后又来 start"的路径。
 	windows map[winKey]*waitWindow
 
+	// Version 版本号（票02，规格 §A）：serveConfig 装配时自 main 经
+	// ServeContext 传入（显式传参不做全局单例；直接构造 Daemon 的替身不装 =
+	// 空，Health 回落 dev）。同 DockSnap 的"构造后装配赋值"先例。
+	Version string
+
 	StartedAt float64
 }
 
