@@ -93,16 +93,19 @@ func TestQueryReportProjectScopeAggregates(t *testing.T) {
 			"useless_warm": false, "close_reason": "window_closed"})
 	mustRec(t, e, "usage", e.t0-30, "C:/proj", "L1", "r-s1",
 		accounts.Fields{"model": "glm-5.3", "title": "t", "input_tokens": 100,
-			"cache_read_tokens": 10, "cache_creation_tokens": 5, "output_tokens": 30, "offset": 0})
+			"cache_read_tokens": 10, "cache_creation_tokens": 5, "output_tokens": 30,
+			"offset": 0, "subagent": ""})
 	mustRec(t, e, "usage", e.t0-20, "C:/proj", "L1", "r-s2",
 		accounts.Fields{"model": "glm-5.3", "title": "t", "input_tokens": 200,
-			"cache_read_tokens": 20, "cache_creation_tokens": 10, "output_tokens": 40, "offset": 0})
+			"cache_read_tokens": 20, "cache_creation_tokens": 10, "output_tokens": 40,
+			"offset": 0, "subagent": ""})
 	// 他项目流水不得串入。
 	mustRec(t, e, "block", e.t0-100, "C:/other", "L9", "r-s3",
 		accounts.Fields{"prefix_tokens": 999, "idle_s": 30})
 	mustRec(t, e, "usage", e.t0-30, "C:/other", "L9", "r-s3",
 		accounts.Fields{"model": "glm-5.3", "title": "t", "input_tokens": 99999,
-			"cache_read_tokens": 0, "cache_creation_tokens": 0, "output_tokens": 0, "offset": 0})
+			"cache_read_tokens": 0, "cache_creation_tokens": 0, "output_tokens": 0,
+			"offset": 0, "subagent": ""})
 
 	resp := reportGET(t, e, "?scope=project&key=C:/proj")
 	if resp["scope"] != "project" || resp["key"] != "C:/proj" {

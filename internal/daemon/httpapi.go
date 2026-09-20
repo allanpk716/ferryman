@@ -98,18 +98,33 @@ func AlreadyRunning(port int, token string) bool {
 // go srv.Serve(ln)（ThreadingHTTPServer.serve_forever 的 Go 形：一连接一
 // goroutine，daemon_threads=True 同位）。
 func ListenAndServe(d DaemonLike, port int, token string) (net.Listener, *http.Server, error) {
+	return ListenAndServeWithShutdown(d, port, token, nil) // nil＝不装 /shutdown
+}
+
+// ListenAndServeWithShutdown 票04（规格 §C 第5条 停旧）：ListenAndServe +
+// POST /shutdown 守护内部管理端点（不在 agent 面 MCP 动词面，internal/mcp
+// 零改动）。onShutdown 是端点过守门后的停机触发器——serveConfig 传子 ctx 的
+// cancel，与 os.Interrupt 同一 Done 源；nil ＝ 未装配，/shutdown 落未知路径
+// 旧行为（POST 404 / GET 404）。
+func ListenAndServeWithShutdown(d DaemonLike, port int, token string, onShutdown func()) (net.Listener, *http.Server, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return nil, nil, err
 	}
-	srv := &http.Server{Handler: makeHandler(d, token)}
+	srv := &http.Server{Handler: makeHandler(d, token, onShutdown)}
 	return ln, srv, nil
 }
 
 // makeHandler Handler 类（server.py:721-781）的闭包形：token 与 daemon 由
-// make_server 构造器捕获，do_POST/do_GET 落到两个分派函数。
-func makeHandler(d DaemonLike, token string) http.Handler {
+// make_server 构造器捕获，do_POST/do_GET 落到两个分派函数。票04 起带停机
+// 钩子：/shutdown 在方法分派前拦截——管理端点自带守门序（loopback → 方法
+// → 鉴权），与 POST/GET 面的 auth 顺序无关；钩子 nil＝旧行为原样。
+func makeHandler(d DaemonLike, token string, onShutdown func()) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI == "/shutdown" && onShutdown != nil {
+			doShutdown(onShutdown, token, w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodPost:
 			doPost(d, token, w, r)
@@ -181,6 +196,44 @@ func doGet(d DaemonLike, token string, w http.ResponseWriter, r *http.Request) {
 		}
 		notFound(w)
 	}
+}
+
+// doShutdown POST /shutdown（票04，规格 §C 第5条 停旧）：守护内部管理端点。
+// 守门序：非 loopback 一票拒（403）→ 方法非 POST（405，带 Allow）→ Bearer
+// 鉴权（401，复用既有 token 机制）→ 200 后触发停机。触发在响应显式冲刷之后
+// 同步进行：cancel 一动，主 goroutine 的 srv.Close 便可能立刻收口——不先冲刷
+// 会赶在响应出网前掐断连接（Windows RST → 客户端只见连接中断，与 doPost
+// 先读光 body 同一坑）。
+func doShutdown(onShutdown func(), token string, w http.ResponseWriter, r *http.Request) {
+	if !isLoopback(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden: loopback only"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	_, _ = io.Copy(io.Discard, r.Body) // 先读光 body 再回话（同 doPost 的 RST 纪律）
+	if !isAuthed(r, token) {
+		unauthorized(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	_ = http.NewResponseController(w).Flush()
+	onShutdown()
+}
+
+// isLoopback 来源即环回（127.0.0.0/8 与 ::1 同判，IsLoopback 一处裁决）：
+// listener 虽只绑 127.0.0.1，管理端点仍逐请求复核来源（纵深）；解析失败
+// 一律按非环回拒。
+func isLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // isAuthed _authed 的判定向（回复 401 的半边独立成 unauthorized）。

@@ -265,7 +265,7 @@ func TestQuerySessionDetailAggregation(t *testing.T) {
 			"agent": "cc", "session_id": sid, "lineage_id": lin, "project": "C:/proj",
 			"model": "glm-5.3", "title": "t",
 			"input_tokens": in, "cache_read_tokens": cr, "cache_creation_tokens": cc,
-			"output_tokens": out, "offset": 0,
+			"output_tokens": out, "offset": 0, "subagent": "",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -279,7 +279,7 @@ func TestQuerySessionDetailAggregation(t *testing.T) {
 		"agent": "cc", "session_id": "sd-2", "lineage_id": pathsx.NormPath(`C:\tmp\sd-2.jsonl`),
 		"project": "C:/proj", "model": "glm-5.3", "title": "t",
 		"input_tokens": 99999, "cache_read_tokens": 0, "cache_creation_tokens": 0,
-		"output_tokens": 0, "offset": 0}); err != nil {
+		"output_tokens": 0, "offset": 0, "subagent": ""}); err != nil {
 		t.Fatal(err)
 	}
 

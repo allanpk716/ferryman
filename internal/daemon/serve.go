@@ -3,7 +3,8 @@
 // 装配序：配置 → 数据目录 → token → Ledger/Store/Accounts → 工人（队列）→
 // QWatchStats → Daemon → 监听（绑定失败分流：唯一化跳过 / 端口被占失败）→
 // pid 文件 → Watcher/Worker 起 → 横幅逐字 → 阻塞 → SIGINT/ctx 优雅停
-// （watcher.Stop/worker 停/pid 删除）。
+// （watcher.Stop/worker 停/pid 删除）；POST /shutdown 管理端点（票04）取消
+// 同一 ctx，走同一停序。
 //
 // 语义同位：Python print(flush=True) → Go fmt.Println 直写（无缓冲 stdout）；
 // KeyboardInterrupt → os/signal SIGINT（ctx 取消）；server.shutdown() → srv.Close。
@@ -112,7 +113,12 @@ func serveConfig(cfg *config.Config, ctx context.Context) int {
 		})
 	}
 	d := NewDaemon(cfg, led, st, enqueue, acc, startedAt, qwatchStats)
-	ln, srv, err := ListenAndServe(d, cfg.Server.Port, token)
+	// /shutdown（票04，规格 §C 第5条 停旧）：子 ctx 派生——管理端点的 cancel
+	// 与 os.Interrupt 取消同一 Done 源，触发同一优雅停序：面板（srv）与守护
+	// （渡口/watcher/worker/pid）一起收。
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ln, srv, err := ListenAndServeWithShutdown(d, cfg.Server.Port, token, cancel)
 	if err != nil {
 		// 唯一化（钩子自举的并发兜底）：绑定失败 = 端口已有监听者
 		if AlreadyRunning(cfg.Server.Port, token) {
