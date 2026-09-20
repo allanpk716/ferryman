@@ -76,7 +76,12 @@ jobs:
 
       - name: Extract tag annotation as release body
         shell: bash
-        run: git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > tag_notes.txt
+        run: |
+          # 显式从 origin 拉 tag ref:checkout 在 tag 事件下可能把本地 refs/tags/<tag>
+          # 建成直指 commit(peeled)的形态,annotated tag 对象不在,%(contents) 会落空
+          # (v0.1.0 首发实证:body 回退成了合并提交消息)。
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > tag_notes.txt
 
       - name: Create release (publish directly, no draft)
         shell: bash
