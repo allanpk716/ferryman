@@ -1,0 +1,95 @@
+# Ferryman 发布流水线——仅在推送 semver tag(v* 且严格 vX.Y.Z / vX.Y.Z-<pre>)时触发。
+#
+# 发布操作要求 annotated tag(附注标签):
+#   git tag -a v0.1.0 -m "First public release"
+#   git push origin v0.1.0
+# lightweight tag(轻量标签)没有注释对象,Release body 会是空的——务必用 annotated tag。
+#
+# 所有 run 步骤显式 shell: bash:windows-latest runner 默认 shell 是 pwsh,而
+# ${GITHUB_REF_NAME} 展开与 sha256sum 是 bash 语法;runner 自带 Git Bash(F11/G2)。
+#
+# 发布直接 publish(不加 draft),用 runner 预装的 gh CLI,不引第三方 release action。
+# 含预发布后缀(-rc. / -beta. / -alpha. / 任意 -<pre> 段)的 tag 会把 Release 标为
+# prerelease: true——GitHub latest 通道只返回非 prerelease 非 draft,默认忽略预发布。
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 全量检出:保证 annotated tag 对象在本地,tag_notes 提取不落空(浅检出对
+          # %(contents) 有翻车前科);本仓小,全量成本可忽略。
+          fetch-depth: 0
+
+      - name: Setup Go (version from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        shell: bash
+        run: go vet ./...
+
+      - name: Test
+        shell: bash
+        run: go test ./...
+
+      - name: Build (inject tag as main.version)
+        shell: bash
+        run: go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o ferryman_windows_amd64.exe ./cmd/ferryman
+
+      - name: Checksum
+        shell: bash
+        run: sha256sum ferryman_windows_amd64.exe > ferryman_windows_amd64.exe.sha256
+
+      - name: Validate tag is strict semver (vX.Y.Z or vX.Y.Z-<pre>)
+        shell: bash
+        run: |
+          # 完整 strict semver(带 v 前缀):拒绝前导零、缺分量、非数字分量;不含 build metadata。
+          semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+          if [[ ! "$GITHUB_REF_NAME" =~ $semver_re ]]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' is not strict semver (vX.Y.Z or vX.Y.Z-<pre>); refusing to release."
+            exit 1
+          fi
+          echo "tag ok: ${GITHUB_REF_NAME}"
+
+      - name: Detect prerelease (any -<pre> segment)
+        id: pre
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract tag annotation as release body
+        shell: bash
+        run: git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > tag_notes.txt
+
+      - name: Create release (publish directly, no draft)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ steps.pre.outputs.is_prerelease }}
+        run: |
+          args=()
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            ferryman_windows_amd64.exe ferryman_windows_amd64.exe.sha256 \
+            --title "ferryman ${GITHUB_REF_NAME}" \
+            --notes-file tag_notes.txt \
+            "${args[@]}"
