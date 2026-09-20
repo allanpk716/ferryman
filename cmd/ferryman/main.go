@@ -44,6 +44,7 @@ import (
 	"ferryman/internal/cutover"
 	"ferryman/internal/daemon"
 	"ferryman/internal/installer"
+	"ferryman/internal/mcp"
 	"ferryman/internal/report"
 	"ferryman/internal/viewer/demo"
 	"ferryman/internal/viewer/server"
@@ -86,6 +87,8 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman watchdog install|uninstall|status   # 看门计划任务三操作
   ferryman account report [--since 日] [--until 日] [--project 名] [--session id]
                       [--kind 类型] [--provider 键] [--json]
+  ferryman mcp [--config 路径]      # stdio MCP server（agent 面只读工具，票04；
+                                  # CC 等 MCP 客户端把本命令注册为 server 用）
   ferryman cutover backup [--data 目录] [--dest 目录]
   ferryman cutover rollback-write [--repo 目录] [--data 目录]
   ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
@@ -138,6 +141,8 @@ func run(args []string) int {
 		return cmdAccount(args[1:])
 	case "cutover":
 		return cmdCutover(args[1:])
+	case "mcp":
+		return cmdMCP(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
@@ -399,6 +404,20 @@ func cmdAccount(args []string) int {
 		Since: *since, Until: *until, Project: *project, Session: *session,
 		Kind: *kind, Provider: *provider, JSON: *asJSON,
 	})
+}
+
+// ---- mcp（票04：agent 面 stdio MCP server） ----
+
+// cmdMCP `ferryman mcp`：stdio JSON-RPC 2.0 的 MCP server（六件只读工具中的
+// 五件转发 daemon 查询端点；doctor 在票05）。stdout 专留给 JSON-RPC，任何
+// 诊断只走 stderr；--config 缺省时走 FERRYMAN_CONFIG 或默认路径。
+func cmdMCP(args []string) int {
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "配置文件路径（缺省 = FERRYMAN_CONFIG 环境变量或 ~/ferryman/config.toml）")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	return mcp.Run(*cfgPath)
 }
 
 // ---- cutover 族（票23：切换工具，不执行生产切换） ----
