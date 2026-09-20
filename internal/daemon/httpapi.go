@@ -174,6 +174,11 @@ func doGet(d DaemonLike, token string, w http.ResponseWriter, r *http.Request) {
 			qsOr(q, "cwd", ""),
 			qsOr(q, "session_id", "")))
 	default:
+		// 票01接线（唯一改动点）：未命中端点先交只读查询面（queryapi.go
+		// 注册表，/sessions 等；鉴权已过），仍未命中才 404。
+		if dispatchQuery(d, w, r) {
+			return
+		}
 		notFound(w)
 	}
 }
