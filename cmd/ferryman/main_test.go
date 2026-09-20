@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -59,5 +61,31 @@ func TestParseEvents(t *testing.T) {
 	}
 	if v := parseEvents("UserPromptSubmit"); !reflect.DeepEqual(v, []string{"UserPromptSubmit"}) {
 		t.Fatalf("单事件 = %v, want [UserPromptSubmit]", v)
+	}
+}
+
+// TestCmdVersion version 子命令（发布链票01）：缺省 dev 带「非 release 构建」
+// 提示；注入值原样输出（测试直接改包级 version 变量——ldflags
+// "-X main.version=…" 与之等价，exe 冒烟另行证明）。
+func TestCmdVersion(t *testing.T) {
+	orig := version
+	defer func() { version = orig }()
+
+	version = "dev"
+	var buf bytes.Buffer
+	if code := cmdVersion(nil, &buf); code != 0 {
+		t.Fatalf("version 退出码 = %d, want 0", code)
+	}
+	if out := buf.String(); !strings.Contains(out, "dev") || !strings.Contains(out, "非 release 构建") {
+		t.Fatalf("dev 输出 = %q, want 含版本值与「非 release 构建」提示", out)
+	}
+
+	version = "v0.1.0"
+	buf.Reset()
+	if code := cmdVersion(nil, &buf); code != 0 {
+		t.Fatalf("version 退出码 = %d, want 0", code)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "v0.1.0" {
+		t.Fatalf("注入后输出 = %q, want v0.1.0（注入值原样透出）", got)
 	}
 }

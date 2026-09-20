@@ -5,6 +5,7 @@
 //	ferryman                     # 无参 = serve：守护(7311) + 面板(15900) + 托盘
 //	ferryman serve               # 同上（点火脚本 start-daemon.cmd 调它）
 //	ferryman doctor              # 一键体检
+//	ferryman version             # 版本号（dev = 非 release 构建）
 //	ferryman install-cc [--events E1,E2,…]
 //	ferryman install-ccswitch
 //	ferryman install-codex [--events E1,E2,…]
@@ -27,6 +28,7 @@ import (
 	"embed"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -74,12 +76,18 @@ const (
 	panelPortEnv = "FERRYMAN_PANEL_PORT"
 )
 
+// version 版本号：编译期由 -ldflags "-X main.version=…" 注入（build.ps1
+// -Release 与发布 CI；值取 git describe --tags --always）；缺省 dev =
+// 本地开发构建（ferryman version 时带「非 release 构建」提示）。
+var version = "dev"
+
 const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交接守护（守望→摆渡→闸门→归还）
 
 用法:
   ferryman                # 无参 = serve：守护(127.0.0.1:7311) + 面板(15900) + 托盘
   ferryman serve [--port N] [--no-tray] [--smoke]
   ferryman doctor         # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
+  ferryman version        # 打印版本号（dev = 非 release 构建）
   ferryman install-cc [--events 事件1,事件2,…]
   ferryman install-ccswitch
   ferryman install-codex [--events 事件1,事件2,…]
@@ -130,6 +138,8 @@ func run(args []string) int {
 		return cmdServe(args[1:])
 	case "doctor":
 		return installer.RunDoctor()
+	case "version":
+		return cmdVersion(args[1:], os.Stdout)
 	case "install-cc":
 		return cmdInstallCC(args[1:])
 	case "install-ccswitch":
@@ -421,6 +431,24 @@ func cmdAccount(args []string) int {
 		Since: *since, Until: *until, Project: *project, Session: *session,
 		Kind: *kind, Provider: *provider, JSON: *asJSON,
 	})
+}
+
+// ---- version（发布链：可注入版本号） ----
+
+// cmdVersion `ferryman version`：打印版本号。dev = 非 release 构建（本地
+// go build 未注入）；release 值由 build.ps1 -Release / CI 以
+// -ldflags "-X main.version=<git describe --tags --always>" 编译期注入。
+func cmdVersion(args []string, w io.Writer) int {
+	fs := flag.NewFlagSet("version", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if version == "dev" {
+		fmt.Fprintf(w, "%s（非 release 构建；release 版由 build.ps1 -Release / CI 注入）\n", version)
+		return 0
+	}
+	fmt.Fprintln(w, version)
+	return 0
 }
 
 // ---- mcp（票04：agent 面 stdio MCP server） ----
