@@ -107,6 +107,14 @@ function setNote(text) {
   document.getElementById('toolbar-note').textContent = text || '';
 }
 
+// fadeIn 页面内容淡入（150ms 纯 opacity）：各 render 成功收尾时调一次；
+// remove+强制回流+add 保证连续导航可重播；降动效由 CSS media query 关动画。
+function fadeIn(el) {
+  el.classList.remove('fade-in');
+  void el.offsetWidth; // 强制回流重启动画
+  el.classList.add('fade-in');
+}
+
 // ---------- 页面级竞态守卫 ----------
 
 // navSeq 导航序号：每次 renderList/renderTimeline 进入时自增并捕获；
@@ -201,6 +209,7 @@ async function renderList() {
     '</tr></thead><tbody>' +
     (rows || '<tr><td colspan="9" class="empty">暂无会话数据</td></tr>') +
     '</tbody></table>';
+  fadeIn(app);
 
   app.querySelectorAll('tr[data-lineage]').forEach(function (tr) {
     tr.addEventListener('click', function () {
@@ -263,7 +272,7 @@ var TL_SCAFFOLD =
   '<div class="tl-chart">' +
   '<div id="tl-wrap">' +
   '<svg id="tl-svg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="单会话 token 时序图（上道主会话、下道子代理合计）"></svg>' +
-  '<div id="tl-tooltip" hidden>' +
+  '<div id="tl-tooltip">' +
   '<div class="tip-time"></div>' +
   '<div class="tip-model"></div>' +
   '<div class="tip-rows"></div>' +
@@ -336,6 +345,7 @@ async function renderTimeline(lineage) {
     return;
   }
   buildTimelinePage(app, lineage, requests, events, windows);
+  fadeIn(app);
 }
 
 // deriveReqs 每条 usage 派生花费字段（GLM 口径）与累计；并给行编全局下标 idx。
@@ -459,6 +469,52 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
 
   function recomputeZones() { state.zones = deriveZones(mainReqs, events, state.ttl); }
 
+  // ---- 视窗补间（plans/002）：跳转类视窗变化 300ms ease-in-out 过渡 ----
+  // 可打断（新跳转/拖拽/滚轮即停）；navSeq 变（切页）自毁；降动效偏好下瞬跳。
+  // 曲线 = CSS token --ease-in-out 同一条 cubic-bezier(0.77,0,0.175,1)，JS 侧求解复刻。
+  var viewTween = null;
+  function stopViewTween() {
+    if (viewTween) { cancelAnimationFrame(viewTween.raf); viewTween = null; }
+  }
+  // cubicBezier 贝塞尔求解（牛顿法 8 轮足够收敛）：t∈[0,1] 的缓动值。
+  function cubicBezier(x1, y1, x2, y2) {
+    function bx(t) { return 3 * (1 - t) * (1 - t) * t * x1 + 3 * (1 - t) * t * t * x2 + t * t * t; }
+    function by(t) { return 3 * (1 - t) * (1 - t) * t * y1 + 3 * (1 - t) * t * t * y2 + t * t * t; }
+    return function (x) {
+      var t = x;
+      for (var i = 0; i < 8; i++) {
+        var e = bx(t) - x;
+        if (Math.abs(e) < 1e-5) break;
+        var d = 3 * (1 - t) * (1 - t) * x1 + 6 * (1 - t) * t * (x2 - x1) + 3 * t * t * (1 - x2);
+        if (Math.abs(d) < 1e-6) break;
+        t -= e / d;
+      }
+      return by(Math.max(0, Math.min(1, t)));
+    };
+  }
+  var easeInOut = cubicBezier(0.77, 0, 0.175, 1);
+  function tweenView(to0, to1) {
+    stopViewTween();
+    var rm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (rm || (Math.abs(to0 - state.t0) < 1 && Math.abs(to1 - state.t1) < 1)) {
+      state.t0 = to0; state.t1 = to1; clampView(); draw(); return;
+    }
+    var seqAtTween = navSeq; // 切页守卫：与回放定时器同款自毁
+    var from0 = state.t0, from1 = state.t1, start = performance.now(), DUR = 300;
+    function step(now) {
+      if (seqAtTween !== navSeq) { viewTween = null; return; }
+      var p = Math.min(1, (now - start) / DUR);
+      var e = easeInOut(p);
+      state.t0 = from0 + (to0 - from0) * e;
+      state.t1 = from1 + (to1 - from1) * e;
+      clampView();
+      draw();
+      if (p < 1) viewTween.raf = requestAnimationFrame(step);
+      else { state.t0 = to0; state.t1 = to1; clampView(); draw(); viewTween = null; } // 末帧钉死目标值
+    }
+    viewTween = { raf: requestAnimationFrame(step) };
+  }
+
   // ---- 元素引用 ----
   var svg = document.getElementById('tl-svg');
   var wrap = document.getElementById('tl-wrap');
@@ -540,7 +596,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   function attachTip(target, fillFn) {
     target.addEventListener('mousemove', function (ev) {
       fillFn();
-      tip.hidden = false;
+      tip.classList.add('show');
       var wr = wrap.getBoundingClientRect();
       if (!wr.width) return;
       var left = ev.clientX - wr.left + 14;
@@ -550,7 +606,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       tip.style.left = Math.max(0, left) + 'px';
       tip.style.top = Math.max(0, top) + 'px';
     });
-    target.addEventListener('mouseleave', function () { tip.hidden = true; });
+    target.addEventListener('mouseleave', function () { tip.classList.remove('show'); });
   }
 
   // 各类 tooltip 内容
@@ -654,9 +710,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     var z = state.zones[deadHop++ % state.zones.length];
     var mid = (z.from + z.to) / 2;
     var span = Math.max(600, (z.to - z.from) * 3);
-    state.t0 = mid - span / 2;
-    state.t1 = mid + span / 2;
-    clampView();
+    tweenView(mid - span / 2, mid + span / 2);
     pick({ type: 'zone', i: state.zones.indexOf(z) });
   }
 
@@ -823,9 +877,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
           var ei = idxs[hop++ % idxs.length];
           var t = events[ei].ts;
           var span = Math.max(600, (state.full1 - state.full0) * 0.1);
-          state.t0 = t - span / 2;
-          state.t1 = t + span / 2;
-          clampView();
+          tweenView(t - span / 2, t + span / 2);
           state.sel = { type: 'ev', i: ei }; // 直选不 toggle：循环跳转逐次定位
           btResult.hidden = true;
           renderDetail();
@@ -898,9 +950,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
         if (!wasSel && (lo < state.t0 || hi > state.t1)) {
           // 参考线必须看得见：当前视窗不含首末就扩到含（留 15% 余量）
           var margin = (hi - lo) * 0.15 + 30;
-          state.t0 = Math.min(state.t0, lo - margin);
-          state.t1 = Math.max(state.t1, hi + margin);
-          clampView();
+          tweenView(Math.min(state.t0, lo - margin), Math.max(state.t1, hi + margin));
         }
         renderGantt();
         draw();
@@ -1248,8 +1298,8 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     var act = windowBeatActual(win);
     var maxV = Math.max(planned, act.n ? act.sum : 0, nothing);
 
-    // btLine 一条对比横条：val=null 显示灰"—（未启用）"。
-    function btLine(label, val, sub, fillCls) {
+    // btLine 一条对比横条：val=null 显示灰"—（未启用）"；idx 行序（三线 40ms 错峰生长）。
+    function btLine(label, val, sub, fillCls, idx) {
       var line = document.createElement('div');
       line.className = 'bt-line';
       var lab = document.createElement('span');
@@ -1260,6 +1310,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
       var fill = document.createElement('div');
       fill.className = 'bt-fill ' + fillCls;
       if (val != null && maxV > 0) fill.style.width = (val / maxV * 100) + '%';
+      fill.style.animationDelay = (idx * 40) + 'ms';
       track.appendChild(fill);
       var v = document.createElement('span');
       v.className = val == null ? 'bt-val bt-dim' : 'bt-val';
@@ -1279,16 +1330,16 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     btLine('若当时这样配', planned,
       beats.length + ' 跳' + (beats.length ? ' @ T0+' + beatOffsets(beats, win.opened_ts) : '') +
       ' · 共 ' + fmtCost(planned) + ' 积分',
-      'bt-fill-green');
+      'bt-fill-green', 0);
     if (act.n > 0) {
-      btLine('实际发生', act.sum, act.n + ' 跳真实 beat', 'bt-fill-actual');
+      btLine('实际发生', act.sum, act.n + ' 跳真实 beat', 'bt-fill-actual', 1);
     } else {
-      btLine('实际发生', null, '', 'bt-fill-actual');
+      btLine('实际发生', null, '', 'bt-fill-actual', 1);
     }
     if (nothing > 0) {
-      btLine('什么都不做', nothing, '整窗超 TTL，过期一次全款', 'bt-fill-red');
+      btLine('什么都不做', nothing, '整窗超 TTL，过期一次全款', 'bt-fill-red', 2);
     } else {
-      btLine('什么都不做', 0, '存活无损', 'bt-fill-red');
+      btLine('什么都不做', 0, '存活无损', 'bt-fill-red', 2);
     }
 
     var stats = document.createElement('div');
@@ -1828,6 +1879,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   // ---- 缩放 / 平移 / 拖点区分 ----
   var drag = null, moved = false;
   svg.addEventListener('mousedown', function (ev) {
+    stopViewTween(); // 补间进行中抢拖拽：从当前视窗无缝接手
     drag = { x: ev.clientX, t0: state.t0, t1: state.t1 };
     moved = false;
   });
@@ -1859,6 +1911,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
   });
   svg.addEventListener('wheel', function (ev) {
     ev.preventDefault();
+    stopViewTween(); // 补间进行中滚轮：以当前视窗为缩放基准
     var wr = wrap.getBoundingClientRect();
     if (!wr.width) return;
     var mx = (ev.clientX - wr.left) / wr.width * 1200; // viewBox x
@@ -1870,9 +1923,7 @@ function buildTimelinePage(app, lineage, requests, events, windows) {
     draw();
   }, { passive: false });
   svg.addEventListener('dblclick', function () {
-    state.t0 = state.full0;
-    state.t1 = state.full1;
-    draw();
+    tweenView(state.full0, state.full1);
   });
 
   // ---- 控制条交互 ----
@@ -2005,6 +2056,7 @@ async function renderCfg() {
   viewerNote.textContent = '另：时间线页的积分口径与 TTL 是查看器前端的固定值（GLM 价 6.9/1.7/24 每万 tokens、'
     + 'TTL 默认 600 秒），不随 config.toml 变；TTL 可在时序页图例行临时改（只影响当次显示）。';
   app.appendChild(viewerNote);
+  fadeIn(app);
 }
 
 // ---------- 路由 ----------
