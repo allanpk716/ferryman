@@ -76,3 +76,15 @@ func launchCmdImpl(cmdPath string) error {
 	}
 	return c.Start()
 }
+
+// spawnRelayImpl detached 隐藏拉起自中继副本(直拉 exe 本体,不经 cmd.exe——
+// 副本是可执行文件不是脚本;脱离语义与 launchCmdImpl 同款,stdout 无人看,
+// 结果走 notify/journal/doctor)。
+func spawnRelayImpl(exe string, args []string) error {
+	c := exec.Command(exe, args...)
+	c.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
+	}
+	return c.Start()
+}

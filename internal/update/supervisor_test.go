@@ -545,3 +545,103 @@ func spawnDeadProcess(t *testing.T) int {
 	}
 	return cmd.Process.Pid
 }
+
+// ---- 自中继(v0.1.0 首发实测补):监督者自身 == 换装目标时交棒副本 ----
+
+// TestSelfRelayHandover 自身映像 == 换装目标 → 复制自身为 .supervisor-copy、
+// detached 拉起副本接手、本进程 Relayed 返回;不动锁/journal、不进下载。
+func TestSelfRelayHandover(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	var spawnExe string
+	var spawnArgs []string
+	sup.selfExe = func() (string, error) { return w.exePath, nil } // 自身即目标
+	sup.spawnRelay = func(exe string, args []string) error {
+		spawnExe, spawnArgs = exe, args
+		return nil
+	}
+
+	res := sup.Run()
+	if !res.Relayed || res.Err != nil {
+		t.Fatalf("应自中继交棒: relayed=%v err=%v", res.Relayed, res.Err)
+	}
+	copyPath := w.exePath + ".supervisor-copy"
+	got, err := os.ReadFile(copyPath)
+	if err != nil {
+		t.Fatalf("副本应落盘: %v", err)
+	}
+	if string(got) != string(w.oldBytes) {
+		t.Fatal("副本内容应与自身逐字节一致")
+	}
+	if spawnExe != copyPath {
+		t.Fatalf("拉起对象 = %q, want 副本 %q", spawnExe, copyPath)
+	}
+	wantArgs := []string{"update", "--supervise", "--self-relay"}
+	if fmt.Sprint(spawnArgs) != fmt.Sprint(wantArgs) {
+		t.Fatalf("副本参数 = %v, want %v", spawnArgs, wantArgs)
+	}
+	if _, err := os.Stat(filepath.Join(w.dataDir, "update.lock")); err == nil {
+		t.Fatal("交棒不应持锁(锁归副本)")
+	}
+	if _, err := os.Stat(filepath.Join(w.dataDir, journalName)); err == nil {
+		t.Fatal("交棒不应写 journal")
+	}
+}
+
+// TestSelfRelayHandoverCarriesIntent 显式版本与 prerelease 意图随副本透传。
+func TestSelfRelayHandoverCarriesIntent(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.Spec, c.Prerelease = "v0.3.0", true
+	})
+	var spawnArgs []string
+	sup.selfExe = func() (string, error) { return w.exePath, nil }
+	sup.spawnRelay = func(_ string, args []string) error { spawnArgs = args; return nil }
+
+	if res := sup.Run(); !res.Relayed {
+		t.Fatalf("应交棒: %+v", res)
+	}
+	want := []string{"update", "--supervise", "--self-relay", "v0.3.0", "--prerelease"}
+	if fmt.Sprint(spawnArgs) != fmt.Sprint(want) {
+		t.Fatalf("副本参数 = %v, want %v", spawnArgs, want)
+	}
+}
+
+// TestSelfRelaySkippedWhenDifferentTarget 自身 != 换装目标 → 不交棒,全流程
+// 照常(成功升级)。
+func TestSelfRelaySkippedWhenDifferentTarget(t *testing.T) {
+	_, sup := newUpdateWorld(t, nil, nil)
+	other := filepath.Join(t.TempDir(), "not-the-target.exe")
+	sup.selfExe = func() (string, error) { return other, nil }
+	res := sup.Run()
+	if res.Relayed || !res.Success {
+		t.Fatalf("不同映像不应交棒且应正常升级: relayed=%v success=%v err=%v",
+			res.Relayed, res.Success, res.Err)
+	}
+}
+
+// TestSelfRelayMarkerSkips 副本携 --self-relay 标记:即便自身 == 目标也不再
+// 自中继(防无限交棒),直接干活。
+func TestSelfRelayMarkerSkips(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.SelfRelay = true
+	})
+	sup.selfExe = func() (string, error) { return w.exePath, nil } // 副本形态:自身即目标
+	res := sup.Run()
+	if res.Relayed || !res.Success {
+		t.Fatalf("标记后不应再交棒且应正常升级: relayed=%v success=%v err=%v",
+			res.Relayed, res.Success, res.Err)
+	}
+}
+
+// TestSelfRelayCopyInResidueDomain 自中继副本在清扫域内(副本删不掉自己,
+// 靠下次清扫收走)。
+func TestSelfRelayCopyInResidueDomain(t *testing.T) {
+	dir := t.TempDir()
+	copyPath := filepath.Join(dir, "ferryman.exe.supervisor-copy")
+	if err := os.WriteFile(copyPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cleanSwapResidues(dir)
+	if _, err := os.Stat(copyPath); !os.IsNotExist(err) {
+		t.Fatal("supervisor-copy 应被清扫域收走")
+	}
+}

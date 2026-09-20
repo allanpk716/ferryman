@@ -446,7 +446,7 @@ const (
 )
 
 // updateResiduePatterns exe 旁换装残留清扫域（update.cleanSwapResidues 同域）。
-var updateResiduePatterns = []string{"ferryman.exe.new", "ferryman.exe.new.part", "ferryman.exe.swap-tmp*"}
+var updateResiduePatterns = []string{"ferryman.exe.new", "ferryman.exe.new.part", "ferryman.exe.swap-tmp*", "ferryman.exe.supervisor-copy*"}
 
 // CheckUpdateResidues 升级事务残留检查（本票，规格 §C 第9条崩溃恢复，review
 // block F4 配套检测）：journal 在册/半写 + 换装目标 exe 旁 .new/.swap-tmp 残留

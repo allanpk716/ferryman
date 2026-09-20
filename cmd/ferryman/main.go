@@ -583,6 +583,7 @@ func cmdUpdate(args []string, w io.Writer) int {
 	check := fs.Bool("check", false, "只检查并报告，不下载不换文件")
 	pre := fs.Bool("prerelease", false, "检查纳入预发布版（rc/beta；缺省只看稳定版）")
 	_ = fs.Bool("supervise", false, "内部旗标：托盘隐藏派生用，行为与无参一致")
+	selfRelay := fs.Bool("self-relay", false, "内部旗标：本进程是自中继副本，不再自中继")
 	if err := fs.Parse(orderFlagsFirst(args)); err != nil {
 		return 2
 	}
@@ -595,7 +596,7 @@ func cmdUpdate(args []string, w io.Writer) int {
 		spec = fs.Arg(0)
 	}
 	if !*check {
-		return runUpdateExecute(spec, *pre, w)
+		return runUpdateExecute(spec, *pre, *selfRelay, w)
 	}
 	out, err := update.Check(update.Endpoints{}, version, spec, *pre)
 	if err != nil {
@@ -625,7 +626,7 @@ func orderFlagsFirst(args []string) []string {
 // 装配：config 可载则用其 DataDir/守护口，载不动回落缺省（~/ferryman、7311）
 // ——升级不应因配置坏而不可用。结果 stdout 报告 + notify 通道推送（seam F，
 // 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）。
-var runUpdateExecute = func(spec string, pre bool, w io.Writer) int {
+var runUpdateExecute = func(spec string, pre, selfRelay bool, w io.Writer) int {
 	dataDir, port := "", update.DefaultDaemonPort
 	var cfg *config.Config
 	if c, err := config.Load("", false); err == nil {
@@ -641,7 +642,14 @@ var runUpdateExecute = func(spec string, pre bool, w io.Writer) int {
 		Current:    version,
 		Spec:       spec,
 		Prerelease: pre,
+		SelfRelay:  selfRelay,
 	}).Run()
+	if res.Relayed {
+		// 自中继交棒：副本进程已接手（detached 无控制台），结果走 notify；
+		// journal/doctor 可查。本进程使命结束，退出码 0。
+		fmt.Fprintln(w, "已转交升级代理进程接手（自身即换装目标，副本接力）；结果将经通知推送")
+		return 0
+	}
 	var summary string
 	switch {
 	case res.Success:

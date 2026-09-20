@@ -37,3 +37,10 @@ func launchCmdImpl(cmdPath string) error {
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return c.Start()
 }
+
+// spawnRelayImpl 新会话直拉自中继副本(detached 等价)。
+func spawnRelayImpl(exe string, args []string) error {
+	c := exec.Command(exe, args...)
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return c.Start()
+}

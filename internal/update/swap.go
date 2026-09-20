@@ -69,10 +69,11 @@ func pruneBackups(exeDir string, keep int) {
 	}
 }
 
-// cleanSwapResidues 一切退出路径清理换装残留:.new/.new.part/.swap-tmp*。
+// cleanSwapResidues 一切退出路径清理换装残留:.new/.new.part/.swap-tmp*/
+// .supervisor-copy*(自中继副本无法删除自身运行镜像,留待此处收走)。
 // .old-* 备份与正式 exe 不在清理域。目录缺失静默。
 func cleanSwapResidues(exeDir string) {
-	for _, pat := range []string{"ferryman.exe.new", "ferryman.exe.new.part", "ferryman.exe.swap-tmp*"} {
+	for _, pat := range []string{"ferryman.exe.new", "ferryman.exe.new.part", "ferryman.exe.swap-tmp*", "ferryman.exe.supervisor-copy*"} {
 		matches, err := filepath.Glob(filepath.Join(exeDir, pat))
 		if err != nil {
 			continue

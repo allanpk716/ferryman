@@ -39,6 +39,7 @@ type Config struct {
 	Current      string        // 当前版本(main.version)
 	Spec         string        // 显式目标版本(可空;含降级)
 	Prerelease   bool          // 纳入预发布
+	SelfRelay    bool          // 本进程已是自中继副本,不再自中继(内部旗标)
 	StartCmd     string        // 点火脚本;空 = <DataDir>/start-daemon.cmd
 	HTTP         *http.Client  // 守护面客户端;空 = 3s 超时内建
 	PortWait     time.Duration // 停旧等端口释放上限;0 = 30s
@@ -50,19 +51,23 @@ type Config struct {
 // Result 升级结论(seam F 结果通知与 CLI stdout 的单源)。
 type Result struct {
 	Success     bool
+	Relayed     bool  // 已转交自中继副本接手,本进程只负责退出(v0.1.0 首发实测补)
 	From, To    string
 	RolledBack  bool   // 失败但已回滚恢复旧版服务
 	RollbackErr string // 回滚也失败(服务可能中断,需人工介入)
 	Err         error
 }
 
-// Supervisor 监督者。proc* 为进程面 seam(测试注桩);launch 为拉起 seam。
+// Supervisor 监督者。proc* 为进程面 seam(测试注桩);launch 为拉起 seam;
+// selfExe/spawnRelay 为自中继 seam(同上)。
 type Supervisor struct {
-	cfg       Config
-	procAlive func(pid int) bool
-	procImage func(pid int) (string, error)
-	killPID   func(pid int) error
-	launch    func(cmdPath string) error
+	cfg        Config
+	procAlive  func(pid int) bool
+	procImage  func(pid int) (string, error)
+	killPID    func(pid int) error
+	launch     func(cmdPath string) error
+	selfExe    func() (string, error)
+	spawnRelay func(exe string, args []string) error
 }
 
 // NewSupervisor 装配(平台真实现见 proc_*.go / swap_*.go)。
@@ -93,11 +98,13 @@ func NewSupervisor(cfg Config) *Supervisor {
 		}
 	}
 	return &Supervisor{
-		cfg:       cfg,
-		procAlive: procAliveImpl,
-		procImage: procImageImpl,
-		killPID:   killImpl,
-		launch:    launchCmdImpl,
+		cfg:        cfg,
+		procAlive:  procAliveImpl,
+		procImage:  procImageImpl,
+		killPID:    killImpl,
+		launch:     launchCmdImpl,
+		selfExe:    os.Executable,
+		spawnRelay: spawnRelayImpl,
 	}
 }
 
@@ -111,6 +118,16 @@ func (s *Supervisor) Run() Result {
 		return Result{Err: err}
 	}
 	exeDir := filepath.Dir(targetExe)
+
+	// 0.5 自中继(v0.1.0 首发实测补):监督者自身映像 == 换装目标时,单次原子
+	// 替换会被自己的运行镜像锁死(实测 Access is denied——停旧只停了守护,
+	// 没停监督者本人)。复制自身为副本、detached 拉起副本接手(副本与目标不同
+	// 文件,seam A 恢复可行),本进程交棒退出。
+	if relayed, rerr := s.selfRelayIfNeeded(targetExe); rerr != nil {
+		return Result{Err: rerr}
+	} else if relayed {
+		return Result{Relayed: true, From: s.cfg.Current}
+	}
 
 	// 1. 锁(seam B:持有者活 = PID 活且映像==换装目标)
 	lk, err := acquireUpdateLock(s.cfg.DataDir, targetExe, s.procAlive, s.procImage, s.logf)
@@ -197,6 +214,51 @@ func (s *Supervisor) Run() Result {
 
 	// 8. 回滚
 	return s.rollback(j, seen)
+}
+
+// selfRelayIfNeeded 自中继判定:自身映像 == 换装目标且未携中继标记时,复制
+// 自身为 <目标>.supervisor-copy 并 detached 拉起副本接手(副本携 --self-relay,
+// 不会再次自中继),本进程交棒。复制失败/拉起失败如实报错中止——此时硬走
+// swap 必然 Access denied(自己的镜像锁着目标),早失败比晚失败诚实。
+func (s *Supervisor) selfRelayIfNeeded(targetExe string) (bool, error) {
+	if s.cfg.SelfRelay {
+		return false, nil
+	}
+	self, err := s.selfExe()
+	if err != nil {
+		return false, nil // 拿不到自身映像(几乎不可能):不拦,让后续按原样走
+	}
+	if !samePath(self, targetExe) {
+		return false, nil
+	}
+	copyPath := relayCopyPath(targetExe)
+	if err := copyFile(self, copyPath); err != nil {
+		return false, fmt.Errorf("自中继副本落盘失败: %w", err)
+	}
+	if err := s.spawnRelay(copyPath, relayArgs(s.cfg.Spec, s.cfg.Prerelease)); err != nil {
+		_ = os.Remove(copyPath)
+		return false, fmt.Errorf("自中继副本拉起失败: %w", err)
+	}
+	s.logf("监督者自身即换装目标——已转交副本接手升级,本进程退出(副本 %s)", copyPath)
+	return true, nil
+}
+
+// relayCopyPath 自中继副本落点(在 cleanSwapResidues 清扫域内:副本退出后
+// 无法删除自身运行镜像,留待下次 update/doctor 驱动的清扫收走)。
+func relayCopyPath(targetExe string) string {
+	return targetExe + ".supervisor-copy"
+}
+
+// relayArgs 副本接手参数:监督者旗标 + 自中继标记 + 原样的版本意图。
+func relayArgs(spec string, prerelease bool) []string {
+	args := []string{"update", "--supervise", "--self-relay"}
+	if spec != "" {
+		args = append(args, spec)
+	}
+	if prerelease {
+		args = append(args, "--prerelease")
+	}
+	return args
 }
 
 // resolveTargetExe seam E:点火脚本引号 exe 优先;失败回落本进程映像。

@@ -38,7 +38,7 @@ Ferryman 目前没有版本号、没有发布通道、没有升级机制:exe 靠
 - 发布操作须用 annotated tag(`git tag -a vX.Y.Z -m "..."`)——lightweight tag 的注释为空。
 
 ### C. 自升级(核心)
-**统一监督者**:CLI `ferryman update` 进程即监督者;托盘「立即升级」spawn detached 隐藏的 `ferryman update --supervise`(内部旗标,行为与无参一致);「检查更新」/`--check` 为纯只读路径。两执行入口收敛同一状态机:
+**统一监督者**:CLI `ferryman update` 进程即监督者;托盘「立即升级」spawn detached 隐藏的 `ferryman update --supervise`(内部旗标,行为与无参一致);「检查更新」/`--check` 为纯只读路径。两执行入口收敛同一状态机。**自中继(实施补,v0.1.0 首发实测)**:监督者自身映像 == 换装目标时,单次原子替换会被自己的运行镜像锁死——先复制自身为 `<目标>.supervisor-copy`、detached 拉起副本携 `--self-relay` 接手,本进程交棒退出;副本与目标不同文件,seam A 恢复可行;副本删不掉自身运行镜像,留 `.supervisor-copy*` 入清扫域(下次 update/doctor 收走)。监督者序列:
 
 1. **锁**(`~/ferryman/update.lock`):O_CREATE|O_EXCL 原子创建;存 PID+进程映像路径+generation。存活判定 = PID 活**且**映像路径 == 换装目标 exe 路径(seam B);持有者存活 → 打印「升级进行中」退出;陈旧 → 原子接管(generation 递增)。
 2. **journal**(`~/ferryman/update-journal.json`):阶段 staging / swap / verify,先写后动。

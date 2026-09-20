@@ -135,11 +135,11 @@ func TestCmdUpdate(t *testing.T) {
 	defer func() { runUpdateExecute = orig }()
 
 	var gotSpec string
-	var gotPre bool
+	var gotPre, gotRelay bool
 	var calls int
-	runUpdateExecute = func(spec string, pre bool, _ io.Writer) int {
+	runUpdateExecute = func(spec string, pre, selfRelay bool, _ io.Writer) int {
 		calls++
-		gotSpec, gotPre = spec, pre
+		gotSpec, gotPre, gotRelay = spec, pre, selfRelay
 		return 0
 	}
 
@@ -159,6 +159,15 @@ func TestCmdUpdate(t *testing.T) {
 	}
 	if calls != 1 || gotSpec != "" {
 		t.Fatalf("--supervise 应同无参走执行路径: calls=%d spec=%q", calls, gotSpec)
+	}
+
+	// --self-relay 内部旗标（自中继副本）：透传给执行路径（副本不再自中继）
+	calls = 0
+	if code := cmdUpdate([]string{"--supervise", "--self-relay"}, &buf); code != 0 {
+		t.Fatalf("--self-relay 退出码 = %d, want 0（stub）", code)
+	}
+	if calls != 1 || !gotRelay {
+		t.Fatalf("--self-relay 应透传执行路径: calls=%d relay=%v", calls, gotRelay)
 	}
 
 	buf.Reset()
