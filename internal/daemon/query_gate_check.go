@@ -14,12 +14,16 @@ package daemon
 // 字典序（跨 Agent 同 id 理论碰撞再按 agent，钉全序——台账 map 迭代序随机）。
 //
 // 推演输入边界（票面裁定）：只依据台账、交接库索引与内存闸门态，不解析 jsonl
-// 正文。与真闸门的两处如实声明的保守缺口（预演只会更严、绝不更松）：
+// 正文。与真闸门的偏差面（预演只会更严、绝不更松）：
 //  1. 机器等机器豁免只覆盖停车窗道（T48；waitWindowOpenLocked 零副作用探测）
 //     ——计数道无零写访问器（SubagentActive 判定即清理泄漏条目）、悬空道须
 //     读转录尾部，均不推演；
 //  2. pending 的 TTL 懒删除与新闲置周期清除只做条件推演、不落写——判定与
-//     真闸门一致，副作用（delete/Clear）为零。
+//     真闸门一致，副作用（delete/Clear）为零；
+//  3. pending 降级路径精确镜像：rec.Blocks≥DegradeAfterBlocks 时下次真提交
+//     n=Blocks+1 超 3 即 Clear＋放行（gate.go §6.10-6）→ 预演 allow；
+//  4. observe 在窗时真闸门 decision=allow（带警告上下文），镜像 verdict=warn
+//     ——偏严方向的措辞映射，非判定偏差。
 //
 // 红线（queryapi.go 顶部块全文适用）：无消息内容、无凭据字段、纯只读；
 // 并发纪律同 query_sessions.go——台账锁内一次抄齐快照，ValidHandoff/pending/
@@ -112,6 +116,9 @@ func (d *Daemon) probeGate(agent, sid, cwd string, lastWrite float64) gateCheckR
 			set("allow", "not-in-window")
 		case handoff != nil: // 分支 5：有效交接 → block（路径即判定依据）
 			set("block", "valid-handoff")
+		case pok && rec.Blocks >= DegradeAfterBlocks: // 分支 6 降级路径的精确
+			// 镜像：下次真提交 n=Blocks+1>DegradeAfterBlocks → Clear＋放行
+			set("allow", "pending-degraded")
 		case pok: // 分支 6：待交接标记在位（首次警告已过）→ block
 			set("block", "pending")
 		default: // 分支 7：首次进窗、无交接 → 警告区

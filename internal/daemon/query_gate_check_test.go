@@ -337,6 +337,50 @@ func TestGateCheckRequireBearer(t *testing.T) {
 	}
 }
 
+// ---- pending 降级路径的精确镜像（分支 6 降级：Blocks≥3 → 下次真提交放行） ----
+
+func TestGateCheckPendingDegradeMirror(t *testing.T) {
+	e := newQueryEnv(t)
+	e.qreg("cc", "gc-d1", `C:\tmp\gc-d1.jsonl`, `C:\proj-d1`, 35, 100)
+	e.qreg("cc", "gc-d2", `C:\tmp\gc-d2.jsonl`, `C:\proj-d2`, 35, 100)
+	e.d.Pending.Set([2]string{"cc", "gc-d1"}) // Set 惰性建表，再改 Blocks
+	e.d.Pending.Set([2]string{"cc", "gc-d2"})
+	e.d.Pending.mu.Lock()
+	// 已被真闸门连拦 3 次（Blocks=3）→ 下次真提交 n=4>3 即 Clear＋放行（降级）
+	e.d.Pending.t[[2]string{"cc", "gc-d1"}] = PendingRec{SetAt: e.t0, Blocks: 3}
+	// 只拦过 2 次 → 下次真提交 n=3 仍 block（未达降级）
+	e.d.Pending.t[[2]string{"cc", "gc-d2"}] = PendingRec{SetAt: e.t0, Blocks: 2}
+	e.d.Pending.mu.Unlock()
+
+	code, resp := gateCheckSingle(t, e, "gc-d1")
+	if code != 200 {
+		t.Fatalf("gc-d1 = %d", code)
+	}
+	basis, _ := resp["basis"].(map[string]any)
+	if resp["verdict"] != "allow" || basis["reason"] != "pending-degraded" {
+		t.Fatalf("gc-d1 Blocks=3 应预演降级放行, got verdict=%v basis=%v",
+			resp["verdict"], resp["basis"])
+	}
+	code, resp = gateCheckSingle(t, e, "gc-d2")
+	if code != 200 {
+		t.Fatalf("gc-d2 = %d", code)
+	}
+	basis, _ = resp["basis"].(map[string]any)
+	if resp["verdict"] != "block" || basis["reason"] != "pending" {
+		t.Fatalf("gc-d2 Blocks=2 应仍预演 block, got verdict=%v basis=%v",
+			resp["verdict"], resp["basis"])
+	}
+	// 汇总模式同谓词：gc-d1 行 allow、gc-d2 行 block
+	rows := gateCheckSummary(t, e, "")
+	verdicts := map[string]any{}
+	for _, r := range rows {
+		verdicts[r["session_id"].(string)] = r["verdict"]
+	}
+	if verdicts["gc-d1"] != "allow" || verdicts["gc-d2"] != "block" {
+		t.Fatalf("汇总降级镜像不符: %v", verdicts)
+	}
+}
+
 // ---- 零状态写入：调用前后台账/pending/窗口/闸门计数/交接库文件字节不变 ----
 
 func TestGateCheckZeroStateWrite(t *testing.T) {
@@ -344,6 +388,10 @@ func TestGateCheckZeroStateWrite(t *testing.T) {
 	e.qreg("cc", "gc-z1", `C:\tmp\gc-z1.jsonl`, `C:\proj-z1`, 40, 100)
 	e.qreg("cc", "gc-z2", `C:\tmp\gc-z2.jsonl`, `C:\proj-z2`, 5, 100)
 	e.qreg("cc", "gc-z3", `C:\tmp\gc-z3.jsonl`, `C:\proj-z3`, 35, 100)
+	// gc-z4：凉＋有效交接＋无窗无 pending——驱动写副作用最重的分支 5
+	// （真闸门此分支 Pending.Clear＋MarkBlocked＋SavePendingPrompt＋addBlocks）。
+	e.qreg("cc", "gc-z4", `C:\tmp\gc-z4.jsonl`, `C:\proj-z4`, 2100, 100)
+	e.st.SaveHandoff("gc-z4", "cc", `C:\proj-z4`, "T", isoUTC(e.t0), "fresh", "MD-Z4")
 	en := e.st.SaveHandoff("gc-z1", "cc", `C:\proj-z1`, "T", isoUTC(e.t0), "fresh", "MD-Z")
 	e.st.SavePendingPrompt("gc-z1", "PROMPT-SENTINEL-Z")
 	e.d.Pending.Set([2]string{"cc", "gc-z3"})
@@ -415,7 +463,7 @@ func TestGateCheckZeroStateWrite(t *testing.T) {
 	pend0, win0, stats0 := snapPending(), snapWindows(), snapStats()
 
 	for _, q := range []string{"/gate_check?session_id=gc-z1", "/gate_check?session_id=gc-z3",
-		"/gate_check", "/gate_check?limit=2"} {
+		"/gate_check?session_id=gc-z4", "/gate_check", "/gate_check?limit=2"} {
 		if code, raw := getRaw(t, e.port, q, e.token); code != 200 {
 			t.Fatalf("GET %s = %d %q", q, code, raw)
 		}
