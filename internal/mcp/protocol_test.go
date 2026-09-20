@@ -160,8 +160,14 @@ func TestProtocolErrors(t *testing.T) {
 	e := newEnv(t, false, false)
 	p := startPipes(t, e.cfg)
 	p.send("{not json")
-	if code := errCode(t, p.recv()); code != -32700 {
+	resp := p.recv()
+	if code := errCode(t, resp); code != -32700 {
 		t.Fatalf("坏 JSON 应 -32700, got %d", code)
+	}
+	// JSON-RPC 2.0 §5.1：parse error 的 id MUST 为显式 null——解码后即
+	// 键存在且值为 nil（omitempty 缺字段则键不存在，不合格）。
+	if v, ok := resp["id"]; !ok || v != nil {
+		t.Fatalf(`parse error 应含显式 "id":null, got id=%v(ok=%v)`, v, ok)
 	}
 	if code := errCode(t, p.call("resources/list", nil)); code != -32601 {
 		t.Fatalf("未知方法应 -32601, got %d", code)

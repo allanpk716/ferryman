@@ -69,7 +69,14 @@ func New(cfg *config.Config) *Server {
 // 路径（config.Load 优先级原样复用）；失败只写 stderr（stdout 专留给
 // JSON-RPC——stdio MCP 纪律），返回进程退出码。
 func Run(configPath string) int {
+	// config.Load 的校验警告经 fmt.Printf 写 os.Stdout（config.Validate 两处）
+	// ——stdio 纪律下 stdout 专留给 JSON-RPC，握手前的非 JSON 行可能被客户端
+	// 当传输错误。Load 期间把 stdout 临时换向 stderr（此刻单线程，Serve 尚未
+	// 开始，无并发争用）。
+	saved := os.Stdout
+	os.Stdout = os.Stderr
 	cfg, err := config.Load(configPath, false)
+	os.Stdout = saved
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -168,7 +175,8 @@ func toolError(id json.RawMessage, msg string) *rpcResponse {
 func (s *Server) handleLine(line []byte) *rpcResponse {
 	var req rpcRequest
 	if err := json.Unmarshal(line, &req); err != nil {
-		return errResp(nil, codeParseError, "parse error: "+err.Error())
+		return errResp(json.RawMessage("null"), codeParseError,
+			"parse error: "+err.Error())
 	}
 	if len(req.ID) == 0 { // 无 id ＝通知（notifications/* 等）：静默接收
 		return nil
