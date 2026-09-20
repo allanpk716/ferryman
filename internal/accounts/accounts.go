@@ -61,9 +61,12 @@ var kindFields = map[string][]string{
 	// （隐私铁律，白名单拒 messages 等内容字段）。
 	"dock": {"mode", "model_in", "model_out", "input_tokens", "cache_read_tokens",
 		"cache_creation_tokens", "output_tokens", "latency_s", "status"},
-	// 逐次请求的用量遥测（设计 §3.7；会话文件 30 天清理后的审计地基）
+	// 逐次请求的用量遥测（设计 §3.7；会话文件 30 天清理后的审计地基）。
+	// subagent 子代理标记字段（票01，ADR-0008 的 Go 版追加先例同 beat.lane）：
+	// 值=子代理转录文件 stem（agent-<agentId>，完整文件名去扩展名——账本行自身
+	// 携带恢复所需键成分），主会话行恒写空串（白名单"必填"语义不变）。
 	"usage": {"model", "title", "input_tokens", "cache_read_tokens",
-		"cache_creation_tokens", "output_tokens", "offset"},
+		"cache_creation_tokens", "output_tokens", "offset", "subagent"},
 }
 
 // kindOrder 科目顺序 = Python dict 插入序（KINDS 元组），未知科目报错文案用。

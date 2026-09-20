@@ -173,7 +173,7 @@ func putUsage(t *testing.T, acc *accounts.Accounts, ts float64, sid string, i, c
 		"agent": "cc", "session_id": sid, "lineage_id": "L-" + sid,
 		"project": "C:/proj", "model": "glm-5.3", "title": "",
 		"input_tokens": i, "cache_read_tokens": cr, "cache_creation_tokens": cc,
-		"output_tokens": 10, "offset": 0,
+		"output_tokens": 10, "offset": 0, "subagent": "",
 	}); err != nil {
 		t.Fatal(err)
 	}

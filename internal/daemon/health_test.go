@@ -181,11 +181,11 @@ func TestHealthMissSignalsCorrelation(t *testing.T) {
 	mustRecord("usage", w.t0-4000, accounts.Fields{
 		"agent": "cc", "session_id": "ms1", "lineage_id": "L", "project": "C:/p",
 		"model": "m", "title": "", "input_tokens": 100, "cache_read_tokens": 100,
-		"cache_creation_tokens": 0, "output_tokens": 1, "offset": 0})
+		"cache_creation_tokens": 0, "output_tokens": 1, "offset": 0, "subagent": ""})
 	mustRecord("usage", w.t0, accounts.Fields{
 		"agent": "cc", "session_id": "ms1", "lineage_id": "L", "project": "C:/p",
 		"model": "m", "title": "", "input_tokens": 900, "cache_read_tokens": 0,
-		"cache_creation_tokens": 0, "output_tokens": 1, "offset": 0})
+		"cache_creation_tokens": 0, "output_tokens": 1, "offset": 0, "subagent": ""})
 	mustRecord("qwatch_hit", w.t0-1000, accounts.Fields{
 		"agent": "cc", "session_id": "ms1", "lineage_id": "L", "project": "C:/p",
 		"unit_count": 1, "marker_lines": "", "qmark_lines": "", "numbered_lines": "",

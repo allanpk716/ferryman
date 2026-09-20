@@ -254,7 +254,7 @@ func TestUsageKindRoundtrip(t *testing.T) {
 		"agent": "cc", "session_id": "s1", "lineage_id": "L1", "project": "C:/proj",
 		"model": "glm-5.3", "title": "修登录bug", "input_tokens": 100,
 		"cache_read_tokens": 9000, "cache_creation_tokens": 0,
-		"output_tokens": 50, "offset": 2048,
+		"output_tokens": 50, "offset": 2048, "subagent": "",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -269,6 +269,62 @@ func TestUsageKindRoundtrip(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "不落这些字段") {
 		t.Fatalf("err = %v, want 含 不落这些字段", err)
+	}
+}
+
+func TestUsageSubagentMarkerField(t *testing.T) {
+	// 票01/ADR-0008：usage 白名单追加最小标记字段 subagent——子代理行值=文件
+	// stem（agent-<agentId>），主会话行写空串（必填语义不变，参照 beat.lane
+	// 的 Go 版追加先例）。消息内容仍被白名单拒绝（隐私铁律，沿用既有拒绝形态）。
+	acc := newAcc(t)
+	// 子代理行：标记=stem
+	if _, err := acc.Record("usage", 1758150005.0, Fields{
+		"agent": "cc", "session_id": "p1", "lineage_id": "L1", "project": "C:/proj",
+		"model": "glm-5.3", "title": "", "input_tokens": 1,
+		"cache_read_tokens": 0, "cache_creation_tokens": 0,
+		"output_tokens": 2, "offset": 10, "subagent": "agent-a1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 主会话行：空串是合法值（显式写键，不是省略键）
+	if _, err := acc.Record("usage", 1758150005.0, Fields{
+		"agent": "cc", "session_id": "s1", "lineage_id": "L0", "project": "C:/proj",
+		"model": "glm-5.3", "title": "", "input_tokens": 1,
+		"cache_read_tokens": 0, "cache_creation_tokens": 0,
+		"output_tokens": 2, "offset": 20, "subagent": "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 白名单"必填"语义不变：缺 subagent → 缺必填字段
+	_, err := acc.Record("usage", 1758150005.0, Fields{
+		"agent": "cc", "session_id": "s1", "lineage_id": "L0", "project": "C:/proj",
+		"model": "glm-5.3", "title": "", "input_tokens": 1,
+		"cache_read_tokens": 0, "cache_creation_tokens": 0,
+		"output_tokens": 2, "offset": 30,
+	})
+	if err == nil || !strings.Contains(err.Error(), "缺必填") {
+		t.Fatalf("err = %v, want 含 缺必填", err)
+	}
+	// 隐私不变量：子代理行带内容字段 → 白名单拒绝（消息内容永不入账）
+	_, err = acc.Record("usage", 1758150005.0, Fields{
+		"agent": "cc", "session_id": "p1", "lineage_id": "L1", "project": "C:/proj",
+		"model": "glm-5.3", "title": "", "input_tokens": 1,
+		"cache_read_tokens": 0, "cache_creation_tokens": 0,
+		"output_tokens": 2, "offset": 40, "subagent": "agent-a1",
+		"content": "子代理消息原话不应入账",
+	})
+	if err == nil || !strings.Contains(err.Error(), "不落这些字段") {
+		t.Fatalf("err = %v, want 含 不落这些字段", err)
+	}
+	rows := acc.Read(ReadOpts{Kind: "usage"})
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	if rows[0]["subagent"] != "agent-a1" {
+		t.Fatalf("子代理行 subagent = %v, want agent-a1", rows[0]["subagent"])
+	}
+	if rows[1]["subagent"] != "" {
+		t.Fatalf("主会话行 subagent = %v, want 空串", rows[1]["subagent"])
 	}
 }
 
@@ -311,7 +367,7 @@ func TestLineKeyOrder(t *testing.T) {
 		"agent": "cc", "session_id": "s1", "lineage_id": "L1", "project": "C:/proj",
 		"model": "glm-5.3", "title": "修登录bug", "input_tokens": 100,
 		"cache_read_tokens": 9000, "cache_creation_tokens": 0,
-		"output_tokens": 50, "offset": 2048,
+		"output_tokens": 50, "offset": 2048, "subagent": "",
 	}); err != nil {
 		t.Fatal(err)
 	}

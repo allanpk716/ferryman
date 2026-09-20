@@ -268,6 +268,7 @@ func TestResumeFromAccounts(t *testing.T) {
 			"input_tokens": r.InputTokens, "cache_read_tokens": r.CacheReadTokens,
 			"cache_creation_tokens": r.CacheCreationTokens,
 			"output_tokens":         r.OutputTokens, "offset": r.Offset,
+			"subagent": "",
 		}); err != nil {
 			t.Fatal(err)
 		}

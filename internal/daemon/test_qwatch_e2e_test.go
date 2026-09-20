@@ -440,6 +440,7 @@ func TestHealthReportsMissSignalsFromAccounts(t *testing.T) {
 	u1["cache_creation_tokens"] = 0
 	u1["output_tokens"] = 5
 	u1["offset"] = 10
+	u1["subagent"] = ""
 	if _, err := accts.Record("usage", t0, u1); err != nil {
 		t.Fatal(err)
 	}
@@ -452,6 +453,7 @@ func TestHealthReportsMissSignalsFromAccounts(t *testing.T) {
 	u2["cache_creation_tokens"] = 0
 	u2["output_tokens"] = 5
 	u2["offset"] = 20
+	u2["subagent"] = ""
 	if _, err := accts.Record("usage", t0+1200, u2); err != nil {
 		t.Fatal(err)
 	}

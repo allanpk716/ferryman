@@ -248,11 +248,16 @@ func (w *Watcher) pollCC() {
 		if !strings.HasSuffix(p, ".jsonl") {
 			return nil
 		}
-		if hasPathPart(p, "subagents") {
-			return nil // T32：子代理转录（<sid>/subagents/agent-*.jsonl）不是独立会话，不摆渡
-		}
 		info, err := os.Stat(p)
 		if err != nil { // OSError → continue
+			return nil
+		}
+		if hasPathPart(p, "subagents") {
+			// T32 + 票01/ADR-0008 分流：子代理转录（<sid>/subagents/agent-*.jsonl）
+			// 不是独立会话——不 Touch、不入摆渡队、不参与闲置判定/问询守望/
+			// 心跳排程（摆渡与闸门语义零变动，T32/T48 只消费不改变）；唯一新增
+			// 行为是喂 usage 采集（随父会话入账）。
+			w.harvestSubagentUsage(p, info.Size())
 			return nil
 		}
 		mtime, size := statMTime(info), int(info.Size())
@@ -1190,6 +1195,7 @@ func (w *Watcher) harvestUsage(path string, size int64, st *ledger.SessionState)
 			"input_tokens": r.InputTokens, "cache_read_tokens": r.CacheReadTokens,
 			"cache_creation_tokens": r.CacheCreationTokens,
 			"output_tokens":         r.OutputTokens, "offset": int(r.Offset),
+			"subagent": "", // 主会话行恒空串（白名单必填语义，票01）
 		}); err != nil {
 			fmt.Printf("[harvest] 用量采集失败（忽略继续）: %s: %v\n", filepath.Base(path), err)
 			return
@@ -1204,6 +1210,72 @@ func (w *Watcher) harvestUsage(path string, size int64, st *ledger.SessionState)
 	if w.Daemon != nil {
 		w.Daemon.NoteUsage(agent, sid, tsMax)
 	}
+}
+
+// harvestSubagentUsage 票01/ADR-0008 子代理转录 usage 采集：行随父会话入账
+// （session_id=行内父 sid、lineage_id=父转录归一键、subagent=文件 stem，四列
+// 取自该子代理自己的 assistant 记录）。故障隔离与 harvestUsage 同款——
+// harvest=nil（旧测试形态）视同不采集，一切异常吞掉，记账永不弄断守望；
+// 绝不喂 NoteUsage/排程/摆渡（子代理完成 ≠ 主会话恢复，T48 语义零变动）。
+func (w *Watcher) harvestSubagentUsage(path string, size int64) {
+	if w.harvest == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[harvest] 子代理用量采集失败（忽略继续）: %s: %v\n", filepath.Base(path), r)
+		}
+	}()
+	rows := w.harvest.MaybeHarvestSubagent(path, size, "cc")
+	if len(rows) == 0 {
+		return
+	}
+	lineage := w.subagentLineage(path, rows[0].SessionID)
+	for _, r := range rows {
+		ts := -1.0 // Python ts=None → 账本盖章 now（harvestUsage 同款）
+		if r.TS != nil {
+			ts = *r.TS
+		}
+		if _, err := w.Accounts.Record("usage", ts, accounts.Fields{
+			"agent": "cc", "session_id": r.SessionID, "lineage_id": lineage,
+			"project": r.Project, "model": r.Model, "title": r.Title,
+			"input_tokens": r.InputTokens, "cache_read_tokens": r.CacheReadTokens,
+			"cache_creation_tokens": r.CacheCreationTokens,
+			"output_tokens":         r.OutputTokens, "offset": int(r.Offset),
+			"subagent": r.Subagent, // 值=文件 stem（agent-<agentId>，账本行自带恢复键成分）
+		}); err != nil {
+			fmt.Printf("[harvest] 子代理用量采集失败（忽略继续）: %s: %v\n", filepath.Base(path), err)
+			return
+		}
+	}
+}
+
+// subagentLineage 子代理行的族系键＝父转录路径的归一键（rev1·F4/F9）：台账有
+// 父会话 → 以台账 TranscriptPath 为准（与路径剥离结果不一致记一行可诊断日志，
+// 不阻断入账）；台账无 → 用从子代理文件自身路径剥离构造的结果。
+func (w *Watcher) subagentLineage(subPath, parentSid string) string {
+	derived := pathsx.NormPath(parentTranscriptPath(subPath, parentSid))
+	w.Ledger.Mu().Lock()
+	var have string
+	if st := w.Ledger.GetLocked("cc", parentSid); st != nil {
+		have = pathsx.NormPath(st.TranscriptPath) // 建后不变字段，锁内快照（先例 prevQwatchOpen）
+	}
+	w.Ledger.Mu().Unlock()
+	if have == "" {
+		return derived
+	}
+	if have != derived {
+		fmt.Printf("[harvest] 子代理父转录与路径剥离推导不一致（以台账为准）: 父=%s 台账=%s 推导=%s\n",
+			runeCap8(parentSid), have, derived)
+	}
+	return have
+}
+
+// parentTranscriptPath 从子代理文件自身路径剥离尾段 /<父sid>/subagents/<stem>
+// 得同目录父转录文件（projects/<munged>/<父sid>.jsonl 兄弟文件，实测布局）。
+func parentTranscriptPath(subPath, parentSid string) string {
+	munged := filepath.Dir(filepath.Dir(filepath.Dir(subPath))) // .../subagents → <父sid> → <munged>
+	return filepath.Join(munged, parentSid+".jsonl")
 }
 
 // ---- 小工具 ----

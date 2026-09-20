@@ -8,7 +8,8 @@
 //     偏移先推进后返回，Record 中途失败时该批尾部行永久丢失（at-most-once，
 //     故障隔离语义）；同 message.id 的重写行在内存中按首发去重（CC 会重复落
 //     同一条助手消息）；
-//   - 范围 v1：仅 CC 主会话（subagents 转录由守望 glob 层排除；Codex 挂后续）。
+//   - 范围：CC 主会话＋子代理转录（票01/ADR-0008：子代理随父会话入账，守望
+//     对 subagents 路径仅跳摆渡不跳采数；Codex 挂后续）。
 package harvest
 
 import (
@@ -43,12 +44,22 @@ type Row struct {
 	Title   string
 	Project string
 	Offset  int64
+
+	// 票01 子代理面：主转录行两字段恒零值（SessionID 由调用方按台账 sid 落账，
+	// Subagent 落空串——白名单必填语义）；子代理行 Subagent=文件 stem
+	// （agent-<agentId>）、SessionID=父 sid（行内 sessionId）。
+	Subagent  string
+	SessionID string
 }
 
-// harvestKey 状态键 (agent, 文件名 stem)——假设监视目录树下会话文件名唯一
-// （CC 为 UUID）；同名冲突会导致状态串扰。账本恢复侧以 session_id 充 stem。
+// harvestKey 状态键 (agent, 父sid, stem)（票01：由 (agent, stem) 扩为父域复合
+// 键）。主会话 sid 成分恒空串，stem=文件名 stem（CC 为 UUID）——旧键 (agent,
+// stem) 的「会话文件名唯一」假设仅对主会话成立，子代理文件名 agent-<hex> 实测
+// 全局唯一，父域键是防御性投资（同名不串扰）且使断点恢复语义自明（恢复键全取
+// 账本行内字段，零推导）。
 type harvestKey struct {
 	agent string
+	sid   string // 父域 sid：主会话恒空串；子代理文件=行内 sessionId（父会话）
 	stem  string
 }
 
@@ -221,16 +232,25 @@ type HarvestState struct {
 	titles   map[harvestKey]string
 	cwds     map[harvestKey]string
 	msgSeen  map[harvestKey]map[string]bool
+	// subParents 子代理文件路径 → 已解析父 sid 的记忆（票01：每文件只窥探
+	// 一次行内 sessionId；解析失败的文件不记忆，下轮重试——首行可能尚未落盘）。
+	subParents map[string]string
 }
 
 // NewHarvestState 从 usage 流水恢复偏移/标题/项目（读失败 → 从零采，重复风险接受）。
+//
+// 恢复键零推导（票01）：复合键三成分全部取自账本行内字段——agent 公共字段、
+// session_id（子代理行=父 sid）、subagent 标记字段（=stem）；旧账本无标记字段
+// （或主会话行的空串）按主会话键恢复：stem 以 session_id 充（CC 主转录
+// stem=UUID=session_id，历史语义向后兼容）。
 func NewHarvestState(a *accounts.Accounts) *HarvestState {
 	h := &HarvestState{
-		accounts: a,
-		offsets:  map[harvestKey]int64{},
-		titles:   map[harvestKey]string{},
-		cwds:     map[harvestKey]string{},
-		msgSeen:  map[harvestKey]map[string]bool{},
+		accounts:   a,
+		offsets:    map[harvestKey]int64{},
+		titles:     map[harvestKey]string{},
+		cwds:       map[harvestKey]string{},
+		msgSeen:    map[harvestKey]map[string]bool{},
+		subParents: map[string]string{},
 	}
 	var entries []map[string]any
 	if a != nil {
@@ -239,7 +259,13 @@ func NewHarvestState(a *accounts.Accounts) *HarvestState {
 	for _, e := range entries {
 		agent, _ := e["agent"].(string)
 		sid, _ := e["session_id"].(string)
-		key := harvestKey{agent: agent, stem: sid}
+		sub, _ := e["subagent"].(string) // 缺键/空串=主会话行（旧账本兼容）
+		var key harvestKey
+		if sub != "" {
+			key = harvestKey{agent: agent, sid: sid, stem: sub}
+		} else {
+			key = harvestKey{agent: agent, stem: sid} // 主会话键：session_id 充 stem
+		}
 		off := ledgerOffset(e["offset"]) // int(e.get("offset") or 0)
 		existing, ok := h.offsets[key]
 		if !ok {
@@ -293,7 +319,81 @@ func pathStem(p string) string {
 // 残行（无换行结尾）整段留待下一轮；文件打不开返回空、不推进偏移；
 // 偏移先推进后返回（at-most-once）。
 func (h *HarvestState) MaybeHarvest(path string, size int64, agent string) []Row {
-	key := harvestKey{agent: agent, stem: pathStem(path)}
+	return h.readNew(path, size, harvestKey{agent: agent, stem: pathStem(path)})
+}
+
+// MaybeHarvestSubagent 子代理转录采集（票01/ADR-0008）：父 sid 从行内 sessionId
+// 取（勿只靠路径推导，peekSessionID 优先、路径剥离兜底），状态键=父域复合键
+// (agent, 父sid, stem)；出行带 Subagent=stem、SessionID=父 sid。首见语义与主
+// 转录一致：从 offset 0 全量回填，不跳尾。
+func (h *HarvestState) MaybeHarvestSubagent(path string, size int64, agent string) []Row {
+	stem := pathStem(path)
+	parent := h.subagentParent(path)
+	if parent == "" {
+		return nil // 父 sid 解析不出（本轮不采，下轮重试）
+	}
+	rows := h.readNew(path, size, harvestKey{agent: agent, sid: parent, stem: stem})
+	for i := range rows {
+		rows[i].Subagent = stem
+		rows[i].SessionID = parent
+	}
+	return rows
+}
+
+// subagentParent 解析子代理文件的父会话 sid：行内 sessionId 优先，路径剥离
+// 兜底；解析结果按路径记忆。失败返回空串。
+func (h *HarvestState) subagentParent(path string) string {
+	if parent, ok := h.subParents[path]; ok {
+		return parent
+	}
+	parent := peekSessionID(path)
+	if parent == "" {
+		parent = parentSidFromPath(path)
+	}
+	if parent == "" {
+		return ""
+	}
+	h.subParents[path] = parent
+	return parent
+}
+
+// peekSessionID 读文件头部找第一条带 sessionId 的记录（子代理转录首行即含父
+// 会话 sid——t32 实测样例；64KB 覆盖富首行绰绰有余）。打不开/无 → 空串。
+func peekSessionID(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	head := make([]byte, 64*1024)
+	n, rerr := f.ReadAt(head, 0)
+	if rerr != nil && !errors.Is(rerr, io.EOF) {
+		return ""
+	}
+	for _, line := range strings.Split(string(head[:n]), "\n") {
+		rec, ok := jsonl.DecodeDict(line)
+		if !ok {
+			continue
+		}
+		if v, ok := rec["sessionId"].(string); ok && jsonl.Truthy(v) {
+			return v
+		}
+	}
+	return ""
+}
+
+// parentSidFromPath 路径剥离兜底：.../<父sid>/subagents/<stem>.jsonl → <父sid>
+// （父转录为同目录兄弟文件 <父sid>.jsonl 的实测布局）。
+func parentSidFromPath(path string) string {
+	if filepath.Base(filepath.Dir(path)) != "subagents" {
+		return ""
+	}
+	return filepath.Base(filepath.Dir(filepath.Dir(path)))
+}
+
+// readNew 键就位后的增量尾读（MaybeHarvest/MaybeHarvestSubagent 共用体）：
+// 偏移推进、残行扣留、去重与 title/project 携带全在此。
+func (h *HarvestState) readNew(path string, size int64, key harvestKey) []Row {
 	offset, ok := h.offsets[key]
 	if !ok {
 		offset = 0
