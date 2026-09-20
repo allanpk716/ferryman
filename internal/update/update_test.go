@@ -14,9 +14,10 @@ import (
 
 // fakeRel 一条 release 的造数(tag、预发布标记、资产字节)。
 type fakeRel struct {
-	tag   string
-	pre   bool
-	bytes []byte
+	tag        string
+	pre        bool
+	bytes      []byte
+	corruptSha bool // 票05:伺服坏 .sha256(校验失败拒替换路径)
 }
 
 // fakeGHMux 伪 GitHub 路由:latest 端点实现 GitHub 语义——排除 prerelease
@@ -59,6 +60,10 @@ func fakeGHMux(rels []fakeRel) *http.ServeMux {
 		case assetName:
 			_, _ = w.Write(r.bytes)
 		case assetName + ".sha256":
+			if r.corruptSha { // 坏摘要:64 位合法十六进制但与资产不符
+				fmt.Fprintf(w, "%064x  %s\n", 1, assetName)
+				return
+			}
 			fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(r.bytes), assetName)
 		default:
 			http.NotFound(w, nil)
@@ -249,7 +254,7 @@ func TestParseSemverCompare(t *testing.T) {
 		want int // Compare(a,b) 的符号
 	}{
 		{"v1.2.3", "v1.2.3", 0},
-		{"v1.2.3", "v1.2.3-rc.1", 1},  // 正式 > 预发布
+		{"v1.2.3", "v1.2.3-rc.1", 1}, // 正式 > 预发布
 		{"v1.2.3-rc.2", "v1.2.3-rc.1", 1},
 		{"v1.2.3-1", "v1.2.3-rc", -1}, // 数字段 < 字母段
 		{"v0.2.0", "v0.1.9", 1},

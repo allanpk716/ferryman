@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -121,16 +122,39 @@ func TestPanelMuxAPIVersion(t *testing.T) {
 	}
 }
 
-// TestCmdUpdate update 子命令（票03 只读路径）：无 --check = 升级执行器尚未
-// 接线（票05），诚实退 1；多余位置参数退 2。--check 的联网行为在 internal/update
-// 里用 httptest 全覆盖，这里只测分发边界，不外呼。
+// TestCmdUpdate update 子命令（票03 只读路径 + 票05 执行路径）：无 --check /
+// --supervise 都走监督者执行（stub 注入缝断言，不真升级）；--supervise 行为与
+// 无参一致（规格 §C 统一监督者）；多余位置参数退 2。--check 的联网行为在
+// internal/update 里用 httptest 全覆盖，这里只测分发边界，不外呼。
 func TestCmdUpdate(t *testing.T) {
-	var buf bytes.Buffer
-	if code := cmdUpdate(nil, &buf); code != 1 {
-		t.Fatalf("无 --check 退出码 = %d, want 1（执行器票05 才接线）", code)
+	orig := runUpdateExecute
+	defer func() { runUpdateExecute = orig }()
+
+	var gotSpec string
+	var gotPre bool
+	var calls int
+	runUpdateExecute = func(spec string, pre bool, _ io.Writer) int {
+		calls++
+		gotSpec, gotPre = spec, pre
+		return 0
 	}
-	if out := buf.String(); !strings.Contains(out, "升级执行器尚未接线") {
-		t.Fatalf("无 --check 输出 = %q, want 含「升级执行器尚未接线」", out)
+
+	// 无 --check = 执行（顺带传显式版本与 prerelease）
+	var buf bytes.Buffer
+	if code := cmdUpdate([]string{"v0.2.0", "--prerelease"}, &buf); code != 0 {
+		t.Fatalf("执行路径退出码 = %d, want 0（stub）", code)
+	}
+	if calls != 1 || gotSpec != "v0.2.0" || !gotPre {
+		t.Fatalf("执行路径参数透传: calls=%d spec=%q pre=%v", calls, gotSpec, gotPre)
+	}
+
+	// --supervise 内部旗标：行为与无参一致（同走执行路径）
+	calls = 0
+	if code := cmdUpdate([]string{"--supervise"}, &buf); code != 0 {
+		t.Fatalf("--supervise 退出码 = %d, want 0（stub）", code)
+	}
+	if calls != 1 || gotSpec != "" {
+		t.Fatalf("--supervise 应同无参走执行路径: calls=%d spec=%q", calls, gotSpec)
 	}
 
 	buf.Reset()

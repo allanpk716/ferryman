@@ -6,8 +6,9 @@
 //	ferryman serve               # 同上（点火脚本 start-daemon.cmd 调它）
 //	ferryman doctor              # 一键体检
 //	ferryman version             # 版本号（dev = 非 release 构建）
-//	ferryman update --check [vX.Y.Z] [--prerelease]   # 检查更新（只报告不动手；
-//	                                   # 显式版本支持降级；执行器票05 接线）
+//	ferryman update [--check] [vX.Y.Z] [--prerelease]  # 无 --check = 执行升级
+//	                                   # （监督者：下载/校验/换装/重启/回滚）；--check
+//	                                   # 只报告不动手；显式版本支持降级
 //	ferryman install-cc [--events E1,E2,…]
 //	ferryman install-ccswitch
 //	ferryman install-codex [--events E1,E2,…]
@@ -47,10 +48,12 @@ import (
 
 	"github.com/getlantern/systray"
 
+	"ferryman/internal/config"
 	"ferryman/internal/cutover"
 	"ferryman/internal/daemon"
 	"ferryman/internal/installer"
 	"ferryman/internal/mcp"
+	"ferryman/internal/notify"
 	"ferryman/internal/report"
 	"ferryman/internal/update"
 	"ferryman/internal/viewer/demo"
@@ -468,21 +471,24 @@ func cmdVersion(args []string, w io.Writer) int {
 	return 0
 }
 
-// ---- update（发布链票03：--check 只读检查；升级执行器票05 接线） ----
+// ---- update（发布链票03 --check 只读；票05 监督者执行） ----
 
 // cmdUpdate `ferryman update`：--check 解析目标版本并与当前版本比较（已是最新/
 // 发现新版/显式降级注明；dev 等非 semver 如实提示无从比较），只报告不动手
-// （D6：升级纯手动；D8：网络走环境代理；D11：固定产物名）。无 --check 时
-// 升级执行器尚未接线，如实提示并退 1——不装已完成（票05）。
+// （D6：升级纯手动；D8：网络走环境代理；D11：固定产物名）。无 --check =
+// 监督者执行（票05：锁/journal/停旧/原子换装/校验/回滚/崩溃恢复）；--supervise
+// 为托盘派生用的内部旗标（detached 隐藏 spawn），行为与无参一致（规格 §C
+// 统一监督者）——两入口收敛同一 runUpdateExecute。
 func cmdUpdate(args []string, w io.Writer) int {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	check := fs.Bool("check", false, "只检查并报告，不下载不换文件")
 	pre := fs.Bool("prerelease", false, "检查纳入预发布版（rc/beta；缺省只看稳定版）")
-	if err := fs.Parse(args); err != nil {
+	_ = fs.Bool("supervise", false, "内部旗标：托盘隐藏派生用，行为与无参一致")
+	if err := fs.Parse(orderFlagsFirst(args)); err != nil {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "用法: ferryman update --check [vX.Y.Z] [--prerelease]")
+		fmt.Fprintln(os.Stderr, "用法: ferryman update [--check] [vX.Y.Z] [--prerelease]")
 		return 2
 	}
 	spec := ""
@@ -490,8 +496,7 @@ func cmdUpdate(args []string, w io.Writer) int {
 		spec = fs.Arg(0)
 	}
 	if !*check {
-		fmt.Fprintln(w, "升级执行器尚未接线（票05）：当前只支持 ferryman update --check")
-		return 1
+		return runUpdateExecute(spec, *pre, w)
 	}
 	out, err := update.Check(update.Endpoints{}, version, spec, *pre)
 	if err != nil {
@@ -500,6 +505,63 @@ func cmdUpdate(args []string, w io.Writer) int {
 	}
 	fmt.Fprintln(w, out)
 	return 0
+}
+
+// orderFlagsFirst 旗标前置规整：Go flag 在首个位置参数后停止解析，
+// `update v0.2.0 --prerelease` 原样 Parse 会把 --prerelease 当多余位置参数——
+// 重排后任意顺序可用。'-‘ 前缀视作旗标（负版本号不存在，无误伤面）。
+func orderFlagsFirst(args []string) []string {
+	var flags, pos []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	return append(flags, pos...)
+}
+
+// runUpdateExecute 监督者执行路径（var 形 = main_test 注入缝，不真升级）。
+// 装配：config 可载则用其 DataDir/守护口，载不动回落缺省（~/ferryman、7311）
+// ——升级不应因配置坏而不可用。结果 stdout 报告 + notify 通道推送（seam F，
+// 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）。
+var runUpdateExecute = func(spec string, pre bool, w io.Writer) int {
+	dataDir, port := "", update.DefaultDaemonPort
+	var cfg *config.Config
+	if c, err := config.Load("", false); err == nil {
+		cfg = c
+		dataDir = c.DataDir()
+		if c.Server.Port != 0 {
+			port = c.Server.Port
+		}
+	}
+	res := update.NewSupervisor(update.Config{
+		DataDir:    dataDir,
+		Port:       port,
+		Current:    version,
+		Spec:       spec,
+		Prerelease: pre,
+	}).Run()
+	var summary string
+	switch {
+	case res.Success:
+		summary = fmt.Sprintf("升级完成：%s → %s", res.From, res.To)
+	case res.RolledBack:
+		summary = fmt.Sprintf("升级失败（%v），已回滚并恢复 %s 服务", res.Err, res.From)
+	case res.RollbackErr != "":
+		summary = fmt.Sprintf("升级失败且回滚未成：%v；回滚问题：%s——请人工检查", res.Err, res.RollbackErr)
+	default:
+		summary = fmt.Sprintf("升级失败：%v（现场未动/已恢复）", res.Err)
+	}
+	fmt.Fprintln(w, summary)
+	if cfg != nil {
+		notify.NotifyAlert("Ferryman 升级", summary, cfg) // 旁路尽力而为
+	}
+	if res.Success {
+		return 0
+	}
+	return 1
 }
 
 // ---- mcp（票04：agent 面 stdio MCP server） ----
