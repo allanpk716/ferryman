@@ -236,6 +236,16 @@ _Avoid_: 假数据（贬义且不准——合成但有黄金数依据）
 时序页的策略计算器卡片：给定价格表与实测 TTL 和该会话前缀 S，对假设窗现算 τ、首跳时机、等待上限、最多跳数、单跳与全程成本上限——是"若开启会怎样"的推演，不是已发生的事实。
 _Avoid_: 心跳配置（推演不是配置；真执行器仍受三道授权门槛约束）
 
+### agent 面（MCP 只读起步——ADR-0009）
+
+**agent 面（agent surface）**：
+Ferryman 暴露给 AI agent 的 MCP 工具面；只读起步，一切读经 daemon 端点，MCP 进程永不直读台账/账本/交接库文件；能力按四格禁区划分，不变量在 daemon 侧代码强制、不写在 agent 提示词。
+_Avoid_: API（太泛）、控制接口（v1 无控制）
+
+**降闸禁手（no gate step-down via agent）**：
+enforce→observe/off 的闸门降级对 agent 面永不可执行，只能人手改配置或走 CLI；agent 对闸门只有查询与升级建议上报；合法单次绕过只有逃生门两条。
+_Avoid_: 权限系统（没有角色与授权链，只有单向禁令）
+
 ### 迁移收编（Go 一次性替换）
 
 **公式单源（formula single source）**：
