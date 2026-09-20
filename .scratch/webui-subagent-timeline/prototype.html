@@ -1,0 +1,460 @@
+<!doctype html>
+<!--
+  PROTOTYPE（一次性原型，回答完 Q4 就删或归档 throwaway 分支）
+  问题：时序页的主会话请求与子代理请求怎么同图呈现？
+  三变体（URL ?variant= 切换，或底部条/←→键）：
+    A 同轨双色 —— 零布局改动，子代理柱半透明+虚线紫描边+▼角标
+    B 双泳道   —— 图区分上下两道（主会话/子代理），共用时间轴，各自 y 轴
+    C 子代理甘特 —— 主图不动，下方每个子代理一行甘特条（跨度+请求刻点+尾标）
+  数据：合成（真实账本还没有子代理 usage 行——本原型就是在决定要不要采）。
+  形状仿 cmd/ferryman/web/app.js 的时序页：三段堆叠柱（绿缓存读/红新输入/蓝输出）、
+  等待窗浅蓝带、断缓存斜纹、TTL 绿带、顶部事件符号行。暗色 #111 主题，零外部资源。
+-->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>原型：时序页主/子代理呈现（throwaway）</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; color: #ddd;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #toolbar { position: sticky; top: 0; z-index: 10; display: flex;
+    justify-content: space-between; align-items: baseline; gap: 12px;
+    padding: 8px 16px; background: #111; border-bottom: 1px solid #2a2a2a; }
+  #toolbar b { font-size: 14px; color: #fff; font-weight: 600; }
+  #toolbar .note { font-size: 12px; color: #888; }
+  #app { padding: 10px 16px 90px; max-width: 1240px; }
+  a { color: #6ea8fe; text-decoration: none; }
+  .caption { padding: 8px 12px; margin: 8px 0; border-left: 3px solid #ba68c8;
+    background: #1a1a1a; color: #ccc; font-size: 12.5px; }
+  .cards { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .card { background: #1a1a1a; border: 1px solid #262626; border-radius: 6px;
+    padding: 8px 12px; min-width: 130px; }
+  .card .k { font-size: 11px; color: #999; }
+  .card .v { font-size: 17px; font-weight: 600; color: #fff; margin: 2px 0; }
+  .card .s { font-size: 11px; color: #888; }
+  .card .v.sub { color: #ce93d8; }
+  .legend { display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    margin: 6px 0; font-size: 12px; color: #aaa; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px;
+    border: 1px solid #333; border-radius: 999px; cursor: pointer; user-select: none; }
+  .chip.off { opacity: .4; }
+  .chip i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  #wrap { position: relative; background: #161616; border: 1px solid #262626;
+    border-radius: 8px; padding: 6px 4px 2px; }
+  #tip { position: absolute; z-index: 20; background: #222; border: 1px solid #444;
+    border-radius: 6px; padding: 7px 10px; font-size: 12px; pointer-events: none;
+    max-width: 300px; box-shadow: 0 3px 14px rgba(0,0,0,.5); }
+  #tip .t { color: #fff; font-weight: 600; }
+  #tip .r { display: flex; justify-content: space-between; gap: 14px; color: #bbb; }
+  #tip .r b { color: #ddd; font-weight: 500; }
+  #gantt { margin-top: 10px; background: #161616; border: 1px solid #262626;
+    border-radius: 8px; padding: 10px 12px; }
+  #gantt h4 { margin: 0 0 8px; font-size: 12.5px; color: #aaa; font-weight: 600; }
+  .grow { display: flex; align-items: center; gap: 8px; margin: 7px 0; cursor: pointer; }
+  .grow:hover .gname { color: #fff; }
+  .gname { width: 88px; font-size: 12px; color: #999; text-align: right; flex: none; }
+  .gtrack { position: relative; flex: 1; height: 20px; background: #1e1e1e;
+    border-radius: 4px; }
+  .gbar { position: absolute; top: 3px; height: 14px; border-radius: 4px; }
+  .gtick { position: absolute; top: 5px; width: 2.5px; height: 10px;
+    background: rgba(17,17,17,.55); border-radius: 1px; }
+  .gmeta { width: 150px; font-size: 11.5px; color: #888; flex: none; }
+  .grow.sel .gname { color: #fff; font-weight: 600; }
+  #proto-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px;
+    z-index: 50; display: flex; align-items: center; gap: 10px;
+    background: #2b2b2b; border: 1px solid #666; border-radius: 999px;
+    padding: 7px 14px; box-shadow: 0 4px 18px rgba(0,0,0,.6); color: #eee; }
+  #proto-bar button { background: #444; color: #eee; border: 0; border-radius: 999px;
+    width: 28px; height: 28px; cursor: pointer; font-size: 14px; }
+  #proto-bar button:hover { background: #5a5a5a; }
+  #proto-bar .lbl { font-size: 13px; font-weight: 600; min-width: 210px; text-align: center; }
+  #proto-bar .hint { font-size: 11px; color: #999; }
+  .evnote { font-size: 11px; color: #777; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <div><a href="#" onclick="return false">← 返回会话列表</a>　<b>时序页原型 · 主/子代理呈现</b></div>
+  <div class="note">合成数据（一场 CC 会话：派 3 个子代理 → 等待窗 6.5 分 → 恢复 → 断缓存 → 交接）· 本页为一次性原型</div>
+</div>
+<div id="app">
+  <div class="caption" id="caption"></div>
+  <div class="cards" id="cards"></div>
+  <div class="legend" id="legend"></div>
+  <div id="wrap"><svg id="svg" width="1204" height="380" viewBox="0 0 1204 380"></svg>
+    <div id="tip" hidden></div></div>
+  <div id="gantt" hidden></div>
+  <div class="evnote">事件行：↑注入 ●心跳(命中) ◯强续 ⚑交接 ✕拦截 ｜ 浅蓝带=等待窗（等子代理）｜ 斜纹=断缓存区</div>
+</div>
+
+<div id="proto-bar">
+  <button id="pv" aria-label="上一变体">◀</button>
+  <span class="lbl" id="plbl"></span>
+  <button id="nx" aria-label="下一变体">▶</button>
+  <span class="hint">←/→ 键切换 · ?variant=A/B/C</span>
+</div>
+
+<script>
+// ---------- 合成数据（秒，相对 10:00:00） ----------
+var TTL = 600;
+var REQ = [ // 主会话请求 {t, in, cr, cc, out}
+  { t: 30,   in: 2100,  cr: 0,     cc: 0,    out: 900  },
+  { t: 210,  in: 1800,  cr: 62000, cc: 2100, out: 2600 },
+  { t: 420,  in: 2400,  cr: 71000, cc: 2400, out: 3100 },
+  { t: 600,  in: 1900,  cr: 83000, cc: 1900, out: 4700 },
+  { t: 1170, in: 2200,  cr: 86000, cc: 2200, out: 5200 }, // 窗后恢复（TTL 内存活）
+  { t: 1380, in: 2600,  cr: 92000, cc: 2600, out: 3900 },
+  { t: 2520, in: 95000, cr: 0,     cc: 0,    out: 1800 }, // 断缓存后全款重付
+];
+var SUB = [ // 子代理请求 {t, ag, in, cr, cc, out} —— 第一票入账后账本里会有的形状
+  { t: 780,  ag: 'agent-1', in: 1500, cr: 0,     cc: 1500, out: 8000  },
+  { t: 810,  ag: 'agent-2', in: 1800, cr: 0,     cc: 1800, out: 15000 },
+  { t: 850,  ag: 'agent-3', in: 900,  cr: 0,     cc: 900,  out: 3000  },
+  { t: 930,  ag: 'agent-3', in: 500,  cr: 4000,  cc: 500,  out: 2500  },
+  { t: 960,  ag: 'agent-1', in: 600,  cr: 15000, cc: 600,  out: 12000 },
+  { t: 900,  ag: 'agent-2', in: 900,  cr: 14000, cc: 900,  out: 14000 },
+  { t: 1080, ag: 'agent-2', in: 700,  cr: 13000, cc: 700,  out: 16000 },
+];
+var WIN = [ { o: 750, c: 1140, reason: 'subagents_done', prefix: 88000 } ];
+var EV = [
+  { t: 25,   k: 'inject', x: '2.1k' },
+  { t: 990,  k: 'beat',   x: 'hit' },
+  { t: 2400, k: 'handoff' },
+  { t: 2430, k: 'bypass' },
+  { t: 4800, k: 'block',  x: '闲置 56 分' },
+];
+var FULL = 4950;
+var AGC = { 'agent-1': '#ba68c8', 'agent-2': '#9575cd', 'agent-3': '#7986cb' };
+
+// ---------- 小工具 ----------
+function hms(t) { var s = 36000 + t; var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = Math.floor(s % 60);
+  return h + ':' + String(m).padStart(2, '0') + ':' + String(x).padStart(2, '0'); }
+function dur(t) { var m = Math.floor(t / 60), s = Math.round(t % 60);
+  return m ? m + '分' + (s ? s + '秒' : '') : s + '秒'; }
+function k(n) { return n >= 10000 ? (n / 1000).toFixed(0) + 'k' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+function el(tag, attrs) { var e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  if (attrs) for (var a in attrs) e.setAttribute(a, attrs[a]); return e; }
+function tok(r) { return r.in + r.cr + r.cc + r.out; }
+function sum(xs, f) { return xs.reduce(function (s, x) { return s + f(x); }, 0); }
+
+// ---------- 统计（三变体共用，surface the state） ----------
+function cards() {
+  var mOut = sum(REQ, function (r) { return r.out; }), sOut = sum(SUB, function (r) { return r.out; });
+  var mTok = sum(REQ, tok), sTok = sum(SUB, tok);
+  var share = Math.round(sOut / (sOut + mOut) * 100);
+  var c = document.getElementById('cards'); c.textContent = '';
+  [['请求数', REQ.length + ' + ' + SUB.length + '子', '主会话 + 子代理'],
+   ['总 tokens（主）', k(mTok), '输入+缓存读+建缓存+输出'],
+   ['总 tokens（子）', k(sTok), '子代理 7 条请求 · 3 个'],
+   ['输出占比（子）', share + '%', '主 ' + k(mOut) + ' / 子 ' + k(sOut) + ' · e0c 实测均值 47%'],
+   ['等待窗', '1 · ' + dur(WIN[0].c - WIN[0].o), '关闭原因 subagents_done'],
+   ['断缓存', '1 次', '等待后强续 · 全款重付 95k']
+  ].forEach(function (d) {
+    var e = document.createElement('div'); e.className = 'card';
+    e.innerHTML = '<div class="k"></div><div class="v' + (d[0].indexOf('子') >= 0 ? ' sub' : '') + '"></div><div class="s"></div>';
+    e.children[0].textContent = d[0]; e.children[1].textContent = d[1]; e.children[2].textContent = d[2];
+    c.appendChild(e);
+  });
+}
+
+// ---------- 图例 ----------
+var showSub = true;
+function legend() {
+  var l = document.getElementById('legend'); l.textContent = '';
+  [['#4caf50', '缓存读'], ['#e57373', '新输入+建缓存'], ['#64b5f6', '模型输出']].forEach(function (s) {
+    var c = document.createElement('span'); c.className = 'chip';
+    c.innerHTML = '<i style="background:' + s[0] + '"></i>';
+    c.appendChild(document.createTextNode(s[1])); l.appendChild(c);
+  });
+  var sc = document.createElement('span'); sc.className = 'chip' + (showSub ? '' : ' off');
+  sc.innerHTML = '<i style="background:#ba68c8"></i>';
+  sc.appendChild(document.createTextNode('子代理请求' + (showSub ? '' : '（已隐藏）')));
+  sc.title = '点击显示/隐藏子代理请求（仅 A/B 变体有效）';
+  sc.onclick = function () { showSub = !showSub; legend(); render(); };
+  l.appendChild(sc);
+}
+
+// ---------- tooltip ----------
+var tip = document.getElementById('tip'), wrap = document.getElementById('wrap');
+function hover(target, title, rows) {
+  target.addEventListener('mousemove', function (ev) {
+    tip.hidden = false;
+    tip.innerHTML = '<div class="t"></div>' + rows.map(function () { return '<div class="r"><span></span><b></b></div>'; }).join('');
+    tip.firstChild.textContent = title;
+    var rs = tip.querySelectorAll('.r');
+    rows.forEach(function (r, i) { rs[i].children[0].textContent = r[0]; rs[i].children[1].textContent = r[1]; });
+    var wr = wrap.getBoundingClientRect();
+    var left = ev.clientX - wr.left + 14, top = ev.clientY - wr.top + 12;
+    if (left + tip.offsetWidth > wr.width - 6) left = ev.clientX - wr.left - tip.offsetWidth - 14;
+    if (top + tip.offsetHeight > wr.height - 6) top = ev.clientY - wr.top - tip.offsetHeight - 12;
+    tip.style.left = Math.max(0, left) + 'px'; tip.style.top = Math.max(0, top) + 'px';
+  });
+  target.addEventListener('mouseleave', function () { tip.hidden = true; });
+}
+
+// ---------- SVG 骨架（三变体共用的时间轴/事件行/窗口带/斜纹/TTL带） ----------
+var X0 = 46, X1 = 1190;
+function xOf(t) { return X0 + t / FULL * (X1 - X0); }
+function axis(svg, yBot) {
+  [0, .25, .5, .75, 1].forEach(function (f) {
+    var y = 26 + f * (yBot - 26);
+    svg.appendChild(el('line', { x1: X0, x2: X1, y1: y, y2: y, stroke: '#232323' }));
+  });
+  for (var t = 0; t <= FULL; t += 600) {
+    svg.appendChild(el('line', { x1: xOf(t), x2: xOf(t), y1: yBot, y2: yBot + 4, stroke: '#555' }));
+    var lb = el('text', { x: xOf(t), y: yBot + 17, 'font-size': '10.5', fill: '#888', 'text-anchor': 'middle' });
+    lb.textContent = hms(t); svg.appendChild(lb);
+  }
+}
+function events(svg, yTop) {
+  var SYM = { inject: ['↑', '#4dd0e1'], beat: ['●', '#4caf50'], handoff: ['⚑', '#ffb74d'],
+              bypass: ['◯', '#aaa'], block: ['✕', '#e57373'] };
+  EV.forEach(function (e) {
+    var s = el('text', { x: xOf(e.t), y: yTop, 'font-size': '13', 'text-anchor': 'middle',
+      fill: SYM[e.k][1], cursor: 'pointer' });
+    s.textContent = SYM[e.k][0]; svg.appendChild(s);
+    hover(s, SYM[e.k][0] + ' ' + e.k, [['时间', hms(e.t)]].concat(e.x ? [['备注', e.x]] : []));
+  });
+}
+function windows(svg, yTop, yBot) {
+  WIN.forEach(function (w) {
+    var r = el('rect', { x: xOf(w.o), y: yTop, width: xOf(w.c) - xOf(w.o), height: yBot - yTop,
+      fill: 'rgba(100,181,246,0.07)', cursor: 'pointer' });
+    svg.appendChild(r);
+    var lb = el('text', { x: (xOf(w.o) + xOf(w.c)) / 2, y: yTop + 30, 'text-anchor': 'middle',
+      'font-size': '10', fill: '#7aa', 'pointer-events': 'none' });
+    lb.textContent = '等子代理 ' + dur(w.c - w.o); svg.appendChild(lb);
+    hover(r, '子代理等待窗口', [['等待', dur(w.c - w.o)], ['关闭原因', w.reason], ['当时前缀', k(w.prefix)]]);
+  });
+}
+function deadzone(svg, yTop, yBot) {
+  var z1 = REQ[5].t + TTL, z2 = REQ[6].t;
+  var defs = el('defs'); var pat = el('pattern', { id: 'dead', width: '8', height: '8',
+    patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' });
+  pat.appendChild(el('rect', { width: '8', height: '8', fill: 'rgba(229,115,115,0.07)' }));
+  pat.appendChild(el('line', { x1: 0, y1: 0, x2: 0, y2: '8', stroke: 'rgba(229,115,115,0.38)', 'stroke-width': '2' }));
+  defs.appendChild(pat); svg.appendChild(defs);
+  var r = el('rect', { x: xOf(z1), y: yTop, width: xOf(z2) - xOf(z1), height: yBot - yTop,
+    fill: 'url(#dead)', stroke: 'rgba(229,115,115,0.55)', 'stroke-width': '0.8', cursor: 'pointer' });
+  svg.appendChild(r);
+  var lb = el('text', { x: (xOf(z1) + xOf(z2)) / 2, y: yTop + 14, 'text-anchor': 'middle',
+    'font-size': '10.5', fill: '#d99', 'pointer-events': 'none' });
+  lb.textContent = '缓存断 ' + dur(z2 - z1); svg.appendChild(lb);
+  hover(r, '断缓存区', [['时段', hms(z1) + ' ~ ' + hms(z2)], ['断了', dur(z2 - z1)], ['下一条', '#7 全款重付 95k']]);
+}
+function ttlband(svg, y) {
+  var marks = REQ.map(function (r) { return r.t; }).concat(EV.filter(function (e) { return e.k === 'beat'; }).map(function (e) { return e.t; }));
+  var any = false;
+  marks.forEach(function (t) {
+    var x1 = Math.max(xOf(t), X0), x2 = Math.min(xOf(t + TTL), X1);
+    if (x2 <= x1) return;
+    svg.appendChild(el('rect', { x: x1, y: y, width: x2 - x1, height: 8, fill: 'rgba(76,175,80,0.22)' }));
+    any = true;
+  });
+  if (any) { var lb = el('text', { x: X0 + 4, y: y + 16, 'font-size': '10', fill: '#7fa97f' });
+    lb.textContent = '绿带=缓存存活（每条请求续 ' + TTL + ' 秒）'; svg.appendChild(lb); }
+}
+// 三段堆叠柱（绿缓存读/红新输入+建缓存/蓝输出）
+function bar(svg, r, x, w, yTop, yBot, ym, sub) {
+  function yOf(v) { return yBot - v / ym * (yBot - yTop); }
+  var g = el('g', { cursor: 'pointer', opacity: sub ? 0.6 : 1 });
+  function seg(y, h, c) { if (h > 0.5) g.appendChild(el('rect', { x: x - w / 2, y: y, width: w, height: h, fill: c })); }
+  var yG = yOf(r.cr), yR = yOf(r.cr + r.in + r.cc), yB = yOf(r.cr + r.in + r.cc + r.out);
+  seg(yG, yBot - yG, '#4caf50'); seg(yR, yG - yR, '#e57373'); seg(yB, yR - yB, '#64b5f6');
+  if (sub) { // 子代理柱：虚线紫描边 + ▼ 角标（A 变体在轨内画）
+    g.appendChild(el('rect', { x: x - w / 2 - 1.5, y: Math.min(yB - 1.5, yBot - 6), width: w + 3,
+      height: yBot - Math.min(yB - 1.5, yBot - 6), fill: 'none', stroke: '#ba68c8',
+      'stroke-width': '1.3', 'stroke-dasharray': '3 2', 'pointer-events': 'none' }));
+    var mk = el('text', { x: x, y: yB - 5, 'font-size': '9.5', 'text-anchor': 'middle', fill: '#ba68c8', 'pointer-events': 'none' });
+    mk.textContent = '▼'; g.appendChild(mk);
+  }
+  svg.appendChild(g);
+  return g;
+}
+
+// ---------- 变体 A：同轨双色 ----------
+function renderA(svg) {
+  var yTop = 48, yBot = 300;
+  axis(svg, yBot);
+  deadzone(svg, yTop, yBot); windows(svg, yTop, yBot);
+  var ym = 0; REQ.concat(SUB).forEach(function (r) { ym = Math.max(ym, tok(r)); }); ym = Math.ceil(ym / 50000) * 50000;
+  REQ.forEach(function (r, i) {
+    var g = bar(svg, r, xOf(r.t), 14, yTop, yBot, ym, false);
+    hover(g, '请求 #' + (i + 1) + ' · 主会话', [['时间', hms(r.t)], ['缓存读', k(r.cr)], ['新输入+建缓存', k(r.in + r.cc)], ['输出', k(r.out)]]);
+  });
+  if (showSub) SUB.forEach(function (r, i) {
+    var g = bar(svg, r, xOf(r.t), 9, yTop, yBot, ym, true);
+    hover(g, '子代理 ' + r.ag + ' · 请求', [['时间', hms(r.t)], ['缓存读', k(r.cr)], ['新输入+建缓存', k(r.in + r.cc)], ['输出', k(r.out)]]);
+  });
+  events(svg, 22); ttlband(svg, yBot + 26);
+  var lb = el('text', { x: X0, y: yTop - 6, 'font-size': '10.5', fill: '#888' }); lb.textContent = 'tokens（主+子同轨，子=半透明紫虚线）'; svg.appendChild(lb);
+}
+
+// ---------- 变体 B：双泳道 ----------
+function renderB(svg) {
+  var yTop1 = 48, yBot1 = 208, yTop2 = 246, yBot2 = 330;
+  axis(svg, yBot2);
+  deadzone(svg, yTop1, yBot2); windows(svg, yTop1, yBot2);
+  svg.appendChild(el('line', { x1: X0, x2: X1, y1: (yBot1 + yTop2) / 2, y2: (yBot1 + yTop2) / 2, stroke: '#3a3a3a', 'stroke-dasharray': '2 4' }));
+  var ym1 = 0; REQ.forEach(function (r) { ym1 = Math.max(ym1, tok(r)); }); ym1 = Math.ceil(ym1 / 50000) * 50000;
+  REQ.forEach(function (r, i) {
+    var g = bar(svg, r, xOf(r.t), 14, yTop1, yBot1, ym1, false);
+    hover(g, '请求 #' + (i + 1) + ' · 主会话', [['时间', hms(r.t)], ['缓存读', k(r.cr)], ['新输入+建缓存', k(r.in + r.cc)], ['输出', k(r.out)]]);
+  });
+  var l1 = el('text', { x: X0, y: yTop1 - 6, 'font-size': '10.5', fill: '#9ab' }); l1.textContent = '主会话（7 请求）'; svg.appendChild(l1);
+  var l2 = el('text', { x: X0, y: yTop2 - 6, 'font-size': '10.5', fill: '#ba8' });
+  l2.textContent = '子代理（3 个 · 7 请求 · 独立 y 轴）'; svg.appendChild(l2);
+  if (showSub) {
+    var ym2 = 0; SUB.forEach(function (r) { ym2 = Math.max(ym2, tok(r)); }); ym2 = Math.ceil(ym2 / 5000) * 5000;
+    SUB.forEach(function (r) {
+      var g = bar(svg, r, xOf(r.t), 9, yTop2, yBot2, ym2, true);
+      hover(g, '子代理 ' + r.ag, [['时间', hms(r.t)], ['缓存读', k(r.cr)], ['新输入+建缓存', k(r.in + r.cc)], ['输出', k(r.out)]]);
+    });
+    [0, .5, 1].forEach(function (f) {
+      var y = yTop2 + f * (yBot2 - yTop2);
+      var lb = el('text', { x: X0 - 5, y: y + 4, 'font-size': '9.5', fill: '#777', 'text-anchor': 'end' });
+      lb.textContent = k((1 - f) * ym2); svg.appendChild(lb);
+    });
+  }
+  events(svg, 22); ttlband(svg, yBot2 + 26);
+}
+
+// ---------- 变体 C：主图 + 子代理甘特 ----------
+var selAg = null;
+function renderC(svg) {
+  var yTop = 48, yBot = 300;
+  axis(svg, yBot);
+  deadzone(svg, yTop, yBot); windows(svg, yTop, yBot);
+  var ym = 0; REQ.forEach(function (r) { ym = Math.max(ym, tok(r)); }); ym = Math.ceil(ym / 50000) * 50000;
+  REQ.forEach(function (r, i) {
+    var g = bar(svg, r, xOf(r.t), 14, yTop, yBot, ym, false);
+    hover(g, '请求 #' + (i + 1) + ' · 主会话', [['时间', hms(r.t)], ['缓存读', k(r.cr)], ['新输入+建缓存', k(r.in + r.cc)], ['输出', k(r.out)]]);
+  });
+  events(svg, 22); ttlband(svg, yBot + 26);
+  var lb = el('text', { x: X0, y: yTop - 6, 'font-size': '10.5', fill: '#888' }); lb.textContent = '主会话（子代理不进主图，见下方甘特）'; svg.appendChild(lb);
+  if (selAg) { // 选中子代理的跨度参考线贯穿主图
+    var rs = SUB.filter(function (r) { return r.ag === selAg; });
+    var lo = Math.min.apply(null, rs.map(function (r) { return r.t; })), hi = Math.max.apply(null, rs.map(function (r) { return r.t; }));
+    [lo, hi].forEach(function (t) {
+      svg.appendChild(el('line', { x1: xOf(t), x2: xOf(t), y1: yTop - 4, y2: yBot, stroke: AGC[selAg], 'stroke-dasharray': '4 3', 'stroke-width': '1.2' }));
+    });
+  }
+  // 甘特区
+  var gEl = document.getElementById('gantt'); gEl.hidden = false; gEl.textContent = '';
+  gEl.appendChild(document.createElement('h4')).textContent = '子代理甘特 · 每 agent 一行（条=首末请求跨度 · 刻点=每次请求 · 点击在主图打参考线）';
+  var agents = Object.keys(AGC);
+  agents.forEach(function (ag) {
+    var rs = SUB.filter(function (r) { return r.ag === ag; }).sort(function (a, b) { return a.t - b.t; });
+    var lo = rs[0].t, hi = rs[rs.length - 1].t, tk = sum(rs, tok);
+    var row = document.createElement('div'); row.className = 'grow' + (selAg === ag ? ' sel' : '');
+    var nm = document.createElement('span'); nm.className = 'gname'; nm.textContent = ag;
+    var tr = document.createElement('div'); tr.className = 'gtrack';
+    var barEl = document.createElement('div'); barEl.className = 'gbar';
+    barEl.style.left = (lo / FULL * 100) + '%'; barEl.style.width = Math.max(0.6, (hi - lo) / FULL * 100) + '%';
+    barEl.style.background = AGC[ag]; barEl.style.opacity = selAg && selAg !== ag ? 0.35 : 0.85;
+    tr.appendChild(barEl);
+    rs.forEach(function (r) {
+      var t = document.createElement('div'); t.className = 'gtick';
+      t.style.left = (r.t / FULL * 100) + '%'; barEl.parentNode.appendChild(t);
+      t.title = '子代理 ' + ag + ' · ' + hms(r.t) + ' · 输出 ' + k(r.out) + ' · 合计 ' + k(tok(r));
+    });
+    var mt = document.createElement('span'); mt.className = 'gmeta';
+    mt.textContent = k(tk) + ' tok · ' + dur(hi - lo) + ' · ' + rs.length + ' 请求';
+    row.appendChild(nm); row.appendChild(tr); row.appendChild(mt);
+    row.addEventListener('click', function () { selAg = selAg === ag ? null : ag; render(); });
+    gEl.appendChild(row);
+  });
+}
+
+// ---------- 变体 D：B 泳道 + C 甘特（组合定稿候选） ----------
+function renderD(svg) {
+  var yTop1 = 48, yBot1 = 196, yTop2 = 232, yBot2 = 312;
+  axis(svg, yBot2);
+  deadzone(svg, yTop1, yBot2); windows(svg, yTop1, yBot2);
+  svg.appendChild(el('line', { x1: X0, x2: X1, y1: (yBot1 + yTop2) / 2, y2: (yBot1 + yTop2) / 2, stroke: '#3a3a3a', 'stroke-dasharray': '2 4' }));
+  var ym1 = 0; REQ.forEach(function (r) { ym1 = Math.max(ym1, tok(r)); }); ym1 = Math.ceil(ym1 / 50000) * 50000;
+  REQ.forEach(function (r, i) {
+    var g = bar(svg, r, xOf(r.t), 14, yTop1, yBot1, ym1, false);
+    hover(g, '请求 #' + (i + 1) + ' · 主会话', [['时间', hms(r.t)], ['缓存读', k(r.cr)], ['新输入+建缓存', k(r.in + r.cc)], ['输出', k(r.out)]]);
+  });
+  var l1 = el('text', { x: X0, y: yTop1 - 6, 'font-size': '10.5', fill: '#9ab' }); l1.textContent = '主会话（子代理在跑时主会话也可能正常对话——本道始终可见）'; svg.appendChild(l1);
+  var l2 = el('text', { x: X0, y: yTop2 - 6, 'font-size': '10.5', fill: '#ba8' });
+  l2.textContent = '子代理合计（3 个 · 7 请求 · 独立 y 轴，逐个见下方甘特）'; svg.appendChild(l2);
+  if (showSub) {
+    var ym2 = 0; SUB.forEach(function (r) { ym2 = Math.max(ym2, tok(r)); }); ym2 = Math.ceil(ym2 / 5000) * 5000;
+    SUB.forEach(function (r) {
+      var g = bar(svg, r, xOf(r.t), 9, yTop2, yBot2, ym2, true);
+      hover(g, '子代理 ' + r.ag, [['时间', hms(r.t)], ['缓存读', k(r.cr)], ['新输入+建缓存', k(r.in + r.cc)], ['输出', k(r.out)]]);
+    });
+    [0, .5, 1].forEach(function (f) {
+      var y = yTop2 + f * (yBot2 - yTop2);
+      var lb = el('text', { x: X0 - 5, y: y + 4, 'font-size': '9.5', fill: '#777', 'text-anchor': 'end' });
+      lb.textContent = k((1 - f) * ym2); svg.appendChild(lb);
+    });
+  }
+  events(svg, 22); ttlband(svg, yBot2 + 26);
+  if (selAg) { // 参考线贯穿两道：选中 agent 的首末请求
+    var rs0 = SUB.filter(function (r) { return r.ag === selAg; });
+    var lo0 = Math.min.apply(null, rs0.map(function (r) { return r.t; })), hi0 = Math.max.apply(null, rs0.map(function (r) { return r.t; }));
+    [lo0, hi0].forEach(function (t) {
+      svg.appendChild(el('line', { x1: xOf(t), x2: xOf(t), y1: yTop1 - 4, y2: yBot2, stroke: AGC[selAg], 'stroke-dasharray': '4 3', 'stroke-width': '1.2' }));
+    });
+  }
+  // 甘特区（同 C）
+  var gEl = document.getElementById('gantt'); gEl.hidden = false; gEl.textContent = '';
+  gEl.appendChild(document.createElement('h4')).textContent = '子代理甘特 · 每 agent 一行（条=首末请求跨度 · 刻点=每次请求 · 点击在上方两道打参考线）';
+  Object.keys(AGC).forEach(function (ag) {
+    var rs = SUB.filter(function (r) { return r.ag === ag; }).sort(function (a, b) { return a.t - b.t; });
+    var lo = rs[0].t, hi = rs[rs.length - 1].t, tk = sum(rs, tok);
+    var row = document.createElement('div'); row.className = 'grow' + (selAg === ag ? ' sel' : '');
+    var nm = document.createElement('span'); nm.className = 'gname'; nm.textContent = ag;
+    var tr = document.createElement('div'); tr.className = 'gtrack';
+    var barEl = document.createElement('div'); barEl.className = 'gbar';
+    barEl.style.left = (lo / FULL * 100) + '%'; barEl.style.width = Math.max(0.6, (hi - lo) / FULL * 100) + '%';
+    barEl.style.background = AGC[ag]; barEl.style.opacity = selAg && selAg !== ag ? 0.35 : 0.85;
+    tr.appendChild(barEl);
+    rs.forEach(function (r) {
+      var t = document.createElement('div'); t.className = 'gtick';
+      t.style.left = (r.t / FULL * 100) + '%'; barEl.parentNode.appendChild(t);
+      t.title = '子代理 ' + ag + ' · ' + hms(r.t) + ' · 输出 ' + k(r.out) + ' · 合计 ' + k(tok(r));
+    });
+    var mt = document.createElement('span'); mt.className = 'gmeta';
+    mt.textContent = k(tk) + ' tok · ' + dur(hi - lo) + ' · ' + rs.length + ' 请求';
+    row.appendChild(nm); row.appendChild(tr); row.appendChild(mt);
+    row.addEventListener('click', function () { selAg = selAg === ag ? null : ag; render(); });
+    gEl.appendChild(row);
+  });
+}
+
+// ---------- 变体注册与切换 ----------
+var VARIANTS = [
+  { key: 'D', name: 'D · 泳道+甘特（组合）', claim: '定稿候选：B 的双泳道 + C 的逐 agent 甘特。上道主会话、下道子代理合计，共用时间轴——主会话在子代理跑的同时仍可正常对话，两道并行对照不丢主轨；下方甘特按 agent 细分并行结构，点击行的参考线贯穿两道。' },
+  { key: 'A', name: 'A · 同轨双色', claim: '主张：零布局改动。子代理柱与主柱同一轨道、同一 y 轴——半透明 60% + 紫色虚线描边 + ▼ 角标区分，悬停可辨。改动最小，但主/子在视觉上混居，密集时段要靠角标找子代理。' },
+  { key: 'B', name: 'B · 双泳道', claim: '主张：甘特式双泳道——上道主会话、下道子代理，共用时间轴、各自 y 轴。一眼看出"主闲置（上道空白）时子代理在烧钱（下道立柱）"，等待窗带贯穿两道把因果钉在一起。图区高度不变，每道压扁约 1/3。' },
+  { key: 'C', name: 'C · 子代理甘特', claim: '主张：主图完全不动（只画主会话），下方加甘特区——每个子代理一行：条=首末请求跨度、竖刻点=每次请求、尾标 tokens/时长。点行会在主图打两条同色参考线。并行结构最清楚（agent-3 短平快 vs agent-2 长跑），但要多一块竖向空间、主/子不在同一图里对照 token 高度。' },
+];
+var vi = Math.max(0, ['D', 'A', 'B', 'C'].indexOf(new URLSearchParams(location.search).get('variant')));
+function render() {
+  var v = VARIANTS[vi];
+  document.getElementById('caption').textContent = v.claim;
+  document.getElementById('plbl').textContent = v.name;
+  document.getElementById('gantt').hidden = true;
+  var svg = document.getElementById('svg'); svg.textContent = '';
+  ({ A: renderA, B: renderB, C: renderC, D: renderD })[v.key](svg);
+  cards(); legend();
+  try { var u = new URL(location); u.searchParams.set('variant', v.key);
+    history.replaceState(null, '', u); } catch (e) {}
+}
+document.getElementById('nx').onclick = function () { vi = (vi + 1) % VARIANTS.length; render(); };
+document.getElementById('pv').onclick = function () { vi = (vi + VARIANTS.length - 1) % VARIANTS.length; render(); };
+document.addEventListener('keydown', function (ev) {
+  if (/input|textarea/i.test((ev.target && ev.target.tagName) || '')) return;
+  if (ev.key === 'ArrowRight') document.getElementById('nx').click();
+  if (ev.key === 'ArrowLeft') document.getElementById('pv').click();
+});
+render();
+</script>
+</body>
+</html>
