@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Ferryman 用量悬浮窗</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+
+<!-- 悬浮窗本体：disc 由 app.js 依契约 JSON 渲染（数据层=data.js，零散落硬编码） -->
+<div class="widget vertical" id="widget">
+  <div class="grip" data-tauri-drag-region title="拖动移动（位置记忆）｜双击收起到托盘">⠿</div>
+  <button class="gear" id="btnSettings" title="显示配置与帮助">⚙</button>
+  <div class="conn-warn" id="connWarn">⚠ daemon 不可达</div>
+  <!-- 票 05 · 升级通知条：托盘「检查更新」后 Rust emit 结果，这里如实显示（无新版/有新版/失败原因）；
+       壳内事件驱动，演示/headless 语境永不出现 -->
+  <div class="update-warn hidden" id="updateNotice"><span id="updateMsg"></span><button type="button" class="hidden" id="btnUpdateInstall">下载安装</button></div>
+</div>
+
+<!-- 收起恢复（浏览器/测试语境的 UI 演示；壳内收起/恢复=托盘菜单，票 02） -->
+<button id="restoreBtn">↩ 恢复悬浮窗</button>
+
+<div class="tooltip hidden" id="tooltip"></div>
+<div class="detail hidden" id="detail"></div>
+
+<!-- 设置浮层：布局/倒计时开关 + 图例帮助（mockbar 图例并入于此；完整设置窗=票 04） -->
+<div class="overlay hidden" id="settings">
+  <div class="sheet">
+    <button class="close" data-close="settings">✕</button>
+    <h2>显示配置</h2>
+    <div class="note">配置存 widget 本地，daemon 不感知；查询永远面向全部上游，这里只管“怎么显示”。显隐/环色/阈值/月预算/顺序等完整配置在托盘菜单「设置…」打开的设置窗（票 04），改动即时生效并持久化。</div>
+    <div class="radioline">布局：
+      <label><input type="radio" name="layout" value="vertical" checked> 竖排贴右缘</label>
+      <label><input type="radio" name="layout" value="horizontal"> 横排</label>
+    </div>
+    <div class="radioline"><label><input type="checkbox" id="optCdline" checked> 显示重置倒计时行</label></div>
+    <h4 class="sec">图例与帮助</h4>
+    <div class="help">
+      <span><span class="sw" style="background:var(--c5h)"></span>5h 窗剩余</span>
+      <span><span class="sw" style="background:var(--cweek)"></span>周剩余</span>
+      <span><span class="sw" style="background:var(--cmonth)"></span>月预算（可选，默认关）</span>
+      <span><span class="sw" style="background:var(--cds)"></span>DeepSeek 预算（可选，默认关）</span>
+      <span><span class="sw" style="background:var(--alert-y)"></span>剩余 &lt;20% 变黄</span>
+      <span><span class="sw" style="background:var(--alert-r)"></span>剩余 &lt;10% 变红</span>
+      <span>环 = <b>剩余制</b>（满弧=满额，随消耗缩短）｜紫色角标<i>估</i> = 台账估算值，与查询值分标</span>
+      <span>●倒计时 = 窗口距重置剩余时间，颜色随所属环（告警时黄/红）</span>
+      <span>数据：30s 轮询 /widget/summary；daemon 不可达=整体灰化，不假造数据</span>
+    </div>
+  </div>
+</div>
+
+<!-- dev 构建角标（release 由 Rust 侧不带 ?dev=1 → 不显示） -->
+<div class="dev-badge" id="devBadge">演示数据</div>
+
+<!-- 六项交互自测结果载体（?selftest=1 才写入；静态断言读 data-*） -->
+<div id="selftest-results" class="hidden" aria-hidden="true"></div>
+
+</body>
+</html>

@@ -1,0 +1,451 @@
+/**
+ * 票 03 · 渲染层：只吃契约 v0 JSON（数据层=data.js），产出门内全部 UI。
+ *
+ * 语义基线=已验收 mock（docs/research/20260921_悬浮窗mock.html）：
+ * 环剩余制/基色/告警联动、倒计时行颜色随环+告警加粗、圆心标识、估算紫虚线角标与
+ * 查询绿实线角标分标、tooltip、详情卡（值/上限/重置时刻+倒计时/最后更新）、横竖切换。
+ *
+ * widget 内置映射（不进契约，spec rev1）：
+ *  - PROVENANCE_BASE / PROVENANCE_BY_ID：kind+key → 字段出处文案（九条 kind:key 全覆盖；
+ *    演示上游的 id 级覆写保文案与设计稿逐字一致——同 kind 不同供应商文案有别，v0 的已知局限）
+ *  - DETAIL_NAME_OF：详情卡长名（圆心短名=label 吃契约；长名是展示别名，缺省回落 label）
+ *
+ * 票 04：显示配置 profile（profile.js 纯逻辑；settings.html 设置窗编辑、本窗消费）——
+ * 显隐/顺序/阈值/环色基色/月预算紫环/DS 预算绿环/布局/倒计时开关，改动即时生效。
+ */
+import * as data from './data.js';
+import * as profile from './profile.js';
+
+// ── 控制台错误捕获（自测第六项：控制台零报错） ──
+const consoleErrors = [];
+window.addEventListener('error', (e) => consoleErrors.push(String(e.message || e)));
+const origError = console.error.bind(console);
+console.error = (...a) => { consoleErrors.push(a.map(String).join(' ')); origError(...a); };
+
+// ── DOM 句柄 ──
+const widget = document.getElementById('widget');
+const tip = document.getElementById('tooltip');
+const detail = document.getElementById('detail');
+const settings = document.getElementById('settings');
+const grip = document.querySelector('#widget .grip');
+const restoreBtn = document.getElementById('restoreBtn');
+
+/** @type {{summary:data.Summary|null, reachable:boolean, detailId:string|null, profile:profile.Profile}} */
+const state = { summary: null, reachable: true, detailId: null, profile: profile.normalizeProfile(null).profile };
+
+/** Tauri 壳内（v2 恒注入 __TAURI_INTERNALS__）：拖动/收出走原生（票 02），JS 演示路径不接管。 */
+const inShell = () => !!window.__TAURI_INTERNALS__;
+
+// ── 配色（环基色/告警色与 mock 同源） ──
+function getVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+const COLORS = { window_5h: getVar('--c5h'), week: getVar('--cweek'),
+                 month_budget: getVar('--cmonth'), ds_budget: getVar('--cds') };
+/** 断言调色板（profile.ringStrokeColor 消费）：基色 + 告警色。 */
+const PALETTE = { base: COLORS, yellow: getVar('--alert-y'), red: getVar('--alert-r') };
+
+/** 生效的对象级显示配置（profile 缺项回落默认）。 */
+const objProf = (id) => profile.effectiveObject(state.profile, id);
+
+/** 环色：对象基色覆写（票 04）→ 阈值告警色（阈值来自该对象 profile，默认 20/10）→ 基色。 */
+function ringColor(p, key, pct) {
+  return profile.ringStrokeColor(key, pct, objProf(p.id), PALETTE);
+}
+
+// ── provenance 内置映射（不进契约） ──
+/** kind+key → 文案（九条，覆盖契约 v0 全部 metric key 组合）。 */
+const PROVENANCE_BASE = {
+  'coding_plan:window_5h': 'quota/limit → data.limits[unit:3] → 剩余 = 100 − percentage(38)',
+  'coding_plan:week': 'quota/limit → data.limits[unit:6] → 剩余 = 100 − percentage(92)',
+  'coding_plan:month_tokens': '台账四列 · 本自然月聚合（智谱端点无绝对值，月度只能本地估算）',
+  'paygo:balance_cny': 'user/balance → balance_infos[0].total_balance = granted + topped_up',
+  'paygo:spend_today_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）',
+  'paygo:spend_week_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）',
+  'paygo:spend_month_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）', // 票 04 起 demo 已补实例（DS 预算环已用值）
+  'handoff:spend_month_cny': '账本 handoff 科目 · 本自然月（估算）',
+  'handoff:spend_week_cny': '账本 handoff 科目 · 本周（估算）',
+};
+/** 演示上游 id 级覆写（同 kind 不同供应商文案有别，保设计稿逐字一致）。 */
+const PROVENANCE_BY_ID = {
+  kimi: {
+    window_5h: 'coding/v1/usages → limits[].detail → remaining/limit',
+    week: 'coding/v1/usages → usage → remaining/limit',
+    month_tokens: '台账四列 · 本自然月聚合（估算）',
+  },
+};
+/** @param {data.Upstream} u @param {data.Metric} m @returns {string} */
+const provenanceOf = (u, m) => PROVENANCE_BY_ID[u.id]?.[m.key] ?? PROVENANCE_BASE[`${u.kind}:${m.key}`] ?? '';
+
+/** 详情卡长名（展示别名；缺省回落契约 label）。 */
+const DETAIL_NAME_OF = { glm: '智谱 GLM', kimi: 'Kimi Coding', deepseek: 'DeepSeek 按量', handoff: '摆渡行（handoff 供应商）' };
+const PLAN_LINE = { coding_plan: (p) => `订阅套餐 · ${p.plan || 'Coding Plan'}`, paygo: () => '充值按量计费', handoff: () => 'OpenAI 协议 · 摆渡执行器专用' };
+
+// ── 倒计时/时刻（演示态基准=契约生成时刻，接真数据后=真实时钟；见 data.now） ──
+function countdownText(resetsAt) {
+  let ms = new Date(resetsAt).getTime() - data.now();
+  if (!(ms > 0)) ms = 0; // 防负值
+  const tmin = Math.floor(ms / 60000);
+  if (tmin < 60) return `${tmin}m`;
+  const h = Math.floor(tmin / 60), mm = tmin % 60;
+  if (h < 24) return mm ? `${h}h${String(mm).padStart(2, '0')}m` : `${h}h`;
+  const d = Math.floor(h / 24), hh = h % 24;
+  return hh ? `${d}d${hh}h` : `${d}d`;
+}
+/** 同一天 → HH:mm；跨天 → 周X HH:mm（按 +08:00 求星期）。 */
+function absTimeText(resetsAt) {
+  const hhmm = resetsAt.slice(11, 16);
+  const nowDay = new Date(data.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  if (resetsAt.slice(0, 10) === nowDay) return hhmm;
+  const wd = '日一二三四五六'[new Date(new Date(resetsAt).getTime() + 8 * 3600e3).getUTCDay()];
+  return `周${wd} ${hhmm}`;
+}
+/** 告警联动：<red 红、<yellow 黄（对象阈值，默认 20/10），否则所属环基色。 */
+function resetColor(p, m) {
+  const lv = profile.alertLevel(m.remaining_pct, objProf(p.id).thresholds);
+  return lv === 'red' ? getVar('--alert-r') : lv === 'yellow' ? getVar('--alert-y')
+    : (COLORS[m.key] || COLORS.window_5h);
+}
+function cdSpan(p, m) {
+  if (!m || !m.resets_at) return '';
+  const alert = profile.alertLevel(m.remaining_pct, objProf(p.id).thresholds) !== 'base';
+  const c = resetColor(p, m);
+  return `<span style="color:${c}${alert ? ';font-weight:600' : ''}"><span class="cdot" style="background:${c}"></span>${countdownText(m.resets_at)}</span>`;
+}
+function cdlineInner(p) {
+  const m = (k) => p.metrics.find((x) => x.key === k);
+  return `${cdSpan(p, m('window_5h'))}<span class="sep"> · </span>${cdSpan(p, m('week'))}`;
+}
+const cdlineHTML = (p) => `<div class="cap cdline${state.profile.show_countdown ? '' : ' hidden'}">${cdlineInner(p)}</div>`;
+
+// ── 圆控件 ──
+const metricOf = (p, k) => p.metrics.find((x) => x.key === k);
+const estBadge = (m) => (m && m.source === 'estimated' ? '<i>估</i>' : '');
+
+/**
+ * 预算环（票 04，剩余制：1−已用/预算，钳 0..100）。
+ * 预算来自该对象 profile；契约只给原始值（mt.value=月 tok / 月花费元），预算在 widget 侧
+ * 参与分母计算。预算未设或契约无数值 → null（不画环：月预算=文字计数现状，DS=无绿环）。
+ */
+function budgetRing(p, key, used) {
+  const o = objProf(p.id);
+  const budget = key === 'ds_budget' ? (o.ds_budget && o.ds_budget.amount_cny) : o.month_budget;
+  const pct = profile.remainingPctOfBudget(used, budget);
+  return pct == null ? null : { key, remaining_pct: pct };
+}
+
+/** 周长按半径查表（r43=5h/DS 预算外环、r33=周中环、r23=月预算内环）。 */
+const RING_R = { 43: 2 * Math.PI * 43, 33: 2 * Math.PI * 33, 23: 2 * Math.PI * 23 };
+const ringCircle = (p, m, r) =>
+  `<circle class="ring" cx="50" cy="50" r="${r}" style="stroke:${ringColor(p, m.key, m.remaining_pct)};stroke-dasharray:${(m.remaining_pct / 100 * RING_R[r]).toFixed(1)} ${RING_R[r].toFixed(1)}" transform="rotate(-90 50 50)"></circle>`;
+const trackCircle = (r) => `<circle class="track" cx="50" cy="50" r="${r}"></circle>`;
+
+function ringSVG(p, m1, m2, m3) { // m1=外环(5h) m2=中环(周) m3=内环(月预算，可空)
+  const seg = (m, r) => (m ? ringCircle(p, m, r) : '');
+  return `${trackCircle(43)}${seg(m1, 43)}${trackCircle(33)}${seg(m2, 33)}${m3 ? `${trackCircle(23)}${seg(m3, 23)}` : ''}`;
+}
+function discHTML(p) {
+  const label = p.label || p.id;
+  let svgInner = '', center = '', cap = '';
+  if (p.error) { // 该上游整体查询失败：不画环不造数
+    svgInner = '';
+    center = `<text x="50" y="47" class="c-label">⚠</text><text x="50" y="60" class="c-sub">${label}</text>`;
+    cap = `<div class="cap">查询失败 · ${p.error.category}</div>`;
+  } else if (p.kind === 'coding_plan') {
+    const mt = metricOf(p, 'month_tokens');
+    // 月预算环（内圈紫环，票 04）：不设预算=不画环（文字计数现状）；设了=caption 保留 + 环
+    svgInner = ringSVG(p, metricOf(p, 'window_5h'), metricOf(p, 'week'),
+      budgetRing(p, 'month_budget', mt && mt.value));
+    center = `<text x="50" y="47" class="c-label">${label}</text>
+              <text x="50" y="60" class="c-sub">${p.plan || 'Coding Plan'}</text>`;
+    cap = cdlineHTML(p) + `<div class="cap">${mt ? mt.text : ''}${estBadge(mt)}</div>`;
+  } else if (p.kind === 'paygo') {
+    const bal = metricOf(p, 'balance_cny'), st = metricOf(p, 'spend_today_cny'),
+          sw = metricOf(p, 'spend_week_cny'), sm = metricOf(p, 'spend_month_cny');
+    // DS 预算环（票 04）：开关+金额在设置窗；已用=spend_month_cny 原始值，剩余制绿环
+    const dsr = budgetRing(p, 'ds_budget', sm && sm.value);
+    svgInner = `${trackCircle(43)}${dsr ? ringCircle(p, dsr, 43) : ''}`;
+    const money = bal ? bal.text.replace(/^¥/, '') : '—'; // 圆心金额吃契约 text
+    center = `<text x="50" y="38" class="c-money-sym">CNY</text>
+              <text x="50" y="56" class="c-money">${money}</text>
+              <text x="50" y="68" class="c-sub">${!bal || bal.available !== false ? '可用' : '不可用'}</text>`;
+    cap = `<div class="cap">${[sm, st, sw].filter(Boolean).map((m) => `${m.text}${estBadge(m)}`).join(' · ')}</div>`;
+  } else { // handoff
+    const sm = metricOf(p, 'spend_month_cny'), sw = metricOf(p, 'spend_week_cny');
+    svgInner = `<circle class="houtline" cx="50" cy="50" r="43"></circle>`;
+    center = `<text x="50" y="47" class="c-label">${label}</text>
+              <text x="50" y="60" class="c-sub">handoff</text>`;
+    cap = `<div class="cap">${sm ? sm.text : ''}${estBadge(sm)} · ${sw ? sw.text : ''}${estBadge(sw)}</div>`;
+  }
+  return `<div class="disc${p.kind === 'handoff' ? ' handoff' : ''}" data-id="${p.id}" tabindex="0">
+            <svg viewBox="0 0 100 100">${svgInner}${center}</svg>${cap}</div>`;
+}
+
+/** 全量重渲染（30s 轮询/profile 变更后调用；显隐与顺序随 profile，票 04）。 */
+function render() {
+  document.body.classList.toggle('conn-down', !state.reachable);
+  for (const el of [...widget.querySelectorAll('.disc')]) el.remove();
+  if (!state.summary) return;
+  profile.orderedVisible([...state.summary.upstreams, state.summary.handoff], state.profile)
+    .forEach((p) => widget.insertAdjacentHTML('beforeend', discHTML(p)));
+  if (state.detailId) { // 重建后若详情卡开着，按 id 重挂
+    const p = findUpstream(state.detailId);
+    if (p) renderDetail(p); else closeDetail();
+  }
+}
+const findUpstream = (id) => state.summary &&
+  [...state.summary.upstreams, state.summary.handoff].find((x) => x.id === id);
+
+// ── tooltip（hover 各环数字） ──
+function labelOf(k) { return { window_5h: '5h', week: '周', month_budget: '月预算', ds_budget: '预算' }[k] || k; }
+widget.addEventListener('mouseover', (e) => {
+  const disc = e.target.closest('.disc'); if (!disc) return;
+  const p = findUpstream(disc.dataset.id); if (!p) return;
+  const rows = p.metrics.filter((m) => m.remaining_pct != null).map((m) =>
+    `<div><span class="t-sw" style="background:${ringColor(p, m.key, m.remaining_pct)}"></span>${labelOf(m.key)} 剩 ${m.remaining_pct}%${m.resets_at ? ` · 重置 ${countdownText(m.resets_at)}` : ''}</div>`
+  ).join('');
+  tip.innerHTML = rows || "<div style='color:var(--txt-dim)'>无环指标 · 单击看详情</div>";
+  tip.classList.remove('hidden');
+});
+widget.addEventListener('mousemove', (e) => {
+  tip.style.left = Math.max(2, Math.min(e.clientX - tip.offsetWidth - 14, window.innerWidth - tip.offsetWidth - 4)) + 'px';
+  tip.style.top = (e.clientY + 14) + 'px';
+});
+widget.addEventListener('mouseout', (e) => {
+  const disc = e.target.closest('.disc'); if (!disc) return;
+  if (e.relatedTarget && disc.contains(e.relatedTarget)) return;
+  tip.classList.add('hidden');
+});
+
+// ── 详情卡（单击展开；小窗内覆盖式弹出） ──
+function renderDetail(p) {
+  const rows = p.metrics.map((m) => {
+    if (m.remaining_pct != null) {
+      const reset = m.resets_at
+        ? `<span class="d-reset" style="color:${resetColor(p, m)}${m.remaining_pct < 20 ? ';font-weight:600' : ''}">重置 ${absTimeText(m.resets_at)}（${countdownText(m.resets_at)} 后）</span>`
+        : '<span class="d-reset"></span>';
+      return `<div class="drow"><span class="d-sw" style="background:${ringColor(p, m.key, m.remaining_pct)}"></span>
+        <span class="d-key">${labelOf(m.key)}剩</span>
+        <span class="d-val">${m.remaining_pct}%<span class="b ${m.source === 'fetched' ? 'fetch' : 'est'}">${m.source === 'fetched' ? '查询' : '估'}</span></span>
+        ${m.abs ? `<span class="d-abs">${m.abs}</span>` : ''}
+        ${reset}</div>`;
+    }
+    let extra = '';
+    if (m.breakdown) extra = `<span class="d-abs">赠送 ${m.breakdown.granted} + 充值 ${m.breakdown.topped_up}</span>`;
+    return `<div class="drow"><span class="d-sw" style="background:${m.source === 'fetched' ? '#7ECB9B' : 'var(--cmonth)'};opacity:.75"></span>
+      <span class="d-key">${m.key.includes('today') ? '今日' : m.key.includes('week') ? '本周' : m.key.includes('month') ? '本月' : '值'}</span>
+      <span class="d-val">${(m.text || '').replace(/^(今|周|月) /, '')}<span class="b ${m.source === 'fetched' ? 'fetch' : 'est'}">${m.source === 'fetched' ? '查询' : '估'}</span></span>
+      ${extra}</div>`;
+  }).join('');
+  detail.innerHTML = `<h3>${DETAIL_NAME_OF[p.id] || p.label || p.id}</h3>
+    <div class="plan">${(PLAN_LINE[p.kind] || (() => ''))(p)}</div>
+    ${rows}
+    <div class="prov">${p.metrics.map((m) => provenanceOf(p, m)).filter(Boolean).map((s) => `• ${s}`).join('<br>')}</div>
+    <div class="dfoot">最后更新 ${p.metrics[0]?.as_of ?? '—'}（远端 5–15 分钟缓存） · 每 30s 轮询 /widget/summary</div>`;
+  detail.classList.remove('hidden');
+}
+function closeDetail() { detail.classList.add('hidden'); state.detailId = null; }
+widget.addEventListener('click', (e) => {
+  const disc = e.target.closest('.disc'); if (!disc) return;
+  state.detailId = disc.dataset.id;
+  const p = findUpstream(state.detailId);
+  if (p) renderDetail(p);
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.disc') && !e.target.closest('#detail')) closeDetail();
+});
+
+// ── 设置浮层（布局/倒计时开关/图例帮助；完整设置窗=票 04） ──
+document.getElementById('btnSettings').addEventListener('click', () => settings.classList.remove('hidden'));
+document.querySelectorAll('[data-close]').forEach((b) =>
+  b.addEventListener('click', () => document.getElementById(b.dataset.close).classList.add('hidden')));
+settings.addEventListener('click', (e) => { if (e.target === settings) settings.classList.add('hidden'); });
+
+/** 横竖切换（票 04 起 profile.layout 是唯一事实源；窗体几何随动属票 09）。 */
+function setLayout(mode) {
+  widget.classList.remove('vertical', 'horizontal');
+  widget.classList.add(mode);
+  document.querySelectorAll('input[name=layout]').forEach((r) => { r.checked = r.value === mode; });
+}
+/** profile 变更持久化（壳内：落盘 + 广播各窗即时生效；演示语境：仅本页）。 */
+function persistProfile() {
+  const t = window.__TAURI__;
+  if (t && t.core && t.core.invoke && t.event && t.event.emit) {
+    t.event.emit('profile-changed', state.profile);
+    t.core.invoke('save_profile', { profile: state.profile })
+      .catch((e) => console.error('save_profile 失败', e));
+  }
+}
+document.querySelectorAll('input[name=layout]').forEach((r) =>
+  r.addEventListener('change', () => {
+    setLayout(r.value);
+    state.profile.layout = r.value;
+    persistProfile();
+  }));
+
+// 倒计时行显隐（widget 本地显示配置，daemon 不感知；票 04 起持久化进 profile）
+document.getElementById('optCdline').addEventListener('change', (e) => {
+  state.profile.show_countdown = e.target.checked;
+  document.querySelectorAll('.cdline').forEach((el) => el.classList.toggle('hidden', !e.target.checked));
+  persistProfile();
+});
+
+// ── 收起/恢复（壳内=托盘菜单与关窗，票 02；浏览器/测试语境=dblclick 手柄的 UI 演示） ──
+grip.addEventListener('dblclick', () => {
+  if (inShell()) return; // 壳内真收起走原生托盘，不留只剩恢复钮的空窗口
+  document.body.classList.add('tray-collapsed');
+  closeDetail(); tip.classList.add('hidden');
+});
+restoreBtn.addEventListener('click', () => document.body.classList.remove('tray-collapsed'));
+
+// ── 拖动（壳内=data-tauri-drag-region 原生拖动+位置记忆，票 02；浏览器语境=JS 演示） ──
+(function jsDrag() {
+  if (inShell()) return;
+  let drag = null;
+  widget.addEventListener('mousedown', (e) => {
+    if (!e.target.closest('.grip')) return;
+    const r = widget.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    widget.style.left = `${e.clientX - drag.dx}px`;
+    widget.style.top = `${e.clientY - drag.dy}px`;
+    widget.style.right = 'auto';
+  });
+  document.addEventListener('mouseup', () => { drag = null; });
+})();
+
+// ── 倒计时逐分钟本地 ticker（零新增查询；详情卡同步刷新） ──
+function refreshCountdowns() {
+  if (!state.summary) return;
+  for (const disc of document.querySelectorAll('.disc[data-id]')) {
+    const p = findUpstream(disc.dataset.id);
+    if (!p || p.kind !== 'coding_plan') continue;
+    const line = disc.querySelector('.cdline');
+    if (line) line.innerHTML = cdlineInner(p);
+  }
+  if (state.detailId && !detail.classList.contains('hidden')) {
+    const p = findUpstream(state.detailId);
+    if (p) renderDetail(p);
+  }
+}
+setInterval(refreshCountdowns, 60000);
+
+// ── 六项交互自测（?selftest=1 才跑；结果落 #selftest-results data-*，供静态断言） ──
+function runSelftest() {
+  const res = [];
+  const set = (k, v) => res.push([k, v]);
+  try {
+    // 1 横竖切换
+    const h = document.querySelector('input[name=layout][value=horizontal]');
+    h.checked = true; h.dispatchEvent(new Event('change', { bubbles: true }));
+    const wasH = widget.classList.contains('horizontal');
+    const v = document.querySelector('input[name=layout][value=vertical]');
+    v.checked = true; v.dispatchEvent(new Event('change', { bubbles: true }));
+    set('layout', wasH && widget.classList.contains('vertical'));
+
+    // 2 收起/恢复
+    grip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    const wasDown = document.body.classList.contains('tray-collapsed')
+      && getComputedStyle(restoreBtn).display !== 'none';
+    restoreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    set('collapse', wasDown && !document.body.classList.contains('tray-collapsed'));
+
+    // 3 拖动手柄位移
+    grip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 60, clientY: 30 }));
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 120, clientY: 80 }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    set('drag', widget.style.left === '60px' && widget.style.top === '50px');
+
+    // 4 tooltip hover 出数字
+    const disc = widget.querySelector('.disc');
+    disc.querySelector('circle').dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    set('tooltip', !tip.classList.contains('hidden') && tip.textContent.includes('62%'));
+    tip.classList.add('hidden');
+
+    // 5 详情卡（放最后，保持展开态供 dump 断言）
+    disc.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    set('detail', !detail.classList.contains('hidden') && detail.textContent.includes('重置'));
+
+    // 6 控制台零报错
+    set('console', consoleErrors.length === 0);
+  } catch (err) {
+    console.error('selftest 异常', err);
+    set('console', false);
+  }
+  const el = document.getElementById('selftest-results');
+  for (const [k, val] of res) el.dataset[k] = val ? '1' : '0';
+  el.dataset.done = '1';
+}
+
+// ── 启动 ──
+document.body.classList.toggle('dev', data.isDev()); // dev 构建角标（release 不带）
+
+// 显示配置（票 04）：演示/测试语境=URL 注入预设（?profile=budgets|hidden）；
+// 壳内=invoke get_profile 读盘（损坏/缺失→Rust 回报 reset_reason，设置窗如实提示），
+// 并订阅设置窗的 profile-changed 广播实现即时生效。
+function initialProfile() {
+  const pv = new URLSearchParams(location.search).get('profile');
+  return profile.normalizeProfile((pv && profile.PRESETS[pv]) || null).profile;
+}
+function applyProfile() {
+  setLayout(state.profile.layout);
+  document.getElementById('optCdline').checked = state.profile.show_countdown;
+  render();
+}
+state.profile = initialProfile();
+applyProfile();
+
+(function wireProfileIpc() {
+  const t = window.__TAURI__;
+  if (!t || !t.core || !t.core.invoke) return; // 浏览器/headless：预设已生效
+  t.core.invoke('get_profile').then((r) => {
+    if (r && r.reset_reason) console.warn('显示配置回落默认：', r.reset_reason);
+    state.profile = profile.normalizeProfile(r && r.profile).profile;
+    applyProfile();
+  }).catch((e) => console.error('get_profile 失败', e));
+  if (t.event && t.event.listen) {
+    t.event.listen('profile-changed', (e) => {
+      state.profile = profile.normalizeProfile(e && e.payload).profile;
+      applyProfile();
+    });
+  }
+})();
+
+// ── 票 05 · 升级通知条（壳内）：托盘「检查更新」→ Rust emit 结果，这里如实显示。
+// 永不自动下载：有新版只出「下载安装」按钮，用户点了才 invoke update_install；
+// 失败（含 pubkey 仍是占位串）原样转述原因。演示/headless 无事件源，通知条不出现。 ──
+(function wireUpdateNotice() {
+  const t = window.__TAURI__;
+  const bar = document.getElementById('updateNotice');
+  const msg = document.getElementById('updateMsg');
+  const btn = document.getElementById('btnUpdateInstall');
+  if (!t || !t.event || !t.event.listen || !bar || !msg || !btn) return;
+  const show = (text, withBtn) => {
+    msg.textContent = text;
+    btn.classList.toggle('hidden', !withBtn);
+    bar.classList.remove('hidden');
+  };
+  t.event.listen('update-check-result', (e) => {
+    const r = (e && e.payload) || {};
+    if (r.status === 'available') show(`有新版本 ${r.version || ''} 可下载`, true);
+    else if (r.status === 'up-to-date') show('已是最新版本', false);
+    else show(`检查失败：${r.message || '未知原因'}`, false);
+  });
+  t.event.listen('update-install-progress', (e) => {
+    const phase = e && e.payload;
+    if (phase === 'downloading') show('正在下载更新…', false);
+    else if (phase === 'installing') show('正在安装，安装器将重启应用…', false);
+  });
+  btn.addEventListener('click', () => {
+    if (!(t.core && t.core.invoke)) return;
+    show('正在下载更新…', false);
+    t.core.invoke('update_install').catch((err) => show(`更新失败：${err}`, false));
+  });
+})();
+
+data.startPolling((summary, reachable) => {
+  state.summary = summary; state.reachable = reachable;
+  render();
+});
+if (new URLSearchParams(location.search).has('selftest')) runSelftest();
