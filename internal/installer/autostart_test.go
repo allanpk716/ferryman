@@ -1,12 +1,15 @@
 // autostart_test.go — 票02：HKCU Run 键自启 Install/Uninstall/Status 三操作验收。
 //
 // 全部走 fake 注册表面（runKeyStore 注入），绝不碰真注册表（本票副作用声明）。
-// 命令构造逐字断言防两处漂移（Run 键值与看门拉起共用 daemonStartScript）。
+// 命令构造逐字断言防两处漂移（Run 键值与状态比对共用 DaemonVBSPath 推导）。
 
 package installer
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,21 +137,50 @@ func TestAutostartStatusOpenErrorPropagates(t *testing.T) {
 	}
 }
 
-// Run 键值逐字（无窗口 PS 包装；$env:ComSpec 运行时解析不漂移）。
+// Run 键值逐字（wscript 隐身宿主零闪窗；VBS 落点与状态比对同一推导）。
 func TestAutostartCommandVerbatim(t *testing.T) {
 	got := AutostartCommand(testLauncher)
-	want := `powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath $env:ComSpec -ArgumentList '/c','\"` +
-		testLauncher + `\"' -WindowStyle Hidden"`
+	want := `wscript.exe "C:\Program Files\Ferryman\start-daemon-hidden.vbs"`
 	if got != want {
 		t.Fatalf("Run 键值逐字不符:\n got: %s\nwant: %s", got, want)
 	}
-	// 无窗口标志必须在内（登录拉起不闪黑窗）
-	if !strings.Contains(got, "-WindowStyle Hidden") {
-		t.Fatalf("缺无窗口标志 -WindowStyle Hidden: %s", got)
+	// 隐身宿主必须在内（登录拉起零闪窗——旧 powershell -WindowStyle Hidden
+	// 形态登录时闪一次黑窗，2026-09-21 事故后弃用）
+	if !strings.Contains(got, "wscript.exe") {
+		t.Fatalf("缺隐身宿主 wscript.exe: %s", got)
 	}
-	// 与看门拉起共用脚本本体（防两处漂移的构造级断言）
-	if !strings.Contains(got, daemonStartScript(testLauncher)) {
-		t.Fatalf("Run 键值应内嵌共用 daemonStartScript 产物: %s", got)
+	// 与 DaemonVBSPath 推导共用（防两处漂移的构造级断言）
+	if got != fmt.Sprintf(`wscript.exe "%s"`, DaemonVBSPath(testLauncher)) {
+		t.Fatalf("Run 键值应指向 DaemonVBSPath 推导落点: %s", got)
+	}
+}
+
+// VBS 本体逐字：wscript 零闪窗形态（与看门 VBS 同款机制）。
+func TestDaemonVBSBodyVerbatim(t *testing.T) {
+	got := daemonVBSBody(testLauncher)
+	want := "' Ferryman daemon hidden launcher (auto-generated, do not edit)\r\n" +
+		"' wscript is a GUI-subsystem host: it never creates a console window.\r\n" +
+		"' WshShell.Run style 0 = run child hidden; False = do not wait.\r\n" +
+		"CreateObject(\"WScript.Shell\").Run \"\"\"C:\\Program Files\\Ferryman\\start-daemon.cmd\"\"\", 0, False\r\n"
+	if got != want {
+		t.Fatalf("VBS 本体逐字不符:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// ensureDaemonVBS：落盘到 launcher 同目录（临时目录替身，绝不碰真 dataDir），
+// 内容 = 本体构造。
+func TestEnsureDaemonVBSWrites(t *testing.T) {
+	dir := t.TempDir()
+	launcher := filepath.Join(dir, LauncherName)
+	if err := ensureDaemonVBS(launcher); err != nil {
+		t.Fatalf("ensureDaemonVBS: %v", err)
+	}
+	raw, err := os.ReadFile(DaemonVBSPath(launcher))
+	if err != nil {
+		t.Fatalf("读回 VBS: %v", err)
+	}
+	if string(raw) != daemonVBSBody(launcher) {
+		t.Fatalf("落盘内容与构造不符: %q", raw)
 	}
 }
 

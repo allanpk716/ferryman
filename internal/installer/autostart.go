@@ -10,13 +10,14 @@
 //   5. ferryman autostart uninstall → reg query 报系统找不到指定的注册表项或值
 //   6. ferryman autostart status  → missing
 //
-// 启动形态沿用现有无窗口方式（钩子自举 ferryman-ensure.ps1 的 Start-Process
-// -WindowStyle Hidden，生产已验证），Run 键值＝PS 包装拉起 ~/ferryman/
-// start-daemon.cmd（与看门拉起共用 daemonStartScript 构造，见 watchdog.go，
-// 杜绝两处漂移）。值形（\" 是 powershell.exe 原生命令行解析的内嵌引号转义；
-// $env:ComSpec 由 PS 运行时解析，机器间不漂移）：
+// 启动形态（2026-09-21 闪窗事故后改版）：Run 键值＝wscript + VBS 隐身启动器
+// 拉起 ~/ferryman/start-daemon.cmd。旧 powershell -WindowStyle Hidden 形态会闪
+// 黑窗（"先建控制台再隐藏"——登录会话由 explorer 拉起时同样先可见再消失，
+// 与看门计划任务同根事故）；wscript 是 GUI 子系统宿主天生不建控制台（PM2
+// pm2-windows-startup 同款机制，详注见 watchdog.go watchdogVBSBody）。VBS 与
+// 点火脚本同目录、由 AutostartInstall 落盘（内容内嵌 launcher 绝对路径）：
 //
-//	powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath $env:ComSpec -ArgumentList '/c','\"<launcher>\"' -WindowStyle Hidden"
+//	wscript.exe "<dataDir>\start-daemon-hidden.vbs"
 //
 // Windows 专属：注册表走 golang.org/x/sys/windows/registry（go.mod 已有
 // x/sys 依赖，无需新增）。
@@ -25,6 +26,7 @@ package installer
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/windows/registry"
@@ -35,6 +37,9 @@ const (
 	RunKeyPath   = `Software\Microsoft\Windows\CurrentVersion\Run`
 	RunValueName = "Ferryman"
 )
+
+// daemonVBSName 登录自启隐身启动器文件名（与点火脚本同目录——dataDir）。
+const daemonVBSName = "start-daemon-hidden.vbs"
 
 // autostartStatus 三态（doctor「存在/缺失/值不符」同口径）。
 type autostartStatus int
@@ -71,10 +76,33 @@ type autostartDeps struct {
 	launcher string // 点火脚本绝对路径（~/ferryman/start-daemon.cmd）
 }
 
-// AutostartCommand Run 键值（与看门拉起共用 daemonStartScript，票面「抽公共
-// 函数或引用同常量」的落点）。
+// DaemonVBSPath 隐身启动器落点（launcher 同目录；状态比对与安装共用同一
+// 推导，绝不两套判据）。
+func DaemonVBSPath(launcher string) string {
+	return filepath.Join(filepath.Dir(launcher), daemonVBSName)
+}
+
+// daemonVBSBody 隐身启动器内容（全 ASCII 铁律，机制注见文件头/watchdog.go）。
+func daemonVBSBody(launcher string) string {
+	return "' Ferryman daemon hidden launcher (auto-generated, do not edit)\r\n" +
+		"' wscript is a GUI-subsystem host: it never creates a console window.\r\n" +
+		"' WshShell.Run style 0 = run child hidden; False = do not wait.\r\n" +
+		fmt.Sprintf("CreateObject(\"WScript.Shell\").Run \"\"\"%s\"\"\", 0, False\r\n", launcher)
+}
+
+// ensureDaemonVBS 写登录自启隐身启动器（幂等覆盖；launcher 同目录随
+// EnsureLauncher 已建，MkdirAll 只为独立可用的兜底）。
+func ensureDaemonVBS(launcher string) error {
+	if err := os.MkdirAll(filepath.Dir(launcher), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(DaemonVBSPath(launcher), []byte(daemonVBSBody(launcher)), 0o644)
+}
+
+// AutostartCommand Run 键值：wscript + VBS 零闪窗形态（与状态比对共用
+// DaemonVBSPath 推导防漂移；旧 PS 包装形态的弃用背景见文件头注）。
 func AutostartCommand(launcher string) string {
-	return fmt.Sprintf(`powershell -NoProfile -WindowStyle Hidden -Command "%s"`, daemonStartScript(launcher))
+	return fmt.Sprintf(`wscript.exe "%s"`, DaemonVBSPath(launcher))
 }
 
 // realAutostartDeps 真注册表面：launcher = ~/ferryman/start-daemon.cmd（与
@@ -154,14 +182,19 @@ func autostartStatusOf(d autostartDeps) (autostartStatus, error) {
 
 // ---- CLI 真实入口（cmd/ferryman 薄分发；打印 + 退出码，install-cc 同风格） ----
 
-// AutostartInstall 装 Run 键自启（ferryman autostart install）。
+// AutostartInstall 装 Run 键自启（ferryman autostart install）：先落 VBS
+// 隐身启动器再写键值（VBS 缺位 = 登录自启空转，响亮失败不装"就绪"假象）。
 func AutostartInstall() int {
 	deps := realAutostartDeps()
+	if err := ensureDaemonVBS(deps.launcher); err != nil {
+		fmt.Println(err)
+		return 1
+	}
 	if err := installAutostart(deps); err != nil {
 		fmt.Println(err)
 		return 1
 	}
-	fmt.Printf("Run 键自启已安装（HKCU %s\\%s；登录时无窗口拉起 %s）\n",
+	fmt.Printf("Run 键自启已安装（HKCU %s\\%s；登录时经 wscript 隐身拉起 %s）\n",
 		RunKeyPath, RunValueName, deps.launcher)
 	return 0
 }

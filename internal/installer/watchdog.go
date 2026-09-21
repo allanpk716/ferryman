@@ -18,7 +18,10 @@
 //   2. 停 daemon 再跑                     → 打印无监听→拉起；几秒后 7311 在听
 //   3. 用不发 HTTP 的进程占 7311 再跑      → 打印占用告警、不拉起、退出 0
 //   4. ferryman watchdog install          → schtasks /Query /TN FerrymanWatchdog 在位
-//   5. schtasks /Run /TN FerrymanWatchdog → 立即触发一次（无窗口闪现）
+//   5. schtasks /Run /TN FerrymanWatchdog → 立即触发一次（wscript 零闪窗——旧
+//      powershell -WindowStyle Hidden 形态实测每跳闪一次黑窗：schtasks 在交互
+//      会话拉 console 子系统进程，-WindowStyle 是"先建窗再隐藏"，2026-09-21
+//      全天 288 次闪窗事故后弃用）
 //   6. 重启机器登录后等 5 分钟            → 看门自动补位（钩子自举够不着的兜底）
 //   7. ferryman watchdog uninstall        → schtasks /Query 报任务不存在
 //
@@ -147,14 +150,15 @@ func runWatchdog(d WatchdogDeps) int {
 // ---- daemon 拉起（与 Run 键同一命令构造，杜绝两处漂移） ----
 
 // daemonStartScript 无窗口拉起点火脚本的 -Command 脚本文本（ferryman-ensure.ps1
-// 的 Start-Process -WindowStyle Hidden 形态 1:1，生产已验证；\" 转义见
-// autostart.go 值形注）。
+// 的 Start-Process -WindowStyle Hidden 形态 1:1，生产已验证）。仅 LaunchDaemon
+// （分支② Go exec + HideWindow 双保险，控制台从不可见）在用——Run 键/看门任务
+// 已改走 wscript+VBS 零闪窗形态（2026-09-21 闪窗事故，见 watchdogVBSBody 注）。
 func daemonStartScript(launcher string) string {
 	return fmt.Sprintf(`Start-Process -FilePath $env:ComSpec -ArgumentList '/c','\"%s\"' -WindowStyle Hidden`, launcher)
 }
 
-// daemonStartPSArgs exec argv 形（LaunchDaemon 用；Run 键值走 AutostartCommand
-// 的可视单串，两者同源 daemonStartScript）。
+// daemonStartPSArgs exec argv 形（LaunchDaemon 专用；Run 键已不再共用——
+// 见 daemonStartScript 注）。
 func daemonStartPSArgs(launcher string) []string {
 	return []string{"-NoProfile", "-WindowStyle", "Hidden", "-Command", daemonStartScript(launcher)}
 }
@@ -169,10 +173,46 @@ func LaunchDaemon(launcher string) error {
 
 // ---- 看门计划任务（schtasks；构造与执行分层，单测只打构造层） ----
 
-// WatchdogTR 计划任务 TR：无窗口拉起本 exe 的 watchdog 子命令（Start-Process
-// 包装与 Run 键同形态——schtasks 每 5 分钟在交互会话拉进程，不包一层会闪黑窗）。
-func WatchdogTR(exe string) string {
-	return fmt.Sprintf(`powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%s' -ArgumentList 'watchdog' -WindowStyle Hidden"`, exe)
+// watchdogVBSName 看门隐身启动器文件名（落 dataDir，与点火脚本同目录）。
+const watchdogVBSName = "watchdog-hidden.vbs"
+
+// watchdogVBSBody 隐身启动器内容（全 ASCII——对齐 EnsureLauncher 的 ASCII
+// 铁律：非 UTF-8 代码页下中文会被重解码破坏）。为什么是 wscript+VBS 而不是
+// powershell -WindowStyle Hidden：后者是"先建控制台再隐藏"，schtasks 在交互
+// 会话拉起时窗口先可见再消失，每 5 分钟闪一次黑窗（2026-09-21 实测事故）；
+// wscript 是 GUI 子系统宿主，天生不创建控制台窗口；WshShell.Run 风格 0 =
+// 子进程隐藏运行，与旧 Start-Process 形态行为等价（PM2 的
+// pm2-windows-startup 同款机制，久经验证）。
+func watchdogVBSBody(exe string) string {
+	return "' Ferryman watchdog hidden launcher (auto-generated, do not edit)\r\n" +
+		"' wscript is a GUI-subsystem host: it never creates a console window.\r\n" +
+		"' WshShell.Run style 0 = run child hidden; False = do not wait (fire-and-forget,\r\n" +
+		"' same as the old Start-Process form).\r\n" +
+		fmt.Sprintf("CreateObject(\"WScript.Shell\").Run \"\"\"%s\"\" watchdog\", 0, False\r\n", exe)
+}
+
+// WatchdogVBSPath 隐身启动器落点（<home>/ferryman/——dataDir，与 exe 分居）。
+func WatchdogVBSPath() string {
+	return filepath.Join(homeDir(), "ferryman", watchdogVBSName)
+}
+
+// EnsureWatchdogVBS 写看门隐身启动器到 dir（幂等覆盖——exe 挪窝后重跑随刷新；
+// dir 注入面供测试指临时目录，绝不写真 dataDir）。
+func EnsureWatchdogVBS(dir, exe string) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, watchdogVBSName)
+	if err := os.WriteFile(p, []byte(watchdogVBSBody(exe)), 0o644); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// WatchdogTR 计划任务 TR：wscript + VBS 隐身触发本 exe 的 watchdog 子命令
+// （零闪窗机制注见 watchdogVBSBody；VBS 由 WatchdogTaskInstall 先落盘）。
+func WatchdogTR(vbs string) string {
+	return fmt.Sprintf(`wscript.exe "%s"`, vbs)
 }
 
 // schtasks 参数构造（纯函数；单测逐字断言，真实执行全走 runner 注入）。
@@ -208,9 +248,10 @@ type taskDeps struct {
 	runner TaskRunner
 }
 
-// realTaskDeps 真装配：TR 指向当前 exe 的 watchdog 子命令。
+// realTaskDeps 真装配：TR 指向 dataDir 的看门隐身启动器（tr 仅 install 路径
+// 用到；query/status 只看任务名，不受 VBS 在否影响）。
 func realTaskDeps() taskDeps {
-	return taskDeps{tr: WatchdogTR(exePath()), runner: execRunner{}}
+	return taskDeps{tr: WatchdogTR(WatchdogVBSPath()), runner: execRunner{}}
 }
 
 // installWatchdogTask 建任务（/F 覆盖＝幂等，重跑修漂移）。
@@ -290,13 +331,20 @@ func realWatchdogLogf(format string, args ...any) {
 	fmt.Fprintf(f, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
 }
 
-// WatchdogTaskInstall 建看门计划任务（ferryman watchdog install）。
+// WatchdogTaskInstall 建看门计划任务（ferryman watchdog install）：先落 VBS
+// 隐身启动器再建任务——VBS 缺位的任务每跳空转（wscript 报找不到脚本），
+// 必须响亮失败（票22 骑手 M3 同款铁律：地基写不出绝不报"就绪"）。
 func WatchdogTaskInstall() int {
-	if err := installWatchdogTask(realTaskDeps()); err != nil {
+	vbs, err := EnsureWatchdogVBS(filepath.Join(homeDir(), "ferryman"), exePath())
+	if err != nil {
+		fmt.Printf("看门隐身启动器写盘失败: %v\n", err)
+		return 1
+	}
+	if err := installWatchdogTask(taskDeps{tr: WatchdogTR(vbs), runner: execRunner{}}); err != nil {
 		fmt.Printf("看门计划任务安装失败: %v\n", err)
 		return 1
 	}
-	fmt.Printf("看门计划任务已安装（%s：每 5 分钟触发一次 ferryman watchdog）\n", WatchdogTaskName)
+	fmt.Printf("看门计划任务已安装（%s：每 5 分钟经 wscript 隐身触发 ferryman watchdog）\n", WatchdogTaskName)
 	return 0
 }
 

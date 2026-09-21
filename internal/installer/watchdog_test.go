@@ -2,7 +2,7 @@
 //
 // HTTP 分支用真 httptest/真 listener（真 401/5xx 响应、真 connection refused、
 // 真超时），拉起动作用接口注入 fake 断言被调（票面验收②）；
-// schtasks 只断言构造参数（逐字，含 /MO 5 与无窗口标志），真实执行全走
+// schtasks 只断言构造参数（逐字，含 /MO 5 与 wscript 隐身宿主），真实执行全走
 // runner 注入——绝不真建/删计划任务（本票副作用声明）。
 
 package installer
@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -150,16 +152,16 @@ func TestWatchdogRefusedNilLaunchExits1(t *testing.T) {
 	}
 }
 
-// 验收③：schtasks 建任务参数逐字（含 /MO 5 与 /TR 无窗口标志）。
+// 验收③：schtasks 建任务参数逐字（含 /MO 5 与 wscript 隐身宿主）。
 func TestSchtasksCreateArgsVerbatim(t *testing.T) {
-	tr := WatchdogTR(`C:\Tools\ferryman.exe`)
+	tr := WatchdogTR(`C:\Users\u\ferryman\watchdog-hidden.vbs`)
 	got := schtasksCreateArgs(WatchdogTaskName, tr)
 	want := []string{"/Create", "/F", "/TN", "FerrymanWatchdog", "/SC", "MINUTE", "/MO", "5", "/TR", tr}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("schtasks /Create 参数逐字不符:\n got: %q\nwant: %q", got, want)
 	}
-	if !strings.Contains(tr, "-WindowStyle Hidden") {
-		t.Fatalf("TR 缺无窗口标志: %s", tr)
+	if !strings.Contains(tr, "wscript.exe") {
+		t.Fatalf("TR 缺 wscript 隐身宿主（旧 powershell 形态每跳闪黑窗）: %s", tr)
 	}
 }
 
@@ -175,12 +177,46 @@ func TestSchtasksDeleteAndQueryArgsVerbatim(t *testing.T) {
 	}
 }
 
-// TR 逐字：无窗口 PS 包装拉起本 exe 的 watchdog 子命令。
+// TR 逐字：wscript + VBS 隐身触发（GUI 子系统宿主零闪窗）。
 func TestWatchdogTRVerbatim(t *testing.T) {
-	got := WatchdogTR(`C:\Tools\ferryman.exe`)
-	want := `powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath 'C:\Tools\ferryman.exe' -ArgumentList 'watchdog' -WindowStyle Hidden"`
+	got := WatchdogTR(`C:\Users\u\ferryman\watchdog-hidden.vbs`)
+	want := `wscript.exe "C:\Users\u\ferryman\watchdog-hidden.vbs"`
 	if got != want {
 		t.Fatalf("TR 逐字不符:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// VBS 本体逐字：wscript 零闪窗形态（GUI 子系统宿主 + 风格 0 隐藏子进程 +
+// 不等待 = 旧 Start-Process 形态的行为等价）。
+func TestWatchdogVBSBodyVerbatim(t *testing.T) {
+	got := watchdogVBSBody(`C:\Tools\ferryman.exe`)
+	want := "' Ferryman watchdog hidden launcher (auto-generated, do not edit)\r\n" +
+		"' wscript is a GUI-subsystem host: it never creates a console window.\r\n" +
+		"' WshShell.Run style 0 = run child hidden; False = do not wait (fire-and-forget,\r\n" +
+		"' same as the old Start-Process form).\r\n" +
+		"CreateObject(\"WScript.Shell\").Run \"\"\"C:\\Tools\\ferryman.exe\"\" watchdog\", 0, False\r\n"
+	if got != want {
+		t.Fatalf("VBS 本体逐字不符:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// EnsureWatchdogVBS：落盘到注入目录（临时目录替身，绝不写真 dataDir），
+// 内容 = 本体构造，落点文件名 = watchdogVBSName。
+func TestEnsureWatchdogVBSWrites(t *testing.T) {
+	dir := t.TempDir()
+	p, err := EnsureWatchdogVBS(dir, `C:\Tools\ferryman.exe`)
+	if err != nil {
+		t.Fatalf("EnsureWatchdogVBS: %v", err)
+	}
+	if p != filepath.Join(dir, watchdogVBSName) {
+		t.Fatalf("落点不符: %s", p)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("读回 VBS: %v", err)
+	}
+	if string(raw) != watchdogVBSBody(`C:\Tools\ferryman.exe`) {
+		t.Fatalf("落盘内容与构造不符: %q", raw)
 	}
 }
 
@@ -222,7 +258,7 @@ func (f *fakeRunner) CombinedOutput(name string, args ...string) ([]byte, error)
 // install = Create 参数逐字经 runner 下发。
 func TestWatchdogTaskInstallArgs(t *testing.T) {
 	r := &fakeRunner{}
-	tr := WatchdogTR(`C:\Tools\ferryman.exe`)
+	tr := WatchdogTR(`C:\Users\u\ferryman\watchdog-hidden.vbs`)
 	if err := installWatchdogTask(taskDeps{tr: tr, runner: r}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
