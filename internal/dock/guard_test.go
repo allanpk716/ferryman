@@ -1,8 +1,8 @@
 // guard_test.go — 票06：双改写守卫与改写准入验收钉子（spec F10/S3）。
 // 覆盖票面验收：rewrite=true＋upstream 三种回环形态（127.0.0.1:15721 /
 // localhost:15721 / [::1]:15722）→ 全部拒绝改写；open.bigmodel.cn → 放行；
-// 回环别名归一化（localhost/::1/127.0.0.0/8 全归一）；model_map 缺 default
-// 键或值为空 → 拒绝改写退回透传。
+// 回环别名归一化与本地中转判定单源已迁 config（票01：config.IsLocalRelayAddr
+// ——校验豁免与守卫共用），归一化表见 internal/config/dock_upstreams_test.go。
 package dock
 
 import (
@@ -11,30 +11,6 @@ import (
 
 	"ferryman/internal/config"
 )
-
-func TestIsLoopbackHostNormalization(t *testing.T) {
-	table := []struct {
-		host string
-		want bool
-	}{
-		{"localhost", true},
-		{"LOCALHOST", true}, // 大小写变体同归一
-		{"127.0.0.1", true},
-		{"127.9.9.9", true}, // 127.0.0.0/8 全归一
-		{"127.0.0.0", true},
-		{"::1", true},
-		{"::ffff:127.0.0.1", true}, // IPv4 映射形
-		{"open.bigmodel.cn", false},
-		{"10.0.0.5", false},
-		{"localhost.example.com", false}, // 前缀相似但非回环
-		{"", false},
-	}
-	for _, tc := range table {
-		if got := isLoopbackHost(tc.host); got != tc.want {
-			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
-		}
-	}
-}
 
 func TestDoubleRewriteRiskForms(t *testing.T) {
 	table := []struct {

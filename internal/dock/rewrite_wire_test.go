@@ -19,13 +19,12 @@ import (
 	"ferryman/internal/config"
 )
 
-// rewriteDockCfg 放行形态的 [dock] 节（上游由调用方给）。
-func rewriteDockCfg(upstream string) *config.DockCfg {
-	return &config.DockCfg{
-		Listen:          "127.0.0.1:15722",
-		UpstreamBaseURL: upstream,
-		RewriteEnabled:  true,
-		APIKey:          "sk-real-key",
+// rewriteDockUpstream 放行形态的渡口上游条目（票01 Options.Upstream 形状；
+// 上游由调用方给）。
+func rewriteDockUpstream(upstream string) *config.DockUpstream {
+	return &config.DockUpstream{
+		BaseURL: upstream,
+		APIKey:  "sk-real-key",
 		ModelMap: map[string]string{
 			"claude-opus-5":   "glm-5.5",
 			"claude-sonnet-5": "glm-5.3-air",
@@ -65,8 +64,8 @@ func TestRewriteHappyPathRewritesBodyAndHeaders(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(up.handler))
 	defer backend.Close()
 
-	dcfg := rewriteDockCfg(backend.URL)
-	srv, err := NewWithOptions(dcfg.Listen, dcfg.UpstreamBaseURL, Options{Dock: dcfg})
+	entry := rewriteDockUpstream(backend.URL)
+	srv, err := NewWithOptions("127.0.0.1:15722", backend.URL, Options{Upstream: entry})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +154,7 @@ func TestRewriteGuardBlocksLocalRelayAtServer(t *testing.T) {
 	}
 	for _, tc := range table {
 		srv, err := NewWithOptions("127.0.0.1:15722", tc.upstream,
-			Options{Dock: rewriteDockCfg(tc.upstream)})
+			Options{Upstream: rewriteDockUpstream(tc.upstream)})
 		if err != nil {
 			t.Fatalf("%s: %v", tc.upstream, err)
 		}
@@ -173,10 +172,10 @@ func TestRewriteMissingDefaultFallsBackPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dcfg := rewriteDockCfg(backend.URL)
-	dcfg.ModelMap = map[string]string{"claude-opus-5": "glm-5.5"} // 无 default 键
-	srv, err := NewWithOptions(dcfg.Listen, dcfg.UpstreamBaseURL,
-		Options{Dock: dcfg, Accounts: acc})
+	entry := rewriteDockUpstream(backend.URL)
+	entry.ModelMap = map[string]string{"claude-opus-5": "glm-5.5"} // 无 default 键
+	srv, err := NewWithOptions("127.0.0.1:15722", backend.URL,
+		Options{Upstream: entry, Accounts: acc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,9 +218,9 @@ func TestRewriteCountTokensModelOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dcfg := rewriteDockCfg(backend.URL)
-	srv, err := NewWithOptions(dcfg.Listen, dcfg.UpstreamBaseURL,
-		Options{Dock: dcfg, Accounts: acc})
+	entry := rewriteDockUpstream(backend.URL)
+	srv, err := NewWithOptions("127.0.0.1:15722", backend.URL,
+		Options{Upstream: entry, Accounts: acc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,9 +290,9 @@ func TestRewriteRecordsUsageRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dcfg := rewriteDockCfg(backend.URL)
-	srv, err := NewWithOptions(dcfg.Listen, dcfg.UpstreamBaseURL,
-		Options{Dock: dcfg, Accounts: acc})
+	entry := rewriteDockUpstream(backend.URL)
+	srv, err := NewWithOptions("127.0.0.1:15722", backend.URL,
+		Options{Upstream: entry, Accounts: acc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,9 +380,9 @@ func TestRewriteBadBodyFallsBackAndRecordsRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dcfg := rewriteDockCfg(backend.URL)
-	srv, err := NewWithOptions(dcfg.Listen, dcfg.UpstreamBaseURL,
-		Options{Dock: dcfg, Accounts: acc})
+	entry := rewriteDockUpstream(backend.URL)
+	srv, err := NewWithOptions("127.0.0.1:15722", backend.URL,
+		Options{Upstream: entry, Accounts: acc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,9 +410,8 @@ func TestDriftAlertsWiredThroughOptions(t *testing.T) {
 	defer backend.Close()
 	var mu sync.Mutex
 	var alerts []string
-	dcfg := rewriteDockCfg(backend.URL)
-	srv, err := NewWithOptions(dcfg.Listen, dcfg.UpstreamBaseURL, Options{
-		Dock: dcfg,
+	srv, err := NewWithOptions("127.0.0.1:15722", backend.URL, Options{
+		Upstream: rewriteDockUpstream(backend.URL),
 		Alert: func(title, message string) {
 			mu.Lock()
 			alerts = append(alerts, title+"|"+message)

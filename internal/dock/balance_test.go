@@ -1,12 +1,14 @@
-// balance_test.go — 票07：智谱余额只读查询验收钉子。
+// balance_test.go — 票07：智谱余额只读查询验收钉子（票01 起按渡口上游条目
+// 取值：active 条目的 api_key/balance_url）。
 //
 // 覆盖票面验收：
 //   - mock 上游 2xx JSON → 解析出余额（data 包裹形/顶层形；数值与数值串通吃，
 //     字面量原样保留）；Authorization 必为 Bearer <真钥>；
 //   - 401/超时/断连/坏 JSON/缺字段/非数值 → 类别错误，错误串永不携带真钥
 //     （防泄漏钉子，T39）；
-//   - 未配置（无 [dock]/无 api_key）→ 未配置哨兵且零 HTTP（计数器断言）；
-//   - URL 覆写生效（请求落到覆写端点）；默认端点单源解析；
+//   - 未配置（无条目/无 api_key/无 balance_url——不配不显示，D11）→ 未配置
+//     哨兵且零 HTTP（计数器断言）；
+//   - URL 覆写生效（请求落到覆写端点）；空端点＝未配置（无内置回落）；
 //   - BalanceInfo 结构即白名单（只有数值/时间两字段，响应多余内容不落）。
 package dock
 
@@ -47,7 +49,7 @@ func TestBalanceParseDataWrapped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := FetchBalance(&config.DockCfg{APIKey: balanceTestKey, BalanceURL: srv.URL})
+	info, err := FetchBalance(&config.DockUpstream{APIKey: balanceTestKey, BalanceURL: srv.URL})
 	if err != nil {
 		t.Fatalf("FetchBalance: %v", err)
 	}
@@ -73,7 +75,7 @@ func TestBalanceParseTopLevelNumber(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := FetchBalance(&config.DockCfg{APIKey: balanceTestKey, BalanceURL: srv.URL})
+	info, err := FetchBalance(&config.DockUpstream{APIKey: balanceTestKey, BalanceURL: srv.URL})
 	if err != nil {
 		t.Fatalf("FetchBalance: %v", err)
 	}
@@ -83,19 +85,21 @@ func TestBalanceParseTopLevelNumber(t *testing.T) {
 }
 
 func TestBalanceNotConfiguredZeroHTTP(t *testing.T) {
-	// 无 [dock]（nil）/有节无钥 → 未配置哨兵，且零 HTTP（计数器钉死）。
+	// 无条目（nil）/无钥/有钥无 balance_url（票01 D11：不配不显示）→ 未配置
+	// 哨兵，且零 HTTP（计数器钉死）。
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 	}))
 	defer srv.Close()
 
-	for i, dk := range []*config.DockCfg{
+	for i, u := range []*config.DockUpstream{
 		nil,
 		{},
-		{BalanceURL: srv.URL}, // 有 URL 无钥：仍不得发请求
+		{BalanceURL: srv.URL},   // 有 URL 无钥：仍不得发请求
+		{APIKey: balanceTestKey}, // 有钥无 URL：不配不显示（D11），零请求
 	} {
-		info, err := FetchBalance(dk)
+		info, err := FetchBalance(u)
 		if !errors.Is(err, ErrBalanceNotConfigured) {
 			t.Fatalf("用例 %d: err = %v, want 未配置哨兵", i, err)
 		}
@@ -108,18 +112,17 @@ func TestBalanceNotConfiguredZeroHTTP(t *testing.T) {
 	}
 }
 
-func TestBalanceEndpointDefaultAndOverride(t *testing.T) {
-	// 默认内置（单源 config.DefaultDockBalanceURL）；覆写原样保留。
-	if got := balanceEndpoint(&config.DockCfg{APIKey: "k"}); got != config.DefaultDockBalanceURL {
-		t.Fatalf("endpoint = %q, want 内置默认", got)
-	}
+func TestBalanceEndpointOverrideAndEmpty(t *testing.T) {
+	// 票01 D11：balance_url 每上游可选——覆写原样保留；空/空白＝未配置端点
+	// （不再回落内置默认：内置端点只活在预置与迁移物化里）。
 	const ov = "http://127.0.0.1:19999/api/user/balance"
-	if got := balanceEndpoint(&config.DockCfg{APIKey: "k", BalanceURL: ov}); got != ov {
+	if got := balanceEndpoint(&config.DockUpstream{APIKey: "k", BalanceURL: ov}); got != ov {
 		t.Fatalf("endpoint = %q, want 覆写值", got)
 	}
-	// 空白串视同未配置端点 → 回落默认（宽松容错）。
-	if got := balanceEndpoint(&config.DockCfg{APIKey: "k", BalanceURL: "   "}); got != config.DefaultDockBalanceURL {
-		t.Fatalf("endpoint = %q, want 空白回落默认", got)
+	for _, blank := range []string{"", "   "} {
+		if got := balanceEndpoint(&config.DockUpstream{APIKey: "k", BalanceURL: blank}); got != "" {
+			t.Fatalf("endpoint(%q) = %q, want 空（不配不显示）", blank, got)
+		}
 	}
 }
 
@@ -131,7 +134,7 @@ func TestBalanceErrorCategoriesNoKeyLeak(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := FetchBalance(&config.DockCfg{APIKey: balanceTestKey, BalanceURL: srv.URL})
+		_, err := FetchBalance(&config.DockUpstream{APIKey: balanceTestKey, BalanceURL: srv.URL})
 		if err == nil || err.Error() != "上游状态 401" {
 			t.Fatalf("err = %v, want 上游状态 401", err)
 		}
@@ -146,7 +149,7 @@ func TestBalanceErrorCategoriesNoKeyLeak(t *testing.T) {
 		defer srv.Close()
 
 		c := &http.Client{Timeout: 80 * time.Millisecond}
-		_, err := FetchBalanceWithClient(c, &config.DockCfg{APIKey: balanceTestKey, BalanceURL: srv.URL})
+		_, err := FetchBalanceWithClient(c, &config.DockUpstream{APIKey: balanceTestKey, BalanceURL: srv.URL})
 		if err == nil || err.Error() != "网络错误（超时）" {
 			t.Fatalf("err = %v, want 网络错误（超时）", err)
 		}
@@ -161,7 +164,7 @@ func TestBalanceErrorCategoriesNoKeyLeak(t *testing.T) {
 		}
 		srv.Close() // 先拆监听 → 连接拒绝
 
-		_, err = FetchBalance(&config.DockCfg{APIKey: balanceTestKey, BalanceURL: "http://" + u.Host + "/x"})
+		_, err = FetchBalance(&config.DockUpstream{APIKey: balanceTestKey, BalanceURL: "http://" + u.Host + "/x"})
 		if err == nil || err.Error() != "网络错误" {
 			t.Fatalf("err = %v, want 网络错误", err)
 		}
@@ -174,7 +177,7 @@ func TestBalanceErrorCategoriesNoKeyLeak(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := FetchBalance(&config.DockCfg{APIKey: balanceTestKey, BalanceURL: srv.URL})
+		_, err := FetchBalance(&config.DockUpstream{APIKey: balanceTestKey, BalanceURL: srv.URL})
 		if err == nil || err.Error() != "响应解析失败" {
 			t.Fatalf("err = %v, want 响应解析失败", err)
 		}
@@ -187,7 +190,7 @@ func TestBalanceErrorCategoriesNoKeyLeak(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := FetchBalance(&config.DockCfg{APIKey: balanceTestKey, BalanceURL: srv.URL})
+		_, err := FetchBalance(&config.DockUpstream{APIKey: balanceTestKey, BalanceURL: srv.URL})
 		if err == nil || err.Error() != "响应解析失败" {
 			t.Fatalf("err = %v, want 响应解析失败", err)
 		}
@@ -199,7 +202,7 @@ func TestBalanceErrorCategoriesNoKeyLeak(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := FetchBalance(&config.DockCfg{APIKey: balanceTestKey, BalanceURL: srv.URL})
+		_, err := FetchBalance(&config.DockUpstream{APIKey: balanceTestKey, BalanceURL: srv.URL})
 		if err == nil || err.Error() != "响应解析失败" {
 			t.Fatalf("err = %v, want 响应解析失败", err)
 		}

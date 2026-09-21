@@ -2,8 +2,53 @@
 # 真实配置在仓库外，永不入库。代码不内置任何默认 provider：
 # 未配置 [ferry] provider 时摆渡将降级为骨架交接（worker 警告，doctor 提示）。
 
+[ferry]
+# 摆渡用 provider —— 必须对应下面某个 [providers.X] 的名字；不配则摆渡降级骨架
+provider = "deepseek"
+
+[dock]
+# 渡口（票01 多上游，ADR-0011）：CC 与上游之间的本机转发层。
+# CC 的 ANTHROPIC_BASE_URL 指到 http://127.0.0.1:15722 是人工一次性步骤，
+# 程序不改写 CC 的任何配置。active 单选一条渡口上游；换上游＝改 active＋重启。
+# rewrite 隐含开启：上游为本地中转地址（如 127.0.0.1:15721）时守卫强制透传。
+listen = "127.0.0.1:15722"
+active = "智谱"
+
+[dock.upstreams."智谱"]
+# 预置：智谱 GLM Coding Plan（模型拼写以官方文档为准，填 key 后即可用）
+base_url = "https://open.bigmodel.cn/api/anthropic"
+api_key = ""
+model_map = { default = "glm-5.3", opus = "glm-5.3", sonnet = "glm-5.3", haiku = "glm-5.3-flash" }
+balance_url = "https://open.bigmodel.cn/api/user/balance"
+
+[dock.upstreams.kimi]
+# 预置：Kimi Coding Plan（key 在 Kimi Code 控制台建，与 API 开放平台 key 不通用；
+# 不用 kimi-for-coding-highspeed——其"强制 thinking"属性未核实）
+base_url = "https://api.kimi.com/coding/"
+api_key = ""
+model_map = { default = "kimi-for-coding", sonnet = "kimi-for-coding", opus = "k3", haiku = "k3-256k" }
+
+[dock.upstreams.deepseek]
+# 预置：DeepSeek 按量（Anthropic 兼容端点；官方已知边界见 doctor/文档）
+base_url = "https://api.deepseek.com/anthropic"
+api_key = ""
+model_map = { default = "deepseek-flash", sonnet = "deepseek-flash", haiku = "deepseek-flash", opus = "deepseek-v4-pro" }
+
+#[dock.upstreams.cc-switch]
+# 回退条目示例（旧单值配置首启自动迁移出的形态）：指向 cc-switch 本地中转时
+# 守卫强制透传（防双重改写）。要回退就把 active 改回 "cc-switch" 并重启。
+#base_url = "http://127.0.0.1:15721"
+#api_key = ""
+#
+# 条目字段：base_url（必填）/ api_key（可空＝未激活占位）/ model_map（非本地
+# 条目必含非空 default；可选 opus/sonnet/haiku 档位键）/ text_only（可选，
+# 命中映射后模型名的 image 块降级文本占位）/ balance_url（可选，不配不显示）。
+# 换上游：active 改成条目名（TOML 键），重启守护生效。
+
 [providers.local]
 # 自建 OpenAI 兼容网关示例（vLLM / SGLang / ollama 等）——地址按你的实际环境填
+# 注意：[providers] 是摆渡供应商表（OpenAI 协议），与上面 [dock.upstreams]
+# （渡口上游，Anthropic 协议）完全分立、互不联动。
 base_url = "http://<你的推理网关地址>:<端口>/v1"
 model = "<你的模型名>"
 window = 131072
@@ -22,10 +67,6 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
 model = "glm-5.3-flash"
 window = 1048576
 # api_key = "..."
-
-[ferry]
-# 摆渡用 provider —— 必须对应上面某个 [providers.X] 的名字；不配则摆渡降级骨架
-provider = "deepseek"
 
 [notify]
 # 拦截通知（T25）：block 时 Pushover（手机）+ Windows Toast（桌面），文案带交接路径。
