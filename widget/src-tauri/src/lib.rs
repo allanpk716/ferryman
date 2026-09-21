@@ -86,6 +86,18 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // dev 构建旗标（票 03）：debug 构建把窗口导航到带 ?dev=1 的自身地址，
+            // 前端据此显示“演示数据”角标并走演示数据层；release 不带参数（角标不显示、
+            // 走 live 取数，daemon 端点未接线时如实整体灰化）。
+            // 不用 eval 注入：窗口来自 conf 挂不了 initialization script，eval 有输给
+            // 页面脚本的竞态；navigate 在 show 之前发生，用户只看到最终页面（零闪窗不破）。
+            if cfg!(debug_assertions) {
+                if let Ok(mut url) = w.url() {
+                    url.set_query(Some("dev=1"));
+                    let _ = w.navigate(url);
+                }
+            }
+
             let _ = w.show(); // 零闪窗：先载（含位置恢复）后显
             Ok(())
         })
