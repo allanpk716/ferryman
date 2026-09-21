@@ -1,0 +1,27 @@
+name: widget
+
+# ADR-0012：widget 独立构建面——路径过滤，只在 widget/ 或本 workflow 变更时触发；
+# 主仓 Go 构建永不感知本 workflow 的存在。
+on:
+  push:
+    branches: [main]
+    paths: ["widget/**", ".github/workflows/widget.yml"]
+  pull_request:
+    paths: ["widget/**", ".github/workflows/widget.yml"]
+
+jobs:
+  check:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: widget/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: widget/src-tauri
+      - name: cargo check
+        run: cargo check --locked
+      - name: cargo test
+        run: cargo test --locked

@@ -1,0 +1,24 @@
+[package]
+name = "ferryman-widget"
+version = "0.1.0"
+description = "Ferryman 用量悬浮窗：纯读消费 daemon /widget/summary 的置顶小窗"
+authors = ["allan716"]
+edition = "2021"
+
+# 边界铁律（ADR-0012）：widget 永不 import Ferryman Go 代码，只认 HTTP 契约；
+# 本 crate 独立于主仓（根目录无 Cargo workspace），Rust 工具链永不进主构建。
+
+[lib]
+# lib 名加 _lib 后缀避免与 bin 名冲突（Windows 下 rust-lang/cargo#8519）
+name = "ferryman_widget_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+strip = true
+lto = true
