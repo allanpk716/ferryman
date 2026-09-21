@@ -151,6 +151,11 @@
   /* 恢复按钮（收起演示） */
   #restoreBtn{position:fixed; z-index:41; right:18px; top:66px}
 </style>
+<style>/* 壳内占位适配（票 03 正式移植前）：去演示台 chrome，widget 铺满窗口 */
+.mockbar,.legend,#restoreBtn{display:none!important}
+.widget{position:fixed!important;left:0!important;top:0!important;right:auto!important;bottom:auto!important;transform:none!important;max-height:100vh;overflow:hidden}
+body{overflow:hidden}
+</style>
 </head>
 <body>
 
@@ -177,7 +182,7 @@
 
 <!-- 悬浮窗本体：disc 由下方契约 JSON 渲染 -->
 <div class="widget vertical" id="widget">
-  <div class="grip" title="位置已记忆（mock 演示）">⠿</div>
+  <div class="grip" data-tauri-drag-region title="拖动移动（位置记忆）">⠿</div>
 </div>
 
 <button id="restoreBtn" class="hidden" style="font:12.5px inherit;color:var(--txt);background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:6px 12px;cursor:pointer">↩ 从托盘恢复悬浮窗</button>

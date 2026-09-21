@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "悬浮窗主窗口最小权限（W1：仅核心默认；插件能力随票 02/04/05 增补）",
   "windows": ["widget"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }
