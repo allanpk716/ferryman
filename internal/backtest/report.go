@@ -72,7 +72,7 @@ type CountsView struct {
 // CapS 为指针：nil = +Inf（JSON 不支持 Inf，置 null）。
 type PerfView struct {
 	Scenario     string   `json:"scenario"`
-	TTLS         float64  `json:"ttl_s"`
+	TTLS         float64  `json:"ttl_s"` // 点级有效 ttl_s′（场景档 × 乘数；对照列 ×1.0 即档值）
 	TTLMult      float64  `json:"ttl_mult"`
 	TauS         float64  `json:"tau_s"`
 	FirstBeatS   float64  `json:"first_beat_s"`
@@ -500,7 +500,7 @@ func perfOf(r *ScenarioResult) *PerfView {
 		return nil
 	}
 	p := &PerfView{
-		Scenario: r.Scenario, TTLS: r.TTLS, TTLMult: r.Point.TTLMult,
+		Scenario: r.Scenario, TTLS: r.Point.TTLS, TTLMult: r.Point.TTLMult,
 		TauS: r.Point.TauS, FirstBeatS: r.Point.FirstBeatS,
 		Windows: r.Windows, Beats: r.Beats, BeatCost: r.BeatCost,
 		GrossSavings: r.GrossSavings, NetSavings: r.NetSavings,

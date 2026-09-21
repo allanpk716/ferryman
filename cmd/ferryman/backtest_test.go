@@ -129,11 +129,11 @@ func TestBacktestE2E(t *testing.T) {
 	if v.Gap.Recommend == "" || strings.Contains(v.Gap.Recommend, "无法给出") {
 		t.Fatalf("Recommend = %q, want 行动出口文案", v.Gap.Recommend)
 	}
-	// 档数：规范三档恒在 + 引擎稳定键（config/-1/3/-1/2）作为额外档附后
-	//（票03 report.go 文档化接缝：「引擎用了别的名字时作为额外档附在规范
-	// 三档之后，不丢数」）——共 6 档，其中 3 档带数据。
-	if len(v.Tiers) != 6 {
-		t.Fatalf("Tiers 档数 = %d, want 6（规范三档 + 引擎键三档）", len(v.Tiers))
+	// 档数：引擎场景键与报告规范档名同值单源（grid.go 常量别名 report.go
+	// ScenarioName*，78e8c50 首跑暴露的接缝瑕疵经协调者修复）——恰规范三档，
+	// 三档全带数据，无占位行。
+	if len(v.Tiers) != 3 {
+		t.Fatalf("Tiers 档数 = %d, want 3（规范三档，键名单源后无额外档）", len(v.Tiers))
 	}
 	withData := 0
 	for _, tv := range v.Tiers {

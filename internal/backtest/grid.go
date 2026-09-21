@@ -24,12 +24,14 @@ import (
 // （对数均匀；规格「扫参网格」：档位表即全集，无开闭区间歧义）。
 var TTLMultipliers = [...]float64{0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.4, 1.6, 1.8, 2.0}
 
-// TTL 场景档稳定键（规格 D3：config TTL / −1/3 / −1/2）。报告文案由票03 定，
-// 引擎只产稳定键；切片出场序即此处常量声明序。
+// TTL 场景档稳定键（规格 D3：config TTL / −1/3 / −1/2）。与报告规范档名
+// （report.go ScenarioName* 常量）**同值单源**：引擎 Scenario 字段直接携带
+// 规范档名，报告场景轴按名匹配不再出现占位行（78e8c50 首跑暴露的接缝瑕疵，
+// 协调者修复 2026-09-21）；切片出场序即此处常量声明序。
 const (
-	ScenarioConfig     = "config"
-	ScenarioMinusThird = "-1/3"
-	ScenarioMinusHalf  = "-1/2"
+	ScenarioConfig     = ScenarioNameConfig
+	ScenarioMinusThird = ScenarioNameThird
+	ScenarioMinusHalf  = ScenarioNameHalf
 )
 
 // scenario 单个 TTL 场景档（缓存存活判定的 TTL 值 + 稳定键）。
