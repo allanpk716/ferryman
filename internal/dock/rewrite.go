@@ -16,9 +16,9 @@
 // SetEscapeHTML(false) 重编码（不对 <>& 做多余转义，CC 请求体常含代码片段）。
 // 重编码会规范化空白与键序，票面接受「解析后等价」而非逐字节相同。
 //
-// TODO(票06)：RewriteConfig 的 model_map/default/text_only 三字段从 [dock]
-// 配置节接线（internal/config 的 DockCfg 目前只有 UpstreamBaseURL/Listen）；
-// rewrite_enabled 开关与调用时机也由票06 在接线层控制——本纯函数不感知开关，
+// 接线现状（票01 收敛）：RewriteConfig 的 model_map/default/text_only 三字段
+// 由装配点从渡口上游条目（config.DockUpstream，经 ActiveUpstream 解析）注入；
+// 改写恒被请求（隐含开启），守卫拒绝即整体退透传——本纯函数不感知准入，
 // 被调用即执行全部生效改写，不存在「第六件」。
 package dock
 

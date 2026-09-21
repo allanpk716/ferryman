@@ -767,6 +767,279 @@ func TestDoctorResultsUpdateResidueWiring(t *testing.T) {
 	}
 }
 
+// ---- 票04：CheckDockRewrite 新语义（改写隐含开启；复用 dock.ResolveRewrite
+// 显式开关内核，绝不读废弃 rewrite_enabled） ----
+
+// TestCheckDockRewriteImplicitOn 票01 评审确认缺陷的修复钉子：迁移后的新配置
+// rewrite_enabled 恒缺省——旧实现据此误报"渡口纯透传"；新实现按 ActiveUpstream
+// 条目交守卫裁决。
+func TestCheckDockRewriteImplicitOn(t *testing.T) {
+	// 新表形态：active=智谱（非本地、default 在）、rewrite_enabled 保持 false
+	d := &config.DockCfg{
+		Listen: "127.0.0.1:15722", Active: "智谱",
+		Upstreams: map[string]config.DockUpstream{
+			"智谱": {BaseURL: "https://open.bigmodel.cn/api/anthropic",
+				ModelMap: map[string]string{"default": "glm-5.3"}},
+		},
+	}
+	c := CheckDockRewrite(d)
+	if !c.OK || !strings.Contains(c.Msg, "改写模式在位") {
+		t.Fatalf("新表非本地上游应判改写在位（不得读废弃 rewrite_enabled）: %+v", c)
+	}
+	// 迁移回退条目：本地中转地址＝守卫强制透传——设计内，不判失败
+	mig := &config.DockCfg{
+		Listen: "127.0.0.1:15722", Active: "cc-switch",
+		Upstreams: map[string]config.DockUpstream{
+			"cc-switch": {BaseURL: "http://127.0.0.1:15721"},
+		},
+	}
+	c = CheckDockRewrite(mig)
+	if !c.OK || !strings.Contains(c.Msg, "透传") || !strings.Contains(c.Msg, "设计内") {
+		t.Fatalf("本地回退条目应判设计内透传: %+v", c)
+	}
+	// nil dock＝渡口未配置
+	c = CheckDockRewrite(nil)
+	if !c.OK || !strings.Contains(c.Msg, "渡口未配置") {
+		t.Fatalf("nil dock 应通过零行为: %+v", c)
+	}
+	// 表形态非本地缺 default → FAIL 点名
+	bad := &config.DockCfg{
+		Active: "x",
+		Upstreams: map[string]config.DockUpstream{
+			"x": {BaseURL: "https://x.example", ModelMap: map[string]string{}},
+		},
+	}
+	c = CheckDockRewrite(bad)
+	if c.OK || !strings.Contains(c.Msg, "default") {
+		t.Fatalf("非本地缺 default 应 FAIL: %+v", c)
+	}
+	// 悬空 active → FAIL
+	dangling := &config.DockCfg{Active: "ghost",
+		Upstreams: map[string]config.DockUpstream{
+			"real": {BaseURL: "https://r.example", ModelMap: map[string]string{"default": "m"}}}}
+	c = CheckDockRewrite(dangling)
+	if c.OK {
+		t.Fatalf("悬空 active 应 FAIL: %+v", c)
+	}
+}
+
+// ---- 票04：渡口上游检查组（CheckDockUpstreams） ----
+
+// migratedDock 全量迁移产物形态（票01）：cc-switch 回退条目＋智谱/kimi/deepseek
+// 三条未激活预置（key 留空），active=cc-switch（本地回退通道）。
+func migratedDock() *config.DockCfg {
+	return &config.DockCfg{
+		Listen: "127.0.0.1:15722", Active: "cc-switch",
+		Upstreams: map[string]config.DockUpstream{
+			"cc-switch": {BaseURL: "http://127.0.0.1:15721"},
+			"智谱": {BaseURL: "https://open.bigmodel.cn/api/anthropic",
+				ModelMap: map[string]string{"default": "glm-5.3"}},
+			"kimi": {BaseURL: "https://api.kimi.com/coding/",
+				ModelMap: map[string]string{"default": "kimi-for-coding"}},
+			"deepseek": {BaseURL: "https://api.deepseek.com/anthropic",
+				ModelMap: map[string]string{"default": "deepseek-flash"}},
+		},
+	}
+}
+
+// TestCheckDockUpstreamsMigratedHealthy 迁移形态健康面：主判通过；三条未激活
+// 预置逐条缺钥提示（pass 不判失败）；本地 cc-switch 条目豁免缺钥提示；active
+// 非 deepseek 无边界提示。
+func TestCheckDockUpstreamsMigratedHealthy(t *testing.T) {
+	res := CheckDockUpstreams(migratedDock())
+	byName := map[string]CheckResult{}
+	for _, r := range res {
+		byName[r.Name] = r
+	}
+	main, ok := byName["dock_upstream"]
+	if !ok || main.Status != StatusPass {
+		t.Fatalf("迁移形态应主判通过: %+v", res)
+	}
+	for _, n := range []string{"dock_upstream_key:智谱", "dock_upstream_key:kimi", "dock_upstream_key:deepseek"} {
+		r, ok := byName[n]
+		if !ok || r.Status != StatusPass || !strings.Contains(r.Detail, "未配置（手编 config 填 api_key）") {
+			t.Fatalf("缺钥提示缺位或形态不对: %s → %+v", n, r)
+		}
+	}
+	if _, ok := byName["dock_upstream_key:cc-switch"]; ok {
+		t.Fatalf("本地中转条目不出站鉴权，不应出缺钥提示: %+v", res)
+	}
+	if _, ok := byName["dock_deepseek_boundary"]; ok {
+		t.Fatalf("active 非 deepseek 不应出边界提示: %+v", res)
+	}
+}
+
+// TestCheckDockUpstreamsMissingDefaultFails 非本地条目缺 default＝FAIL 点名；
+// 本地条目（cc-switch 无 model_map）豁免——同 validateDockUpstreams 判据域。
+func TestCheckDockUpstreamsMissingDefaultFails(t *testing.T) {
+	d := migratedDock()
+	x := d.Upstreams["kimi"]
+	x.ModelMap = map[string]string{}
+	d.Upstreams["kimi"] = x
+	res := CheckDockUpstreams(d)
+	if res[0].Name != "dock_upstream" || res[0].Status != StatusFail || !strings.Contains(res[0].Detail, "kimi") {
+		t.Fatalf("非本地缺 default 应 FAIL 并点名: %+v", res[0])
+	}
+}
+
+// TestCheckDockUpstreamsDanglingActiveFails active 悬空＝FAIL（可用条目列全）。
+func TestCheckDockUpstreamsDanglingActiveFails(t *testing.T) {
+	d := migratedDock()
+	d.Active = "ghost"
+	res := CheckDockUpstreams(d)
+	if res[0].Status != StatusFail || !strings.Contains(res[0].Detail, "ghost") || !strings.Contains(res[0].Detail, "kimi") {
+		t.Fatalf("悬空 active 应 FAIL 并列可用条目: %+v", res[0])
+	}
+}
+
+// TestCheckDockUpstreamsDeepSeekBoundary active=deepseek 时输出官方边界（清单
+// 逐 token 齐全）；手改名条目按端点命中同样出提示。
+func TestCheckDockUpstreamsDeepSeekBoundary(t *testing.T) {
+	d := migratedDock()
+	d.Active = "deepseek"
+	res := CheckDockUpstreams(d)
+	var boundary *CheckResult
+	for i := range res {
+		if res[i].Name == "dock_deepseek_boundary" {
+			boundary = &res[i]
+		}
+	}
+	if boundary == nil || boundary.Status != StatusPass {
+		t.Fatalf("active=deepseek 应出边界提示: %+v", res)
+	}
+	for _, tok := range []string{"document", "search_result", "redacted_thinking",
+		"mcp_tool_use", "mcp_tool_result", "is_error", "disable_parallel_tool_use",
+		"budget_tokens", "透传", "upstream use"} {
+		if !strings.Contains(boundary.Detail, tok) {
+			t.Fatalf("边界提示缺 %q: %s", tok, boundary.Detail)
+		}
+	}
+	// 手改名条目按端点识别
+	d2 := &config.DockCfg{Active: "ds", Upstreams: map[string]config.DockUpstream{
+		"ds": {BaseURL: "https://api.deepseek.com/anthropic",
+			ModelMap: map[string]string{"default": "deepseek-flash"}}}}
+	res2 := CheckDockUpstreams(d2)
+	found := false
+	for _, r := range res2 {
+		if r.Name == "dock_deepseek_boundary" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("端点命中也应出边界提示: %+v", res2)
+	}
+}
+
+// TestCheckDockUpstreamsLegacyForm 旧单值形态（未迁移/迁移失败回退）＝合法回退
+// 态：单项提示不判失败，含迁移反复失败异形排查面；deepseek 端点照出边界。
+func TestCheckDockUpstreamsLegacyForm(t *testing.T) {
+	legacy := &config.DockCfg{Listen: "127.0.0.1:15722",
+		UpstreamBaseURL: "http://127.0.0.1:15721"} // 旧单值、无表、无 model_map
+	res := CheckDockUpstreams(legacy)
+	if len(res) != 1 || res[0].Name != "dock_upstream" || res[0].Status != StatusPass {
+		t.Fatalf("旧单值形态应单项提示不判失败: %+v", res)
+	}
+	for _, tok := range []string{"未迁移", "异形"} {
+		if !strings.Contains(res[0].Detail, tok) {
+			t.Fatalf("迁移提示缺 %q: %s", tok, res[0].Detail)
+		}
+	}
+	// 旧单值＋deepseek 端点 → 边界提示照出
+	dsLegacy := &config.DockCfg{UpstreamBaseURL: "https://api.deepseek.com/anthropic"}
+	res = CheckDockUpstreams(dsLegacy)
+	if len(res) != 2 || res[1].Name != "dock_deepseek_boundary" {
+		t.Fatalf("旧单值 deepseek 端点应出边界提示: %+v", res)
+	}
+}
+
+// TestCheckDockUpstreamsMigrationRewriteHint 迁移条目非本地上游＝改写已隐含
+// 开启的行为变化提示（评审低危备注）；本地回退条目（常态）不出提示。
+func TestCheckDockUpstreamsMigrationRewriteHint(t *testing.T) {
+	d := migratedDock()
+	cc := d.Upstreams["cc-switch"]
+	cc.BaseURL = "https://open.bigmodel.cn/api/anthropic" // 迁移条目非本地（旧直连形态）
+	cc.ModelMap = map[string]string{"default": "glm-5.3"}
+	d.Upstreams["cc-switch"] = cc
+	res := CheckDockUpstreams(d)
+	var hint *CheckResult
+	for i := range res {
+		if res[i].Name == "dock_upstream_rewrite_hint" {
+			hint = &res[i]
+		}
+	}
+	if hint == nil || hint.Status != StatusPass || !strings.Contains(hint.Detail, "隐含开启") {
+		t.Fatalf("迁移条目非本地应出行为变化提示: %+v", res)
+	}
+	for _, r := range CheckDockUpstreams(migratedDock()) {
+		if r.Name == "dock_upstream_rewrite_hint" {
+			t.Fatalf("本地回退条目不应出行为变化提示: %+v", res)
+		}
+	}
+}
+
+// ---- 票04：doctor 装配缝——渡口上游检查组接线与人面输出 ----
+
+// TestDoctorResultsDockGroupWiring cfg.Dock 在位时：dock_rewrite 后紧跟
+// dock_upstream（组内主判在前），缺钥提示以 pass 语义进入结构化出口。
+func TestDoctorResultsDockGroupWiring(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	cfg, _ := deps.LoadCfg()
+	cfg.Dock = migratedDock()
+	res := doctorResults(deps)
+	names := make([]string, len(res))
+	for i, r := range res {
+		names[i] = r.Name
+	}
+	idx := -1
+	for i, n := range names {
+		if n == "dock_rewrite" {
+			idx = i
+		}
+	}
+	if idx < 0 || idx+1 >= len(names) || names[idx+1] != "dock_upstream" {
+		t.Fatalf("dock 检查组接线不符（dock_rewrite 后应紧跟 dock_upstream）: %v", names)
+	}
+	for _, r := range res {
+		if strings.HasPrefix(r.Name, "dock_upstream_key:") && r.Status != StatusPass {
+			t.Fatalf("缺钥提示应 pass: %+v", r)
+		}
+	}
+}
+
+// TestRunDoctorDockHintsDoNotFail 人面/退出码：迁移形态（含未激活预置缺钥提示）
+// 全绿退出 0、健康行与提示行以 [OK] 可见；缺 default 判 [FAIL] 并退出 1。
+func TestRunDoctorDockHintsDoNotFail(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	cfg, _ := deps.LoadCfg()
+	cfg.Dock = migratedDock()
+	var out strings.Builder
+	deps.Out = &out
+	if code := runDoctor(deps); code != 0 {
+		t.Fatalf("迁移形态（含未激活预置缺钥提示）应退出 0:\n%s", out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "[OK]   渡口上游 active=cc-switch 在位") {
+		t.Fatalf("缺渡口上游健康行:\n%s", got)
+	}
+	if !strings.Contains(got, "未配置（手编 config 填 api_key）") {
+		t.Fatalf("缺预置缺钥提示行:\n%s", got)
+	}
+	// 缺 default 判 FAIL：可见 + 退出 1
+	bad := migratedDock()
+	x := bad.Upstreams["deepseek"]
+	x.ModelMap = map[string]string{}
+	bad.Upstreams["deepseek"] = x
+	cfg.Dock = bad
+	var out2 strings.Builder
+	deps.Out = &out2
+	if code := runDoctor(deps); code != 1 {
+		t.Fatalf("非本地缺 default 应退出 1:\n%s", out2.String())
+	}
+	if !strings.Contains(out2.String(), "[FAIL] 渡口上游配置有问题") {
+		t.Fatalf("缺 default 失败行不可见:\n%s", out2.String())
+	}
+}
+
 // ---- 票05：结构化出口（doctorResults / DoctorStructured / realStatsProbe 端口） ----
 
 // notProdPort 结构化出口测试的端口验收钉子（生产端口全集：渡口双轨/上游/

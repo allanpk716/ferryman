@@ -1,10 +1,13 @@
-// balance.go — 票07：智谱（bigmodel）余额只读查询。
+// balance.go — 票07：智谱（bigmodel）余额只读查询（票01 起按渡口上游条目
+// 取值：active 条目的 api_key/balance_url）。
 //
 // 语义（票面钉死）：
-//   - 只读 GET：Authorization: Bearer <[dock].api_key>（与透传改写出站同一把
+//   - 只读 GET：Authorization: Bearer <条目.api_key>（与透传改写出站同一把
 //     真钥，T39：钥只活本机 config.toml，不入日志/账本/错误）。
 //   - 按需触发：调用方（daemon /stats 面板拉取）拉一次查一次；本文件不做任何
 //     后台轮询/定时器。
+//   - 未配置＝条目缺失/无 api_key/无 balance_url（票01 D11：不配不显示）——
+//     零 HTTP；内置智谱端点只活在预置与首启迁移的物化里，本层无默认回落。
 //   - 错误只出类别（未配置 / 网络错误 / 网络错误（超时） / 上游状态 NNN /
 //     响应解析失败）——错误串永不携带 api_key 与 URL 原文（net/url.Error 的
 //     包裹文本可能带 URL，故一律不透传原始错误）。
@@ -37,8 +40,8 @@ const (
 	balanceCatParse   = "响应解析失败"
 )
 
-// ErrBalanceNotConfigured 未配置哨兵：无 [dock] 节或 api_key 为空（展示层
-// 据此出「未配置」文案单源；该路径零 HTTP）。
+// ErrBalanceNotConfigured 未配置哨兵：无条目、无 api_key 或无 balance_url
+// （不配不显示，D11；展示层据此出「未配置」文案单源；该路径零 HTTP）。
 var ErrBalanceNotConfigured = errors.New("未配置")
 
 // BalanceInfo 余额查询结果——只取数值/时间字段（结构即白名单，票07；
@@ -49,21 +52,21 @@ type BalanceInfo struct {
 }
 
 // FetchBalance 生产入口：5s 墙钟超时。
-func FetchBalance(dk *config.DockCfg) (BalanceInfo, error) {
-	return FetchBalanceWithClient(&http.Client{Timeout: BalanceTimeoutS}, dk)
+func FetchBalance(u *config.DockUpstream) (BalanceInfo, error) {
+	return FetchBalanceWithClient(&http.Client{Timeout: BalanceTimeoutS}, u)
 }
 
 // FetchBalanceWithClient client 注入内核（测试注入短超时/httptest）。
-func FetchBalanceWithClient(c *http.Client, dk *config.DockCfg) (BalanceInfo, error) {
-	if dk == nil || strings.TrimSpace(dk.APIKey) == "" {
+func FetchBalanceWithClient(c *http.Client, u *config.DockUpstream) (BalanceInfo, error) {
+	if u == nil || strings.TrimSpace(u.APIKey) == "" || balanceEndpoint(u) == "" {
 		return BalanceInfo{}, ErrBalanceNotConfigured // 未配置不发请求
 	}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
-		balanceEndpoint(dk), nil)
+		balanceEndpoint(u), nil)
 	if err != nil { // balance_url 配坏：不出 URL 原文（可能内嵌敏感串）
 		return BalanceInfo{}, errors.New(balanceCatNetwork)
 	}
-	req.Header.Set("Authorization", "Bearer "+dk.APIKey) // 真钥只进出站头
+	req.Header.Set("Authorization", "Bearer "+u.APIKey) // 真钥只进出站头
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.Do(req)
 	if err != nil {
@@ -85,13 +88,10 @@ func FetchBalanceWithClient(c *http.Client, dk *config.DockCfg) (BalanceInfo, er
 	return parseBalance(body)
 }
 
-// balanceEndpoint 端点解析单源：balance_url 覆写（空白视同未配），否则内置
-// 默认（程序化构造 DockCfg 不经 TOML 解析层时的防御回落）。
-func balanceEndpoint(dk *config.DockCfg) string {
-	if u := strings.TrimSpace(dk.BalanceURL); u != "" {
-		return u
-	}
-	return config.DefaultDockBalanceURL
+// balanceEndpoint 端点解析单源：条目 balance_url（空白视同未配——不配不显示，
+// 票01 D11；无内置默认回落）。
+func balanceEndpoint(u *config.DockUpstream) string {
+	return strings.TrimSpace(u.BalanceURL)
 }
 
 // parseBalance 防御性解析：data 包裹形优先、顶层兜底，只取 balance/expire

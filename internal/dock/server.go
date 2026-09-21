@@ -6,12 +6,13 @@
 // target.Host＋FlushInterval:-1）不加 XFF、Host 可控、体逐字节同、逐跳头剥。
 // 入站不鉴权（绑 127.0.0.1 已足；auth 类头照抄不校验——占位令牌也是照抄）。
 //
-// 票06 双模式语义：rewrite_enabled=false（默认）＝纯透传——票01 路径逐字保留
-// （头零处理、体零触碰、不记账不观察）；true＝/v1/messages POST 过改写器
-// （改写发生在进代理前：读体→改写→回填→代理），count_tokens 仅同映射 model
-// （其余键不动）。守卫拒绝（上游指本地中转端口 / 缺 default 键）→ 退回纯
-// 透传＋告警，绝不半改写。快照存改写前 CC 原始体——beat 重放原始请求经渡口
-// 再走同一改写（"beat 与真流量同路径"不变式）。
+// 票06 双模式语义（票01 起开关退役，D13）：Options.Upstream 注入即隐含请求
+// 改写——纯透传（New 全零 Options / 守卫拒绝）时票01 路径逐字保留（头零处
+// 理、体零触碰、不记账不观察）；改写开＝/v1/messages POST 过改写器（改写发生
+// 在进代理前：读体→改写→回填→代理），count_tokens 仅同映射 model（其余键
+// 不动）。守卫拒绝（上游指本地中转端口 / 缺 default 键）→ 退回纯透传＋日志，
+// 绝不半改写。快照存改写前 CC 原始体——beat 重放原始请求经渡口再走同一改写
+// （"beat 与真流量同路径"不变式）。
 package dock
 
 import (
@@ -46,12 +47,15 @@ const (
 	modeRewrite     = "rewrite"
 )
 
-// Options NewWithOptions 的注入面：daemon 接线把 [dock] 节、账本句柄与漂移
-// 推送闭包交给渡口。New(listen, upstream) 等价于全零 Options＝纯透传、不记
-// 账、不观察（票01 形状与行为不变）。
+// Options NewWithOptions 的注入面：daemon 接线把渡口上游条目（票01：active
+// 条目，改写值与出站真钥的唯一来源）、账本句柄与漂移推送闭包交给渡口。
+// New(listen, upstream) 等价于全零 Options＝纯透传、不记账、不观察（票01
+// 形状与行为不变）。
 type Options struct {
-	// Dock 完整 [dock] 配置节；nil 或 RewriteEnabled=false＝纯透传。
-	Dock *config.DockCfg
+	// Upstream active 渡口上游条目（config.ActiveUpstream 的产物）。改写隐含
+	// 开启（D13/D15：无开关）——非本地上游即改写＋真钥替换；上游为本地中转
+	// 地址由守卫强制退透传（防双重改写）。nil＝纯透传不观察（票01 旧形状）。
+	Upstream *config.DockUpstream
 	// Accounts dock 科目账本；nil＝不记账（旧测试零改动）。
 	Accounts *accounts.Accounts
 	// Alert 形态漂移推送函数（daemon 侧给 AlertViaNotify(cfg) 的闭包）；
@@ -99,9 +103,9 @@ func New(listen, upstreamBaseURL string) (*Server, error) {
 	return NewWithOptions(listen, upstreamBaseURL, Options{})
 }
 
-// NewWithOptions 构造渡口（票06 接线入口）：改写模式、dock 科目、形态漂移
-// 观察按 Options 装配；守卫拒绝＝退回纯透传＋告警日志（拒绝是构造期一次
-// 判死——[dock] 节无热加载，见 guard.go 注释）。
+// NewWithOptions 构造渡口（票06 接线入口，票01 起上游条目化）：改写模式、
+// dock 科目、形态漂移观察按 Options 装配；守卫拒绝＝退回纯透传＋日志（拒绝
+// 是构造期一次判死——无热加载，见 guard.go 注释）。
 func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) {
 	if listen == "" {
 		return nil, fmt.Errorf("dock: listen 为空")
@@ -115,15 +119,15 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 		target: target,
 		store:  NewSnapshotStore(),
 	}
-	if o.Dock != nil {
+	if o.Upstream != nil {
 		s.drift = NewDriftTracker(o.Alert)
-		if o.Dock.RewriteEnabled {
-			rw, ok, reason := ResolveRewrite(o.Dock)
-			if ok {
-				s.rewriteOn, s.rwCfg, s.apiKey = true, rw, o.Dock.APIKey
-			} else {
-				logger.Printf("⚠ %s", reason)
-			}
+		// 票01（D13/D15）：改写隐含开启——无开关，守卫单源裁决（本地中转
+		// 地址退透传；非本地缺 default 退透传——配置层已拒，构造期兜底）。
+		rw, ok, reason := resolveRewrite(true, upstreamBaseURL, o.Upstream.ModelMap, o.Upstream.TextOnly)
+		if ok {
+			s.rewriteOn, s.rwCfg, s.apiKey = true, rw, o.Upstream.APIKey
+		} else {
+			logger.Printf("[dock] %s", reason)
 		}
 	}
 	if o.Accounts != nil {

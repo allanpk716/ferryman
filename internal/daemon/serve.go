@@ -62,6 +62,12 @@ func ServeContext(ctx context.Context, relaxMinGap bool, version string) int {
 		fmt.Println(err)
 		return 1
 	}
+	// 票01：旧 [dock] 单值首启迁移＋预置（加载配置后、渡口构造前；仅此处
+	// 写回用户配置——CLI/doctor 只读解析）。失败如实告警并保留旧单值行为
+	// 继续（ActiveUpstream 兜底包装），绝不丢配置。
+	if err := config.MigrateDockFirstBoot("", cfg); err != nil {
+		fmt.Printf("[ferryman] ⚠ [dock] 首启迁移失败（保留旧单值配置继续运行）: %v\n", err)
+	}
 	return serveConfig(cfg, ctx, version)
 }
 
@@ -156,25 +162,36 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// 不绑端口、零行为变化。独立 listener/生命周期：构造或绑定失败只告警
 	// 降级，绝不拖垮主服务（渡口挂＝CC 直连上游旧行为，base_url 指回即回退）。
 	// 把 CC base_url 指到渡口是人工操作，不在本程序职责内。
+	// 票01 装配按 active：目的地/真钥/model_map/text_only 全部取自 active 条目
+	// （ActiveUpstream 单源——新旧并存以新表为准，F9）；旧单值字段此处不读。
 	var dockSrv *dock.Server
 	if cfg.Dock != nil {
-		// 票06 接线：改写模式/守卫/dock 科目/漂移告警经 Options 注入——
-		// rewrite_enabled 与守卫判定在 dock 包内单源裁决（拒绝即退纯透传）。
-		ds, derr := dock.NewWithOptions(cfg.Dock.Listen, cfg.Dock.UpstreamBaseURL, dock.Options{
-			Dock:     cfg.Dock,
-			Accounts: acc,
-			Alert:    dock.AlertViaNotify(cfg),
-		})
-		if derr != nil {
-			fmt.Printf("[ferryman] ⚠ 渡口未启动（配置无效）: %v\n", derr)
-		} else if derr = ds.Start(); derr != nil {
-			fmt.Printf("[ferryman] ⚠ 渡口未启动（监听 %s 失败，主服务不受影响）: %v\n",
-				cfg.Dock.Listen, derr)
+		if name, up := cfg.Dock.ActiveUpstream(); up == nil {
+			fmt.Printf("[ferryman] ⚠ 渡口未启动：[dock].active %q 未指向上游表中的任何条目\n",
+				cfg.Dock.Active)
 		} else {
-			dockSrv = ds
-			d.DockSnap = ds.Snapshots()
-			fmt.Printf("[ferryman] 渡口: http://%s → %s（模式由守卫裁决；快照内存态，重启即失）\n",
-				cfg.Dock.Listen, cfg.Dock.UpstreamBaseURL)
+			// 票06 接线（票01 起条目化）：改写隐含开启，守卫/doctor 判定在
+			// dock 包内单源裁决（本地中转地址拒绝即退纯透传）。
+			ds, derr := dock.NewWithOptions(cfg.Dock.Listen, up.BaseURL, dock.Options{
+				Upstream: up,
+				Accounts: acc,
+				Alert:    dock.AlertViaNotify(cfg),
+			})
+			if derr != nil {
+				fmt.Printf("[ferryman] ⚠ 渡口未启动（配置无效）: %v\n", derr)
+			} else if derr = ds.Start(); derr != nil {
+				fmt.Printf("[ferryman] ⚠ 渡口未启动（监听 %s 失败，主服务不受影响）: %v\n",
+					cfg.Dock.Listen, derr)
+			} else {
+				dockSrv = ds
+				d.DockSnap = ds.Snapshots()
+				label := name
+				if label == "" {
+					label = "旧单值" // 无表兜底（未迁移/迁移失败回退）
+				}
+				fmt.Printf("[ferryman] 渡口: http://%s → %s（active=%s；模式由守卫裁决；快照内存态，重启即失）\n",
+					cfg.Dock.Listen, up.BaseURL, label)
+			}
 		}
 	}
 

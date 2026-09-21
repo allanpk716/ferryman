@@ -105,18 +105,20 @@ const DefaultDockBalanceURL = "https://open.bigmodel.cn/api/user/balance"
 // 为 nil 指针（[dock] 节缺失）＝渡口完全不启动——不绑端口、零行为变化
 // （评审 F11 裁定）；节存在才构造本结构，缺字段回落默认值。
 type DockCfg struct {
-	UpstreamBaseURL string // 上游（默认 cc-switch）地址
-	Listen          string // 渡口监听地址（绑本机）
-	// 票06 改写模式（rewrite_enabled=false＝纯透传，以下字段不生效）。
-	// 校验语义：true 但 model_map 缺 default 键/值为空、或上游指回本地中转
-	// 端口 → 守卫拒绝进入改写模式（退回纯透传）＋告警——不硬拒启（渡口挂
-	// ＝CC 直连旧行为，见 dock.ResolveRewrite 单源）。
-	RewriteEnabled bool              // true＝/v1/messages POST 过改写器＋出站头卫生
-	APIKey         string            // 上游真钥：只进出站 Authorization，永不入日志/账本/错误（T39）
-	ModelMap       map[string]string // 别名→GLM 档；含 default 键（改写模式必须非空）
-	TextOnly       []string          // text-only 模型名单（命中则 image 块降级文本占位）
-	// 票07 余额只读查询（/stats 面板展示用；查询侧无 api_key → 未配置零请求）。
-	BalanceURL string // 余额端点覆写；解析层缺省回落 DefaultDockBalanceURL
+	Listen string // 渡口监听地址（绑本机）
+	// 票01 多上游（ADR-0011）：渡口上游表＋active 单选。装配与查询一律经
+	// ActiveUpstream() 取 active 条目（新表+active 优先，F9）；下组旧单值
+	// 字段仅作无表时的兜底包装与首启迁移的源值——serve 装配点不再读它们。
+	Active    string                  // active 单选键：指向 Upstreams 中一条
+	Upstreams map[string]DockUpstream // [dock.upstreams.<名>] 条目表（定义见 dock_upstream.go）
+	// 旧单值六字段（rewrite_enabled 已废弃：解析容忍、装配不生效——改写隐含
+	// 开启，由守卫对本地中转地址强制透传兜底，D13/D15）。
+	UpstreamBaseURL string              // 上游（默认 cc-switch）地址
+	RewriteEnabled  bool                // 废弃：仅 doctor 旧面沿用的解析残留
+	APIKey          string              // 上游真钥：只进出站 Authorization，永不入日志/账本/错误（T39）
+	ModelMap        map[string]string   // 别名→GLM 档；含 default 键（改写模式必须非空）
+	TextOnly        []string            // text-only 模型名单（命中则 image 块降级文本占位）
+	BalanceURL      string              // 余额端点覆写；解析层缺省回落 DefaultDockBalanceURL
 }
 
 // Config 全量配置（字段=Python dataclass 1:1）。
@@ -190,17 +192,7 @@ func (c *Config) ThresholdFor(_ string) ThresholdCfg {
 // relaxMinGap=True：冒烟/测试用——放宽"阈值差≥120s"（仍强制 summarize<block）。
 func Load(path string, relaxMinGap bool) (*Config, error) {
 	cfg := Default()
-	p := path
-	if p == "" {
-		p = os.Getenv("FERRYMAN_CONFIG")
-	}
-	if p == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = ""
-		}
-		p = filepath.Join(home, "ferryman", "config.toml")
-	}
+	p := resolveConfigPath(path)
 	if _, err := os.Stat(p); err == nil { // Python p.exists()：异常一律视为不存在
 		data := map[string]any{}
 		if _, err := toml.DecodeFile(p, &data); err != nil {
@@ -376,48 +368,112 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		cfg.FerryProvider = pyStr(get(f, "provider", cfg.FerryProvider))
 	}
 	// [dock]（票01）：节存在才构造（Default() 里 Dock 恒 nil——nil 即 F11 的
-	// "完全不启动"判据，daemon 侧据此不绑端口）；节内缺字段回落默认值
-	// （上游=cc-switch 15721，监听=本机 15722，与透传实验 forwarder.go 一致）。
-	// 票06 补改写四字段（开关默认 false；model_map 含 default 键、text_only
-	// 数组；api_key 真钥只活本机 config.toml 永不入库）。
+	// "完全不启动"判据，daemon 侧据此不绑端口）；解析集中在 parseDockSection
+	// （票01 起与首启迁移共用单源）：旧单值六字段（缺字段回落默认：上游=
+	// cc-switch 15721，监听=本机 15722，与透传实验 forwarder.go 一致）＋
+	// 新上游表（upstreams+active，取用经 ActiveUpstream 以新表优先——F9）。
 	if raw, ok := data["dock"]; ok {
 		dk, err := asTable(raw, "dock")
 		if err != nil {
 			return err
 		}
-		dcfg := &DockCfg{
-			UpstreamBaseURL: pyStr(get(dk, "upstream_base_url", "http://127.0.0.1:15721")),
-			Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
-			RewriteEnabled:  pyBool(get(dk, "rewrite_enabled", false)),
-			APIKey:          pyStr(get(dk, "api_key", "")),
-			// 票07：缺省回落内置默认端点（同 upstream_base_url 的解析层补默认惯例）。
-			BalanceURL: pyStr(get(dk, "balance_url", DefaultDockBalanceURL)),
-		}
-		if rawMM, ok := dk["model_map"]; ok {
-			mm, ok := rawMM.(map[string]any)
-			if !ok {
-				return errors.New("config: dock.model_map 不是表")
-			}
-			m := make(map[string]string, len(mm))
-			for k, v := range mm {
-				m[k] = pyStr(v)
-			}
-			dcfg.ModelMap = m
-		}
-		if rawTO, ok := dk["text_only"]; ok {
-			arr, ok := rawTO.([]any)
-			if !ok {
-				return errors.New("config: dock.text_only 不是数组")
-			}
-			to := make([]string, 0, len(arr))
-			for _, v := range arr {
-				to = append(to, pyStr(v))
-			}
-			dcfg.TextOnly = to
+		dcfg, err := parseDockSection(dk)
+		if err != nil {
+			return err
 		}
 		cfg.Dock = dcfg
 	}
 	return nil
+}
+
+// parseDockSection [dock] 节解析单源（Load 与首启迁移共用）。节内缺字段回落
+// 默认值；新表（upstreams+active）与旧单值可并存——并存时解析层两层都收，
+// 取用由 ActiveUpstream 裁决（新表+active 优先，F9）。
+func parseDockSection(dk map[string]any) (*DockCfg, error) {
+	dcfg := &DockCfg{
+		UpstreamBaseURL: pyStr(get(dk, "upstream_base_url", "http://127.0.0.1:15721")),
+		Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
+		RewriteEnabled:  pyBool(get(dk, "rewrite_enabled", false)), // 废弃键：容忍解析不生效（D13）
+		APIKey:          pyStr(get(dk, "api_key", "")),
+		// 票07：缺省回落内置默认端点（旧单值行为；条目级 balance_url 无此默认——
+		// 不配不显示，D11）。
+		BalanceURL: pyStr(get(dk, "balance_url", DefaultDockBalanceURL)),
+		Active:     pyStr(get(dk, "active", "")),
+	}
+	if rawMM, ok := dk["model_map"]; ok {
+		mm, ok := rawMM.(map[string]any)
+		if !ok {
+			return nil, errors.New("config: dock.model_map 不是表")
+		}
+		m := make(map[string]string, len(mm))
+		for k, v := range mm {
+			m[k] = pyStr(v)
+		}
+		dcfg.ModelMap = m
+	}
+	if rawTO, ok := dk["text_only"]; ok {
+		arr, ok := rawTO.([]any)
+		if !ok {
+			return nil, errors.New("config: dock.text_only 不是数组")
+		}
+		to := make([]string, 0, len(arr))
+		for _, v := range arr {
+			to = append(to, pyStr(v))
+		}
+		dcfg.TextOnly = to
+	}
+	if rawUps, ok := dk["upstreams"]; ok {
+		ups, err := parseDockUpstreamsTable(rawUps)
+		if err != nil {
+			return nil, err
+		}
+		dcfg.Upstreams = ups
+	}
+	return dcfg, nil
+}
+
+// parseDockUpstreamsTable [dock.upstreams] 条目表解析。条目字段缺省即空
+// （base_url 必填与 model_map default 要求由 validateDockUpstreams 把关，
+// 解析层不替校验做决定）。
+func parseDockUpstreamsTable(raw any) (map[string]DockUpstream, error) {
+	t, err := asTable(raw, "dock.upstreams")
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]DockUpstream, len(t))
+	for name, v := range t {
+		et, err := asTable(v, "dock.upstreams."+name)
+		if err != nil {
+			return nil, err
+		}
+		e := DockUpstream{
+			BaseURL:    pyStr(get(et, "base_url", "")),
+			APIKey:     pyStr(get(et, "api_key", "")),                 // 空＝未激活预置，解析不受影响
+			BalanceURL: pyStr(get(et, "balance_url", "")),             // 空＝不配不显示（D11）
+		}
+		if rawMM, ok := et["model_map"]; ok {
+			mm, ok := rawMM.(map[string]any)
+			if !ok {
+				return nil, errors.New("config: dock.upstreams." + name + ".model_map 不是表")
+			}
+			e.ModelMap = make(map[string]string, len(mm))
+			for k, val := range mm {
+				e.ModelMap[k] = pyStr(val)
+			}
+		}
+		if rawTO, ok := et["text_only"]; ok {
+			arr, ok := rawTO.([]any)
+			if !ok {
+				return nil, errors.New("config: dock.upstreams." + name + ".text_only 不是数组")
+			}
+			e.TextOnly = make([]string, 0, len(arr))
+			for _, v := range arr {
+				e.TextOnly = append(e.TextOnly, pyStr(v))
+			}
+		}
+		m[name] = e
+	}
+	return m, nil
 }
 
 // Validate 违例拒启（config.py:164-205 逐字，含两类告警打印与 lead 就地夹取）。
@@ -484,6 +540,11 @@ func Validate(c *Config, relaxMinGap bool) error {
 	}
 	if c.Watch.PollIntervalS <= 0 {
 		problems = append(problems, "watch.poll_interval_s 须 > 0")
+	}
+	// 票01：上游表校验（active 指向、base_url 必填、非本地条目必含 default；
+	// 单源 validateDockUpstreams 与首启迁移共用）。
+	if c.Dock != nil {
+		problems = append(problems, validateDockUpstreams(c.Dock)...)
 	}
 	if len(problems) > 0 {
 		return errors.New("配置校验失败，拒绝启动：\n  - " + strings.Join(problems, "\n  - "))

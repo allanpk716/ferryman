@@ -117,6 +117,11 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman cutover rollback-write [--repo 目录] [--data 目录]
   ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
   ferryman cutover smoke [--config 沙箱配置]
+  ferryman upstream list [--config 路径]       # 渡口上游表：active 标注/base_url/
+                                             #   model_map 概要/可用状态/密钥脱敏
+  ferryman upstream use <名> [--config 路径]   # 切换 active 并自动重启守护
+                                             #   （在途请求中断；守护未起来时如实
+                                             #   报告，不自动回滚/重试）
 
 面板（时间线查看器，viewer 原样）:
   ferryman --demo [--port N] [--no-tray] [--no-browser]
@@ -171,6 +176,8 @@ func run(args []string) int {
 		return cmdAccount(args[1:])
 	case "cutover":
 		return cmdCutover(args[1:])
+	case "upstream":
+		return cmdUpstream(args[1:], os.Stdout)
 	case "mcp":
 		return cmdMCP(args[1:])
 	case "backtest":
