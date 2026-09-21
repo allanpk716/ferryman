@@ -15,6 +15,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,15 @@ func fakeRestart(healthOK bool, launchErr error) (*upstreamRestartDeps, *[]strin
 			return healthOK
 		},
 	}, &order
+}
+
+// stubDefaultCfgPath 让注入的路径视同默认配置路径（测自动重启链用；真默认在
+// 用户主目录，测试不写那里）。
+func stubDefaultCfgPath(t *testing.T) {
+	t.Helper()
+	old := upstreamCfgIsDefault
+	upstreamCfgIsDefault = func(string) bool { return true }
+	t.Cleanup(func() { upstreamCfgIsDefault = old })
 }
 
 // ---- list ----
@@ -211,6 +221,7 @@ func TestUpstreamUseNoUpstreamTableRejected(t *testing.T) {
 
 func TestUpstreamUseSuccessWritesStopsRelaunchesChecksHealth(t *testing.T) {
 	f := writeUpstreamCfg(t, upstreamCfgSrc)
+	stubDefaultCfgPath(t) // 注入路径视同默认路径：本测钉的是自动重启链
 	deps, order := fakeRestart(true, nil)
 	var buf bytes.Buffer
 	if code := upstreamUse(f, "zhipu", &buf, deps); code != 0 {
@@ -246,6 +257,7 @@ func TestUpstreamUseSuccessWritesStopsRelaunchesChecksHealth(t *testing.T) {
 
 func TestUpstreamUseHealthTimeoutHonestReportNoRollbackNoRetry(t *testing.T) {
 	f := writeUpstreamCfg(t, upstreamCfgSrc)
+	stubDefaultCfgPath(t) // 注入路径视同默认路径：本测钉的是自动重启链
 	deps, order := fakeRestart(false, nil)
 	var buf bytes.Buffer
 	if code := upstreamUse(f, "zhipu", &buf, deps); code == 0 {
@@ -273,6 +285,7 @@ func TestUpstreamUseHealthTimeoutHonestReportNoRollbackNoRetry(t *testing.T) {
 
 func TestUpstreamUseLaunchFailureReported(t *testing.T) {
 	f := writeUpstreamCfg(t, upstreamCfgSrc)
+	stubDefaultCfgPath(t) // 注入路径视同默认路径：本测钉的是自动重启链
 	deps, _ := fakeRestart(true, os.ErrPermission)
 	var buf bytes.Buffer
 	if code := upstreamUse(f, "zhipu", &buf, deps); code == 0 {
@@ -291,6 +304,120 @@ func TestUpstreamUseMissingNameAndBadConfig(t *testing.T) {
 	buf.Reset()
 	if code := upstreamUse(filepath.Join(t.TempDir(), "absent.toml"), "a", &buf, nil); code == 0 {
 		t.Fatal("配置不存在应非零退出")
+	}
+}
+
+// ---- 评审收口：#1 双序解析 / #3 停旧失败降级话术 / #7 自定义路径拒绝自动重启 ----
+
+// TestParseUpstreamFlagsBothOrdersTailScan 文档顺序 `use <名> --config 路径`
+// 此前被 Go flag 首位置参数截断而必失败（评审 #1 实测复现）：两种顺序都必须
+// 解析成功且结果一致。
+func TestParseUpstreamFlagsBothOrdersTailScan(t *testing.T) {
+	f := writeUpstreamCfg(t, upstreamCfgSrc) // 只要一个真路径，解析层不读文件
+	// 文档顺序：名在前，--config 在后
+	cfg, rest, code := parseUpstreamFlags("upstream use", []string{"zhipu", "--config", f})
+	if code != 0 || cfg != f || len(rest) != 1 || rest[0] != "zhipu" {
+		t.Fatalf("名前旗标后: code=%d cfg=%q rest=%v", code, cfg, rest)
+	}
+	// 旗标顺序：--config 在前，名在后
+	cfg2, rest2, code2 := parseUpstreamFlags("upstream use", []string{"--config", f, "zhipu"})
+	if code2 != 0 || cfg2 != f || len(rest2) != 1 || rest2[0] != "zhipu" {
+		t.Fatalf("旗标前名后: code=%d cfg=%q rest=%v", code2, cfg2, rest2)
+	}
+	if cfg != cfg2 || strings.Join(rest, ",") != strings.Join(rest2, ",") {
+		t.Fatalf("两种顺序解析结果不一致: %q/%v vs %q/%v", cfg, rest, cfg2, rest2)
+	}
+	// = 形态、名在前
+	cfg3, rest3, code3 := parseUpstreamFlags("upstream use", []string{"zhipu", "--config=" + f})
+	if code3 != 0 || cfg3 != f || len(rest3) != 1 || rest3[0] != "zhipu" {
+		t.Fatalf("=形态: code=%d cfg=%q rest=%v", code3, cfg3, rest3)
+	}
+	// 旗标缺值 → 退出 2
+	if _, _, code4 := parseUpstreamFlags("upstream use", []string{"zhipu", "--config"}); code4 != 2 {
+		t.Fatalf("旗标缺值应退出 2, got %d", code4)
+	}
+	// 未知旗标仍退出 2（位置参数之前——与原 flag 行为一致；位置参数之后的
+	// 未知旗标落进 rest，由 use 的 len!=1 检查拦下）
+	if _, _, code5 := parseUpstreamFlags("upstream use", []string{"--bogus", "zhipu"}); code5 != 2 {
+		t.Fatalf("未知旗标应退出 2, got %d", code5)
+	}
+}
+
+// TestCmdUpstreamUseDocOrderCustomCfgNoAutoRestart 端到端：文档顺序（名前
+// --config 后）经 cmdUpstream 全链解析成功；自定义配置路径走 #7 分支——
+// 切换写回成功、明示不自动重启、退出 0（deps 未装配 → 绝不真拉进程）。
+func TestCmdUpstreamUseDocOrderCustomCfgNoAutoRestart(t *testing.T) {
+	f := writeUpstreamCfg(t, upstreamCfgSrc)
+	var buf bytes.Buffer
+	if code := cmdUpstream([]string{"use", "zhipu", "--config", f}, &buf); code != 0 {
+		t.Fatalf("cmdUpstream use 文档顺序 = %d\n%s", code, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "未尝试自动重启") || !strings.Contains(out, "手动重启") {
+		t.Errorf("自定义路径输出缺不自动重启指引:\n%s", out)
+	}
+	if after := readFileUp(t, f); !strings.Contains(after, `active = "zhipu"`) {
+		t.Fatalf("切换本身应已写回 active:\n%s", after)
+	}
+	// 旗标在前顺序同判
+	f2 := writeUpstreamCfg(t, upstreamCfgSrc)
+	buf.Reset()
+	if code := cmdUpstream([]string{"use", "--config", f2, "zhipu"}, &buf); code != 0 {
+		t.Fatalf("cmdUpstream use 旗标前 = %d\n%s", code, buf.String())
+	}
+	if out := buf.String(); !strings.Contains(out, "未尝试自动重启") {
+		t.Errorf("旗标前顺序应同样走不自动重启分支:\n%s", out)
+	}
+}
+
+// TestUpstreamUseShutdownErrorDegradesSuccessWording 停旧曾报错（如 401）时，
+// 健康检查有应答也可能打在旧守护上——成功话术必须降级为如实版本，不得宣称
+// "守护已重启"（评审 #3 假成功防线）。
+func TestUpstreamUseShutdownErrorDegradesSuccessWording(t *testing.T) {
+	f := writeUpstreamCfg(t, upstreamCfgSrc)
+	stubDefaultCfgPath(t)
+	deps, order := fakeRestart(true, nil)
+	deps.Shutdown = func() error {
+		*order = append(*order, "shutdown")
+		return errors.New("HTTP 401")
+	}
+	var buf bytes.Buffer
+	if code := upstreamUse(f, "zhipu", &buf, deps); code != 0 {
+		t.Fatalf("退出码 = %d\n%s", code, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "健康检查有应答") || !strings.Contains(out, "未能确认") ||
+		!strings.Contains(out, "HTTP 401") {
+		t.Errorf("停旧失败时应输出降级话术（含原因）:\n%s", out)
+	}
+	if strings.Contains(out, "守护已重启") {
+		t.Errorf("停旧失败不得宣称守护已重启:\n%s", out)
+	}
+	if got := *order; len(got) != 3 || got[0] != "shutdown" || got[1] != "launch" || got[2] != "health" {
+		t.Fatalf("调用序 = %v, want [shutdown launch health]", got)
+	}
+}
+
+// TestUpstreamUseCustomCfgPathRefusesAutoRestart 自定义 --config 路径：真重启
+// 不透传路径会让新守护读默认配置（评审 #7）——切换写回成功后明示拒绝自动
+// 重启、给手动指引、退出 0，且完全不触发重启链。
+func TestUpstreamUseCustomCfgPathRefusesAutoRestart(t *testing.T) {
+	f := writeUpstreamCfg(t, upstreamCfgSrc) // 临时目录路径 ≠ 默认解析路径
+	deps, order := fakeRestart(true, nil)
+	var buf bytes.Buffer
+	if code := upstreamUse(f, "zhipu", &buf, deps); code != 0 {
+		t.Fatalf("退出码 = %d（切换本身成功）\n%s", code, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "未尝试自动重启") || !strings.Contains(out, "手动重启") ||
+		!strings.Contains(out, "FERRYMAN_CONFIG") {
+		t.Errorf("自定义路径输出缺如实指引:\n%s", out)
+	}
+	if n := len(*order); n != 0 {
+		t.Fatalf("自定义路径不得触发重启链（shutdown/launch/health 被调 %d 次）", n)
+	}
+	if after := readFileUp(t, f); !strings.Contains(after, `active = "zhipu"`) {
+		t.Fatalf("切换应已写回:\n%s", after)
 	}
 }
 

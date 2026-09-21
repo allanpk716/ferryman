@@ -193,3 +193,49 @@ func TestSetActiveUpstreamAtomicWriteLeavesNoTemp(t *testing.T) {
 		t.Fatalf("产物非合法 TOML: %v", err)
 	}
 }
+
+// TestSetActiveUpstreamWriteFailureCleansTemp 注入写失败：tmp 路径被空目录占住
+// ——WriteFile 必败，而 os.Remove 恰能清掉空目录。写失败分支也要清 .active-tmp
+// （评审 #2：此前只有 rename 失败分支清理）。
+func TestSetActiveUpstreamWriteFailureCleansTemp(t *testing.T) {
+	f := writeCfg(t, setActiveSrc)
+	if err := os.Mkdir(f+".active-tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetActiveUpstream(f, "zhipu"); err == nil {
+		t.Fatal("注入写失败后应报错")
+	}
+	des, err := os.ReadDir(filepath.Dir(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, de := range des {
+		if strings.Contains(de.Name(), ".active-tmp") {
+			t.Fatalf("写失败分支残留临时文件: %s", de.Name())
+		}
+	}
+	if got := readFileT(t, f); got != setActiveSrc {
+		t.Fatalf("写失败不得动原文件\n--- got ---\n%s", got)
+	}
+}
+
+// TestSetActiveUpstreamInsertsAfterHeaderWithoutTrailingNewline [dock] 表头为
+// 末行且无行尾：插入分支若直接粘连会拼出 `[dock]active = "a"` 非法 TOML
+// （评审 #5：lineEnding 为空时须补 \n）。
+func TestSetActiveUpstreamInsertsAfterHeaderWithoutTrailingNewline(t *testing.T) {
+	src := "[dock.upstreams.a]\nbase_url = \"https://a.example\"\nmodel_map = { default = \"m1\" }\n\n[dock]"
+	f := writeCfg(t, src)
+	if err := SetActiveUpstream(f, "a"); err != nil {
+		t.Fatalf("表头末行无行尾时插入应成功: %v", err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("写回后 Load: %v", err)
+	}
+	if cfg.Dock.Active != "a" {
+		t.Fatalf("active = %q, want a", cfg.Dock.Active)
+	}
+	if after := readFileT(t, f); !strings.HasSuffix(after, "active = \"a\"\n") {
+		t.Fatalf("插入行应带行尾:\n%s", after)
+	}
+}

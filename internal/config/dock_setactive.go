@@ -72,6 +72,7 @@ func SetActiveUpstream(path, name string) error {
 	}
 	tmp := p + ".active-tmp"
 	if err := os.WriteFile(tmp, newRaw, mode); err != nil {
+		_ = os.Remove(tmp) // 写失败也可能留半截文件：与 rename 失败同纪律，顺手清
 		return err
 	}
 	if err := os.Rename(tmp, p); err != nil { // 原子替换（Windows MoveFileEx 语义）
@@ -106,8 +107,14 @@ func rewriteDockActive(raw []byte, name string) ([]byte, error) {
 			return nil, fmt.Errorf("config: [dock] 含引号键 \"active\"（异形形态），保守拒写")
 		}
 	}
-	// 无 active 行：插到 [dock] 表头之后（跟随表头行行尾）
-	insert := newLine + lineEnding(lines[start])
+	// 无 active 行：插到 [dock] 表头之后（跟随表头行行尾）。表头为末行且无
+	// 行尾时先补 \n——否则插入行与表头粘连成 `[dock]active = …` 非法 TOML。
+	tail := lineEnding(lines[start])
+	sep := ""
+	if tail == "" {
+		sep, tail = "\n", "\n"
+	}
+	insert := sep + newLine + tail
 	out := strings.Join(lines[:start+1], "") + insert + strings.Join(lines[start+1:], "")
 	return []byte(out), nil
 }

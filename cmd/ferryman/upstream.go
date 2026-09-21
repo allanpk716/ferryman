@@ -3,13 +3,16 @@
 //
 //	list  全部条目 + active 标注 + base_url + model_map 概要 + 可用状态
 //	      （缺 key 显示"未配置，需手编 config 填 api_key"）+ 密钥脱敏（只露尾 4 位）。
-//	use <名>
+//	use <名> [--config 路径]   （--config 在名前名后皆可）
 //	      条目不存在→拒绝并列出可用条目；缺 api_key→拒绝并提示先填 key；
 //	      有效→提示"在途请求将被中断"→校验配置（写回会让守护拒启的先拦下）→
 //	      原子写 active（internal/config.SetActiveUpstream：临时文件+rename）→
 //	      触发守护重启（POST /shutdown 停旧；detached 隐藏拉起 serve，复用钩子
 //	      自举同款机制 start-daemon.cmd）→轮询健康检查（/stats）→成功输出新
-//	      active 与冷启动提示。
+//	      active 与冷启动提示（停旧曾报错时降级为"健康检查有应答（未能确认
+//	      是否为新进程）"——应答可能来自旧守护）。
+//	      自定义 --config 路径（解析结果≠默认路径）→切换成功后不自动重启
+//	      （重启不透传路径，新守护会读默认配置），如实指引手动重启，退出 0。
 //	      健康检查失败→非零退出，如实报告"配置已切换为 <名>，守护进程未起来"，
 //	      给手动拉起（ferryman serve/看门）与回退（upstream use cc-switch）指引；
 //	      不自动回滚、不自动重试。
@@ -68,18 +71,45 @@ const upstreamUsage = `用法:
   ferryman upstream list [--config 路径]      # 渡口上游表：active 标注/base_url/
                                             #   model_map 概要/可用状态/密钥脱敏
   ferryman upstream use <名> [--config 路径]  # 切换 active 并自动重启守护
-                                            #   （在途请求中断；守护未起来时如实
-                                            #   报告，不自动回滚/重试）
+                                            #   （--config 在名前名后皆可；自定义
+                                            #   配置路径不自动重启；在途请求中断；
+                                            #   守护未起来时如实报告，不自动回滚/
+                                            #   重试）
 `
 
 // parseUpstreamFlags --config 旗标（缺省 = FERRYMAN_CONFIG 或 ~/ferryman/config.toml）。
+// 文档顺序 `use <名> [--config 路径]` 与 `use [--config 路径] <名>` 皆可：Go flag
+// 在首个位置参数处停止解析，故先手动全扫摘出 --config（含 = 形态、位置参数之后
+// 也认；-- 终止符之后仍按位置参数），余下再交 FlagSet——未知旗标依旧报错退出 2。
 func parseUpstreamFlags(name string, args []string) (string, []string, int) {
+	cfg := ""
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" { // flag 终止符：其后全是位置参数，交回 FlagSet 同语义处理
+			rest = append(rest, args[i:]...)
+			break
+		}
+		switch {
+		case a == "--config" || a == "-config":
+			if i+1 >= len(args) {
+				return "", nil, 2 // 旗标缺值
+			}
+			i++
+			cfg = args[i]
+		case strings.HasPrefix(a, "--config="):
+			cfg = strings.TrimPrefix(a, "--config=")
+		case strings.HasPrefix(a, "-config="):
+			cfg = strings.TrimPrefix(a, "-config=")
+		default:
+			rest = append(rest, a)
+		}
+	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	cfgPath := fs.String("config", "", "配置文件路径（缺省 = FERRYMAN_CONFIG 或 ~/ferryman/config.toml）")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(rest); err != nil {
 		return "", nil, 2
 	}
-	return *cfgPath, fs.Args(), 0
+	return cfg, fs.Args(), 0
 }
 
 // ---- list ----
@@ -210,6 +240,14 @@ type upstreamRestartDeps struct {
 	Health   func(budget time.Duration) bool // 轮询 /stats 至有应答或超时
 }
 
+// upstreamCfgIsDefault 当前 cfgPath 是否解析为默认配置路径（与 config.
+// ResolveConfigPath 同源判断：显式自定义路径 ≠ 默认解析结果即拒绝自动重启——
+// 测试注入临时路径用，可覆写；真默认在用户主目录，测试不写那里）。
+var upstreamCfgIsDefault = func(cfgPath string) bool {
+	return filepath.Clean(config.ResolveConfigPath(cfgPath)) ==
+		filepath.Clean(config.ResolveConfigPath(""))
+}
+
 // upstreamUse `upstream use <名>` 可测核心。deps nil = 真装配（真 HTTP＋真
 // 派生）。流程与拒绝分支见文件头；配置保持已写状态（不自动回滚）。
 func upstreamUse(cfgPath, name string, w io.Writer, deps *upstreamRestartDeps) int {
@@ -257,14 +295,26 @@ func upstreamUse(cfgPath, name string, w io.Writer, deps *upstreamRestartDeps) i
 	}
 	fmt.Fprintf(w, "已写回 active = %q（%s，原子写）\n", name, resolved)
 
+	// 自定义配置路径（解析结果 ≠ 默认路径）：自动重启不透传该路径，新守护会读
+	// 默认配置——明示拒绝自动重启（评审 #7 最小修）。切换本身已成功，如实指引
+	// 手动重启后退出 0。
+	if !upstreamCfgIsDefault(cfgPath) {
+		fmt.Fprintf(w, "已切换 active=%s；当前使用自定义配置路径，未尝试自动重启——"+
+			"请手动重启守护（如 FERRYMAN_CONFIG=%s ferryman serve 或看门）。\n", name, resolved)
+		return 0
+	}
+
 	// 守护重启：停旧 → 拉起 → 健康检查（deps 注入）。
 	if deps == nil {
 		deps = realUpstreamRestartDeps(cfg)
 	}
+	shutdownErr := error(nil)
 	fmt.Fprintf(w, "停旧守护…（POST /shutdown）\n")
 	if serr := deps.Shutdown(); serr != nil {
 		// 未应答 ≠ 失败终点：守护可能本就未在跑（看门也没拉过）——如实记一笔，
-		// 继续拉起（拉起自己会绑定端口）。
+		// 继续拉起（拉起自己会绑定端口）。记下这笔：停旧未确认时健康检查的
+		// 应答可能来自旧守护，成功话术须降级（评审 #3 假成功防线）。
+		shutdownErr = serr
 		fmt.Fprintf(w, "  旧守护未应答（%v；可能未在跑）——继续拉起\n", serr)
 	}
 	fmt.Fprintf(w, "拉起新守护…（detached 隐藏）\n")
@@ -281,7 +331,12 @@ func upstreamUse(cfgPath, name string, w io.Writer, deps *upstreamRestartDeps) i
 			"回退：ferryman upstream use cc-switch\n", name, upstreamHealthBudget)
 		return 1
 	}
-	fmt.Fprintf(w, "已切换为 %s：守护已重启，健康检查通过。\n", name)
+	if shutdownErr != nil {
+		fmt.Fprintf(w, "已切换为 %s：健康检查有应答（未能确认是否为新进程；"+
+			"此前停旧失败: %v）。\n", name, shutdownErr)
+	} else {
+		fmt.Fprintf(w, "已切换为 %s：守护已重启，健康检查通过。\n", name)
+	}
 	fmt.Fprintf(w, "内存缓存快照已清空，旧会话按冷启动全量重付。\n")
 	return 0
 }
