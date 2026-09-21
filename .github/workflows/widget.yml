@@ -153,7 +153,7 @@ jobs:
           git fetch --force origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
           git tag -l --format='%(contents)' "${TAG_NAME}" > tag_notes.txt
           args=()
-          if [[ "$TAG_NAME" == *-* ]]; then args+=(--prerelease); fi
+          if [[ "${TAG_NAME#widget-v}" == *-* ]]; then args+=(--prerelease); fi
           if gh release view "$TAG_NAME" > /dev/null 2>&1; then
             gh release upload "$TAG_NAME" dist-upload/* --clobber
             gh release edit "$TAG_NAME" --notes-file tag_notes.txt
