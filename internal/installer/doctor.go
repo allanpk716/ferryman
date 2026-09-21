@@ -18,6 +18,11 @@
 //   - HttpBeatSender 功能退化声明（评审附录#14）：信息行输出，不判 FAIL。
 //   - CheckUpdateResidues 升级事务残留（本票，规格 §C 第9条）：journal/换装
 //     旁路残留 = 上次升级中断现场，提示 `ferryman update` 一键恢复/清理。
+//   - 票04（渡口多上游）：CheckDockRewrite 按新语义重构——rewrite_enabled 废弃
+//     （迁移后恒缺省，不得再据此判"纯透传"），改写隐含开启，doctor 把 active
+//     条目装进"开关显式开"的探针交 dock.ResolveRewrite 单源裁决；新增渡口上游
+//     检查组 CheckDockUpstreams（active 可解析/非本地条目 default/缺钥逐条提示/
+//     deepseek 官方边界声明）。
 package installer
 
 import (
@@ -30,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -346,22 +352,154 @@ func CheckFerryProvider(name string, providers map[string]ferry.Provider) Check 
 	return Check{true, fmt.Sprintf("摆渡 provider '%s' 在位", name)}
 }
 
-// CheckDockRewrite 渡口改写守卫体检（票06）：判定单源在 dock.ResolveRewrite
-// ——doctor 与 daemon 构造期读同一函数，绝不出现两套判据。rewrite_enabled
-// =true 却被守卫拒绝＝FAIL：配置说开了、实际在透传，是"静默失效"同类事故
-// （与本文件头两类事故同性质），必须点名修法。
+// CheckDockRewrite 渡口改写守卫体检（票04 按票01 新语义重构）：判定单源在
+// dock.ResolveRewrite——doctor 与 daemon 构造期读同一函数，绝不出现两套判据。
+// rewrite_enabled 已废弃（迁移后的新配置该字段恒缺省，不得再据此判"纯透传"
+// ——旧实现会误报）；改写隐含开启，doctor 把 active 条目（ActiveUpstream 单源）
+// 装进"开关显式开"的探针配置交守卫裁决，结论按成因三分：
+//   - 守卫放行 ＝ 改写模式在位；
+//   - 上游为本地中转地址（回环＋15721/15722/15723，cc-switch 回退通道）＝ 守卫
+//     强制透传防双重改写——设计内，不判失败；
+//   - 非本地上游未进改写（缺 default）＝ 表形态下配置错误，FAIL 带守卫告警
+//     文案；旧单值未迁移形态属合法回退透传态，提示迁移不判失败。
 func CheckDockRewrite(dockCfg *config.DockCfg) Check {
 	if dockCfg == nil {
 		return Check{true, "渡口未配置（[dock] 节缺失，零行为）"}
 	}
-	if !dockCfg.RewriteEnabled {
-		return Check{true, "渡口纯透传（rewrite_enabled=false）"}
+	name, up := dockCfg.ActiveUpstream()
+	if up == nil {
+		return Check{false, fmt.Sprintf("[dock].active %q 未指向上游表中的任何条目"+
+			"——透传/改写模式未判定（见渡口上游检查）", dockCfg.Active)}
 	}
-	_, ok, reason := dock.ResolveRewrite(dockCfg)
-	if !ok {
-		return Check{false, "渡口改写模式未生效: " + reason}
+	probe := &config.DockCfg{
+		RewriteEnabled:  true, // 显式开关内核：新语义改写隐含开启（D13/D15 无开关）
+		UpstreamBaseURL: up.BaseURL,
+		ModelMap:        up.ModelMap,
+		TextOnly:        up.TextOnly,
 	}
-	return Check{true, "渡口改写模式在位（default 键在、上游非本地中转）"}
+	_, ok, reason := dock.ResolveRewrite(probe)
+	if ok {
+		label := name
+		if label == "" {
+			label = "旧单值" // 无表兜底（未迁移/迁移失败回退，serve 横幅同款标签）
+		}
+		return Check{true, fmt.Sprintf("渡口改写模式在位（active=%s；default 键在、上游非本地中转）", label)}
+	}
+	if config.IsLocalRelayAddr(up.BaseURL) {
+		return Check{true, "渡口纯透传（上游为本地中转地址，守卫强制透传防双重改写——设计内）"}
+	}
+	if len(dockCfg.Upstreams) == 0 {
+		return Check{true, "渡口纯透传（旧单值配置未迁移，无 model_map——首启迁移后由守卫按条目裁决）"}
+	}
+	return Check{false, "渡口改写模式未生效: " + reason}
+}
+
+// DeepSeekBoundaryNotice DeepSeek 官方已知边界声明（票04，review block F2 收敛
+// 口径；docs/ 多上游使用说明同文照录）：激活 deepseek 条目时 doctor 输出一行。
+// 信息行不判 FAIL——遇不支持负载渡口如实透传上游错误（不做协议转换，D5），
+// 不是本实现的故障。
+const DeepSeekBoundaryNotice = "DeepSeek 官方已知边界（上游侧限制，非本实现故障）: " +
+	"不支持消息类型 document、search_result、redacted_thinking、mcp_tool_use、mcp_tool_result；" +
+	"忽略语义 tool_result.is_error、tool_choice.disable_parallel_tool_use、thinking.budget_tokens；" +
+	"遇不支持负载如实透传上游错误（不做协议转换），处置＝人手换上游（ferryman upstream use <其他条目>）"
+
+// CheckDockUpstreams 渡口上游检查组（票04）。返回的 CheckResult 自带稳定名：
+//   - dock_upstream——主判：表形态下 active 存在且可解析（缺 active/悬空＝FAIL，
+//     点名可用条目）、非本地条目 model_map 含非空 default（本地中转地址条目＝
+//     守卫透传域豁免——与 config.validateDockUpstreams 同判据域）；旧单值形态
+//     （未迁移/迁移失败回退）＝合法回退态，提示迁移反复失败的异形排查面，不判
+//     失败（serve 侧迁移失败有告警，doctor 只读不迁移）；
+//   - dock_upstream_rewrite_hint——迁移行为变化提示（评审低危备注）：active 为
+//     迁移出的 cc-switch 条目且上游非本地＝升级后改写已隐含开启（旧
+//     rewrite_enabled=false 的纯透传不再保留）；
+//   - dock_upstream_key:<条目名>——缺 api_key 条目逐条提示"未配置（手编 config
+//     填 api_key）"；预置未激活属正常，提示不判 FAIL。本地中转地址条目豁免
+//     （守卫强制透传不出站鉴权，cc-switch 回退通道常态无钥）；
+//   - dock_deepseek_boundary——active 为 deepseek（预置名或端点命中）时输出
+//     DeepSeekBoundaryNotice。
+func CheckDockUpstreams(dockCfg *config.DockCfg) []CheckResult {
+	out := []CheckResult{}
+	if len(dockCfg.Upstreams) == 0 {
+		// 旧单值形态：ActiveUpstream 兜底包装仍在服务（升级当天零行为变化）。
+		out = append(out, CheckResult{Name: "dock_upstream", Status: StatusPass,
+			Detail: "渡口上游为旧单值形态（未迁移出上游表）——旧行为兜底继续服务" +
+				"（守护重启触发首启迁移；迁移反复失败查 serve 日志，" +
+				"检查 config [dock] 节是否含空值键等异形）"})
+		name, up := dockCfg.ActiveUpstream()
+		if up != nil && isDeepSeekUpstream(name, up.BaseURL) {
+			out = append(out, CheckResult{Name: "dock_deepseek_boundary", Status: StatusPass,
+				Detail: DeepSeekBoundaryNotice})
+		}
+		return out
+	}
+	// 表形态主判（缺 active/悬空/缺 base_url/非本地缺 default，问题列表确定性）
+	var probs []string
+	if dockCfg.Active == "" {
+		probs = append(probs, "已配上游表但缺 active（单选键，须指向一条渡口上游）")
+	} else if _, ok := dockCfg.Upstreams[dockCfg.Active]; !ok {
+		probs = append(probs, fmt.Sprintf("[dock].active 指向不存在的条目 %s（可用: %s）",
+			dockCfg.Active, strings.Join(sortedUpstreamNames(dockCfg), ", ")))
+	}
+	var noDefault []string
+	for _, n := range sortedUpstreamNames(dockCfg) {
+		up := dockCfg.Upstreams[n]
+		if strings.TrimSpace(up.BaseURL) == "" {
+			probs = append(probs, fmt.Sprintf("[dock.upstreams.%s] 缺 base_url（必填）", n))
+			continue
+		}
+		if !config.IsLocalRelayAddr(up.BaseURL) && up.ModelMap["default"] == "" {
+			noDefault = append(noDefault, n)
+		}
+	}
+	if len(noDefault) > 0 {
+		probs = append(probs, "非本地条目 model_map 缺非空 default: "+strings.Join(noDefault, ", "))
+	}
+	if len(probs) > 0 {
+		out = append(out, CheckResult{Name: "dock_upstream", Status: StatusFail,
+			Detail: "渡口上游配置有问题: " + strings.Join(probs, "；")})
+	} else {
+		up := dockCfg.Upstreams[dockCfg.Active] // 上面已验证存在
+		out = append(out, CheckResult{Name: "dock_upstream", Status: StatusPass,
+			Detail: fmt.Sprintf("渡口上游 active=%s 在位（%s；模式由守卫按上游地址裁决）",
+				dockCfg.Active, up.BaseURL)})
+	}
+	// 迁移行为变化提示（active=迁移条目且上游非本地）
+	if up, ok := dockCfg.Upstreams[dockCfg.Active]; ok && dockCfg.Active == "cc-switch" &&
+		!config.IsLocalRelayAddr(up.BaseURL) {
+		out = append(out, CheckResult{Name: "dock_upstream_rewrite_hint", Status: StatusPass,
+			Detail: "渡口上游 cc-switch 迁移自旧单值且上游非本地：升级后改写已隐含开启" +
+				"（旧 rewrite_enabled=false 的纯透传不再保留）——行为变化提示"})
+	}
+	// 缺 api_key 逐条提示（本地透传域豁免）
+	for _, n := range sortedUpstreamNames(dockCfg) {
+		up := dockCfg.Upstreams[n]
+		if up.APIKey == "" && !config.IsLocalRelayAddr(up.BaseURL) {
+			out = append(out, CheckResult{Name: "dock_upstream_key:" + n, Status: StatusPass,
+				Detail: fmt.Sprintf("渡口上游 %s 未配置（手编 config 填 api_key）", n)})
+		}
+	}
+	// DeepSeek 官方边界声明
+	if up, ok := dockCfg.Upstreams[dockCfg.Active]; ok && isDeepSeekUpstream(dockCfg.Active, up.BaseURL) {
+		out = append(out, CheckResult{Name: "dock_deepseek_boundary", Status: StatusPass,
+			Detail: DeepSeekBoundaryNotice})
+	}
+	return out
+}
+
+// isDeepSeekUpstream active 条目是否 DeepSeek：预置名 deepseek 或端点命中
+// deepseek（手改名条目按端点识别）。
+func isDeepSeekUpstream(name, baseURL string) bool {
+	return name == "deepseek" || strings.Contains(baseURL, "deepseek")
+}
+
+// sortedUpstreamNames 条目名排序（map 迭代无序——检查输出面必须确定）。
+func sortedUpstreamNames(d *config.DockCfg) []string {
+	names := make([]string, 0, len(d.Upstreams))
+	for k := range d.Upstreams {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // CheckAutostart Run 键自启三态（票02）：installed=在位；missing/mismatch=
@@ -580,6 +718,10 @@ func doctorResults(d doctorDeps) []CheckResult {
 		// 票06：渡口配置了才查（无 [dock] 的存量用户零新增检查行）
 		if cfg.Dock != nil {
 			out = append(out, CheckDockRewrite(cfg.Dock).named("dock_rewrite"))
+			// 票04：渡口上游检查组（CheckResult 自带名：dock_upstream /
+			// dock_upstream_rewrite_hint / dock_upstream_key:<条目名> /
+			// dock_deepseek_boundary——主判紧随 dock_rewrite）。
+			out = append(out, CheckDockUpstreams(cfg.Dock)...)
 		}
 	}
 
