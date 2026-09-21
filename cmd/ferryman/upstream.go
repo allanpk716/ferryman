@@ -1,4 +1,4 @@
-// upstream.go — 票02：`ferryman upstream list / use`（渡口多上游直连，ADR-0011；
+// upstream.go — 票02：`ferryman upstream list / use`（渡口多上游直连，ADR-0012；
 // CLI 契约见 docs/superpowers/specs/20260921-渡口多上游直连-spec.md「CLI 契约」节）。
 //
 //	list  全部条目 + active 标注 + base_url + model_map 概要 + 可用状态
