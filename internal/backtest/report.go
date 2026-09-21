@@ -142,8 +142,8 @@ type DoubleView struct {
 	Policy    string  `json:"policy"`
 }
 
-// HoldoutView 留出集两栏（D17）：前半选参 / 后半验证；后半栏参数集与前半一致
-// 是结构保证（SplitHalf 产出即保证），SameParams 恒真、不另算。
+// HoldoutView 留出集两栏（D17）：v1 为分半呈现（参数在全窗选出，两栏共用同一
+// 参数组，SameParams 恒真）；真·前半选参+后半独立验证为白天候选项（终局评审）。
 type HoldoutView struct {
 	SelectN     int    `json:"select_n"`
 	HoldoutN    int    `json:"holdout_n"`
@@ -456,7 +456,8 @@ func buildDouble(basis *PerfView) DoubleView {
 func buildHoldout(ds *Dataset, basis *PerfView) HoldoutView {
 	h := HoldoutView{
 		ParamDesc: paramDesc(basis),
-		Note:      "验证栏参数不得来自后半数据（结构保证），后半栏参数集与前半一致",
+		Note: "v1 取舍：参数组在全部可重放窗上选出（非仅前半），此处两栏为分半呈现而非独立验证；" +
+			"真·前半选参+后半独立评分为白天候选项（终局评审发现，见 spec Further Notes）",
 	}
 	if ds == nil {
 		h.SelectSpan, h.HoldoutSpan = "（数据集未传入）", "（数据集未传入）"
@@ -650,11 +651,11 @@ func RenderMarkdown(res *SweepResult, ds *Dataset) string {
 		"",
 		fmt.Sprintf("- %s。", v.DoubleCount.Policy), "")
 
-	// 7. 留出集两栏：前半选参 / 后半验证（参数集与前半一致）。
-	L = append(L, "## 7. 留出集：前半选参 / 后半验证", "",
+	// 7. 留出集两栏：v1 为分半呈现（参数在全窗选出，非独立验证——见注记）。
+	L = append(L, "## 7. 留出集：分半呈现（v1 非独立验证）", "",
 		"| 栏 | 角色 | 窗数 | 开窗跨度（UTC） | 参数组 |", "|---|---|---:|---|---|",
-		fmt.Sprintf("| 前半 | 选参 | %d | %s | %s |", v.Holdout.SelectN, v.Holdout.SelectSpan, v.Holdout.ParamDesc),
-		fmt.Sprintf("| 后半 | 只验证 | %d | %s | 参数集与前半一致（结构保证） |", v.Holdout.HoldoutN, v.Holdout.HoldoutSpan),
+		fmt.Sprintf("| 前半 | 呈现 | %d | %s | %s |", v.Holdout.SelectN, v.Holdout.SelectSpan, v.Holdout.ParamDesc),
+		fmt.Sprintf("| 后半 | 呈现 | %d | %s | 参数组与前半一致（全窗选参，非结构保证） |", v.Holdout.HoldoutN, v.Holdout.HoldoutSpan),
 		"", fmt.Sprintf("- %s", v.Holdout.Note), "")
 
 	// 8. 盲区声明（固定文案）。

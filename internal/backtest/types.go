@@ -30,7 +30,7 @@ type Window struct {
 type Dataset struct {
 	Windows      []Window   // 可重放窗：项目过滤幸存且价格可算（引擎重放输入）
 	SelectHalf   []Window   // 留出集前半：选参（窗数 ceil(n/2)）
-	HoldoutHalf  []Window   // 留出集后半：只验证（验证栏参数不得来自后半——结构保证）
+	HoldoutHalf  []Window   // 留出集后半：v1 呈现用（引擎现于全窗选参，真分半选参为白天候选项——终局评审发现）
 	Unknown      []Window   // unknown 桶：project 未还原（照登；不被正集包含、受 exclude 约束）
 	Uncomputable []Window   // 不可算桶：provider 缺 P_cache（照登不剔除不估算，D19）
 	Counts       LoadCounts // 全套计数 + 装载时点戳

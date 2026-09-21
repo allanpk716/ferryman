@@ -22,7 +22,7 @@ var reportHeaders = []string{
 	"## 4. 诊断网格（诊断用，非可部署）",
 	"## 5. 无效保温（单列）",
 	"## 6. 双计检查",
-	"## 7. 留出集：前半选参 / 后半验证",
+	"## 7. 留出集：分半呈现（v1 非独立验证）",
 	"## 8. 盲区声明",
 	"## 9. 证据等级",
 }
@@ -148,9 +148,9 @@ func TestMarkdownSectionsOrderAndKeyLines(t *testing.T) {
 		"handoff 科目",
 		"不互相抵扣",
 		// 7 留出集两栏（后半栏参数集与前半一致）
-		"| 前半 | 选参 | 2 |",
-		"| 后半 | 只验证 | 1 |",
-		"参数集与前半一致",
+		"| 前半 | 呈现 | 2 |",
+		"| 后半 | 呈现 | 1 |",
+		"参数组与前半一致（全窗选参，非结构保证）",
 		// 8 盲区固定文案
 		"DefaultBeatOutTokens=300",
 		"渡口限流",
@@ -300,8 +300,8 @@ func TestJSONMarkdownConsistency(t *testing.T) {
 	}
 
 	// 留出集两栏。
-	checkNum(t, md, "holdout.select_n", jnum(t, top, "holdout", "select_n"), 2, "| 前半 | 选参 | 2 |")
-	checkNum(t, md, "holdout.holdout_n", jnum(t, top, "holdout", "holdout_n"), 1, "| 后半 | 只验证 | 1 |")
+	checkNum(t, md, "holdout.select_n", jnum(t, top, "holdout", "select_n"), 2, "| 前半 | 呈现 | 2 |")
+	checkNum(t, md, "holdout.holdout_n", jnum(t, top, "holdout", "holdout_n"), 1, "| 后半 | 呈现 | 1 |")
 	if s := jstr(t, top, "holdout", "param_desc"); !strings.Contains(s, "τ=378.0") || !strings.Contains(md, s) {
 		t.Fatalf("holdout.param_desc = %q，markdown 未印证", s)
 	}
@@ -362,7 +362,7 @@ func TestReportEmptyGraceful(t *testing.T) {
 	}
 	for _, k := range []string{
 		"（未装载）", "（无）", "（引擎未产出）", "主网格最优（引擎未产出）",
-		"（引擎未产出诊断网格）", "历史空表照登", "handoff 科目", "参数集与前半一致",
+		"（引擎未产出诊断网格）", "历史空表照登", "handoff 科目", "参数组与前半一致（全窗选参，非结构保证）",
 		"DefaultBeatOutTokens=300", EvidenceLevel,
 		ScenarioNameConfig, "−1/3", "−1/2",
 	} {
