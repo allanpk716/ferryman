@@ -15,6 +15,7 @@
 //	ferryman install-mcp [--force]
 //	ferryman account report [--since …] [--until …] [--project …] [--session …]
 //	                        [--kind …] [--provider …] [--json]
+//	ferryman backtest [--projects glob]… [--exclude glob]… [--json] [--out 路径]
 //
 // 面板族 flags（原 cmd/viewer 语义原样）：--demo / --port N / --no-tray /
 // --no-browser / --install-shortcuts——带这些 flag（不带子命令）= 只起面板
@@ -109,6 +110,9 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
                       [--kind 类型] [--provider 键] [--json]
   ferryman mcp [--config 路径]      # stdio MCP server（agent 面只读工具，票04；
                                   # CC 等 MCP 客户端把本命令注册为 server 用）
+  ferryman backtest [--config 路径] [--projects glob]… [--exclude glob]…
+                  [--json] [--out 路径]   # 等待窗扫参（离线只读）：账本 window
+                                  # 行反事实重放 → docs 实验报告 + ttl_s 校准建议
   ferryman cutover backup [--data 目录] [--dest 目录]
   ferryman cutover rollback-write [--repo 目录] [--data 目录]
   ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
@@ -169,6 +173,8 @@ func run(args []string) int {
 		return cmdCutover(args[1:])
 	case "mcp":
 		return cmdMCP(args[1:])
+	case "backtest":
+		return cmdBacktest(args[1:], os.Stdout, os.Stderr)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
