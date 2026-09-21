@@ -27,5 +27,5 @@
 
 - 独占验证命令：Playwright 断言 + 手工实测（设置窗开闭的进程树观察）
 
-decision_refs: ADR-0012；CONTEXT.md 词条"显示配置/月预算/环"
+decision_refs: ADR-0014；CONTEXT.md 词条"显示配置/月预算/环"
 review_blocks: 无

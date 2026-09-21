@@ -32,5 +32,5 @@ widget 自升级闭环：tauri-plugin-updater（endpoints 指向本仓 Releases 
 - 独占验证命令：CI 产物 + 双版本手工升级实测
 - 生成密钥对属敏感操作：私钥永不入库，过程记录不含密钥内容
 
-decision_refs: ADR-0012"独立升级线"；AntFeedingLog ADR-0001/docs/release.md
+decision_refs: ADR-0014"独立升级线"；AntFeedingLog ADR-0001/docs/release.md
 review_blocks: 无

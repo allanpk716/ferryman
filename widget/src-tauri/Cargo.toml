@@ -5,7 +5,7 @@ description = "Ferryman 用量悬浮窗：纯读消费 daemon /widget/summary �
 authors = ["allan716"]
 edition = "2021"
 
-# 边界铁律（ADR-0012）：widget 永不 import Ferryman Go 代码，只认 HTTP 契约；
+# 边界铁律（ADR-0014）：widget 永不 import Ferryman Go 代码，只认 HTTP 契约；
 # 本 crate 独立于主仓（根目录无 Cargo workspace），Rust 工具链永不进主构建。
 
 [lib]
@@ -22,7 +22,7 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 # 开机自启（票 02）：默认关，设置里可开（票 04 接 UI）
 tauri-plugin-autostart = "2"
-# 自升级（票 05）：独立升级线（ADR-0012）。endpoints 指向本仓 Releases 的 widget
+# 自升级（票 05）：独立升级线（ADR-0014）。endpoints 指向本仓 Releases 的 widget
 # latest.json；签名密钥对生成与保管流程见 widget/docs/release.md（密钥独立于主程序）
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }

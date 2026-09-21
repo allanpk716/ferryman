@@ -30,5 +30,5 @@
 - 首次编译拉取 Tauri 依赖树（仅 widget 目录，网络+分钟级时长）
 - 不运行 `cargo tauri dev`（图标未生成前 dev 可用但 bundle 不行；图标在票 02）
 
-decision_refs: ADR-0012
+decision_refs: ADR-0014
 review_blocks: 无

@@ -1,6 +1,6 @@
 name: widget
 
-# ADR-0012：widget 独立构建面——路径过滤，只在 widget/ 或本 workflow 变更时触发；
+# ADR-0014：widget 独立构建面——路径过滤，只在 widget/ 或本 workflow 变更时触发；
 # 主仓 Go 构建永不感知本 workflow 的存在。
 #
 # 票 05 · 独立升级线：widget-v* tag 触发 release job（nsis + updater 签名产物附 Release）。

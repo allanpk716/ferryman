@@ -20,7 +20,7 @@ https://github.com/allanpk716/ferryman/releases/latest/download/latest.json
 
 三个缓解选项（互斥，选一个；**今晚不定，晨间人工拍板后改 endpoint 并重发**）：
 
-1. **独立 widget 仓库**：widget 用 subtree 拆出去（ADR-0012 本来就留了这出口），Releases 完全分开，endpoint 永远指向自己的 latest。最干净，成本是仓库管理。
+1. **独立 widget 仓库**：widget 用 subtree 拆出去（ADR-0014 本来就留了这出口），Releases 完全分开，endpoint 永远指向自己的 latest。最干净，成本是仓库管理。
 2. **固定 tag 指针**：发版后把一个常驻 tag（如 `widget-latest`）强制移到最新 widget Release 上，endpoint 改成 `.../releases/download/widget-latest/latest.json`。零新仓库，成本是发版流程多一步 `git tag -f`（可塞进 CI 自动做）。
 3. **GitHub Pages 托 latest.json**：CI 发版时把 latest.json 推到 gh-pages（路径如 `/ferryman/widget/latest.json`），安装包仍放 Release。endpoint 指 Pages，永不 404；成本是多维护一个分支。
 

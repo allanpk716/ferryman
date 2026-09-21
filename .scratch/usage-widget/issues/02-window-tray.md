@@ -27,5 +27,5 @@
 - 独占验证命令：`cargo check` + 手工实测清单（拖动/托盘/单实例/自启）
 - 注册表 Run 键写入需实测后清理（验收后关闭自启）
 
-decision_refs: ADR-0012；报告决策记录 10
+decision_refs: ADR-0014；报告决策记录 10
 review_blocks: 无
