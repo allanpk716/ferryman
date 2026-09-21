@@ -412,6 +412,38 @@ applyProfile();
   }
 })();
 
+// ── 票 05 · 升级通知条（壳内）：托盘「检查更新」→ Rust emit 结果，这里如实显示。
+// 永不自动下载：有新版只出「下载安装」按钮，用户点了才 invoke update_install；
+// 失败（含 pubkey 仍是占位串）原样转述原因。演示/headless 无事件源，通知条不出现。 ──
+(function wireUpdateNotice() {
+  const t = window.__TAURI__;
+  const bar = document.getElementById('updateNotice');
+  const msg = document.getElementById('updateMsg');
+  const btn = document.getElementById('btnUpdateInstall');
+  if (!t || !t.event || !t.event.listen || !bar || !msg || !btn) return;
+  const show = (text, withBtn) => {
+    msg.textContent = text;
+    btn.classList.toggle('hidden', !withBtn);
+    bar.classList.remove('hidden');
+  };
+  t.event.listen('update-check-result', (e) => {
+    const r = (e && e.payload) || {};
+    if (r.status === 'available') show(`有新版本 ${r.version || ''} 可下载`, true);
+    else if (r.status === 'up-to-date') show('已是最新版本', false);
+    else show(`检查失败：${r.message || '未知原因'}`, false);
+  });
+  t.event.listen('update-install-progress', (e) => {
+    const phase = e && e.payload;
+    if (phase === 'downloading') show('正在下载更新…', false);
+    else if (phase === 'installing') show('正在安装，安装器将重启应用…', false);
+  });
+  btn.addEventListener('click', () => {
+    if (!(t.core && t.core.invoke)) return;
+    show('正在下载更新…', false);
+    t.core.invoke('update_install').catch((err) => show(`更新失败：${err}`, false));
+  });
+})();
+
 data.startPolling((summary, reachable) => {
   state.summary = summary; state.reachable = reachable;
   render();

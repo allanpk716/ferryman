@@ -5,9 +5,10 @@ use std::{fs, path::PathBuf, sync::Mutex, time::{Duration, Instant}};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, PhysicalPosition, WindowEvent,
+    Emitter, Manager, PhysicalPosition, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_updater::UpdaterExt;
 
 /// 持久化的窗口几何（票 02 只记位置；尺寸不可缩放无需记）。
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -73,6 +74,69 @@ fn save_profile(app: tauri::AppHandle, profile: serde_json::Value) -> Result<(),
     fs::write(&p, text).map_err(|e| format!("写入显示配置失败: {e}"))
 }
 
+// ── 票 05 · 独立升级线：托盘菜单手动检查更新（唯一触发点，无后台轮询、不自动下载） ──
+
+/// 更新检查结果载荷（emit 给前端通知条如实显示；前端=app.js wireUpdateNotice）。
+#[derive(serde::Serialize, Clone)]
+struct UpdateNotice {
+    /// available=有新版可下载 / up-to-date=已是最新 / error=检查失败
+    status: &'static str,
+    version: Option<String>,
+    /// 失败原因等补充说明（照实转述，不吞不美化；密钥未配=占位 pubkey 时如实报错）
+    message: Option<String>,
+}
+
+/// 检查命中后暂存的更新包：只由前端「下载安装」按钮显式取走（update_install），绝不自动下载。
+struct PendingUpdate(Mutex<Option<tauri_plugin_updater::Update>>);
+
+/// 托盘「检查更新」：异步查 latest.json，结果一律 emit 到前端如实显示（通知条）。
+/// 密钥未配/端点 404/网络失败都是 error 路径——诚实报错，不弹系统对话框、不崩程序。
+fn check_for_updates(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let notice = match app.updater() {
+            Ok(u) => match u.check().await {
+                Ok(Some(update)) => {
+                    let version = update.version.clone();
+                    if let Some(st) = app.try_state::<PendingUpdate>() {
+                        if let Ok(mut slot) = st.0.lock() {
+                            *slot = Some(update);
+                        }
+                    }
+                    UpdateNotice { status: "available", version: Some(version), message: None }
+                }
+                Ok(None) => UpdateNotice { status: "up-to-date", version: None, message: None },
+                Err(e) => UpdateNotice { status: "error", version: None, message: Some(format!("{e}")) },
+            },
+            Err(e) => UpdateNotice {
+                status: "error",
+                version: None,
+                message: Some(format!("更新器初始化失败: {e}")),
+            },
+        };
+        let _ = app.emit("update-check-result", notice); // 主窗不在也不碍事
+    });
+}
+
+/// 下载并安装更新（前端按钮显式触发；Windows 下 nsis 安装器接管并重启应用）。
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
+    let update = {
+        let Some(st) = app.try_state::<PendingUpdate>() else {
+            return Err("更新器未就绪".into());
+        };
+        let mut slot = st.0.lock().map_err(|_| "更新状态锁失败".to_string())?;
+        slot.take().ok_or_else(|| "请先在托盘菜单执行「检查更新」".to_string())?
+    };
+    let _ = app.emit("update-install-progress", "downloading");
+    let bytes = update
+        .download(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("下载更新失败: {e}"))?;
+    let _ = app.emit("update-install-progress", "installing");
+    update.install(bytes).map_err(|e| format!("安装更新失败: {e}"))?;
+    Ok(()) // 到不了这行也无妨：Windows 上 install 会拉起安装器退出本进程
+}
+
 /// 设置窗：按需创建、关闭即销毁（防双 WebView 常驻内存）；已开则只聚焦不重复建。
 fn open_settings(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("settings") {
@@ -112,9 +176,13 @@ pub fn run() {
         }))
         // 自启插件只接线；默认关（不 enable），票 04 设置里给开关
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        // 自升级（票 05）：插件接线。检查只走托盘菜单手动触发（check_for_updates），
+        // 无后台轮询；pubkey 占位期间 check 会失败并经前端通知条如实显示（预期行为）
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(MoveThrottle(Mutex::new(None)))
-        // 自定义命令（票 04）：get_profile / save_profile（profile.json 读写）
-        .invoke_handler(tauri::generate_handler![get_profile, save_profile])
+        .manage(PendingUpdate(Mutex::new(None)))
+        // 自定义命令（票 04/05）：get_profile / save_profile / update_install
+        .invoke_handler(tauri::generate_handler![get_profile, save_profile, update_install])
         .setup(|app| {
             let w = app.get_webview_window("widget").expect("conf 未配置 widget 窗口");
 
@@ -127,11 +195,11 @@ pub fn run() {
                 }
             }
 
-            // 托盘：常驻图标 + 菜单（检查更新为占位，票 05 接真身）
+            // 托盘：常驻图标 + 菜单（检查更新=票 05 真身：手动触发，结果经通知条如实显示）
             let show = MenuItem::with_id(app, "show", "显示悬浮窗", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "收起到托盘", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
-            let update = MenuItem::with_id(app, "update", "检查更新（票 05）", true, None::<&str>)?;
+            let update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &hide, &settings, &update, &quit])?;
             TrayIconBuilder::with_id("main")
@@ -153,7 +221,8 @@ pub fn run() {
                     }
                     "settings" => open_settings(app), // 票 04：按需创建、关闭即销毁
                     "quit" => app.exit(0),
-                    _ => {} // update 占位（票 05）
+                    "update" => check_for_updates(app.clone()), // 票 05：手动检查，异步
+                    _ => {}
                 })
                 .build(app)?;
 

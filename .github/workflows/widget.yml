@@ -2,15 +2,24 @@ name: widget
 
 # ADR-0012：widget 独立构建面——路径过滤，只在 widget/ 或本 workflow 变更时触发；
 # 主仓 Go 构建永不感知本 workflow 的存在。
+#
+# 票 05 · 独立升级线：widget-v* tag 触发 release job（nsis + updater 签名产物附 Release）。
+# tag 隔离铁律：主程序 release.yml 的 tag 过滤是 'v*'（v 开头），本文件是 'widget-v*'
+# （widget- 开头）——两个 glob 无交集：推 widget tag 绝不触发主程序发版，反之亦然。
+# GitHub 过滤语义：tag push 事件只评估 tags 过滤（branches/paths 不参与），反之 branch
+# push 只评估 branches/paths——所以 check 作业用 if 收窄到 branch，避免 tag 推送陪跑。
 on:
   push:
     branches: [main]
     paths: ["widget/**", ".github/workflows/widget.yml"]
+    tags: ['widget-v*']
   pull_request:
     paths: ["widget/**", ".github/workflows/widget.yml"]
 
 jobs:
   check:
+    # 仅分支/PR 跑检查；widget-v* tag 推送只走 release 作业
+    if: github.ref_type == 'branch'
     runs-on: windows-latest
     defaults:
       run:
@@ -25,3 +34,131 @@ jobs:
         run: cargo check --locked
       - name: cargo test
         run: cargo test --locked
+
+  release:
+    # 票 05 · widget 独立发版：nsis 安装包 + updater 签名产物（.sig/latest.json）附 Release。
+    # 重跑纪律：upsert 语义（先 create，已存在则 upload --clobber + edit notes），绝不删 Release。
+    # 前置（一次性，见 widget/docs/release.md）：密钥对生成、pubkey 替换占位串、
+    # Secrets 配置 TAURI_WIDGET_SIGNING_PRIVATE_KEY / TAURI_WIDGET_SIGNING_PRIVATE_KEY_PASSWORD。
+    if: startsWith(github.ref, 'refs/tags/widget-v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: widget
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: widget/package-lock.json
+
+      - name: Install widget toolchain (@tauri-apps/cli)
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: widget/src-tauri
+
+      - name: Verify version matches tag
+        # 版本校验（与主程序 check-versions 同纪律）：tag widget-vX.Y.Z 的 X.Y.Z 必须
+        # 与 package.json / tauri.conf.json / Cargo.toml 三处一致，否则拒绝发版
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          expected="${TAG_NAME#widget-v}"
+          ver=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version")
+          cargo_ver=$(node -p "require('fs').readFileSync('src-tauri/Cargo.toml','utf8').match(/^version\s*=\s*\"([^\"]+)\"/m)[1]")
+          pkg_ver=$(node -p "require('./package.json').version")
+          if [ "$ver" != "$expected" ] || [ "$cargo_ver" != "$expected" ] || [ "$pkg_ver" != "$expected" ]; then
+            echo "::error::tag ${TAG_NAME} 与版本号不一致：tauri.conf.json=${ver} Cargo.toml=${cargo_ver} package.json=${pkg_ver} 期望=${expected}"
+            exit 1
+          fi
+          echo "version ok: ${expected}（三处一致）"
+
+      - name: Check signing secrets present
+        # 友好预检：Secrets 缺失不在预检拦截，签名步会自然失败；这里给可操作的中文提示
+        env:
+          KEY: ${{ secrets.TAURI_WIDGET_SIGNING_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::未配置 Secret TAURI_WIDGET_SIGNING_PRIVATE_KEY：updater 产物签名将失败。请按 widget/docs/release.md 生成密钥对并配置 TAURI_WIDGET_SIGNING_PRIVATE_KEY / TAURI_WIDGET_SIGNING_PRIVATE_KEY_PASSWORD。"
+          else
+            echo "widget 签名密钥已配置。"
+          fi
+
+      - name: Build (nsis + updater 签名产物)
+        # createUpdaterArtifacts: true（tauri.conf.json）→ CLI 用私钥给 setup.exe 出 .sig；
+        # env 变量名是 tauri CLI 钦定，Secret 名带 WIDGET 与主程序密钥隔离（独立信任域）
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_WIDGET_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_WIDGET_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: npx tauri build
+
+      - name: Collect updater artifacts (canonical names + latest.json)
+        # 产物三件套收进 dist-upload/ 并统一成无空格规范名（GitHub 资产名不吃空格；
+        # updater 验签只看文件字节，改名无碍）：setup.exe + .sig + latest.json
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-upload
+          ver=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version")
+          exe=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe | head -1)
+          sig="${exe}.sig"
+          if [ ! -f "$sig" ]; then
+            echo "::error::未找到签名文件 ${sig}：createUpdaterArtifacts 未生效或签名密钥缺失"
+            exit 1
+          fi
+          name="Ferryman-Widget_${ver}_x64-setup.exe"
+          cp "$exe" "dist-upload/${name}"
+          cp "$sig" "dist-upload/${name}.sig"
+          node -e "
+            const fs = require('fs');
+            const exe = 'Ferryman-Widget_${ver}_x64-setup.exe';
+            const latest = {
+              version: '${ver}',
+              notes: 'Ferryman Widget ${ver}',
+              pub_date: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+              platforms: {
+                'windows-x86_64': {
+                  signature: fs.readFileSync('dist-upload/' + exe + '.sig', 'utf8').trim(),
+                  url: 'https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/' + exe,
+                },
+              },
+            };
+            fs.writeFileSync('dist-upload/latest.json', JSON.stringify(latest, null, 2) + '\n');
+            console.log(fs.readFileSync('dist-upload/latest.json', 'utf8'));
+          "
+          ls -la dist-upload
+
+      - name: Create release (publish directly, upsert on rerun)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # annotated tag 的注释对象作 release body（与主程序 release 同规范；轻量标签 body 为空）
+          git fetch --force origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+          git tag -l --format='%(contents)' "${TAG_NAME}" > tag_notes.txt
+          args=()
+          if [[ "$TAG_NAME" == *-* ]]; then args+=(--prerelease); fi
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            gh release upload "$TAG_NAME" dist-upload/* --clobber
+            gh release edit "$TAG_NAME" --notes-file tag_notes.txt
+            echo "Release 已存在：资产覆盖上传（upsert）"
+          else
+            gh release create "$TAG_NAME" dist-upload/* \
+              --title "$TAG_NAME" --notes-file tag_notes.txt "${args[@]}"
+          fi

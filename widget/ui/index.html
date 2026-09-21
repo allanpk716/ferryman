@@ -13,6 +13,9 @@
   <div class="grip" data-tauri-drag-region title="拖动移动（位置记忆）｜双击收起到托盘">⠿</div>
   <button class="gear" id="btnSettings" title="显示配置与帮助">⚙</button>
   <div class="conn-warn" id="connWarn">⚠ daemon 不可达</div>
+  <!-- 票 05 · 升级通知条：托盘「检查更新」后 Rust emit 结果，这里如实显示（无新版/有新版/失败原因）；
+       壳内事件驱动，演示/headless 语境永不出现 -->
+  <div class="update-warn hidden" id="updateNotice"><span id="updateMsg"></span><button type="button" class="hidden" id="btnUpdateInstall">下载安装</button></div>
 </div>
 
 <!-- 收起恢复（浏览器/测试语境的 UI 演示；壳内收起/恢复=托盘菜单，票 02） -->

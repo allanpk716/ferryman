@@ -41,6 +41,12 @@ body{
 body.conn-down .conn-warn{display:block}
 body.conn-down .widget .disc{filter:grayscale(1); opacity:.55}
 
+/* 票 05 · 升级通知条：托盘「检查更新」结果如实显示（默认隐藏，壳内事件驱动） */
+.update-warn{display:flex; align-items:center; flex-wrap:wrap; gap:3px 6px;
+  font-size:10.5px; color:var(--txt-dim); padding:2px 6px; line-height:1.5}
+#btnUpdateInstall{font-size:10px; padding:0 6px; border-radius:8px; cursor:pointer;
+  background:rgba(91,155,213,.18); color:var(--c5h); border:1px solid rgba(91,155,213,.5)}
+
 /* dev 构建角标（release 由 Rust 侧不带 ?dev=1 → body 无 dev 类 → 不显示） */
 .dev-badge{
   display:none; position:fixed; top:3px; right:3px; z-index:80;

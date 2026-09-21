@@ -102,6 +102,33 @@ export function forceGray() {
   return params.has('gray');
 }
 
+/**
+ * 票 05 · 契约防御注入（?superset=1，仅断言/演示语境）：把演示副本包成「契约超集」——
+ * 未知顶层/上游字段 + 更高 version + 未知 metric key。widget 对超集必须向前兼容：
+ * 不崩、未知字段被忽略（assert-static.mjs ⑫ 组断言背书）。实现上零特判：渲染层只按
+ * 已知 key 取值，天然吃掉未知字段——本函数只是把「喂超集」这一动作做成可断言的入口。
+ * 产品路径（无该参数）零影响；live 取数路径同样天然兼容。
+ * @param {Summary} summary
+ * @returns {Summary}
+ */
+export function maybeSuperset(summary) {
+  if (!params.has('superset')) return summary;
+  const c = structuredClone(summary);
+  c.version = (c.version || 0) + 998; // 更高 version：widget 不设版本闸门，照常渲染
+  c.experimental_rollout = { mode: 'canary' }; // 未知顶层字段 → 忽略
+  c.schema_ext = ['future.field.v9']; // 未知顶层字段 → 忽略
+  const glm = c.upstreams.find((u) => u.id === 'glm');
+  if (glm) {
+    glm.future_flag = true; // 上游级未知字段 → 忽略
+    // 未知 metric key：环/倒计时按已知 key 取值自然跳过；详情卡如实列出（provenance 无映射则留空）
+    glm.metrics.push({
+      key: 'window_10h', remaining_pct: 50,
+      resets_at: '2026-09-21T19:00:00+08:00', source: 'fetched', as_of: '12:03',
+    });
+  }
+  return c;
+}
+
 // ── 时钟：倒计时本地推算的基准 ──
 // live：真实时钟。demo：锚点=generated_at（载入时刻对齐，随真实分钟推进，
 // 使「倒计时走字」可观察）；?static=1 冻结于 generated_at（断言确定性）。
@@ -130,7 +157,7 @@ export function now() {
 export function startPolling(onUpdate) {
   async function tick() {
     if (isDev()) {
-      onUpdate(DEMO_SUMMARY, !forceGray());
+      onUpdate(maybeSuperset(DEMO_SUMMARY), !forceGray());
       return;
     }
     const url = String(window.__WIDGET_DAEMON_URL__ || '');

@@ -16,6 +16,7 @@
  *   gray=1     强制 daemon 不可达灰化态
  *   selftest=1 页面同步自跑六项交互并把结果写进 #selftest-results 的 data-* 属性
  *   profile=X  票 04 · 注入显示配置预设（budgets=预算环/覆写；hidden=显隐过滤），见 profile.js PRESETS
+ *   superset=1 票 05 · 注入契约超集（未知字段+更高 version+未知 metric key），验证向前兼容不崩
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -75,6 +76,9 @@ const attr = (tag, name) => {
 };
 const circles = (dump, cls) =>
   [...dump.matchAll(/<circle\b[^>]*>/g)].map((m) => m[0]).filter((t) => attr(t, 'class') === cls);
+/** 任意 dump 上找指定 r/dasharray/stroke 的环（票 05 超集断言与主断言共用几何判据）。 */
+const findRingIn = (dump, r, dash, stroke) =>
+  circles(dump, 'ring').some((t) => attr(t, 'r') === r && dashOf(t) === dash && strokeOf(t) === stroke);
 const strokeOf = (tag) => (attr(tag, 'style') || '').match(/stroke:\s*(#[0-9A-Fa-f]{6})/)?.[1] || null;
 const dashOf = (tag) => {
   const m = (attr(tag, 'style') || '').match(/stroke-dasharray:\s*([\d.]+)\s+([\d.]+)/);
@@ -249,6 +253,23 @@ async function main() {
       !HID.includes('data-id="glm"') && !HID.includes('data-id="handoff"') &&
       HID.includes('data-id="kimi"') && HID.includes('data-id="deepseek"'), '');
 
+    // ⑫ 票 05 · 契约防御：超集 JSON 向前兼容（?superset=1 注入未知顶层/上游字段 +
+    // 更高 version + 未知 metric key）。验收：渲染不崩、未知字段被忽略、已知内容零漂移。
+    const SUP = stripScripts(dumpDom('?static=1&dev=1&selftest=1&superset=1'));
+    const supSt = (SUP.match(/<div id="selftest-results"[^>]*>/) || [''])[0];
+    check('sup.超集注入生效且渲染不崩（未知 metric 上详情卡+四 disc 齐+控制台零报错）',
+      SUP.includes('window_10h') &&
+      ['data-id="glm"', 'data-id="kimi"', 'data-id="deepseek"', 'data-id="handoff"'].every((s) => SUP.includes(s)) &&
+      /data-console="1"/.test(supSt), supSt || '缺 #selftest-results');
+    check('sup.更高 version 不拒渲染（version=999，GLM 5h 环几何与基线逐字一致）',
+      findRingIn(SUP, '43', '167.5 270.2', '#5B9BD5'), '');
+    check('sup.未知 metric key 不进环（环数仍=4，剩余 50% 的 window_10h 不加环）',
+      circles(SUP, 'ring').length === 4, `实际 ${circles(SUP, 'ring').length}`);
+    check('sup.未知顶层/上游字段被忽略（canary/experimental_rollout/future_flag 不落 DOM）',
+      !['canary', 'experimental_rollout', 'future_flag'].some((s) => SUP.includes(s)), '');
+    check('sup.已知内容与基线逐字一致（87.50 / 月 3.2M tok / 重置 14:32）',
+      ['>87.50<', '月 3.2M tok', '重置 14:32（2h28m 后）'].every((s) => SUP.includes(s)), '');
+
     // ⑥ 数据层/渲染层分离 + provenance 内置映射（源码级；缺文件按空串计，落到断言红）
     const src = (f) => { try { return readFileSync(join(UI_DIR, f), 'utf8'); } catch { return ''; } };
     const html = src('index.html'), css = src('style.css'), appjs = src('app.js'), datajs = src('data.js');
@@ -280,8 +301,8 @@ async function main() {
                       'settings.html': shtml, 'settings.js': sjs, 'profile.js': pjs };
     const badUrl = Object.entries(runtime).filter(([, t]) => /https?:\/\//.test(t)).map(([f]) => f);
     check('offline.运行时源零 URL 字面量', badUrl.length === 0, badUrl.join(','));
-    check('offline.六份 dump 无外链资源',
-      [MAIN, REL, GRAY, SETTINGS, PROF, HID].every((d) => !/(src|href)\s*=\s*["']https?:\/\//i.test(d)), '');
+    check('offline.全部 dump 无外链资源',
+      [MAIN, REL, GRAY, SETTINGS, PROF, HID, SUP].every((d) => !/(src|href)\s*=\s*["']https?:\/\//i.test(d)), '');
     check('drag.壳内手柄带 data-tauri-drag-region', html.includes('data-tauri-drag-region'), '');
   } finally {
     // 无常驻资源（file:// 直读，不起服务）
