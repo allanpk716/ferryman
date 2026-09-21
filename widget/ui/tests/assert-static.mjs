@@ -15,6 +15,7 @@
  *   dev=1      等效 dev 构建旗标（演示数据 + “演示数据”角标）
  *   gray=1     强制 daemon 不可达灰化态
  *   selftest=1 页面同步自跑六项交互并把结果写进 #selftest-results 的 data-* 属性
+ *   profile=X  票 04 · 注入显示配置预设（budgets=预算环/覆写；hidden=显隐过滤），见 profile.js PRESETS
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -35,8 +36,8 @@ if (!EDGE) {
   process.exit(1);
 }
 
-// ── file:// 基址（index.html 绝对路径转 file URL，查询串接在后面） ──
-const BASE = pathToFileURL(join(UI_DIR, 'index.html')).href;
+// ── file:// 基址（页面绝对路径转 file URL，查询串接在后面；票 04 起支持 settings.html） ──
+const pageUrl = (page) => pathToFileURL(join(UI_DIR, page)).href;
 
 /**
  * 起一次 headless Edge dump 渲染后 DOM。
@@ -45,14 +46,14 @@ const BASE = pathToFileURL(join(UI_DIR, 'index.html')).href;
  * 预算小于 30s/60s 定时器周期，轮询与 ticker 不会在 dump 前触发，输出确定。
  * --user-data-dir 用一次性临时目录：避免与正在运行的 Edge 抢默认配置文件。
  */
-function dumpDom(qs) {
+function dumpDom(qs, page = 'index.html') {
   const profile = mkdtempSync(join(tmpdir(), 'widget-audit-'));
   try {
     const args = [
       '--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
       `--user-data-dir=${profile}`, '--allow-file-access-from-files',
       '--window-size=132,620', '--virtual-time-budget=1500',
-      '--dump-dom', BASE + qs,
+      '--dump-dom', pageUrl(page) + qs,
     ];
     const r = spawnSync(EDGE, args, { encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
     const out = r.stdout || '';
@@ -154,6 +155,100 @@ async function main() {
     check('gray.dev+gray 注入：有数据但灰化', /(^|\s)conn-down(\s|$)/.test(bodyClass(GRAY)) &&
       GRAY.includes('data-id="glm"') && GRAY.includes('id="connWarn"'), bodyClass(GRAY));
 
+    // ⑧ 票 04 · 设置窗静态形态（settings.html headless dump；目录×默认配置渲染出表格）
+    const SETTINGS = stripScripts(dumpDom('?selftest=1', 'settings.html'));
+    const sTable = (SETTINGS.match(/<tbody[^>]*>[\s\S]*?<\/tbody>/) || [''])[0];
+    check('set.表格行=4', (sTable.match(/<tr\b/g) || []).length === 4,
+      `实际 ${(sTable.match(/<tr\b/g) || []).length}`);
+    check('set.四对象齐', ['GLM', 'Kimi', 'DeepSeek', '摆渡'].every((s) => sTable.includes(s)),
+      sTable.slice(0, 200));
+    check('set.默认竖排选中', /name="layout" value="vertical"[^>]*checked/.test(SETTINGS), '');
+    check('set.默认倒计时选中', /id="optCdline"[^>]*checked/.test(SETTINGS), '');
+    check('set.默认阈值 20/10 ×3 行', (sTable.match(/value="20"/g) || []).length >= 3 &&
+      (sTable.match(/value="10"/g) || []).length >= 3, '');
+    check('set.DS 预算默认关', /class="f-dsb-on"(?![^>]*checked)/.test(sTable), '');
+    check('set.handoff 行无环/无阈值', (() => {
+      const m = sTable.match(/<tr data-id="handoff">[\s\S]*?<\/tr>/);
+      return !!m && m[0].includes('无环') && m[0].includes('—') && !m[0].includes('f-color');
+    })(), '');
+    check('set.月预算“不设=文字计数”说明在页', SETTINGS.includes('不设=文字计数'), '');
+    check('set.重置提示元素存在', SETTINGS.includes('id="resetNotice"'), '');
+    const sst = (SETTINGS.match(/<div id="selftest-results"[^>]*>/) || [''])[0];
+    const sAttr = (k) => new RegExp(`${k}="1"`).test(sst);
+    check('set.selftest 完成', sAttr('data-done'), sst || '缺 #selftest-results');
+    check('set.行数自测', sAttr('data-rows'), sst);
+    check('set.默认值自测', sAttr('data-defaults'), sst);
+    check('set.控制台零报错', sAttr('data-console'), sst);
+
+    // ⑨ 票 04 · profile 纯逻辑（node 直跑 profile.js 导出，零 DOM）
+    let PJ = null;
+    try { PJ = await import('../profile.js'); } catch { /* 缺文件→本组全红 */ }
+    check('pure.profile.js 可被 node 导入', !!PJ, 'import 失败');
+    if (PJ) {
+      const d = PJ.normalizeProfile(null).profile;
+      check('pure.空输入→默认', d.layout === 'vertical' && d.show_countdown === true &&
+        Object.keys(d.objects).length === 0, JSON.stringify(d));
+      const bad = PJ.normalizeProfile({ layout: 'diagonal', show_countdown: 'no',
+        thresholds: { yellow: 'x', red: -3 },
+        objects: { glm: 'junk', kimi: { month_budget: 4000000 } } });
+      check('pure.坏值修复', bad.profile.layout === 'vertical' && bad.profile.show_countdown === true &&
+        bad.repaired === true && bad.profile.objects.kimi.month_budget === 4000000 &&
+        !bad.profile.objects.glm, JSON.stringify(bad));
+      const okn = PJ.normalizeProfile({ layout: 'horizontal', show_countdown: false,
+        objects: { glm: { visible: true, thresholds: { yellow: 30, red: 15 }, order: 2 },
+                   deepseek: { ds_budget: { enabled: true, amount_cny: 300 } } } });
+      check('pure.合法值保留且不误报修复', okn.profile.layout === 'horizontal' &&
+        okn.profile.show_countdown === false && okn.profile.objects.glm.thresholds.yellow === 30 &&
+        okn.profile.objects.glm.order === 2 &&
+        okn.profile.objects.deepseek.ds_budget.amount_cny === 300 && okn.repaired === false,
+        JSON.stringify(okn));
+      const R = PJ.remainingPctOfBudget;
+      check('pure.预算剩余 3.2M/4M=20%', R(3200000, 4000000) === 20, String(R(3200000, 4000000)));
+      check('pure.预算钳制 0..100/非法 null',
+        R(0, 100) === 100 && R(150, 100) === 0 && R(null, 100) === null &&
+        R(10, 0) === null && R(10, -5) === null, '');
+      const eo = PJ.effectiveObject({ layout: 'vertical', show_countdown: true, objects: {} }, 'glm');
+      check('pure.effectiveObject 缺省=可见/20/10/无预算',
+        eo.visible === true && eo.thresholds.yellow === 20 && eo.thresholds.red === 10 &&
+        eo.month_budget === null && eo.ds_budget === null && eo.order === null, JSON.stringify(eo));
+      const entries = [{ id: 'glm' }, { id: 'kimi' }, { id: 'deepseek' }, { id: 'handoff' }];
+      const ov = PJ.orderedVisible(entries,
+        PJ.normalizeProfile({ objects: { handoff: { order: -1 }, glm: { visible: false } } }).profile);
+      check('pure.可见过滤+排序',
+        JSON.stringify(ov.map((x) => x.id)) === JSON.stringify(['handoff', 'kimi', 'deepseek']),
+        JSON.stringify(ov.map((x) => x.id)));
+      const ov2 = PJ.orderedVisible(entries, PJ.normalizeProfile(null).profile);
+      check('pure.无序值=契约序',
+        JSON.stringify(ov2.map((x) => x.id)) === JSON.stringify(['glm', 'kimi', 'deepseek', 'handoff']),
+        JSON.stringify(ov2.map((x) => x.id)));
+    }
+
+    // ⑩ 票 04 · 预算环（URL profile=budgets 注入演示配置；产品路径无该参数）
+    // 预设：GLM 月预算 4M tok（已用 3.2M→剩 20%）+5h 基色覆写；Kimi 月预算 8M（已用
+    // 5.1M→剩 36.25%）+阈值覆写 85/70；DeepSeek 预算 ¥100（月花 58.6→剩 41.4%）；handoff 提前。
+    const PROF = stripScripts(dumpDom('?static=1&dev=1&profile=budgets'));
+    const prings = circles(PROF, 'ring');
+    const findRingP = (r, dash, stroke) =>
+      prings.some((t) => attr(t, 'r') === r && dashOf(t) === dash && strokeOf(t) === stroke);
+    check('prof.默认跑无 r23 内环（预算未设=无紫环）',
+      !circles(MAIN, 'ring').some((t) => attr(t, 'r') === '23'), '');
+    check('prof.GLM 紫环 20%→28.9 144.5 基色紫', findRingP('23', '28.9 144.5', '#9B7EDE'),
+      prings.map((t) => `${attr(t, 'r')} ${dashOf(t)} ${strokeOf(t)}`).join(' ; '));
+    check('prof.Kimi 月环 36.25%→52.4 144.5（阈值覆写→红）', findRingP('23', '52.4 144.5', '#E85D5D'), '');
+    check('prof.Kimi 5h 80% 阈值覆写→黄', findRingP('43', '216.1 270.2', '#E8C33D'), '');
+    check('prof.GLM 5h 基色覆写 #E056FD', findRingP('43', '167.5 270.2', '#E056FD'), '');
+    check('prof.DS 绿环 41.4%→111.9 270.2', findRingP('43', '111.9 270.2', '#6BBF8A'), '');
+    check('prof.预算环 caption 保留（月 3.2M tok 仍在）', PROF.includes('月 3.2M tok'), '');
+    check('prof.handoff 提前（order 覆写）',
+      PROF.indexOf('data-id="handoff"') >= 0 &&
+      PROF.indexOf('data-id="handoff"') < PROF.indexOf('data-id="glm"'), '');
+
+    // ⑪ 票 04 · 显隐过滤（URL profile=hidden 注入：glm/handoff visible=false）
+    const HID = stripScripts(dumpDom('?static=1&dev=1&profile=hidden'));
+    check('vis.hidden 预设滤除 glm/handoff',
+      !HID.includes('data-id="glm"') && !HID.includes('data-id="handoff"') &&
+      HID.includes('data-id="kimi"') && HID.includes('data-id="deepseek"'), '');
+
     // ⑥ 数据层/渲染层分离 + provenance 内置映射（源码级；缺文件按空串计，落到断言红）
     const src = (f) => { try { return readFileSync(join(UI_DIR, f), 'utf8'); } catch { return ''; } };
     const html = src('index.html'), css = src('style.css'), appjs = src('app.js'), datajs = src('data.js');
@@ -174,12 +269,19 @@ async function main() {
       '账本 handoff 科目 · 本周（估算）'].every((s) => appjs.includes(s)), '');
     check('css.dev 角标规则存在', css.includes('body.dev .dev-badge'), '');
     check('css.灰化规则存在', css.includes('body.conn-down'), '');
+    const shtml = src('settings.html'), sjs = src('settings.js'), pjs = src('profile.js');
+    check('split.settings 页引模块且无内联数据', shtml.includes('<script type="module" src="settings.js">') &&
+      !['generated_at', 'remaining_pct', '3.2M', '87.50'].some((s) => shtml.includes(s)), '');
+    check('split.settings.js 无演示数据字面量', !['generated_at', '3.2M', '87.50', '12:03'].some((s) => sjs.includes(s)), '');
+    check('split.profile.js 无演示数据字面量', !['generated_at', '3.2M', '87.50', '12:03'].some((s) => pjs.includes(s)), '');
 
-    // ⑦ 离线铁律：无外部引用（运行时四文件零 URL 字面量；dump 无外链资源）
-    const runtime = { 'index.html': html, 'style.css': css, 'app.js': appjs, 'data.js': datajs };
+    // ⑦ 离线铁律：无外部引用（运行时源零 URL 字面量；dump 无外链资源；票 04 起含设置窗三件）
+    const runtime = { 'index.html': html, 'style.css': css, 'app.js': appjs, 'data.js': datajs,
+                      'settings.html': shtml, 'settings.js': sjs, 'profile.js': pjs };
     const badUrl = Object.entries(runtime).filter(([, t]) => /https?:\/\//.test(t)).map(([f]) => f);
     check('offline.运行时源零 URL 字面量', badUrl.length === 0, badUrl.join(','));
-    check('offline.三份 dump 无外链资源', [MAIN, REL, GRAY].every((d) => !/(src|href)\s*=\s*["']https?:\/\//i.test(d)), '');
+    check('offline.六份 dump 无外链资源',
+      [MAIN, REL, GRAY, SETTINGS, PROF, HID].every((d) => !/(src|href)\s*=\s*["']https?:\/\//i.test(d)), '');
     check('drag.壳内手柄带 data-tauri-drag-region', html.includes('data-tauri-drag-region'), '');
   } finally {
     // 无常驻资源（file:// 直读，不起服务）

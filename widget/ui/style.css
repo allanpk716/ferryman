@@ -134,3 +134,33 @@ body.tray-collapsed #widget{display:none}
 body.tray-collapsed #restoreBtn{display:block}
 
 .hidden{display:none!important}
+
+/* ── 票 04 · 设置窗（独立窗口 settings.html；按需创建、关闭即销毁） ── */
+body.settings-page{overflow:auto; padding:10px 12px}
+body.settings-page .sheet{max-height:none; width:100%; padding:12px 10px}
+.note.warn{
+  display:block; font-size:11px; color:var(--alert-y);
+  border:1px solid rgba(232,195,61,.4); background:rgba(232,195,61,.1);
+  border-radius:8px; padding:5px 8px; margin-bottom:8px;
+}
+.set{width:100%; border-collapse:collapse; font-size:11.5px; margin:6px 0}
+.set th,.set td{border:1px solid rgba(255,255,255,.08); padding:4px 6px; text-align:left; vertical-align:middle}
+.set th{background:rgba(255,255,255,.04); font-weight:600; font-size:11px}
+.set .hint{font-size:10px; color:var(--txt-faint)}
+.set input[type=number]{
+  width:56px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.14);
+  color:var(--txt); border-radius:4px; padding:1px 4px; font:inherit;
+}
+.set .f-mb{width:84px}
+.set .f-dsb-amt{width:64px}
+.set input[type=color]{
+  width:24px; height:18px; padding:0; border:none; background:none;
+  cursor:pointer; vertical-align:-4px; margin-right:2px;
+}
+.set button{
+  background:none; border:1px solid rgba(255,255,255,.16); color:var(--txt-dim);
+  font-size:11px; line-height:1; border-radius:4px; padding:2px 5px; cursor:pointer;
+}
+.set button:hover{color:var(--txt); background:rgba(255,255,255,.08)}
+.radioline .hint{font-size:10.5px; color:var(--txt-faint)}
+.statusline{margin-top:8px; font-size:11px; color:var(--txt-dim); min-height:16px}

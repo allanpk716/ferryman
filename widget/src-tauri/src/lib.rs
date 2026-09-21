@@ -33,6 +33,74 @@ fn save_state(app: &tauri::AppHandle, x: i32, y: i32) {
     }
 }
 
+// ── 票 04 · 显示配置（display profile）持久化与设置窗 ──
+
+/// 配置文件路径：app_data_dir()/profile.json（=%APPDATA%/<identifier>/，与
+/// window-state.json 同目录；票面「$APPDATA/ferryman-widget/profile.json」即此目录的泛称，
+/// 走 tauri path API 而非硬编码目录名）。
+fn profile_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("profile.json"))
+}
+
+/// 读显示配置。文件缺失/损坏 → profile=null + reset_reason（missing|corrupted），
+/// 由前端回落默认并如实提示——配置文件问题永不崩程序。
+#[tauri::command]
+fn get_profile(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let Some(p) = profile_path(&app) else {
+        return Ok(serde_json::json!({ "profile": null, "reset_reason": "no-dir" }));
+    };
+    match fs::read_to_string(&p) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => Ok(serde_json::json!({ "profile": v, "reset_reason": null })),
+            Err(_) => Ok(serde_json::json!({ "profile": null, "reset_reason": "corrupted" })),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(serde_json::json!({ "profile": null, "reset_reason": "missing" }))
+        }
+        Err(e) => Err(format!("读取显示配置失败: {e}")),
+    }
+}
+
+/// 写显示配置（目录不存在则建；失败返回 Err，前端如实提示）。
+#[tauri::command]
+fn save_profile(app: tauri::AppHandle, profile: serde_json::Value) -> Result<(), String> {
+    let Some(p) = profile_path(&app) else { return Err("无法定位配置目录".into()) };
+    if let Some(dir) = p.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let text =
+        serde_json::to_string_pretty(&profile).map_err(|e| format!("序列化显示配置失败: {e}"))?;
+    fs::write(&p, text).map_err(|e| format!("写入显示配置失败: {e}"))
+}
+
+/// 设置窗：按需创建、关闭即销毁（防双 WebView 常驻内存）；已开则只聚焦不重复建。
+fn open_settings(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    let built = tauri::WebviewWindowBuilder::new(
+        app,
+        "settings",
+        tauri::WebviewUrl::App("settings.html".into()),
+    )
+    .title("显示配置")
+    .inner_size(560.0, 520.0)
+    .min_inner_size(460.0, 380.0)
+    .center()
+    .resizable(true)
+    .visible(false) // 零闪窗：建好再显
+    .build();
+    match built {
+        Ok(w) => {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+        Err(e) => eprintln!("设置窗创建失败: {e}"), // 建窗失败不崩主程序，托盘仍可用
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例必须最前：二次启动不出现第二个窗口，拉起既有窗口后由 main 退出
@@ -45,6 +113,8 @@ pub fn run() {
         // 自启插件只接线；默认关（不 enable），票 04 设置里给开关
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(MoveThrottle(Mutex::new(None)))
+        // 自定义命令（票 04）：get_profile / save_profile（profile.json 读写）
+        .invoke_handler(tauri::generate_handler![get_profile, save_profile])
         .setup(|app| {
             let w = app.get_webview_window("widget").expect("conf 未配置 widget 窗口");
 
@@ -57,10 +127,10 @@ pub fn run() {
                 }
             }
 
-            // 托盘：常驻图标 + 菜单（设置/检查更新为占位，票 04/05 接真身）
+            // 托盘：常驻图标 + 菜单（检查更新为占位，票 05 接真身）
             let show = MenuItem::with_id(app, "show", "显示悬浮窗", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "收起到托盘", true, None::<&str>)?;
-            let settings = MenuItem::with_id(app, "settings", "设置…（票 04）", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
             let update = MenuItem::with_id(app, "update", "检查更新（票 05）", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &hide, &settings, &update, &quit])?;
@@ -81,8 +151,9 @@ pub fn run() {
                             let _ = w.hide();
                         }
                     }
+                    "settings" => open_settings(app), // 票 04：按需创建、关闭即销毁
                     "quit" => app.exit(0),
-                    _ => {} // settings/update 占位
+                    _ => {} // update 占位（票 05）
                 })
                 .build(app)?;
 
@@ -102,16 +173,22 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            // 关窗=收起到托盘；退出只走托盘菜单
+            // 悬浮窗：关窗=收起到托盘，退出只走托盘菜单；
+            // 设置窗（票 04）：不拦默认关闭流程 → 窗口与 WebView 一并销毁（关闭即销毁验收）
             WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                if let Ok(pos) = window.outer_position() {
-                    save_state(window.app_handle(), pos.x, pos.y);
+                if window.label() != "settings" {
+                    api.prevent_close();
+                    if let Ok(pos) = window.outer_position() {
+                        save_state(window.app_handle(), pos.x, pos.y);
+                    }
+                    let _ = window.hide();
                 }
-                let _ = window.hide();
             }
-            // 拖动中节流保存位置（≥500ms 一次）
+            // 拖动中节流保存位置（≥500ms 一次）；只针对悬浮窗（设置窗位置不记）
             WindowEvent::Moved(pos) => {
+                if window.label() != "widget" {
+                    return;
+                }
                 let throttle = window.state::<MoveThrottle>();
                 let due = throttle
                     .0

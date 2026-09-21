@@ -9,8 +9,12 @@
  *  - PROVENANCE_BASE / PROVENANCE_BY_ID：kind+key → 字段出处文案（九条 kind:key 全覆盖；
  *    演示上游的 id 级覆写保文案与设计稿逐字一致——同 kind 不同供应商文案有别，v0 的已知局限）
  *  - DETAIL_NAME_OF：详情卡长名（圆心短名=label 吃契约；长名是展示别名，缺省回落 label）
+ *
+ * 票 04：显示配置 profile（profile.js 纯逻辑；settings.html 设置窗编辑、本窗消费）——
+ * 显隐/顺序/阈值/环色基色/月预算紫环/DS 预算绿环/布局/倒计时开关，改动即时生效。
  */
 import * as data from './data.js';
+import * as profile from './profile.js';
 
 // ── 控制台错误捕获（自测第六项：控制台零报错） ──
 const consoleErrors = [];
@@ -26,8 +30,8 @@ const settings = document.getElementById('settings');
 const grip = document.querySelector('#widget .grip');
 const restoreBtn = document.getElementById('restoreBtn');
 
-/** @type {{summary:data.Summary|null, reachable:boolean, detailId:string|null, showCdline:boolean}} */
-const state = { summary: null, reachable: true, detailId: null, showCdline: true };
+/** @type {{summary:data.Summary|null, reachable:boolean, detailId:string|null, profile:profile.Profile}} */
+const state = { summary: null, reachable: true, detailId: null, profile: profile.normalizeProfile(null).profile };
 
 /** Tauri 壳内（v2 恒注入 __TAURI_INTERNALS__）：拖动/收出走原生（票 02），JS 演示路径不接管。 */
 const inShell = () => !!window.__TAURI_INTERNALS__;
@@ -36,14 +40,15 @@ const inShell = () => !!window.__TAURI_INTERNALS__;
 function getVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 const COLORS = { window_5h: getVar('--c5h'), week: getVar('--cweek'),
                  month_budget: getVar('--cmonth'), ds_budget: getVar('--cds') };
+/** 断言调色板（profile.ringStrokeColor 消费）：基色 + 告警色。 */
+const PALETTE = { base: COLORS, yellow: getVar('--alert-y'), red: getVar('--alert-r') };
 
-/** 环色：基色，<20% 黄、<10% 红（pct 为空=无环指标，回落基色）。 */
-function ringColor(key, pct) {
-  const base = COLORS[key] || COLORS.window_5h;
-  if (pct == null) return base;
-  if (pct < 10) return getVar('--alert-r');
-  if (pct < 20) return getVar('--alert-y');
-  return base;
+/** 生效的对象级显示配置（profile 缺项回落默认）。 */
+const objProf = (id) => profile.effectiveObject(state.profile, id);
+
+/** 环色：对象基色覆写（票 04）→ 阈值告警色（阈值来自该对象 profile，默认 20/10）→ 基色。 */
+function ringColor(p, key, pct) {
+  return profile.ringStrokeColor(key, pct, objProf(p.id), PALETTE);
 }
 
 // ── provenance 内置映射（不进契约） ──
@@ -55,7 +60,7 @@ const PROVENANCE_BASE = {
   'paygo:balance_cny': 'user/balance → balance_infos[0].total_balance = granted + topped_up',
   'paygo:spend_today_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）',
   'paygo:spend_week_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）',
-  'paygo:spend_month_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）', // mock 无此实例，按枚举补位
+  'paygo:spend_month_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）', // 票 04 起 demo 已补实例（DS 预算环已用值）
   'handoff:spend_month_cny': '账本 handoff 科目 · 本自然月（估算）',
   'handoff:spend_week_cny': '账本 handoff 科目 · 本周（估算）',
 };
@@ -93,30 +98,49 @@ function absTimeText(resetsAt) {
   const wd = '日一二三四五六'[new Date(new Date(resetsAt).getTime() + 8 * 3600e3).getUTCDay()];
   return `周${wd} ${hhmm}`;
 }
-/** 告警联动：<10% 红、<20% 黄，否则所属环基色。 */
-function resetColor(m) {
-  if (m.remaining_pct < 10) return getVar('--alert-r');
-  if (m.remaining_pct < 20) return getVar('--alert-y');
-  return COLORS[m.key] || COLORS.window_5h;
+/** 告警联动：<red 红、<yellow 黄（对象阈值，默认 20/10），否则所属环基色。 */
+function resetColor(p, m) {
+  const lv = profile.alertLevel(m.remaining_pct, objProf(p.id).thresholds);
+  return lv === 'red' ? getVar('--alert-r') : lv === 'yellow' ? getVar('--alert-y')
+    : (COLORS[m.key] || COLORS.window_5h);
 }
-function cdSpan(m) {
+function cdSpan(p, m) {
   if (!m || !m.resets_at) return '';
-  const alert = m.remaining_pct < 20, c = resetColor(m);
+  const alert = profile.alertLevel(m.remaining_pct, objProf(p.id).thresholds) !== 'base';
+  const c = resetColor(p, m);
   return `<span style="color:${c}${alert ? ';font-weight:600' : ''}"><span class="cdot" style="background:${c}"></span>${countdownText(m.resets_at)}</span>`;
 }
 function cdlineInner(p) {
   const m = (k) => p.metrics.find((x) => x.key === k);
-  return `${cdSpan(m('window_5h'))}<span class="sep"> · </span>${cdSpan(m('week'))}`;
+  return `${cdSpan(p, m('window_5h'))}<span class="sep"> · </span>${cdSpan(p, m('week'))}`;
 }
-const cdlineHTML = (p) => `<div class="cap cdline${state.showCdline ? '' : ' hidden'}">${cdlineInner(p)}</div>`;
+const cdlineHTML = (p) => `<div class="cap cdline${state.profile.show_countdown ? '' : ' hidden'}">${cdlineInner(p)}</div>`;
 
 // ── 圆控件 ──
 const metricOf = (p, k) => p.metrics.find((x) => x.key === k);
 const estBadge = (m) => (m && m.source === 'estimated' ? '<i>估</i>' : '');
-function ringSVG(m1, m2) { // m1=外环(5h) m2=中环(周)，均可空
-  const C1 = 2 * Math.PI * 43, C2 = 2 * Math.PI * 33;
-  const seg = (m, r, C) => m ? `<circle class="ring" cx="50" cy="50" r="${r}" style="stroke:${ringColor(m.key, m.remaining_pct)};stroke-dasharray:${(m.remaining_pct / 100 * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 50 50)"></circle>` : '';
-  return `<circle class="track" cx="50" cy="50" r="43"></circle>${seg(m1, 43, C1)}<circle class="track" cx="50" cy="50" r="33"></circle>${seg(m2, 33, C2)}`;
+
+/**
+ * 预算环（票 04，剩余制：1−已用/预算，钳 0..100）。
+ * 预算来自该对象 profile；契约只给原始值（mt.value=月 tok / 月花费元），预算在 widget 侧
+ * 参与分母计算。预算未设或契约无数值 → null（不画环：月预算=文字计数现状，DS=无绿环）。
+ */
+function budgetRing(p, key, used) {
+  const o = objProf(p.id);
+  const budget = key === 'ds_budget' ? (o.ds_budget && o.ds_budget.amount_cny) : o.month_budget;
+  const pct = profile.remainingPctOfBudget(used, budget);
+  return pct == null ? null : { key, remaining_pct: pct };
+}
+
+/** 周长按半径查表（r43=5h/DS 预算外环、r33=周中环、r23=月预算内环）。 */
+const RING_R = { 43: 2 * Math.PI * 43, 33: 2 * Math.PI * 33, 23: 2 * Math.PI * 23 };
+const ringCircle = (p, m, r) =>
+  `<circle class="ring" cx="50" cy="50" r="${r}" style="stroke:${ringColor(p, m.key, m.remaining_pct)};stroke-dasharray:${(m.remaining_pct / 100 * RING_R[r]).toFixed(1)} ${RING_R[r].toFixed(1)}" transform="rotate(-90 50 50)"></circle>`;
+const trackCircle = (r) => `<circle class="track" cx="50" cy="50" r="${r}"></circle>`;
+
+function ringSVG(p, m1, m2, m3) { // m1=外环(5h) m2=中环(周) m3=内环(月预算，可空)
+  const seg = (m, r) => (m ? ringCircle(p, m, r) : '');
+  return `${trackCircle(43)}${seg(m1, 43)}${trackCircle(33)}${seg(m2, 33)}${m3 ? `${trackCircle(23)}${seg(m3, 23)}` : ''}`;
 }
 function discHTML(p) {
   const label = p.label || p.id;
@@ -126,19 +150,24 @@ function discHTML(p) {
     center = `<text x="50" y="47" class="c-label">⚠</text><text x="50" y="60" class="c-sub">${label}</text>`;
     cap = `<div class="cap">查询失败 · ${p.error.category}</div>`;
   } else if (p.kind === 'coding_plan') {
-    svgInner = ringSVG(metricOf(p, 'window_5h'), metricOf(p, 'week'));
+    const mt = metricOf(p, 'month_tokens');
+    // 月预算环（内圈紫环，票 04）：不设预算=不画环（文字计数现状）；设了=caption 保留 + 环
+    svgInner = ringSVG(p, metricOf(p, 'window_5h'), metricOf(p, 'week'),
+      budgetRing(p, 'month_budget', mt && mt.value));
     center = `<text x="50" y="47" class="c-label">${label}</text>
               <text x="50" y="60" class="c-sub">${p.plan || 'Coding Plan'}</text>`;
-    const mt = metricOf(p, 'month_tokens');
     cap = cdlineHTML(p) + `<div class="cap">${mt ? mt.text : ''}${estBadge(mt)}</div>`;
   } else if (p.kind === 'paygo') {
-    const bal = metricOf(p, 'balance_cny'), st = metricOf(p, 'spend_today_cny'), sw = metricOf(p, 'spend_week_cny');
-    svgInner = `<circle class="track" cx="50" cy="50" r="43"></circle>`; // 预算环默认关（票 04 设置）
+    const bal = metricOf(p, 'balance_cny'), st = metricOf(p, 'spend_today_cny'),
+          sw = metricOf(p, 'spend_week_cny'), sm = metricOf(p, 'spend_month_cny');
+    // DS 预算环（票 04）：开关+金额在设置窗；已用=spend_month_cny 原始值，剩余制绿环
+    const dsr = budgetRing(p, 'ds_budget', sm && sm.value);
+    svgInner = `${trackCircle(43)}${dsr ? ringCircle(p, dsr, 43) : ''}`;
     const money = bal ? bal.text.replace(/^¥/, '') : '—'; // 圆心金额吃契约 text
     center = `<text x="50" y="38" class="c-money-sym">CNY</text>
               <text x="50" y="56" class="c-money">${money}</text>
               <text x="50" y="68" class="c-sub">${!bal || bal.available !== false ? '可用' : '不可用'}</text>`;
-    cap = `<div class="cap">${st ? st.text : ''}${estBadge(st)} · ${sw ? sw.text : ''}${estBadge(sw)}</div>`;
+    cap = `<div class="cap">${[sm, st, sw].filter(Boolean).map((m) => `${m.text}${estBadge(m)}`).join(' · ')}</div>`;
   } else { // handoff
     const sm = metricOf(p, 'spend_month_cny'), sw = metricOf(p, 'spend_week_cny');
     svgInner = `<circle class="houtline" cx="50" cy="50" r="43"></circle>`;
@@ -150,13 +179,13 @@ function discHTML(p) {
             <svg viewBox="0 0 100 100">${svgInner}${center}</svg>${cap}</div>`;
 }
 
-/** 全量重渲染（30s 轮询/灰化态切换后调用；显示配置即时项随 state 落盘到 markup）。 */
+/** 全量重渲染（30s 轮询/profile 变更后调用；显隐与顺序随 profile，票 04）。 */
 function render() {
   document.body.classList.toggle('conn-down', !state.reachable);
   for (const el of [...widget.querySelectorAll('.disc')]) el.remove();
   if (!state.summary) return;
-  [...state.summary.upstreams, state.summary.handoff].forEach((p) =>
-    widget.insertAdjacentHTML('beforeend', discHTML(p)));
+  profile.orderedVisible([...state.summary.upstreams, state.summary.handoff], state.profile)
+    .forEach((p) => widget.insertAdjacentHTML('beforeend', discHTML(p)));
   if (state.detailId) { // 重建后若详情卡开着，按 id 重挂
     const p = findUpstream(state.detailId);
     if (p) renderDetail(p); else closeDetail();
@@ -171,7 +200,7 @@ widget.addEventListener('mouseover', (e) => {
   const disc = e.target.closest('.disc'); if (!disc) return;
   const p = findUpstream(disc.dataset.id); if (!p) return;
   const rows = p.metrics.filter((m) => m.remaining_pct != null).map((m) =>
-    `<div><span class="t-sw" style="background:${ringColor(m.key, m.remaining_pct)}"></span>${labelOf(m.key)} 剩 ${m.remaining_pct}%${m.resets_at ? ` · 重置 ${countdownText(m.resets_at)}` : ''}</div>`
+    `<div><span class="t-sw" style="background:${ringColor(p, m.key, m.remaining_pct)}"></span>${labelOf(m.key)} 剩 ${m.remaining_pct}%${m.resets_at ? ` · 重置 ${countdownText(m.resets_at)}` : ''}</div>`
   ).join('');
   tip.innerHTML = rows || "<div style='color:var(--txt-dim)'>无环指标 · 单击看详情</div>";
   tip.classList.remove('hidden');
@@ -191,9 +220,9 @@ function renderDetail(p) {
   const rows = p.metrics.map((m) => {
     if (m.remaining_pct != null) {
       const reset = m.resets_at
-        ? `<span class="d-reset" style="color:${resetColor(m)}${m.remaining_pct < 20 ? ';font-weight:600' : ''}">重置 ${absTimeText(m.resets_at)}（${countdownText(m.resets_at)} 后）</span>`
+        ? `<span class="d-reset" style="color:${resetColor(p, m)}${m.remaining_pct < 20 ? ';font-weight:600' : ''}">重置 ${absTimeText(m.resets_at)}（${countdownText(m.resets_at)} 后）</span>`
         : '<span class="d-reset"></span>';
-      return `<div class="drow"><span class="d-sw" style="background:${ringColor(m.key, m.remaining_pct)}"></span>
+      return `<div class="drow"><span class="d-sw" style="background:${ringColor(p, m.key, m.remaining_pct)}"></span>
         <span class="d-key">${labelOf(m.key)}剩</span>
         <span class="d-val">${m.remaining_pct}%<span class="b ${m.source === 'fetched' ? 'fetch' : 'est'}">${m.source === 'fetched' ? '查询' : '估'}</span></span>
         ${m.abs ? `<span class="d-abs">${m.abs}</span>` : ''}
@@ -230,19 +259,33 @@ document.querySelectorAll('[data-close]').forEach((b) =>
   b.addEventListener('click', () => document.getElementById(b.dataset.close).classList.add('hidden')));
 settings.addEventListener('click', (e) => { if (e.target === settings) settings.classList.add('hidden'); });
 
-/** 横竖切换（窗体几何随动属票 04/09；此处先落 UI 类切换，语义与 mock 同）。 */
+/** 横竖切换（票 04 起 profile.layout 是唯一事实源；窗体几何随动属票 09）。 */
 function setLayout(mode) {
   widget.classList.remove('vertical', 'horizontal');
   widget.classList.add(mode);
   document.querySelectorAll('input[name=layout]').forEach((r) => { r.checked = r.value === mode; });
 }
+/** profile 变更持久化（壳内：落盘 + 广播各窗即时生效；演示语境：仅本页）。 */
+function persistProfile() {
+  const t = window.__TAURI__;
+  if (t && t.core && t.core.invoke && t.event && t.event.emit) {
+    t.event.emit('profile-changed', state.profile);
+    t.core.invoke('save_profile', { profile: state.profile })
+      .catch((e) => console.error('save_profile 失败', e));
+  }
+}
 document.querySelectorAll('input[name=layout]').forEach((r) =>
-  r.addEventListener('change', () => setLayout(r.value)));
+  r.addEventListener('change', () => {
+    setLayout(r.value);
+    state.profile.layout = r.value;
+    persistProfile();
+  }));
 
-// 倒计时行显隐（widget 本地显示配置，daemon 不感知）
+// 倒计时行显隐（widget 本地显示配置，daemon 不感知；票 04 起持久化进 profile）
 document.getElementById('optCdline').addEventListener('change', (e) => {
-  state.showCdline = e.target.checked;
-  document.querySelectorAll('.cdline').forEach((el) => el.classList.toggle('hidden', !state.showCdline));
+  state.profile.show_countdown = e.target.checked;
+  document.querySelectorAll('.cdline').forEach((el) => el.classList.toggle('hidden', !e.target.checked));
+  persistProfile();
 });
 
 // ── 收起/恢复（壳内=托盘菜单与关窗，票 02；浏览器/测试语境=dblclick 手柄的 UI 演示） ──
@@ -337,6 +380,38 @@ function runSelftest() {
 
 // ── 启动 ──
 document.body.classList.toggle('dev', data.isDev()); // dev 构建角标（release 不带）
+
+// 显示配置（票 04）：演示/测试语境=URL 注入预设（?profile=budgets|hidden）；
+// 壳内=invoke get_profile 读盘（损坏/缺失→Rust 回报 reset_reason，设置窗如实提示），
+// 并订阅设置窗的 profile-changed 广播实现即时生效。
+function initialProfile() {
+  const pv = new URLSearchParams(location.search).get('profile');
+  return profile.normalizeProfile((pv && profile.PRESETS[pv]) || null).profile;
+}
+function applyProfile() {
+  setLayout(state.profile.layout);
+  document.getElementById('optCdline').checked = state.profile.show_countdown;
+  render();
+}
+state.profile = initialProfile();
+applyProfile();
+
+(function wireProfileIpc() {
+  const t = window.__TAURI__;
+  if (!t || !t.core || !t.core.invoke) return; // 浏览器/headless：预设已生效
+  t.core.invoke('get_profile').then((r) => {
+    if (r && r.reset_reason) console.warn('显示配置回落默认：', r.reset_reason);
+    state.profile = profile.normalizeProfile(r && r.profile).profile;
+    applyProfile();
+  }).catch((e) => console.error('get_profile 失败', e));
+  if (t.event && t.event.listen) {
+    t.event.listen('profile-changed', (e) => {
+      state.profile = profile.normalizeProfile(e && e.payload).profile;
+      applyProfile();
+    });
+  }
+})();
+
 data.startPolling((summary, reachable) => {
   state.summary = summary; state.reachable = reachable;
   render();

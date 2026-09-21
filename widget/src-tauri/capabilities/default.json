@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "悬浮窗主窗口最小权限（W1：仅核心默认；插件能力随票 02/04/05 增补）",
-  "windows": ["widget"],
+  "description": "悬浮窗主窗口与设置窗最小权限（W1：仅核心默认；插件能力随票 02/04/05 增补）。settings=票 04 设置窗（按需创建/关闭即销毁）；自定义 command 默认允许，无需逐条授权",
+  "windows": ["widget", "settings"],
   "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

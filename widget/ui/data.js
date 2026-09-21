@@ -13,6 +13,8 @@
  * @property {MetricKey} key
  * @property {number} [remaining_pct] 剩余 %（环指标）
  * @property {string} [text] 展示文本（文字指标，如「月 3.2M tok」）
+ * @property {number} [value] 文字指标的原始数值（v0 之外的附加字段，向前兼容读取）：
+ *            month_tokens=本月 tok 数；spend_*=CNY 金额——票 04 预算环的分母计算（剩余制）用它
  * @property {string} [abs] 绝对数展示（如「1200 / 1500」）
  * @property {{granted:string, topped_up:string}} [breakdown] 余额拆分（DS 赠送/充值）
  * @property {boolean} [available] v0 之外的附加字段（DS 余额可用性）；widget 向前兼容读取
@@ -50,7 +52,7 @@ export const DEMO_SUMMARY = {
       metrics: [
         { key: 'window_5h', remaining_pct: 62, resets_at: '2026-09-21T14:32:00+08:00', source: 'fetched', as_of: '12:03' },
         { key: 'week', remaining_pct: 8, resets_at: '2026-09-28T00:00:00+08:00', source: 'fetched', as_of: '12:03' },
-        { key: 'month_tokens', text: '月 3.2M tok', source: 'estimated', as_of: '12:03' },
+        { key: 'month_tokens', text: '月 3.2M tok', value: 3200000, source: 'estimated', as_of: '12:03' },
       ],
     },
     {
@@ -58,13 +60,14 @@ export const DEMO_SUMMARY = {
       metrics: [
         { key: 'window_5h', remaining_pct: 80, abs: '1200 / 1500', resets_at: '2026-09-21T16:05:00+08:00', source: 'fetched', as_of: '12:02' },
         { key: 'week', remaining_pct: 17, abs: '850 / 5000', resets_at: '2026-09-28T00:00:00+08:00', source: 'fetched', as_of: '12:02' },
-        { key: 'month_tokens', text: '月 5.1M tok', source: 'estimated', as_of: '12:03' },
+        { key: 'month_tokens', text: '月 5.1M tok', value: 5100000, source: 'estimated', as_of: '12:03' },
       ],
     },
     {
       id: 'deepseek', label: 'DeepSeek', kind: 'paygo',
       metrics: [
         { key: 'balance_cny', text: '¥87.50', breakdown: { granted: '10.00', topped_up: '77.50' }, available: true, source: 'fetched', as_of: '12:01' },
+        { key: 'spend_month_cny', text: '月 ¥58.60', value: 58.6, source: 'estimated', as_of: '12:03' }, // 票 04：DS 预算环的已用值（月口径）
         { key: 'spend_today_cny', text: '今 ¥3.10', source: 'estimated', as_of: '12:03' },
         { key: 'spend_week_cny', text: '周 ¥22.40', source: 'estimated', as_of: '12:03' },
       ],
