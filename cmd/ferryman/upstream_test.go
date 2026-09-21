@@ -55,6 +55,29 @@ model_map = { default = "kimi-for-coding" }
 provider = "deepseek"
 `
 
+// upstreamCfgLocalEmptyKeySrc 本地中转空钥场景（终局评审重大问题）：cc-switch
+// 指向本机 15721 且不配 api_key——合法常态（回退通道不出站鉴权、纯透传存量
+// 迁移继承空值、config.example.toml 注释块即此形态）；zhipu 带 key 且 active。
+const upstreamCfgLocalEmptyKeySrc = `
+[server]
+port = 7399
+
+[dock]
+listen = "127.0.0.1:15722"
+active = "zhipu"
+
+[dock.upstreams."cc-switch"]
+base_url = "http://127.0.0.1:15721"
+
+[dock.upstreams.zhipu]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+api_key = "sk-zhipu-00001234ef12"
+model_map = { default = "glm-5.3" }
+
+[ferry]
+provider = "deepseek"
+`
+
 func writeUpstreamCfg(t *testing.T, src string) string {
 	t.Helper()
 	f := filepath.Join(t.TempDir(), "config.toml")
@@ -418,6 +441,57 @@ func TestUpstreamUseCustomCfgPathRefusesAutoRestart(t *testing.T) {
 	}
 	if after := readFileUp(t, f); !strings.Contains(after, `active = "zhipu"`) {
 		t.Fatalf("切换应已写回:\n%s", after)
+	}
+}
+
+// ---- 终局评审重大问题：本地中转空钥豁免（use 不拒绝 / list 文案对齐） ----
+
+// TestUpstreamUseLocalRelayEmptyKeySucceeds 本地中转条目（回环＋中转端口）空
+// key 的 use 不得按"缺 key"拒绝（终局评审重大问题钉子："任何时候一条命令回退
+// 到 cc-switch 保命"必须成立）——注入重启链走通全程，SetActiveUpstream 写回。
+func TestUpstreamUseLocalRelayEmptyKeySucceeds(t *testing.T) {
+	f := writeUpstreamCfg(t, upstreamCfgLocalEmptyKeySrc)
+	stubDefaultCfgPath(t)
+	deps, order := fakeRestart(true, nil)
+	var buf bytes.Buffer
+	if code := upstreamUse(f, "cc-switch", &buf, deps); code != 0 {
+		t.Fatalf("本地空钥条目 use 应成功，退出码 = %d\n%s", code, buf.String())
+	}
+	if out := buf.String(); strings.Contains(out, "拒绝") {
+		t.Errorf("本地空钥条目不得被拒绝:\n%s", out)
+	}
+	if got := *order; len(got) != 3 || got[0] != "shutdown" || got[1] != "launch" || got[2] != "health" {
+		t.Fatalf("重启调用序 = %v, want [shutdown launch health]", got)
+	}
+	if after := readFileUp(t, f); !strings.Contains(after, `active = "cc-switch"`) {
+		t.Fatalf("SetActiveUpstream 未写回 active:\n%s", after)
+	}
+}
+
+// TestUpstreamListLocalRelayEmptyKeyExemptWording list 文案对齐豁免口径：本地
+// 中转空 key 条目显示"本地中转（无需 key）"，不显示"未配置"警告（与 doctor
+// 缺 key 提示同单源豁免）；非本地空 key 条目仍照旧警告。
+func TestUpstreamListLocalRelayEmptyKeyExemptWording(t *testing.T) {
+	f := writeUpstreamCfg(t, upstreamCfgLocalEmptyKeySrc)
+	var buf bytes.Buffer
+	if code := upstreamList(f, &buf); code != 0 {
+		t.Fatalf("list 退出码 = %d, want 0\n%s", code, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "本地中转（无需 key）") {
+		t.Errorf("本地空钥条目应显示豁免文案:\n%s", out)
+	}
+	if strings.Contains(out, "未配置") {
+		t.Errorf("本地空钥条目不得显示未配置警告:\n%s", out)
+	}
+	// 对照：非本地空 key 条目（kimi）仍显示未配置警告
+	f2 := writeUpstreamCfg(t, upstreamCfgSrc)
+	buf.Reset()
+	if code := upstreamList(f2, &buf); code != 0 {
+		t.Fatalf("list 退出码 = %d, want 0\n%s", code, buf.String())
+	}
+	if out := buf.String(); !strings.Contains(out, "未配置") {
+		t.Errorf("非本地空 key 条目仍应显示未配置警告:\n%s", out)
 	}
 }
 

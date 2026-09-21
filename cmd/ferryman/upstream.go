@@ -2,9 +2,12 @@
 // CLI 契约见 docs/superpowers/specs/20260921-渡口多上游直连-spec.md「CLI 契约」节）。
 //
 //	list  全部条目 + active 标注 + base_url + model_map 概要 + 可用状态
-//	      （缺 key 显示"未配置，需手编 config 填 api_key"）+ 密钥脱敏（只露尾 4 位）。
+//	      （缺 key 显示"未配置，需手编 config 填 api_key"；本地中转地址空
+//	      key＝合法常态，显示"本地中转（无需 key）"）+ 密钥脱敏（只露尾
+//	      4 位）。
 //	use <名> [--config 路径]   （--config 在名前名后皆可）
-//	      条目不存在→拒绝并列出可用条目；缺 api_key→拒绝并提示先填 key；
+//	      条目不存在→拒绝并列出可用条目；非本地条目缺 api_key→拒绝并提示
+//	      先填 key（本地中转地址空 key 豁免——回退通道不出站鉴权）；
 //	      有效→提示"在途请求将被中断"→校验配置（写回会让守护拒启的先拦下）→
 //	      原子写 active（internal/config.SetActiveUpstream：临时文件+rename）→
 //	      触发守护重启（POST /shutdown 停旧；detached 隐藏拉起 serve，复用钩子
@@ -140,7 +143,7 @@ func upstreamList(cfgPath string, w io.Writer) int {
 		_, up := d.ActiveUpstream()
 		fmt.Fprintf(w, "渡口上游表：无 [dock.upstreams] 表（旧单值形态——守护下次启动自动迁移出 cc-switch 回退条目＋三条预置）\n")
 		fmt.Fprintf(w, "  旧单值（兜底生效） base_url: %s\n", up.BaseURL)
-		fmt.Fprintf(w, "  api_key: %s\n", renderKeyStatus(up.APIKey))
+		fmt.Fprintf(w, "  api_key: %s\n", renderKeyStatus(up.APIKey, up.BaseURL))
 		return 0
 	}
 	fmt.Fprintf(w, "渡口上游表（config: %s；active = %s）:\n", resolved, d.Active)
@@ -153,7 +156,7 @@ func upstreamList(cfgPath string, w io.Writer) int {
 		fmt.Fprintf(w, "%s%s%s\n", marker, name, activeMark(name == d.Active))
 		fmt.Fprintf(w, "    base_url: %s\n", up.BaseURL)
 		fmt.Fprintf(w, "    model_map: %s\n", renderModelMapBrief(up.ModelMap))
-		fmt.Fprintf(w, "    api_key: %s\n", renderKeyStatus(up.APIKey))
+		fmt.Fprintf(w, "    api_key: %s\n", renderKeyStatus(up.APIKey, up.BaseURL))
 		if up.BalanceURL != "" { // 不配不显示（D11）
 			fmt.Fprintf(w, "    balance_url: %s\n", up.BalanceURL)
 		}
@@ -201,8 +204,14 @@ func renderModelMapBrief(mm map[string]string) string {
 }
 
 // renderKeyStatus 密钥脱敏（T39 纪律：整钥绝不出站，只露尾 4 位）。
-func renderKeyStatus(key string) string {
+// 本地中转地址（守卫透传域）的空 key 是合法常态——回退通道不出站鉴权、纯
+// 透传存量迁移继承空值——豁免"未配置"警告，显示豁免文案（与 doctor 缺 key
+// 提示同单源 config.IsLocalRelayAddr，绝不两套判据）。
+func renderKeyStatus(key, baseURL string) string {
 	if key == "" {
+		if config.IsLocalRelayAddr(baseURL) {
+			return "本地中转（无需 key）"
+		}
 		return "未配置（需手编 config 填 api_key）"
 	}
 	return maskKey(key) + "（已配置）"
@@ -271,7 +280,7 @@ func upstreamUse(cfgPath, name string, w io.Writer, deps *upstreamRestartDeps) i
 			name, strings.Join(sortedNames(cfg.Dock.Upstreams), ", "))
 		return 1
 	}
-	if up.APIKey == "" {
+	if up.APIKey == "" && !config.IsLocalRelayAddr(up.BaseURL) {
 		fmt.Fprintf(w, "拒绝：条目 %q 未配置 api_key——请先手编 config 填 api_key 再 use（%s）\n",
 			name, resolved)
 		return 1
