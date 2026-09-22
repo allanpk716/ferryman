@@ -111,6 +111,76 @@ func TestSwapReplacesStaleBackup(t *testing.T) {
 	}
 }
 
+// TestSwapColonizedBackupStillSwaps 2026-09-22 v0.2.0 部署事故回归:
+// 同 from 版本第二次升级时,备份名已被先前换装的存活让位者(agent 面 mcp
+// 实例的运行映像)占据——运行映像可改名、不可被 REPLACE,让位步必
+// Access denied(v0.1.5→v0.2.0 两次实测)。换装应把占据者挪到 old-* 域内
+// 的 stale 名(字节保全,待 prune 收账)后重试让位,整体仍成功。
+func TestSwapColonizedBackupStillSwaps(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	// 预置 .new(下载完成态)与占据中的备份位(先前让位者,独立字节以区分)。
+	if err := os.WriteFile(newExePath(w.exePath), w.newBytes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backup := backupPath(w.exeDir, "v0.1.0")
+	colonizer := []byte("colonizer-bytes")
+	if err := os.WriteFile(backup, colonizer, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release := lockLikeRunningImage(t, backup)
+	defer release()
+
+	// 前提钉子:占据者必须拦下单次让位(REPLACE 到备份位)——否则未复刻
+	// 生产锁语义,模拟失真须修测试。
+	if err := moveFileReplace(w.exePath, backup); err == nil {
+		t.Fatal("前提不成立:映射句柄未能拦下对备份位的替换——模拟失真,须修测试")
+	}
+	// 被拦的让位未动现场。
+	if got := fileBytes(t, w.exePath); string(got) != string(w.oldBytes) {
+		t.Fatal("被拦让位不应动目标")
+	}
+
+	j := journal{Phase: PhaseSwap, From: "v0.1.0", To: "v0.2.0",
+		TargetExe: w.exePath, NewExe: newExePath(w.exePath),
+		Backup: backup, StartCmd: w.cmdPath}
+	if err := sup.swapFiles(j); err != nil {
+		t.Fatalf("备份位被占据时换装应成功(占据者挪窝让路): %v", err)
+	}
+	if got := fileBytes(t, w.exePath); string(got) != string(w.newBytes) {
+		t.Fatal("换装后目标不是新版")
+	}
+	if got := fileBytes(t, backup); string(got) != string(w.oldBytes) {
+		t.Fatal("让位备份不是旧版")
+	}
+	// 占据者被挪到 old-* 域内(pruneBackups 收账域)的 stale 文件,字节保全。
+	aside := soleStaleAside(t, w.exeDir, backup)
+	if got := fileBytes(t, aside); string(got) != string(colonizer) {
+		t.Fatal("占据者字节应保全在 stale 文件")
+	}
+	if _, err := os.Stat(j.NewExe); !os.IsNotExist(err) {
+		t.Fatal(".new 应被消费")
+	}
+}
+
+// soleStaleAside 找 backup 之外 old-* 域内的挪窝文件(应恰有一个)。
+func soleStaleAside(t *testing.T, exeDir, backup string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(exeDir, oldPrefixBase+"*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asides []string
+	for _, m := range matches {
+		if !strings.EqualFold(m, backup) {
+			asides = append(asides, m)
+		}
+	}
+	if len(asides) != 1 {
+		t.Fatalf("old-* 域内应恰有一个挪窝文件, got %v", asides)
+	}
+	return asides[0]
+}
+
 // TestHiddenLauncherSibling 隐藏 VBS 同目录探测:在位命中、不在空。
 func TestHiddenLauncherSibling(t *testing.T) {
 	dir := t.TempDir()

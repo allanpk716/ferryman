@@ -306,13 +306,26 @@ func (s *Supervisor) resolveTargetExe() (string, error) {
 // 生产实测,备份已拷、替换被拒、升级必败),但允许改名(同卷;运行映像可
 // rename 是 Windows 固有语义)。故:① 旧 exe 改名到备份位(让位即备份,
 // 比特相同免拷贝;REPLACE 覆盖同号陈旧备份——陈旧备份非运行映像);② 新
-// exe 落位原名。两步之间存在毫秒级缺位窗口(ADR-0010 曾以此否决双 rename,
-// 但单次替换在 mcp 共存下永不可行,权衡翻转——见 ADR-0015):看门/自举在
-// 窗口内拉空只会失败,下一轮重试即恢复。② 败则把备份改回原名尽力复原,
-// 复原也败时如实报警(目标缺位,人工介入)。
+// exe 落位原名。① 若被拒且备份位在场,多为先前换装已把存活让位者改到该
+// 名上(同 from 版本第二次升级必撞——2026-09-22 v0.2.0 部署两次实测),
+// 先把占据者挪到 old-* 域内 stale 名(改名活映像恒可行)再重试。两步之间
+// 存在毫秒级缺位窗口(ADR-0010 曾以此否决双 rename,但单次替换在 mcp 共
+// 存下永不可行,权衡翻转——见 ADR-0015):看门/自举在窗口内拉空只会失败,
+// 下一轮重试即恢复。② 败则把备份改回原名尽力复原,复原也败时如实报警
+// (目标缺位,人工介入)。
 func (s *Supervisor) swapFiles(j journal) error {
 	if err := moveFileReplace(j.TargetExe, j.Backup); err != nil {
-		return fmt.Errorf("旧版让位失败(改名到备份位): %w", err)
+		if !fileExists(j.Backup) {
+			return fmt.Errorf("旧版让位失败(改名到备份位): %w", err)
+		}
+		aside := staleAsidePath(j.Backup)
+		if rerr := os.Rename(j.Backup, aside); rerr != nil {
+			return fmt.Errorf("旧版让位失败(改名到备份位): %w(备份位被占,挪窝亦败: %v)", err, rerr)
+		}
+		s.logf("备份位被先前让位者占据——已挪到 %s,重试让位", filepath.Base(aside))
+		if rerr := moveFileReplace(j.TargetExe, j.Backup); rerr != nil {
+			return fmt.Errorf("旧版让位失败(改名到备份位;占据者已挪 %s): %w", aside, rerr)
+		}
 	}
 	if err := moveFileReplace(j.NewExe, j.TargetExe); err != nil {
 		if rbErr := moveFileReplace(j.Backup, j.TargetExe); rbErr != nil {

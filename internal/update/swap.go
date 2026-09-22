@@ -5,11 +5,13 @@ package update
 // 在 swap_windows.go / swap_other.go。
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // exeBaseName 换装目标的旁路与备份基名(与固定产物名对应,exe 本名由
@@ -27,6 +29,14 @@ func newExePath(targetExe string) string {
 // backupPath 备份落点:<exe 目录>/ferryman.exe.old-<白名单化旧版本>。
 func backupPath(exeDir, version string) string {
 	return filepath.Join(exeDir, oldPrefixBase+sanitizeFileToken(version))
+}
+
+// staleAsidePath 占据者挪窝名:备份位被先前换装的存活让位者(运行映像,
+// 可改名、不可被 REPLACE)占据时,先把它挪到本名再空出备份位。名字留在
+// old-* 域内(pruneBackups 收账域)——占据者多为运行映像,prune 删不动时
+// 静默跳过,待其进程退出后自动收走。日期+PID 防同秒撞名。
+func staleAsidePath(backup string) string {
+	return fmt.Sprintf("%s.stale-%s-%d", backup, time.Now().Format("20060102-150405"), os.Getpid())
 }
 
 // sanitizeFileToken 版本串进文件名:白名单 [A-Za-z0-9._-] 外一律 _;
