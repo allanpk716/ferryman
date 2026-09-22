@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"ferryman/internal/beat"
@@ -495,13 +496,17 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	if fs.Parse(args) != nil {
 		return 1
 	}
-	if rc := cmdConstruct(fs.Args(), stdout, stderr); rc != 0 {
+	// 原始 args 原样透传(剔除 run 专属旗标):子命令各自的 FlagSet 认同一
+	// 组公共旗标,再解析一遍。传 fs.Args() 是评审缺陷——旗标调用下恒为空,
+	// construct 必拒"-upstream 缺失",README 用法即坏。
+	sub := stripRunOnlyFlags(args)
+	if rc := cmdConstruct(sub, stdout, stderr); rc != 0 {
 		return rc
 	}
-	if rc := cmdSend(fs.Args(), stdout, stderr); rc != 0 {
+	if rc := cmdSend(sub, stdout, stderr); rc != 0 {
 		return rc
 	}
-	if rc := cmdEvaluate(fs.Args(), stdout, stderr); rc != 0 {
+	if rc := cmdEvaluate(sub, stdout, stderr); rc != 0 {
 		return rc
 	}
 	if !doWriteback {
@@ -509,5 +514,27 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	// 结论不可判定时 writeback 自行拒绝(退出码 1)。
-	return cmdWriteback(append(fs.Args(), "-note", note), stdout, stderr)
+	return cmdWriteback(append(sub, "-note", note), stdout, stderr)
+}
+
+// stripRunOnlyFlags 剔除 run 专属旗标(-writeback/-note 及其值),其余原始
+// args 原样返回——子命令的 FlagSet 不认这两个旗标,泄入即误拒。
+func stripRunOnlyFlags(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch a {
+		case "-writeback", "--writeback":
+			continue // 布尔旗标不吃独立取值(-writeback=true 形态走下面前缀分支)
+		case "-note", "--note":
+			i++ // 连同取值一起跳过
+			continue
+		}
+		if strings.HasPrefix(a, "-note=") || strings.HasPrefix(a, "--note=") ||
+			strings.HasPrefix(a, "-writeback=") || strings.HasPrefix(a, "--writeback=") {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }

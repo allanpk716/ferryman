@@ -314,8 +314,10 @@ func VerifyAppendOnlyDiff(src, out []byte, wantMaxTokens int) error {
 			!bytes.Equal(outTail[len(ins):], srcTail) {
 			return errors.New("补键形态不符: 追加体尾段应为快照尾段前插 ,\"max_tokens\":" + strconv.Itoa(wantMaxTokens))
 		}
-		// 补键形态下,公共键段已比完,收口。
-		return verifyAligned(src, out, aligned[:len(aligned)-1], wantMaxTokens)
+		// 补键形态:尾段(含补插的 max_tokens 键)已在上面逐字节核过;
+		// 公共键段全量走值级校验——含最后一个公共键的值(典型即 messages),
+		// 截掉它等于给中段篡改留盲区。
+		return verifyAligned(src, out, aligned, wantMaxTokens)
 	}
 
 	// 同序形态:尾段(最后值之后到 EOF)必须逐字节一致。

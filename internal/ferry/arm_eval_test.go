@@ -117,6 +117,41 @@ func TestVerifyDiffViolationsFail(t *testing.T) {
 	}
 }
 
+// TestVerifyDiffAppendKeyFormTamperFails 补键形态(快照缺 max_tokens)的收口
+// 盲区回归:收口曾传 aligned[:len(aligned)-1],最后一个公共键的值级校验整段
+// 被跳过——评审探针:messages 中段正文被改仍判 pass。回归在此。
+func TestVerifyDiffAppendKeyFormTamperFails(t *testing.T) {
+	// 探针一:最后一个公共键恰是 messages,中段正文被改必须判违规。
+	src := `{"model":"glm-5.3","messages":[{"role":"user","content":"你好,帮我看看这个会话"}]}`
+	out, _, err := beat.AppendReplayBody([]byte(src), 4096, armEvalInstr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyAppendOnlyDiff([]byte(src), out, 4096); err != nil {
+		t.Fatalf("合法补键形态应照过: %v", err)
+	}
+	tampered := bytes.Replace(out, []byte("你好,帮我看看这个会话"), []byte("中段正文被改"), 1)
+	if bytes.Equal(tampered, out) {
+		t.Fatal("探针未生效(快照正文未在追加体中原样出现)")
+	}
+	if err := VerifyAppendOnlyDiff([]byte(src), tampered, 4096); err == nil {
+		t.Fatal("补键形态下 messages 中段被改应判违规, 却通过")
+	}
+	// 探针二:最后一个公共键非 messages(值为尾键),同一盲区同验。
+	src2 := `{"messages":[{"role":"user","content":"hi"}],"model":"glm-5.3"}`
+	out2, _, err := beat.AppendReplayBody([]byte(src2), 4096, armEvalInstr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered2 := bytes.Replace(out2, []byte("glm-5.3"), []byte("glm-4.5"), 1)
+	if bytes.Equal(tampered2, out2) {
+		t.Fatal("探针未生效(model 值未在追加体中出现)")
+	}
+	if err := VerifyAppendOnlyDiff([]byte(src2), tampered2, 4096); err == nil {
+		t.Fatal("补键形态下尾键值被改应判违规, 却通过")
+	}
+}
+
 // ---- 标准①③④与总判定 ----
 
 func armHop(input, cacheRead, output int, stop, text string) ArmHopResult {

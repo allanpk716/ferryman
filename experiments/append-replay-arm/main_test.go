@@ -205,6 +205,61 @@ func TestDryRunWalksFullFlowWithoutNetwork(t *testing.T) {
 	}
 }
 
+// TestRunChainsConstructSendEvaluateDryRun run 子命令按 README 用法串 1→3
+// 的回归:run 曾把自身 FlagSet 解析后的 fs.Args()(旗标调用下为空)传给
+// 子命令,文档用法 run -snapshot … -workdir … -upstream zhipu -dry-run 即坏
+// (construct 报"[拒绝] construct 需要 -upstream")。dry-run 形态零联网。
+func TestRunChainsConstructSendEvaluateDryRun(t *testing.T) {
+	dir := t.TempDir()
+	snap := writeArmSnapshot(t, dir)
+	state := filepath.Join(dir, "arm_verdict.jsonl")
+
+	if rc := armRun(t, "run", "-snapshot", snap, "-workdir", dir, "-upstream", "zhipu",
+		"-dry-run", "-state", state); rc != 0 {
+		t.Fatalf("run(dry-run) 退出码 %d", rc)
+	}
+	// 三步证据齐:construct ②预检过、send 按 dry-run 留档、evaluate inconclusive。
+	rep := readJSON(t, filepath.Join(dir, constructName))
+	if rep["diff_ok"] != true {
+		t.Fatalf("②字节面预检应过: %v", rep["diff_detail"])
+	}
+	sr := readJSON(t, filepath.Join(dir, sendName))
+	if sr["dry_run"] != true {
+		t.Fatal("发送证据应标记 dry_run")
+	}
+	ev := readJSON(t, filepath.Join(dir, evaluateName))
+	evv := ev["evaluation"].(map[string]any)
+	if evv["verdict"] != ferry.ArmVerdictInconclusive {
+		t.Fatalf("dry-run 判定应 inconclusive, got %v", evv["verdict"])
+	}
+	// writeback 默认不自动:状态文件不产生。
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatal("run 默认不回写, 状态文件不应存在")
+	}
+}
+
+// TestRunWritebackFlagReachesWritebackNotSubcommands run 专属旗标(-writeback)
+// 不得泄入子命令 FlagSet(construct/send/evaluate 不认它,泄入即误拒);
+// dry-run 结论 inconclusive,writeback 依约拒写(退出码 1,状态文件不产生)。
+func TestRunWritebackFlagReachesWritebackNotSubcommands(t *testing.T) {
+	dir := t.TempDir()
+	snap := writeArmSnapshot(t, dir)
+	state := filepath.Join(dir, "arm_verdict.jsonl")
+
+	if rc := armRun(t, "run", "-snapshot", snap, "-workdir", dir, "-upstream", "zhipu",
+		"-dry-run", "-state", state, "-writeback"); rc != 1 {
+		t.Fatalf("dry-run + -writeback 应因 inconclusive 拒写退出 1, got %d", rc)
+	}
+	// 退出码 1 来自 writeback 拒写而非 construct 误拒 -writeback:
+	// 三步证据必须都已落盘。
+	readJSON(t, filepath.Join(dir, constructName))
+	readJSON(t, filepath.Join(dir, sendName))
+	readJSON(t, filepath.Join(dir, evaluateName))
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatal("inconclusive 拒写后状态文件不应存在")
+	}
+}
+
 func TestUpstreamErrorInconclusiveNoWriteback(t *testing.T) {
 	dir := t.TempDir()
 	snap := writeArmSnapshot(t, dir)
