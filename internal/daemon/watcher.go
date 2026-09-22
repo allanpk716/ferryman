@@ -147,7 +147,7 @@ type Watcher struct {
 	// smSeen 同模型触发版本章(stampMu 叶子锁守护):(agent, sid) → 已判定过的
 	// last_write——每写入版本只判一次,防跳过事件逐轮刷屏(qwatchSeen 同款纪律)。
 	smSeen map[winKey]float64
-	// smEffWarned 生效值现算失败告警一次(票08 接线:回落配置值时提示,防刷屏)。
+	// smEffWarned 生效值现算失败告警一次(票08 接线:回落冷启动种子时提示,防刷屏)。
 	smEffWarned atomic.Bool
 	// TuningStore 调参状态库(票08:票07 遗留接线——同模型触发阈值读取改经
 	// tuning.Store.EffectiveThreshold 三态生效值出口;NewWatcher 按 DataDir
@@ -1168,7 +1168,7 @@ func (w *Watcher) reconcilePins(st *ledger.SessionState) {
 // F3 判热时钟口径、F6 跳过原因编码) ----
 
 // maybeSameModel 同模型触发点:台账闲置达生效阈值(票08 起 经 tuning.Store.
-// EffectiveThreshold 三态出口现算——票05 计算器单源;现算失败回落配置值,
+// EffectiveThreshold 三态出口现算——票05 计算器单源;现算失败回落冷启动种子,
 // 见 sameModelEffectiveMin)先判热,再决定是否进同模型档。判冷/上游不在
 // 白名单/上游未启用三种情况:该次触发零模型调用、静默交还既有调度——
 // 第三方/骨架仍走总结阈值(25 分钟档一行不改),遥测记"同模型跳过"事件,
@@ -1238,23 +1238,22 @@ func (w *Watcher) maybeSameModel(st *ledger.SessionState) {
 // sameModelEffectiveMin 同模型触发阈值的生效值读取(分钟;票08:票07 遗留接线)
 // :一律经 tuning.Store.EffectiveThreshold——三态生效值唯一出口,票05 计算器
 // 单源(manual 档下即配置值,语义由出口保证;装配见 same_model_effective.go)。
-// 现算失败(无价格本/钳位矛盾/校准输入缺闲置观测等)回落配置值 CeilingFor 并
-// 告警一次——宁可保守回落,绝不阻断守望(一切异常吞掉的总纪律);TuningStore
-// nil(裸构造形态)同理直回配置值。
+// 现算失败(无价格本/钳位矛盾/缺闲置的旧档位校准 bad_obs 等)回落冷启动种子
+// (D9 三层供给第一层,policy.SameModelSeedThreshold 单源——CeilingFor 是上限
+// 不是缺省,终局修复:不再以配置上限充当缺省把触发点反向推后)并告警一次
+// ——宁可保守回落,绝不阻断守望(一切异常吞掉的总纪律);TuningStore nil
+// (裸构造形态)由装配层直调票05 出口,不经本回落。
 func (w *Watcher) sameModelEffectiveMin(upstream string) float64 {
-	fallback := w.Cfg.SameModel.CeilingFor(upstream)
-	if w.TuningStore == nil {
-		return fallback
-	}
+	seed := policy.SameModelSeedThreshold(w.Cfg.Thresholds.SummarizeS / 60.0)
 	res, err := sameModelEffective(w.Cfg, w.TuningStore, w.waitBooks, upstream)
 	if err == nil {
 		return res.ThresholdMin
 	}
 	if !w.smEffWarned.Swap(true) {
-		fmt.Printf("[samemodel] ⚠ 生效值现算失败(%v)——触发阈值回落配置值 %.1f 分钟"+
-			"(检查 [prices.*] 价格表与调参校准)\n", err, fallback)
+		fmt.Printf("[samemodel] ⚠ 生效值现算失败(%v)——触发阈值回落冷启动种子 %.1f 分钟"+
+			"(D9 第一层;检查 [prices.*] 价格表与调参校准)\n", err, seed)
 	}
-	return fallback
+	return seed
 }
 
 // activeUpstreamName 渡口活动上游条目键(白名单按 [dock.upstreams] 键登记)。

@@ -8,7 +8,7 @@
 //	auto       五护栏判定:全过自动应用+事后通报,任一不过收敛只提醒。
 //
 // 五护栏(auto 档;①为全包结构面约束,②③④在此判定,⑤在执行侧):
-//   - ①只改公式输入不旁路计算器:应用只写 Calibration(TTL 观测替代集),
+//   - ①只改公式输入不旁路计算器:应用只写 Calibration(TTL+闲置观测替代集),
 //     生效值一律 EffectiveThreshold → 票05 policy.SameModelEffectiveThreshold
 //     现算;本包不存在直接产出运行阈值的函数。
 //   - ②建议值钳 [10, 总结阈值]:越界收敛只提醒(sweep 已钳,此处防御复核)。
@@ -52,10 +52,12 @@ func Suggestable(res *backtest.SameModelSweepResult) bool {
 	return res != nil && res.Sample.Sufficient && res.Derived != nil
 }
 
-// SuggestionFromSweep 票06 扫参产物 → 建议(ID=装载时点戳+上游,确定性;
-// TTLObsMin 原样带过——应用时成为公式输入校准)。不可建议返回 nil。
+// SuggestionFromSweep 票06 扫参产物 → 建议(ID=装载时点戳+上游,确定性)。
+// 公式输入校准(TTL 与闲置观测)一律自 res 取(终局修复:缺省 TTL 已在扫参
+// 内归一为种子隐含中位,同源单点——不再收调用方 ttlObs 参数,缺省扫参不再
+// 产出空 TTL 校准)。不可建议返回 nil。
 func SuggestionFromSweep(res *backtest.SameModelSweepResult, upstream, reportPath string,
-	currentMin float64, hasCurrent bool, ttlObs []float64, now float64) *Suggestion {
+	currentMin float64, hasCurrent bool, now float64) *Suggestion {
 	if !Suggestable(res) {
 		return nil
 	}
@@ -69,7 +71,8 @@ func SuggestionFromSweep(res *backtest.SameModelSweepResult, upstream, reportPat
 		NetSavings:  bestNet(res),
 		FerryEvents: res.Sample.FerryEvents,
 		MinEvents:   res.Sample.MinEvents,
-		TTLObsMin:   append([]float64(nil), ttlObs...),
+		TTLObsMin:   append([]float64(nil), res.TTLObsEffMin...),
+		IdleObsMin:  append([]float64(nil), res.IdleObsMin...),
 		ReportPath:  reportPath,
 		CreatedAt:   now,
 	}
@@ -152,6 +155,7 @@ func (s *Store) AutoApply(sug *Suggestion, mode string, summarizeMin, now float6
 		prev := st.Calib[sug.Upstream]
 		cal := &Calibration{Upstream: sug.Upstream,
 			TTLObsMin:  append([]float64(nil), sug.TTLObsMin...),
+			IdleObsMin: append([]float64(nil), sug.IdleObsMin...),
 			SuggestMin: sug.SuggestMin, SourceID: sug.ID, AppliedAt: now}
 		if err := s.Append(&Event{TS: now, Type: EvAutoApplied, ID: sug.ID,
 			Upstream: sug.Upstream, Mode: mode, Suggestion: sug,
@@ -195,7 +199,8 @@ func (s *Store) Accept(id, mode string, summarizeMin, now float64) error {
 	}
 	prev := st.Calib[sug.Upstream]
 	cal := &Calibration{Upstream: sug.Upstream,
-		TTLObsMin: append([]float64(nil), sug.TTLObsMin...),
+		TTLObsMin:  append([]float64(nil), sug.TTLObsMin...),
+		IdleObsMin: append([]float64(nil), sug.IdleObsMin...),
 		SuggestMin: sug.SuggestMin, SourceID: sug.ID, AppliedAt: now}
 	if err := s.Append(&Event{TS: now, Type: EvAccepted, ID: id,
 		Upstream: sug.Upstream, Mode: mode, Suggestion: sug,
@@ -253,17 +258,43 @@ func (s *Store) Rollback(upstream, mode string, now float64) (*Calibration, erro
 	return prev, nil
 }
 
+// 运行侧基线观测口径(终局修复:daemon 装配与 CLI status 共用的单源)。
+// 量级与扫参黄金对拍口径一致:前缀 150k token、追加重放叙事输出 1k token
+// (token 形状;TTL/闲置分布观测不存在运行时供给,由校准注入或空=种子层)。
+const (
+	runtimeBaselinePrefixTokens = 150000.0
+	runtimeBaselineOutTokens    = 1000.0
+)
+
+// RuntimeBaselineObs 运行侧基线观测:只带 token 形状,不带 TTL/闲置——
+// 无校准时计算器走冷启动种子层(该路径不消费 token 形状,出口只要求其为
+// 正);有校准时 Store.EffectiveThreshold 注入校准的 TTL+闲置观测后现算。
+func RuntimeBaselineObs() policy.SameModelObs {
+	return policy.SameModelObs{
+		PrefixTokens: runtimeBaselinePrefixTokens,
+		OutTokens:    runtimeBaselineOutTokens,
+	}
+}
+
 // EffectiveThreshold 三列之"生效值"(护栏①执行面):当前公式输入校准并进
 // 观测后调票05 SameModelEffectiveThreshold 现算——生效值只出自计算器,本包
 // 不存在第二份实现;manual 档校准自然不参与(配置值即生效值,票05 出口语义)。
+// 终局修复:校准的 TTL 与闲置观测一并注入(替代集语义,各自覆盖调用方
+// 同名观测;缺闲置的旧档位校准注入 TTL 后仍会被计算器 bad_obs 拒算,由
+// 调用方按 D9 第一层回落种子)。
 func (s *Store) EffectiveThreshold(c *config.Config, books map[string]prices.PriceBook,
 	upstream string, obs policy.SameModelObs) (policy.SameModelResult, error) {
 	st, err := s.Replay()
 	if err != nil {
 		return policy.SameModelResult{}, err
 	}
-	if cal := st.Calib[upstream]; cal != nil && len(cal.TTLObsMin) > 0 {
-		obs.TTLObsMin = append([]float64(nil), cal.TTLObsMin...)
+	if cal := st.Calib[upstream]; cal != nil {
+		if len(cal.TTLObsMin) > 0 {
+			obs.TTLObsMin = append([]float64(nil), cal.TTLObsMin...)
+		}
+		if len(cal.IdleObsMin) > 0 {
+			obs.IdleObsMin = append([]float64(nil), cal.IdleObsMin...)
+		}
 	}
 	return policy.SameModelEffectiveThreshold(c, books, upstream, obs)
 }

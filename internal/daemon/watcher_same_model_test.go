@@ -50,6 +50,10 @@ func smGateCfg() *config.Config {
 	cfg.SameModel = config.SameModelCfg{Enabled: true, Upstreams: []string{"zhipu"},
 		ThresholdMin: 0.1, CeilingMin: map[string]float64{}}
 	cfg.Heartbeat.TTLS = 1800
+	// 终局修复后生效值拒算回落冷启动种子(不再 CeilingFor),本文件门序测试
+	// 需要亚分钟触发带 → 改走 manual 档(配置值即生效值,0.1min=6s 照读);
+	// 生效值来源本身由 watcher_same_model_effective_test.go 分列钉死。
+	cfg.Tuning.Mode = "manual"
 	return cfg
 }
 

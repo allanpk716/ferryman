@@ -18,6 +18,7 @@ package backtest
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -323,3 +324,53 @@ func TestSameModelSweepBadInput(t *testing.T) {
 
 // 编译锚：policy.DeriveSameModelForUpstream 签名在场（建议值出口红线）。
 var _ = policy.DeriveSameModelForUpstream
+
+// TestSameModelSweepExportsCalibObs 终局修复(跨票生效值链):扫参产物导出
+// 建议投影观测——TTLObsEffMin = 实际采用的 TTL 场景(缺省归一为种子隐含
+// 中位 [25],与内部同源——缺省扫参产出的建议不再携带空 TTL);IdleObsMin =
+// 评分事件总体的闲置样本(装载序,封顶最近 64 个防校准膨胀)。
+func TestSameModelSweepExportsCalibObs(t *testing.T) {
+	// 显式 TTL:原样导出;闲置样本 = 评分总体(截断事件剔除),装载序。
+	res, err := SameModelSweep(smGoldenDS(), smOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.TTLObsEffMin) != 1 || res.TTLObsEffMin[0] != 25 {
+		t.Fatalf("TTLObsEffMin = %v, want [25](显式场景原样)", res.TTLObsEffMin)
+	}
+	if want := []float64{26, 15, 30, 12}; !slices.Equal(res.IdleObsMin, want) {
+		t.Fatalf("IdleObsMin = %v, want %v(评分总体,装载序)", res.IdleObsMin, want)
+	}
+
+	// 缺省 TTL:与内部缺省同源(种子隐含中位 25),不再是空集。
+	o := smOpts()
+	o.TTLObsMin = nil
+	res2, err := SameModelSweep(smGoldenDS(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.TTLObsEffMin) != 1 || res2.TTLObsEffMin[0] != 25 {
+		t.Fatalf("缺省扫参 TTLObsEffMin = %v, want [25](与内部缺省同源)", res2.TTLObsEffMin)
+	}
+
+	// 封顶:70 个事件 → 最近 64 个(尾部对齐,装载序保持)。
+	var evs []IdleEvent
+	for i := 0; i < 70; i++ {
+		evs = append(evs, smEv(float64(1000+i*100), float64(10+i%10), IdleReturned))
+	}
+	ds := &IdleDataset{Events: evs, Counts: IdleLoadCounts{
+		FerryEventsInWindow: 70, WindowDays: 30, HorizonTS: 1000 + 69*100 + 20*60}}
+	res3, err := SameModelSweep(ds, smOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res3.IdleObsMin) != 64 {
+		t.Fatalf("闲置样本应封顶 64 个, got %d", len(res3.IdleObsMin))
+	}
+	if res3.IdleObsMin[63] != 19 { // 末事件 i=69:10+69%10=19
+		t.Fatalf("封顶应取最近样本(末位 = 19), got %v", res3.IdleObsMin[63])
+	}
+	if res3.IdleObsMin[0] != 16 { // 首个 = 事件 i=6:10+6%10=16
+		t.Fatalf("封顶应从第 7 个事件起(首位 = 16), got %v", res3.IdleObsMin[0])
+	}
+}

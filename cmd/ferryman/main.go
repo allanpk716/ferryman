@@ -61,6 +61,7 @@ import (
 	"ferryman/internal/installer"
 	"ferryman/internal/mcp"
 	"ferryman/internal/notify"
+	"ferryman/internal/policy"
 	"ferryman/internal/prices"
 	"ferryman/internal/report"
 	"ferryman/internal/tuning"
@@ -898,6 +899,33 @@ func tuningLoad(cfgPath string, stderr io.Writer) (*config.Config, string, *tuni
 	return cfg, p, tuning.NewStore(cfg.DataDir()), true
 }
 
+// tuningEffectiveUps 生效值行上游集(status 每上游一行):校准在案上游 ∪
+// 同模型白名单,排序去重。
+func tuningEffectiveUps(calUps, whitelist []string) []string {
+	set := map[string]bool{}
+	for _, up := range calUps {
+		set[up] = true
+	}
+	for _, up := range whitelist {
+		set[up] = true
+	}
+	ups := make([]string, 0, len(set))
+	for up := range set {
+		ups = append(ups, up)
+	}
+	sort.Strings(ups)
+	return ups
+}
+
+// tuningEffErrKind 生效值拒算分类(票05 稳定字符串;非该类型归 error)。
+func tuningEffErrKind(err error) string {
+	var e *policy.SameModelError
+	if errors.As(err, &e) {
+		return e.Kind
+	}
+	return "error"
+}
+
 // tuningNotifier 两类托盘气泡接线（票07：经 internal/notify 双通道尽力而为；
 // [notify] enabled=false 全静默）。
 func tuningNotifier(cfg *config.Config) *tuning.Notifier {
@@ -967,6 +995,34 @@ func cmdTuningStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	sort.Strings(calUps)
 
+	// 终局修复(回执与 status 如实):每上游一行生效值——经 Store.
+	// EffectiveThreshold 现算(运行侧基线观测+校准注入),拒算带原因与守望
+	// 回落种子,不编造数字。上游集=校准在案 ∪ 同模型白名单。
+	books := prices.LoadPrices(*cfgPath)
+	seed := policy.SameModelSeedThreshold(cfg.Thresholds.SummarizeS / 60.0)
+	type effRow struct {
+		Upstream string  `json:"upstream"`
+		OK       bool    `json:"ok"`
+		Min      float64 `json:"threshold_min,omitempty"`
+		Mode     string  `json:"mode,omitempty"`
+		Seed     bool    `json:"seed_fallback,omitempty"`
+		ErrKind  string  `json:"err_kind,omitempty"`
+		ErrText  string  `json:"err_text,omitempty"`
+		Fallback float64 `json:"fallback_min,omitempty"`
+	}
+	effUps := tuningEffectiveUps(calUps, cfg.SameModel.Upstreams)
+	effs := make([]effRow, 0, len(effUps))
+	for _, up := range effUps {
+		res, err := store.EffectiveThreshold(cfg, books, up, tuning.RuntimeBaselineObs())
+		if err != nil {
+			effs = append(effs, effRow{Upstream: up, OK: false,
+				ErrKind: tuningEffErrKind(err), ErrText: err.Error(), Fallback: seed})
+			continue
+		}
+		effs = append(effs, effRow{Upstream: up, OK: true, Min: res.ThresholdMin,
+			Mode: res.Mode, Seed: res.SeedFallback})
+	}
+
 	if *asJSON {
 		type sugView struct {
 			*tuning.Suggestion
@@ -982,7 +1038,7 @@ func cmdTuningStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		b, err := json.Marshal(map[string]any{
 			"mode": cfg.Tuning.Mode, "dir": store.Dir, "events": st.Events,
-			"calibrations": cals, "suggestions": sugs,
+			"calibrations": cals, "suggestions": sugs, "effective": effs,
 		})
 		if err != nil { // 全字段可序列化，理论不可达；护底线
 			fmt.Fprintln(stderr, err)
@@ -1003,6 +1059,25 @@ func cmdTuningStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  %s:建议值 %.1f 分钟（TTL 观测 %v，来源 %s，%s）\n",
 			up, c.SuggestMin, c.TTLObsMin, c.SourceID,
 			time.Unix(int64(c.AppliedAt), 0).Format("2006-01-02 15:04:05"))
+	}
+	fmt.Fprintln(stdout, "生效值（经策略计算器现算；拒算时守望回落冷启动种子）:")
+	if len(effs) == 0 {
+		fmt.Fprintln(stdout, "  （无——同模型白名单与校准均为空）")
+	}
+	for _, e := range effs {
+		if !e.OK {
+			fmt.Fprintf(stdout, "  %s:拒算（%s）——%s；守望回落冷启动种子 %.1f 分钟\n",
+				e.Upstream, e.ErrKind, e.ErrText, e.Fallback)
+			continue
+		}
+		detail := "计算器现算"
+		switch {
+		case e.Mode == tuning.ModeManual:
+			detail = "manual 档，配置值即生效值"
+		case e.Seed:
+			detail = "冷启动种子层（无 TTL 观测）"
+		}
+		fmt.Fprintf(stdout, "  %s:%.1f 分钟（%s）\n", e.Upstream, e.Min, detail)
 	}
 	fmt.Fprintf(stdout, "建议（共 %d 条）:\n", len(sugIDs))
 	if len(sugIDs) == 0 {
@@ -1114,7 +1189,7 @@ func cmdTuningSweep(args []string, stdout, stderr io.Writer) int {
 					"建议值拒算（"+res.DerivedErrKind+"）:按当前分布与价格，任何合法触发点净亏或输入不可算，仅提醒")
 			}
 		default:
-			sug := tuning.SuggestionFromSweep(res, up, reportPath, cur, true, ttlObs, now)
+			sug := tuning.SuggestionFromSweep(res, up, reportPath, cur, true, now)
 			if err := store.RecordSuggestion(sug, now); err != nil {
 				fmt.Fprintf(stderr, "%s:建议落流水失败: %v\n", up, err)
 				code = 1
@@ -1145,7 +1220,7 @@ func cmdTuningApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "用法: ferryman tuning apply <建议id>（id 见 ferryman tuning status）")
 		return 2
 	}
-	cfg, _, store, ok := tuningLoad(*cfgPath, stderr)
+	cfg, cfgFile, store, ok := tuningLoad(*cfgPath, stderr)
 	if !ok {
 		return 1
 	}
@@ -1164,8 +1239,18 @@ func cmdTuningApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "已接受 %s,但流水重放后未见该建议——用 ferryman tuning status 核对\n", id)
 		return 1
 	}
-	fmt.Fprintf(stdout, "已接受 %s:%s 上游建议值 %.1f 分钟已写入公式输入校准；生效值由策略计算器现算（ferryman tuning status 可查）。\n回滚:ferryman tuning rollback %s\n",
-		id, sug.Upstream, sug.SuggestMin, sug.Upstream)
+	// 终局修复:回执兑现"可查"——现算当前生效值如实打印(拒算带回落种子),
+	// 不再留无法兑现的表述。
+	books := prices.LoadPrices(cfgFile)
+	res, effErr := store.EffectiveThreshold(cfg, books, sug.Upstream, tuning.RuntimeBaselineObs())
+	if effErr != nil {
+		fmt.Fprintf(stdout, "已接受 %s:%s 上游建议值 %.1f 分钟已写入公式输入校准；生效值现算拒算（%s）——守望回落冷启动种子 %.1f 分钟（ferryman tuning status 可查）。\n回滚:ferryman tuning rollback %s\n",
+			id, sug.Upstream, sug.SuggestMin, tuningEffErrKind(effErr),
+			policy.SameModelSeedThreshold(cfg.Thresholds.SummarizeS/60.0), sug.Upstream)
+		return 0
+	}
+	fmt.Fprintf(stdout, "已接受 %s:%s 上游建议值 %.1f 分钟已写入公式输入校准；当前生效值 %.1f 分钟（策略计算器现算，ferryman tuning status 可查）。\n回滚:ferryman tuning rollback %s\n",
+		id, sug.Upstream, sug.SuggestMin, res.ThresholdMin, sug.Upstream)
 	return 0
 }
 

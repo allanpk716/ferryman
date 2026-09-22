@@ -121,10 +121,9 @@ func DeriveSameModelThreshold(b prices.PriceBook, pv prices.PriceVersion, obs Sa
 
 	// 第一层：无 TTL 观测 → 冷启动种子（D2/D9；p_cache 已验，种子不拒）。
 	if len(obs.TTLObsMin) == 0 {
-		raw := math.Min(config.SameModelSeedMin, summarizeMin)
 		res.SeedFallback = true
-		res.RawMin = raw
-		res.SuggestMin = math.Max(config.SameModelMinCeilMin, math.Min(raw, summarizeMin))
+		res.RawMin = math.Min(config.SameModelSeedMin, summarizeMin)
+		res.SuggestMin = SameModelSeedThreshold(summarizeMin)
 		return res, nil
 	}
 
@@ -274,6 +273,16 @@ func SameModelEffectiveThreshold(c *config.Config, books map[string]prices.Price
 		return SameModelResult{}, &SameModelError{KindBadMode, fmt.Sprintf(
 			"未知调参档位 %q（合法：manual/recommend/auto）——config.Validate 应已拦截，此处防御", mode)}
 	}
+}
+
+// SameModelSeedThreshold 冷启动种子层取值（D9 三层供给第一层，单源）：
+// clamp(min(SameModelSeedMin, 总结阈值), 钳位下限, 总结阈值)。种子路径的
+// 生效值与运行侧现算失败的回落共用此出口——CeilingFor 是上限不是缺省，
+// 终局修复后不再充当回落值。入参总结阈值须 ≥ 下限（前置钳位检查保证；
+// 越界输入按下限夹取，防御不拒）。
+func SameModelSeedThreshold(summarizeMin float64) float64 {
+	raw := math.Min(config.SameModelSeedMin, summarizeMin)
+	return math.Max(config.SameModelMinCeilMin, math.Min(raw, summarizeMin))
 }
 
 // medianOf 样本中位（不改动入参切片）。

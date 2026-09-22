@@ -423,3 +423,72 @@ func TestRollbackToNilDeletesProjection(t *testing.T) {
 		t.Fatalf("回滚到无校准态后投影文件应被删除,得到 err=%v", err)
 	}
 }
+
+// TestEffectiveThresholdInjectsCalibIdle 终局修复(跨票生效值链,终局评审唯一
+// 阻断):校准同时注入 TTL 与闲置观测——运行侧基线观测(只有 token 形状,无
+// TTL/闲置)经 EffectiveThreshold 也能现算,不再"有 TTL 缺闲置"bad_obs 拒算;
+// 建议的闲置样本随 AutoApply/Accept 落校准,且校准观测覆盖调用方自带观测
+// (替代集语义,非合并)。手算:TTL [20] → 0.8×20=16;goldenIdle 下经济点
+// 15 ≤ 16 可行;上限 25 → 生效 16。
+func TestEffectiveThresholdInjectsCalibIdle(t *testing.T) {
+	st := newTestStore(t)
+	books := glmBooks()
+	cfg := testCfg(ModeRecommend)
+
+	// 基线口径单源:daemon 与 CLI status 共用的运行侧观测形状。
+	base := RuntimeBaselineObs()
+	if base.PrefixTokens != 150000 || base.OutTokens != 1000 {
+		t.Fatalf("运行侧基线观测 = %+v, want 150000/1000(扫参黄金对拍口径)", base)
+	}
+
+	// 全链:建议携 TTL+闲置 → auto 应用 → 校准落两观测。
+	sug := testSug("s1-glm", "glm", 16, 42, 30)
+	sug.TTLObsMin = []float64{20}
+	sug.IdleObsMin = goldenIdle()
+	if _, err := st.AutoApply(sug, ModeAuto, 25, testNow, nil); err != nil {
+		t.Fatal(err)
+	}
+	st2, _ := st.Replay()
+	cal := st2.Calib["glm"]
+	if cal == nil || len(cal.TTLObsMin) != 1 || cal.TTLObsMin[0] != 20 {
+		t.Fatalf("校准应带 TTL 观测: %+v", cal)
+	}
+	if len(cal.IdleObsMin) != len(goldenIdle()) {
+		t.Fatalf("校准应携带闲置样本(缺闲置=运行时必拒算): %+v", cal)
+	}
+
+	// 运行侧基线观测(无 TTL/闲置)→ 现算 16,不再 bad_obs。
+	res, err := st.EffectiveThreshold(cfg, books, "glm", base)
+	if err != nil {
+		t.Fatalf("校准齐全后基线观测应可现算: %v", err)
+	}
+	if res.ThresholdMin != 16 {
+		t.Fatalf("生效值 = %v, want 16(校准 TTL 中位 20×0.8)", res.ThresholdMin)
+	}
+
+	// 校准观测覆盖调用方自带观测(替代集,非合并):调用方 TTL/闲置均不参与。
+	res2, err := st.EffectiveThreshold(cfg, books, "glm",
+		policy.SameModelObs{PrefixTokens: 150000, OutTokens: 1000,
+			TTLObsMin: []float64{26, 30, 34}, IdleObsMin: []float64{40}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.ThresholdMin != 16 {
+		t.Fatalf("校准观测应覆盖调用方观测(TTL 与闲置都替换): %v", res2.ThresholdMin)
+	}
+
+	// 人工接受路径同款:Accept 落的校准也带闲置。
+	sugB := testSug("s2-glm", "glm", 16, 42, 30)
+	sugB.TTLObsMin = []float64{20}
+	sugB.IdleObsMin = goldenIdle()
+	if err := st.RecordSuggestion(sugB, testNow+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Accept("s2-glm", ModeRecommend, 25, testNow+2); err != nil {
+		t.Fatal(err)
+	}
+	st3, _ := st.Replay()
+	if calB := st3.Calib["glm"]; len(calB.IdleObsMin) != len(goldenIdle()) {
+		t.Fatalf("Accept 落的校准也应带闲置样本: %+v", calB)
+	}
+}

@@ -745,6 +745,21 @@ func doctorResults(d doctorDeps) []CheckResult {
 			}
 			out = append(out, CheckResult{Name: dc.Name, Status: st, Detail: dc.Detail})
 		}
+		// 终局修复(终局评审普通建议,防静默死档):same_model 开而判热 TTL 未设
+		// ([heartbeat].ttl_s = 0)→ ferry.PredictHot 恒判冷,同模型档永不触发
+		// ——如实警告并指向实测(判热界 τ = 0.8×ttl_s)。same_model 关 = 零新增
+		// 行(存量用户 doctor 输出零漂移)。
+		if cfg.SameModel.Enabled {
+			if cfg.Heartbeat.TTLS <= 0 {
+				out = append(out, CheckResult{Name: "same_model_heat_ttl", Status: StatusFail,
+					Detail: "same_model 已开启但 [heartbeat].ttl_s 未设（=0）——判热将恒冷，" +
+						"同模型档永不触发，请实测填 ttl_s（experiments/cache-ttl 套件）"})
+			} else {
+				out = append(out, CheckResult{Name: "same_model_heat_ttl", Status: StatusPass,
+					Detail: fmt.Sprintf("判热 TTL 已设 %g 秒（判热界 τ=0.8×TTL=%g 秒）",
+						cfg.Heartbeat.TTLS, 0.8*cfg.Heartbeat.TTLS)})
+			}
+		}
 		// 票06：渡口配置了才查（无 [dock] 的存量用户零新增检查行）
 		if cfg.Dock != nil {
 			out = append(out, CheckDockRewrite(cfg.Dock).named("dock_rewrite"))

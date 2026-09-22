@@ -11,10 +11,11 @@
 //     只记变更与依据,不进账本(账本只记费用事件)。
 //
 // 护栏①的结构面保证:本包对外的全部写操作只产出 Calibration(公式输入校准
-// ——计算器 SameModelObs 的 TTL 观测替代集);运行阈值一律由票05
-// policy.SameModelEffectiveThreshold 现算(engine.go EffectiveThreshold),
-// 不存在任何直接写运行阈值的路径。档位(mode)在各引擎函数中是只读入参,
-// 流水事件类型全集固定(无 mode 事件)——升档只认 config.toml 手改。
+// ——计算器 SameModelObs 的 TTL+闲置观测替代集;终局修复补闲置,缺闲置=
+// 运行时必拒算);运行阈值一律由票05 policy.SameModelEffectiveThreshold 现算
+// (engine.go EffectiveThreshold),不存在任何直接写运行阈值的路径。档位(mode)
+// 在各引擎函数中是只读入参,流水事件类型全集固定(无 mode 事件)——升档只认
+// config.toml 手改。
 //
 // 落盘布局(<DataDir>/tuning/):
 //
@@ -81,8 +82,9 @@ type Suggestion struct {
 	BestMin     float64   `json:"best_min"`     // 扫参最优档(依据)
 	NetSavings  float64   `json:"net_savings"`  // 扫参最优净额(依据)
 	FerryEvents int       `json:"ferry_events"` // 滚动窗摆渡事件数(护栏④样本量)
-	MinEvents   int       `json:"min_events"`   // 样本门槛(护栏④)
+	MinEvents   int       `json:"min_events"`  // 样本门槛(护栏④)
 	TTLObsMin   []float64 `json:"ttl_obs_min"`  // 扫参所用 TTL 观测(应用时成为校准输入)
+	IdleObsMin  []float64 `json:"idle_obs_min"` // 扫参事件闲置样本(终局修复:应用时成为校准输入——缺闲置=运行时必拒算)
 	ReportPath  string    `json:"report_path"`  // 证据报告落点(票06)
 	CreatedAt   float64   `json:"created_at"`   // epoch 秒
 }
@@ -91,7 +93,8 @@ type Suggestion struct {
 // 按此输入现算——本结构永远不是运行阈值。
 type Calibration struct {
 	Upstream   string    `json:"upstream"`
-	TTLObsMin  []float64 `json:"ttl_obs_min"` // 计算器 SameModelObs.TTLObsMin 的替代集(分钟)
+	TTLObsMin  []float64 `json:"ttl_obs_min"`  // 计算器 SameModelObs.TTLObsMin 的替代集(分钟)
+	IdleObsMin []float64 `json:"idle_obs_min"` // SameModelObs.IdleObsMin 的替代集(分钟;终局修复补齐——只有 TTL 会 bad_obs 拒算)
 	SuggestMin float64   `json:"suggest_min"` // 本次生效的建议值(记录)
 	SourceID   string    `json:"source_id"`   // 来源建议 id
 	AppliedAt  float64   `json:"applied_at"`  // epoch 秒

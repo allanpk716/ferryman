@@ -451,3 +451,20 @@ func TestSameModelEffectiveClampEmpty(t *testing.T) {
 		t.Fatalf("kind = %v, want clamp_empty", kind)
 	}
 }
+
+// TestSameModelSeedThreshold 冷启动种子层取值单源(D9 三层供给第一层):种子
+// 路径的生效值与运行侧现算失败的回落共用此出口——clamp(min(种子, 总结阈值),
+// 下限, 总结阈值);CeilingFor 是上限不是缺省,不再充当回落值。
+func TestSameModelSeedThreshold(t *testing.T) {
+	cases := []struct{ sum, want float64 }{
+		{25, 20}, // 常规:种子 20
+		{15, 15}, // 总结阈值 < 种子:取总结
+		{30, 20},
+		{12, 12}, // 下限之上夹取(总结 ≥ 10 由前置钳位检查保证)
+	}
+	for _, tc := range cases {
+		if got := SameModelSeedThreshold(tc.sum); got != tc.want {
+			t.Fatalf("SameModelSeedThreshold(%v) = %v, want %v", tc.sum, got, tc.want)
+		}
+	}
+}

@@ -131,6 +131,8 @@ p_out = 24
 enabled = false
 # 实测缓存 TTL（跑 experiments/cache-ttl 套件后填；report 策略对比依赖此值）
 # ttl_s = 600
+# 注意：同模型摆渡的判热也用此值——[ferry.same_model] 开而不设 ttl_s 时判热恒冷，
+# 同模型档永不触发（doctor same_model_heat_ttl 同款检查）。
 # ttl_measured_at = "2026-09-17"
 # ttl_source = "docs/20260917_1630_GLM缓存TTL实测与心跳保温可行性_实验报告.md"
 

@@ -4,11 +4,15 @@ package daemon
 // 阈值读取改经 tuning.Store.EffectiveThreshold(三态生效值唯一出口,票05 计算
 // 器单源),不再直读 CeilingFor。
 //
-// 验收对照(票08「票07 遗留接线」):
+// 验收对照(票08「票07 遗留接线」+ 终局修复回落语义):
 //   - recommend 档无校准:生效值=计算器种子路径现算值(min(20,总结阈值) 钳位),
 //     不再等于配置值——闲置越过生效值即进门序,遥测 threshold_min 记生效值;
-//   - 现算失败(校准并进 TTL 观测但无闲置观测 → bad_obs 等):回落配置值
-//     CeilingFor 并告警一次——宁可保守回落,绝不阻断守望(异常吞掉总纪律);
+//   - 有校准(TTL+闲置齐全):现算生效值(终局修复主钉——校准经 Store 注入
+//     双观测,基线 token 形状照算,不再 bad_obs);
+//   - 现算失败(缺闲置的旧档位校准 → bad_obs 等):回落冷启动种子(D9 三层
+//     供给第一层;CeilingFor 是上限不是缺省)并告警一次——绝不阻断守望;
+//   - 调参库未装配(nil):等同无校准直调票05 出口——manual 档配置值即生效值,
+//     recommend 档走种子层,均不回落 CeilingFor;
 //   - manual 档:出口语义=配置值即生效值,行为与配置值读取一致(钉回归)。
 //
 // 确定性说明:测试配置的总结阈值取 25 分钟(钳位合法域),价格本/调参库全部
@@ -91,14 +95,49 @@ func TestSameModelTriggerReadsEffectiveThreshold(t *testing.T) {
 	}
 }
 
-// TestSameModelEffectiveFallsBackToConfigOnCalcError 现算失败回落:校准把
-// TTL 观测并进公式输入但闲置观测缺席(bad_obs)→ 回落配置值 30 分钟,
-// 闲置 31 分钟照常进门序,遥测记 30;守望绝不被现算失败阻断。
-func TestSameModelEffectiveFallsBackToConfigOnCalcError(t *testing.T) {
+// TestSameModelEffectiveFullCalibrationComputes 终局修复主钉(跨票生效值链,
+// 终局评审唯一阻断):校准带 TTL+闲置观测 → 运行时基线观测也能现算——
+// TTL [20] → 0.8×20=16 分钟(闲置分布经济点 15 ≤ 16 可行),闲置 17 分钟即
+// 进门序,遥测 threshold_min 记 16;不再拒算回落配置值 30。
+func TestSameModelEffectiveFullCalibrationComputes(t *testing.T) {
 	now := freezeClock(t, smBaseT)
 	tmp := t.TempDir()
 	w, sink := newSmEffWatcher(t, smEffCfg())
-	// 校准在案:TTL 观测 [20] 替代集(无闲置观测 → 票05 出口 bad_obs 拒算)。
+	if err := w.TuningStore.Append(&tuning.Event{TS: *now,
+		Type: tuning.EvAccepted, ID: "sy-zhipu", Upstream: "zhipu",
+		Calibration: &tuning.Calibration{Upstream: "zhipu",
+			TTLObsMin: []float64{20}, IdleObsMin: smCalibIdle(),
+			SuggestMin: 16, SourceID: "sy-zhipu", AppliedAt: *now}}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := bareSession(t, w.Ledger, tmp, "sm-eff6")
+	setLastWrite(w.Ledger, st, *now-17*60) // 闲置 17min > 生效值 16min(< 旧回落 30min)
+	w.maybeSameModel(st)
+	if got := smEffThresholdRow(t, sink, "sm-eff6"); got != 16 {
+		t.Fatalf("校准齐全应现算生效值 16 分钟(0.8×TTL 中位 20), got %v", got)
+	}
+	if r := sink.last("sm-eff6"); r == "" {
+		t.Fatal("越过生效值应进门序并留遥测(无判热观测 → cold)")
+	}
+}
+
+// smCalibIdle 校准闲置样本(tuning engine_test goldenIdle 同款,n=20,
+// F(25)=0.95;经济点 15 分钟 ≤ 缓存安全点 16 分钟,可行)。
+func smCalibIdle() []float64 {
+	return []float64{40, 20, 15, 15, 15, 10, 10, 10, 10, 10,
+		5, 5, 5, 5, 5, 5, 5, 5, 5, 5}
+}
+
+// TestSameModelEffectiveFallsBackToSeedOnCalcError 现算失败回落(终局修复
+// 回落语义):缺闲置的旧档位校准(TTL 观测并进公式输入但闲置观测缺席 →
+// bad_obs)→ 回落冷启动种子 20 分钟(D9 第一层;CeilingFor 是上限不是缺省,
+// 不再回落配置值 30),闲置 21 分钟照常进门序,遥测记 20;守望绝不被现算
+// 失败阻断。
+func TestSameModelEffectiveFallsBackToSeedOnCalcError(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	tmp := t.TempDir()
+	w, sink := newSmEffWatcher(t, smEffCfg())
+	// 旧档位校准在案:只有 TTL 观测 [20](无闲置观测 → 票05 出口 bad_obs 拒算)。
 	if err := w.TuningStore.Append(&tuning.Event{TS: *now,
 		Type: tuning.EvAccepted, ID: "sx-zhipu", Upstream: "zhipu",
 		Calibration: &tuning.Calibration{Upstream: "zhipu",
@@ -107,10 +146,37 @@ func TestSameModelEffectiveFallsBackToConfigOnCalcError(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, _ := bareSession(t, w.Ledger, tmp, "sm-eff2")
-	setLastWrite(w.Ledger, st, *now-31*60) // 闲置 31min > 回落配置值 30min
+	setLastWrite(w.Ledger, st, *now-21*60) // 闲置 21min > 种子 20min(< 配置值 30min)
 	w.maybeSameModel(st)
-	if got := smEffThresholdRow(t, sink, "sm-eff2"); got != 30 {
-		t.Fatalf("现算失败应回落配置值 30 分钟, got %v", got)
+	if got := smEffThresholdRow(t, sink, "sm-eff2"); got != 20 {
+		t.Fatalf("现算失败应回落冷启动种子 20 分钟(D9 第一层), got %v", got)
+	}
+}
+
+// TestSameModelEffectiveNilStore 调参库未装配(裸构造形态)不再视为现算失败:
+// nil 库=无校准,直调票05 出口——manual 档配置值即生效值;recommend 档走
+// 种子层;两者都不回落 CeilingFor。
+func TestSameModelEffectiveNilStore(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	tmp := t.TempDir()
+	w, sink := newSmEffWatcher(t, smEffCfg())
+	w.TuningStore = nil
+	st, _ := bareSession(t, w.Ledger, tmp, "sm-eff4")
+	setLastWrite(w.Ledger, st, *now-21*60) // 闲置 21min > 种子 20min(< 配置值 30min)
+	w.maybeSameModel(st)
+	if got := smEffThresholdRow(t, sink, "sm-eff4"); got != 20 {
+		t.Fatalf("nil 调参库 recommend 档应走种子层 20 分钟, got %v", got)
+	}
+
+	cfg := smEffCfg()
+	cfg.Tuning.Mode = "manual"
+	w2, sink2 := newSmEffWatcher(t, cfg)
+	w2.TuningStore = nil
+	st2, _ := bareSession(t, w2.Ledger, tmp, "sm-eff5")
+	setLastWrite(w2.Ledger, st2, *now-31*60) // 闲置 31min ≥ 配置值 30min
+	w2.maybeSameModel(st2)
+	if got := smEffThresholdRow(t, sink2, "sm-eff5"); got != 30 {
+		t.Fatalf("nil 调参库 manual 档应取配置值 30 分钟, got %v", got)
 	}
 }
 

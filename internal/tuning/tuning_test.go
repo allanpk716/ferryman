@@ -25,15 +25,18 @@ func sweepFixture(loadedAt float64) *backtest.SameModelSweepResult {
 			FerryEvents: 42, Sufficient: true},
 		Best:   &backtest.SameModelPoint{TMin: 21, NetSavings: 12.5},
 		Derived: &policy.SameModelResult{Upstream: "glm", SuggestMin: 22},
+		// 终局修复:建议投影观测自扫参产物取(缺省 TTL 已归一,不依赖调用方传参)。
+		TTLObsEffMin:       []float64{26, 30, 34},
+		IdleObsMin:         goldenIdle(),
 		CurrentThresholdMin: 25, HasCurrent: true,
 	}
 }
 
-// TestSuggestionFromSweep 票06 扫参产物 → 建议的字段投影与可建议性判定。
+// TestSuggestionFromSweep 票06 扫参产物 → 建议的字段投影与可建议性判定
+// (终局修复:TTL/闲置观测一律自 res 取——缺省扫参不再产出空 TTL 校准)。
 func TestSuggestionFromSweep(t *testing.T) {
 	res := sweepFixture(1758500000)
-	sug := SuggestionFromSweep(res, "glm", "r/report.md", 25, true,
-		[]float64{26, 30, 34}, 1758500001)
+	sug := SuggestionFromSweep(res, "glm", "r/report.md", 25, true, 1758500001)
 	if sug == nil {
 		t.Fatal("样本充足且有建议值,应产出建议")
 	}
@@ -49,7 +52,15 @@ func TestSuggestionFromSweep(t *testing.T) {
 		t.Fatalf("ReportPath = %q, want r/report.md(证据报告落点)", sug.ReportPath)
 	}
 	if len(sug.TTLObsMin) != 3 || sug.TTLObsMin[0] != 26 {
-		t.Fatalf("TTLObsMin 应原样带过(公式输入校准的来源), got %v", sug.TTLObsMin)
+		t.Fatalf("TTLObsMin 应取扫参有效 TTL(缺省归一后同源), got %v", sug.TTLObsMin)
+	}
+	if len(sug.IdleObsMin) != len(goldenIdle()) || sug.IdleObsMin[0] != goldenIdle()[0] {
+		t.Fatalf("IdleObsMin 应携带闲置样本(应用时成为校准输入), got %v", sug.IdleObsMin)
+	}
+	// 副本语义:改建议观测不得回写扫参产物。
+	sug.TTLObsMin[0] = 99
+	if res.TTLObsEffMin[0] != 26 {
+		t.Fatalf("建议观测应为副本,不得回写扫参产物: %v", res.TTLObsEffMin)
 	}
 
 	// 不可建议三态:样本不足 / 建议值拒算 / 空产物。
@@ -58,7 +69,7 @@ func TestSuggestionFromSweep(t *testing.T) {
 	if Suggestable(bad) {
 		t.Fatal("样本不足不可建议(护栏④)")
 	}
-	if sug := SuggestionFromSweep(bad, "glm", "", 25, true, nil, 2); sug != nil {
+	if sug := SuggestionFromSweep(bad, "glm", "", 25, true, 2); sug != nil {
 		t.Fatal("样本不足不应产出建议")
 	}
 	noDerive := sweepFixture(1)

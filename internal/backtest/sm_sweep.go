@@ -40,6 +40,11 @@ import (
 // 覆盖。
 const smDefaultOutTokens = 1000.0
 
+// smCalibIdleCap 建议投影携带的闲置样本封顶（最近 N 个）：防校准文件与调参
+// 流水随事件总量线性膨胀——中位/分位在 64 样本下已稳定（终局修复：跨票
+// 生效值链的校准载荷）。
+const smCalibIdleCap = 64
+
 // maxSMGridPoints 阈值网格防御上限（整数分钟步进，正常总结阈值 ≤ 60 → 51 档；
 // 防病态输入死循环）。
 const maxSMGridPoints = 1000
@@ -110,6 +115,13 @@ type SameModelSweepResult struct {
 	// 现值（自 SameModelSweepOptions 拷入；报告 diff 列消费）。
 	CurrentThresholdMin float64
 	HasCurrent          bool
+	// 建议投影观测（终局修复：跨票生效值链）——票07 校准输入源。
+	// TTLObsEffMin = 本次扫参实际采用的 TTL 场景观测（缺省已归一为种子隐含
+	// 中位 [25]，与内部同源：缺省扫参产出的建议不再携带空 TTL，apply 后
+	// 运行时可现算）；IdleObsMin = 评分事件总体的闲置间隔样本（装载序，封顶
+	// 最近 smCalibIdleCap 个；建议值 Derived 仍用全总体，此处为校准投影子集）。
+	TTLObsEffMin []float64
+	IdleObsMin   []float64
 }
 
 // SameModelSweep 同模型阈值网格评分主入口：同一事件集上逐阈值档三线记账。
@@ -159,6 +171,7 @@ func SameModelSweep(ds *IdleDataset, opts SameModelSweepOptions) (*SameModelSwee
 
 	res := &SameModelSweepResult{Uncomputable: map[string]int{},
 		CurrentThresholdMin: opts.CurrentThresholdMin, HasCurrent: opts.HasCurrent}
+	res.TTLObsEffMin = append([]float64(nil), ttlObs...) // 缺省已归一，与内部同源
 	if ds != nil {
 		res.Counts = ds.Counts
 	}
@@ -191,6 +204,14 @@ func SameModelSweep(ds *IdleDataset, opts SameModelSweepOptions) (*SameModelSwee
 			pool = append(pool, scored{ev: ev})
 			idles = append(idles, ev.IdleMin)
 		}
+	}
+
+	// 建议投影的闲置样本：装载序（StartTS 升序）封顶最近 smCalibIdleCap 个
+	//（评分总体已完成，idles 不再变）。
+	if n := len(idles); n > smCalibIdleCap {
+		res.IdleObsMin = append([]float64(nil), idles[n-smCalibIdleCap:]...)
+	} else {
+		res.IdleObsMin = append([]float64(nil), idles...)
 	}
 
 	// 逐事件成本常数：调 policy.DeriveSameModelThreshold 现算（公式单源核心，
