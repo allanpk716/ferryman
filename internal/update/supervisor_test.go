@@ -681,3 +681,20 @@ func TestWaitProcessExitBudgetExhausted(t *testing.T) {
 		t.Fatalf("应等满预算: elapsed=%v", el)
 	}
 }
+
+// TestFileTeeLogfAppends 缺省日志应落盘 update.log 留证(副本/派生场景
+// stdout 无人看——2026-09-22 v0.1.4 失败现场只活在转瞬即逝的 stdout 里)。
+func TestFileTeeLogfAppends(t *testing.T) {
+	dir := t.TempDir()
+	f := fileTeeLogf(dir)
+	f("第一行 %d", 1)
+	f("第二行")
+	b, err := os.ReadFile(filepath.Join(dir, "update.log"))
+	if err != nil {
+		t.Fatalf("update.log 应落盘: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "[ferryman-update] 第一行 1") || !strings.Contains(s, "[ferryman-update] 第二行") {
+		t.Fatalf("日志内容缺失: %q", s)
+	}
+}

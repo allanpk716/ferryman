@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -93,9 +94,7 @@ func NewSupervisor(cfg Config) *Supervisor {
 		cfg.PollInterval = defaultPollEvery
 	}
 	if cfg.Logf == nil {
-		cfg.Logf = func(format string, a ...any) {
-			fmt.Printf("[ferryman-update] "+format+"\n", a...)
-		}
+		cfg.Logf = fileTeeLogf(cfg.DataDir)
 	}
 	return &Supervisor{
 		cfg:        cfg,
@@ -109,6 +108,28 @@ func NewSupervisor(cfg Config) *Supervisor {
 }
 
 func (s *Supervisor) logf(format string, a ...any) { s.cfg.Logf(format, a...) }
+
+// fileTeeLogf 缺省日志:stdout + 追加 <DataDir>/update.log。落盘是留证——
+// 自中继副本/托盘派生场景 stdout 无人看,而部分失败路径清 journal 即失现场
+// (2026-09-22 v0.1.4 失败即因此无痕,只剩备份文件的时间戳可推)。逐行开合
+// (升级全程日志量寥寥,不值得留常开句柄——还挡测试 TempDir 清理)。
+func fileTeeLogf(dataDir string) func(format string, a ...any) {
+	var mu sync.Mutex
+	return func(format string, a ...any) {
+		msg := fmt.Sprintf("[ferryman-update] "+format+"\n", a...)
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Print(msg)
+		if dataDir == "" {
+			return
+		}
+		if f, err := os.OpenFile(filepath.Join(dataDir, "update.log"),
+			os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			_, _ = f.WriteString(time.Now().Format("2006-01-02 15:04:05 ") + msg)
+			_ = f.Close()
+		}
+	}
+}
 
 // Run 监督者主序列。返回 Result;过程日志走 Logf。
 func (s *Supervisor) Run() Result {
@@ -193,7 +214,8 @@ func (s *Supervisor) Run() Result {
 	if err := s.swapFiles(j); err != nil {
 		_ = clearJournal(s.cfg.DataDir)
 		res.Err = err
-		// exe 未被原子替换触及;盘上仍是旧版——监督者自己拉起恢复服务
+		// 正常失败现场盘上仍是旧版(让位未成或已复原)——监督者自己拉起
+		// 恢复服务;极端双败(目标缺位)swapFiles 已报警,人工介入。
 		s.restoreServiceQuiet(j)
 		return res
 	}
@@ -277,17 +299,30 @@ func (s *Supervisor) resolveTargetExe() (string, error) {
 	return p, nil
 }
 
-// swapFiles seam A:copy 当前 exe → 备份 → 单次 MoveFileEx 原子替换
-// (REPLACE_EXISTING;停旧后无运行锁,要么旧要么新,无缺位窗口)。
+// swapFiles seam A:两步换装(改名让位)。ADR-0010 的前提「停旧后无运行锁」
+// 被同映像多进程击穿——agent 面 mcp 实例(ADR-0009,用户级注册,CC 会话常驻
+// 拉起)以同一 exe 为映像,停旧守护管不到它们;Windows 对运行中映像拒绝
+// 覆盖(MOVEFILE_REPLACE_EXISTING 必 Access denied——2026-09-22 v0.1.4
+// 生产实测,备份已拷、替换被拒、升级必败),但允许改名(同卷;运行映像可
+// rename 是 Windows 固有语义)。故:① 旧 exe 改名到备份位(让位即备份,
+// 比特相同免拷贝;REPLACE 覆盖同号陈旧备份——陈旧备份非运行映像);② 新
+// exe 落位原名。两步之间存在毫秒级缺位窗口(ADR-0010 曾以此否决双 rename,
+// 但单次替换在 mcp 共存下永不可行,权衡翻转——见 ADR-0015):看门/自举在
+// 窗口内拉空只会失败,下一轮重试即恢复。② 败则把备份改回原名尽力复原,
+// 复原也败时如实报警(目标缺位,人工介入)。
 func (s *Supervisor) swapFiles(j journal) error {
-	if err := copyFile(j.TargetExe, j.Backup); err != nil {
-		return fmt.Errorf("备份旧版失败: %w", err)
+	if err := moveFileReplace(j.TargetExe, j.Backup); err != nil {
+		return fmt.Errorf("旧版让位失败(改名到备份位): %w", err)
+	}
+	if err := moveFileReplace(j.NewExe, j.TargetExe); err != nil {
+		if rbErr := moveFileReplace(j.Backup, j.TargetExe); rbErr != nil {
+			s.logf("警示:两步换装落位与复原均败——目标缺位!备份滞留 %s,请人工介入(落位 %v / 复原 %v)",
+				j.Backup, err, rbErr)
+		}
+		return fmt.Errorf("新版落位失败: %w", err)
 	}
 	pruneBackups(filepath.Dir(j.TargetExe), 2)
-	if err := moveFileReplace(j.NewExe, j.TargetExe); err != nil {
-		return fmt.Errorf("原子替换失败: %w", err)
-	}
-	s.logf("换装完成: %s ← %s(备份 %s)", j.TargetExe, filepath.Base(j.NewExe), j.Backup)
+	s.logf("换装完成(改名让位): %s ← %s(备份 %s)", j.TargetExe, filepath.Base(j.NewExe), j.Backup)
 	return nil
 }
 

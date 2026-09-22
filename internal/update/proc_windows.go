@@ -7,7 +7,9 @@ package update
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/windows"
@@ -64,22 +66,47 @@ func killImpl(pid int) error {
 	return windows.TerminateProcess(h, 1)
 }
 
-// launchCmdImpl detached 隐藏拉起点火脚本(cmd.exe /c;DETACHED_PROCESS +
-// CREATE_NEW_PROCESS_GROUP 脱离父控制台,HideWindow 双保险——与 Run 键/
-// 看门的「无窗口拉起」同语义;Start 不 Wait,拉起即走)。脚本自身的 >>
-// 重定向由 cmd 解释,daemon 输出照落 serve 日志。
+// hiddenLauncherName 隐藏点火脚本(installer 生成,与 start-daemon.cmd 同
+// 目录同基名;Run 键/看门同款通道)。
+const hiddenLauncherName = "start-daemon-hidden.vbs"
+
+// hiddenLauncherSibling 点火脚本同目录的隐藏 VBS;在位返回其路径,不在空
+// (测试世界/未安装环境无此文件,回落 cmd.exe 直拉)。
+func hiddenLauncherSibling(cmdPath string) string {
+	p := filepath.Join(filepath.Dir(cmdPath), hiddenLauncherName)
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
+}
+
+// launchCmdImpl 无窗口拉起点火脚本。优先 wscript 走隐藏点火 VBS——wscript
+// 是 GUI 子系统宿主,永不创建控制台(Run 键/看门/af78f82 零闪窗铁律的同一
+// 通道);脚本自身的 >> 重定向由 cmd 解释,daemon 输出照落 serve 日志。VBS
+// 不在位(或 wscript 缺席,极罕见)回落 cmd.exe /c + CREATE_NO_WINDOW:
+// 注意不能用 DETACHED_PROCESS——cmd.exe 被脱离控制台启动后执行批处理会
+// **自建可见控制台**(2026-09-22 v0.1.4 生产实测:升级失败 restoreService
+// Quiet 拉起的守护常驻一个控制台窗体即此坑),CREATE_NO_WINDOW 给它隐藏
+// 控制台才是对的。Start 不 Wait,拉起即走。
 func launchCmdImpl(cmdPath string) error {
+	if vbs := hiddenLauncherSibling(cmdPath); vbs != "" {
+		if _, err := exec.LookPath("wscript.exe"); err == nil {
+			c := exec.Command("wscript.exe", "/B", vbs)
+			c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			return c.Start()
+		}
+	}
 	c := exec.Command("cmd.exe", "/c", cmdPath)
 	c.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
+		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,
 	}
 	return c.Start()
 }
 
 // spawnRelayImpl detached 隐藏拉起自中继副本(直拉 exe 本体,不经 cmd.exe——
-// 副本是可执行文件不是脚本;脱离语义与 launchCmdImpl 同款,stdout 无人看,
-// 结果走 notify/journal/doctor)。
+// 副本是可执行文件不是脚本,DETACHED_PROCESS 对它就是无控制台,无 cmd.exe
+// 自建控制台的坑;stdout 无人看,结果走 notify/journal/update.log/doctor)。
 func spawnRelayImpl(exe string, args []string) error {
 	c := exec.Command(exe, args...)
 	c.SysProcAttr = &syscall.SysProcAttr{

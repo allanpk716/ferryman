@@ -2,10 +2,10 @@
 
 package update
 
-// seam A(规格 §C 第6条):单次 MoveFileEx(new→exe, MOVEFILE_REPLACE_EXISTING)
-// 原子替换——NTFS 元数据日志保证要么旧要么新,无 exe 缺位窗口。前提是停旧
-// 已完成(运行中的 exe 映像拒绝 DELETE 访问,替换必败——停旧先于 swap 的
-// 顺序即由此钉死)。公共 syscall 包不导出 MoveFileEx,经 x/sys/windows。
+// seam A 原语:MoveFileEx(src→dst, MOVEFILE_REPLACE_EXISTING)——同卷移动,
+// dst 存在即覆盖(可覆盖陈旧备份;对运行中映像会 Access denied)。两步换装
+// 编排(改名让位)在 supervisor.go swapFiles;运行映像「可改名、不可覆盖」
+// 的 Windows 语义是该编排的根基(ADR-0015)。
 
 import (
 	"golang.org/x/sys/windows"
