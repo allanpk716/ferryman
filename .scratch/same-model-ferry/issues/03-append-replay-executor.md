@@ -18,6 +18,7 @@ internal/beat/
 internal/dock/
 internal/ferry/
 internal/accounts/
+internal/daemon/watcher.go(热路径接线;协调者增补:票02 的判热门在此,执行器需挂接)
 
 ## 副作用声明
 go test ./internal/beat/... ./internal/dock/... ./internal/ferry/... ./internal/accounts/...;go build ./...

@@ -183,9 +183,14 @@ func isCountTokens(method, path string) bool {
 //     状态码，代理返回后落一行 dock 科目（任何记账失败不影响转发）；
 //   - 改写模式：体改写发生在进代理前；快照存改写前原始体。
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	capture := ShouldCapture(r.Method, r.URL.Path)
+	// 票03：自产重放（追加重放带 x-ferryman-replay 标记头）不入快照、不喂
+	// 漂移——追加体会顶替主快照（见 replayguard.go）；dock 科目照记（record
+	// 以 messagesPost 计，重放也有传输流水）。
+	messagesPost := ShouldCapture(r.Method, r.URL.Path)
+	replay := isReplayRequest(r.Header)
 	countTok := isCountTokens(r.Method, r.URL.Path)
-	record := s.acc != nil && (capture || countTok)
+	capture := messagesPost && !replay
+	record := s.acc != nil && (messagesPost || countTok)
 
 	needBody := capture || record || (s.rewriteOn && countTok)
 	var body []byte

@@ -150,6 +150,21 @@ type Watcher struct {
 	// "same_model_skip" 科目(usage/qwatch 同层遥测;Accounts nil 时静默跳过)。
 	bookSameModelSkipFn func(st *ledger.SessionState, reason string, ff accounts.Fields)
 
+	// ---- 票03:同模型执行档(追加重放;ADR-0015 决定一/决定三/决定六) ----
+	// AppendSender 追加重放发送器:NewWatcher 对注入的 BeatSender 做类型断言
+	// 装配(HttpBeatSender 双实现;serve 侧零改动即接上)。nil=未装配(渡口关/
+	// 旧测试形态)——判热通过也无法执行,告警一次静默交还既有调度。
+	AppendSender beat.AppendReplaySender
+	// sameModelInFlight 全局同时最多 1 个追加重放在途(执行体在独立 goroutine,
+	// 不占守望线程;占用期错过的触发版本交还既有调度,不排队)。
+	sameModelInFlight atomic.Bool
+	// sameModelSendFn 发送缝(测试注入);nil=走 AppendSender 生产装配。
+	sameModelSendFn func(beat.AppendReplayPlan) beat.AppendReplayResult
+	// smSyncExec 测试直调形态:dispatchSameModel 同步执行(免竞态等待);
+	// 生产恒 false(异步 goroutine)。
+	smSyncExec       bool
+	smNoSenderWarned atomic.Bool // 无发送器降级告警一次
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
@@ -182,6 +197,11 @@ func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 	}
 	w.detect = qwatch.Detect
 	w.enrich = w.enrichImpl
+	// 票03:追加重放发送器装配——注入的 BeatSender 若实现 AppendReplaySender
+	// (HttpBeatSender 真身)即接上;serve 侧零改动。
+	if ap, ok := sender.(beat.AppendReplaySender); ok {
+		w.AppendSender = ap
+	}
 	if acc != nil && cfg.Watch.HarvestUsage {
 		w.harvest = harvest.NewHarvestState(acc)
 	}
@@ -1192,8 +1212,10 @@ func (w *Watcher) maybeSameModel(st *ledger.SessionState) {
 	reason := w.sameModelSkipReason(st.SessionID, upstream, now)
 	w.stampSet(&w.smSeen, key, lastWrite)
 	if reason == "" {
-		// 判热+白名单+已启用 → 进同模型档。执行体(追加重放)是票03 竖切;
-		// 本票到此为止:零模型调用,静默交还既有调度(与冷分支同款静默)。
+		// 判热+白名单+已启用 → 进同模型档:派发追加重放执行体(票03)。执行
+		// 失败按失败链交还既有调度(见 dispatchSameModel);同模型档零重试
+		// (smSeen 版本章已盖)。
+		w.dispatchSameModel(st, upstream)
 		return
 	}
 	w.emitSameModelSkip(st, reason, upstream, now, now-lastWrite)
@@ -1284,6 +1306,160 @@ func (w *Watcher) noteUpstreamRequest(sid string, result beat.BeatResult) {
 		return
 	}
 	w.ReqClock.Note(sid, clock.Now())
+}
+
+// ---- 票03:同模型执行档(追加重放;ADR-0015 决定一/决定三、决定六) ----
+
+// smExecTask 追加重放执行任务快照(派发点一次性抄齐;执行在独立 goroutine,
+// 绝不持台账锁跑网络/读盘——Agent/SessionID/TranscriptPath 建后不变,Cwd
+// 可变故锁内快照)。
+type smExecTask struct {
+	agent, sid, path, cwd string
+}
+
+// dispatchSameModel 派发同模型执行:占全局在途位 → 派发即记 handed_off
+// (maybeEnqueue「入队即记」同款——执行期间 25 分钟档不重复入队)→ 独立
+// goroutine 执行(追加重放是分钟级,绝不能挂守望线程,beat.go Sender 注释
+// 的时限铁律由本形态的 goroutine 承载)。失败清章重武装、交还既有 25 分钟
+// 档(ADR-0015 决定二:同模型的提前只服务于判热会话吃缓存价差,不为任何
+// 会话提前第三方时机);成功保留派发章(覆盖语义=触发点;执行期间会话恢复
+// 写入则 last_write 越线,既有调度自然重判)。
+func (w *Watcher) dispatchSameModel(st *ledger.SessionState, upstream string) {
+	if !w.sameModelInFlight.CompareAndSwap(false, true) {
+		return // 已有追加重放在途:本版本交还既有调度(smSeen 已章,不重试)
+	}
+	stamp := clock.Now()
+	w.Ledger.Mu().Lock()
+	st.HandedOffAt = stamp // 派发即记;失败路径 sameModelFailed 只清自己的章
+	task := smExecTask{agent: st.Agent, sid: st.SessionID,
+		path: st.TranscriptPath, cwd: st.Cwd}
+	w.Ledger.Mu().Unlock()
+	run := func() {
+		defer w.sameModelInFlight.Store(false)
+		ok := true
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[samemodel] 执行异常(按该档失败处理,交还既有调度): %v\n", r)
+					ok = false
+				}
+			}()
+			ok = w.runSameModel(task, upstream)
+		}()
+		if !ok {
+			w.sameModelFailed(st, stamp)
+		}
+	}
+	if w.smSyncExec { // 测试直调形态(生产恒异步)
+		run()
+		return
+	}
+	go run()
+}
+
+// sameModelFailed 该档失败收口:清派发章(仅当仍是自己的章——执行期间既有
+// 调度可能因会话恢复写入而另立新章,不得误伤),交还既有 25 分钟档;同模型
+// 档零重试(smSeen 版本章已盖,ADR-0015 决定三)。
+func (w *Watcher) sameModelFailed(st *ledger.SessionState, stamp float64) {
+	w.Ledger.Mu().Lock()
+	if st.HandedOffAt == stamp {
+		st.HandedOffAt = 0 // 派发前 handed_off < last_write(零覆盖),清零不改覆盖语义
+	}
+	w.Ledger.Mu().Unlock()
+}
+
+// runSameModel 同模型执行核心(同步;测试直调,生产经 dispatchSameModel 的
+// goroutine 进入):追加重放单发 → stop_reason/结构校验 → 骨架合成产物落盘
+// → handoff 科目记账(lane=same_model)。任一步不合 → 记 failed 行、交还既有
+// 调度(返回 false;第三方再败落骨架由既有 worker 链承载)。发送后真发拿到
+// 结论即喂判热时钟(票02 F3 口径:追加重放亦属体外上游请求)。
+func (w *Watcher) runSameModel(task smExecTask, upstream string) bool {
+	send := w.sameModelSendFn
+	if send == nil && w.AppendSender != nil {
+		send = w.AppendSender.SendAppendReplay
+	}
+	if send == nil {
+		if !w.smNoSenderWarned.Swap(true) {
+			fmt.Printf("[samemodel] ⚠ 判热通过但追加重放发送器未装配(渡口关/注入形态)" +
+				"——本进程内同模型档静默交还既有调度\n")
+		}
+		return false
+	}
+	t0 := clock.Now()
+	mt := ferry.SameModelMaxTokens
+	if mt <= 0 {
+		mt = 4096 // 可配缝的零值回落(保守值)
+	}
+	res := send(beat.AppendReplayPlan{
+		SessionID:   task.sid,
+		Instruction: ferry.SameModelInstruction,
+		MaxTokens:   mt,
+	})
+	if res.Sent && res.OK && w.ReqClock != nil {
+		w.ReqClock.Note(task.sid, clock.Now()) // F3:真发拿到结论的上游请求入判热时钟
+	}
+	wall := clock.Now() - t0
+	if res.OK && res.StopReason != "tool_use" {
+		// 骨架仍程序抽取(ADR-0015:确定性骨架不经模型;读盘在执行 goroutine,锁外)。
+		facts, _, _ := extractFacts(task.path)
+		meta := map[string]any{
+			"model":  res.Model,
+			"mode":   "same_model",
+			"wall_s": mathx.Round(wall, 1),
+		}
+		if md, _, err := ferry.SameModelMarkdown(facts.Title, res.Text,
+			facts.SkeletonText(), meta); err == nil {
+			if w.Store != nil {
+				w.Store.SaveHandoff(task.sid, task.agent, task.cwd, facts.Title,
+					facts.LastTS, "fresh", md)
+			}
+			w.bookSameModelHandoff(task, upstream, res, "fresh", wall)
+			fmt.Printf("[samemodel] %s/%s same_model %ss -> handoff\n", task.agent,
+				runeCap8(task.sid), config.PyFloatStr(mathx.Round(wall, 1)))
+			return true
+		}
+		// 输出不合交接 MD 结构:落下方统一 failed 记账,交还既有调度
+	}
+	w.bookSameModelHandoff(task, upstream, res, "failed", wall)
+	return false
+}
+
+// bookSameModelHandoff 同模型档 handoff 科目记账(决定六:lane=same_model,
+// 与第三方/骨架分档核算)。prompt=未命中前缀+缓存读(上游实收全量输入),
+// completion=输出。记账永不弄断该档(bookHandoffImpl 同款护栏)。
+func (w *Watcher) bookSameModelHandoff(task smExecTask, upstream string,
+	res beat.AppendReplayResult, outcome string, wallS float64) {
+	if w.Accounts == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[account] handoff 记账失败(忽略,同模型档不受影响): %v\n", r)
+		}
+	}()
+	var priceVer any                           // nil ≡ Python None(未配价格表;bookHandoffErr 同款)
+	if book, ok := w.waitBooks[upstream]; ok { // NewWatcher 一次读盘(config 重启生效)
+		if pv := book.At(clock.Now()); pv != nil {
+			priceVer = prices.PriceTag(upstream, *pv)
+		}
+	}
+	_, err := w.Accounts.Record("handoff", -1, accounts.Fields{
+		"agent":             task.agent,
+		"session_id":        task.sid,
+		"lineage_id":        pathsx.NormPath(task.path),
+		"project":           task.cwd,
+		"provider":          upstream,
+		"model":             res.Model,
+		"price_ver":         priceVer,
+		"prompt_tokens":     res.InputTokens + res.CacheReadTokens,
+		"completion_tokens": res.OutputTokens,
+		"outcome":           outcome,
+		"wall_s":            mathx.Round(wallS, 1),
+		"lane":              ferry.HandoffLaneSameModel,
+	})
+	if err != nil {
+		fmt.Printf("[account] handoff 记账失败(忽略,同模型档不受影响): %v\n", err)
+	}
 }
 
 // ---- 懒富化与用量采集（daemon.py:441-490 逐字） ----

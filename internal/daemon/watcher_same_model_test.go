@@ -2,13 +2,18 @@ package daemon
 
 // watcher_same_model_test.go — 票02:同模型触发点守望集成钉子(ADR-0015 决定一/
 // 决定二;review_blocks F1 冷分支静默交还、F3 判热时钟口径、F6 跳过原因编码)。
+// 票03 追加:执行档钉子(追加重放派发/失败链/零重试/lane 记账;决定一/三/六)。
 //
 // 验收对照:
 //   - 判冷/白名单未中/未启用三路径:零模型调用、静默交还(25 分钟档原样),
 //     跳过事件各记一次且原因独立编码,同写入版本去重;
 //   - 判热时钟数据源钉死:主转录 usage 行时间戳(真实上游流量)+ 真发成功的
 //     心跳重放(问询/等待两泳道)都计入;子代理 usage、ERROR、observe 不计;
-//   - same_model off(默认)零行为差异;台账闲置(闸门语义)不动。
+//   - same_model off(默认)零行为差异;台账闲置(闸门语义)不动;
+//   - 票03:判热通过派发追加重放(单发、计划形状=指令模板+max_tokens 封顶),
+//     成功落 fresh 产物(叙事+骨架合成)并记 lane=same_model 行;失败
+//     (tool_use/格式不符)记 failed 行、清章交还既有 25 分钟档、零重试,
+//     第三方再败落骨架(既有 worker 链);无发送器=降级静默交还。
 
 import (
 	"encoding/json"
@@ -16,6 +21,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,6 +32,7 @@ import (
 	"ferryman/internal/config"
 	"ferryman/internal/ferry"
 	"ferryman/internal/ledger"
+	"ferryman/internal/store"
 )
 
 // smBaseT 冻结时钟基点(任意 epoch 秒;闲置判定全程确定)。
@@ -176,15 +183,16 @@ func TestSameModelSkipColdPath(t *testing.T) {
 	}
 }
 
-// ---- 热路径:静默交还 + 25 分钟档原样接管 ----
+// ---- 热路径:票03 执行体已落地——无发送器形态=降级静默交还 + 25 分钟档原样接管 ----
 
-func TestSameModelHotHandsBackSilently(t *testing.T) {
+func TestSameModelHotNoSenderDegradesSilently(t *testing.T) {
 	now := freezeClock(t, smBaseT)
 	led := ledger.New()
 	tmp := t.TempDir()
 	sink := newSkipSink()
-	w := newTestWatcherW(smGateCfg(), led, nil, nil, nil, nil)
+	w := newTestWatcherW(smGateCfg(), led, nil, nil, nil, nil) // 无 BeatSender/AppendSender
 	w.bookSameModelSkipFn = sink.record
+	w.smSyncExec = true // 同步直调形态:断言免竞态等待(生产恒异步)
 	w.ArmVerdict = func(string) (bool, bool) { return true, true }
 	w.ReqClock.Note("sm-hot1", *now-100) // 心跳 100s 前刚保温;时钟 ≤ τ → 热
 	st, _ := bareSession(t, led, tmp, "sm-hot1")
@@ -193,8 +201,9 @@ func TestSameModelHotHandsBackSilently(t *testing.T) {
 	if got := sink.count("sm-hot1"); got != 0 {
 		t.Fatalf("判热不得记跳过事件, got %d", got)
 	}
+	// 无发送器=降级:派发章被失败路径清零,静默交还既有调度。
 	if qwRead(led, st).handedOff != 0 {
-		t.Fatal("热路径本票无执行体(票03):不得入队、不得有模型调用")
+		t.Fatal("无发送器降级应清派发章(零模型调用,静默交还)")
 	}
 	// 版本章已盖:换成未启用结论再判不得出新事件(证明热路径也只判一次)
 	w.ArmVerdict = func(string) (bool, bool) { return true, false }
@@ -325,7 +334,7 @@ func TestHeatClockFeedsFromMainTranscriptUsage(t *testing.T) {
 		"type": "assistant", "timestamp": "2026-09-18T12:00:05.000Z",
 		"sessionId": "sm-us1", "cwd": "C:/proj",
 		"message": map[string]any{"role": "assistant", "id": "msg_sm_us1",
-			"model": "glm-5.3",
+			"model":   "glm-5.3",
 			"content": []any{map[string]any{"type": "text", "text": "回答原话(不入账)"}},
 			"usage": map[string]any{"input_tokens": 100,
 				"cache_read_input_tokens": 4000, "cache_creation_input_tokens": 0,
@@ -357,5 +366,343 @@ func TestHeatClockFeedsFromMainTranscriptUsage(t *testing.T) {
 	w.harvestSubagentUsage(sub, si.Size())
 	if ts, _ := w.ReqClock.Last("sm-us1"); math.Abs(ts-want) > 1 {
 		t.Fatalf("子代理 usage 不得改写主会话判热时钟: got %v want ≈%v", ts, want)
+	}
+}
+
+// ---- 票03:执行档(追加重放派发/失败链/零重试/lane 记账) ----
+
+// smNarrative 合格叙事夹具:两层标记+非空层(严格解析通过)。
+const smNarrative = ferry.InjectOpen + "\n注入层:目标过半,下一步做B\n" +
+	ferry.InjectClose + "\n# 目标\n做完A\n# 续接第一句话\n接B"
+
+// smFakeSender 追加重放发送替身:记录计划、按脚本吐结果(默认合格叙事)。
+type smFakeSender struct {
+	mu      sync.Mutex
+	plans   []beat.AppendReplayPlan
+	results []beat.AppendReplayResult
+	idx     int
+}
+
+func (f *smFakeSender) SendAppendReplay(p beat.AppendReplayPlan) beat.AppendReplayResult {
+	f.mu.Lock()
+	f.plans = append(f.plans, p)
+	f.mu.Unlock()
+	if f.idx < len(f.results) {
+		r := f.results[f.idx]
+		f.idx++
+		return r
+	}
+	return beat.AppendReplayResult{Sent: true, OK: true, StopReason: "end_turn",
+		Text: smNarrative, InputTokens: 100, CacheReadTokens: 1900,
+		OutputTokens: 220, Model: "glm-5.3"}
+}
+
+func (f *smFakeSender) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.plans)
+}
+
+func (f *smFakeSender) plan(i int) beat.AppendReplayPlan {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.plans[i]
+}
+
+// smHandoffRow 读该会话的 handoff 科目行(lane 断言用)。
+func smHandoffRow(t *testing.T, acc *accounts.Accounts, sid string) map[string]any {
+	t.Helper()
+	rows := acc.Read(accounts.ReadOpts{Kind: "handoff", Session: sid})
+	if len(rows) != 1 {
+		t.Fatalf("handoff 行数 = %d, want 1", len(rows))
+	}
+	return rows[0]
+}
+
+// smEntryWithStatus 该会话指定状态的交接条目(无=nil)。
+func smEntryWithStatus(t *testing.T, stt *store.Store, cwd, status string) *store.Entry {
+	t.Helper()
+	for _, e := range stt.RestoreCandidates("cc", cwd) {
+		if e.Status == status {
+			cp := e
+			return &cp
+		}
+	}
+	return nil
+}
+
+// writeSmTranscript 冻结时钟对齐的转录夹具:时间戳=smBaseT-60s(新鲜窗内),
+// 使 facts.LastTS→covers_until 可过 RestoreCandidates 的新鲜度过滤。
+func writeSmTranscript(t *testing.T, dir, sid, cwd string) string {
+	t.Helper()
+	d := filepath.Join(dir, "C--smproj")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Unix(int64(smBaseT-60), 0).UTC().Format("2006-01-02T15:04:05.000Z")
+	f := filepath.Join(d, sid+".jsonl")
+	lines := []string{
+		fmt.Sprintf(`{"type":"user","timestamp":%q,"cwd":%q,"sessionId":%q,`+
+			`"message":{"role":"user","content":"做点活"}}`, ts, cwd, sid),
+		fmt.Sprintf(`{"type":"assistant","timestamp":%q,"message":{"role":"assistant",`+
+			`"content":[{"type":"text","text":"干完了"}],"usage":{"input_tokens":2000,`+
+			`"cache_read_input_tokens":100,"cache_creation_input_tokens":0,`+
+			`"output_tokens":5}}}`, ts),
+	}
+	if err := os.WriteFile(f, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// smSession 登记+闲置到触发点的会话(7s ≥ 阈值 6s);返回(状态, 转录路径)。
+func smSession(t *testing.T, led *ledger.Ledger, tmp, sid, cwd string, now float64) (*ledger.SessionState, string) {
+	t.Helper()
+	path := writeSmTranscript(t, filepath.Join(tmp, "projects"), sid, cwd)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := led.Touch("cc", sid, path, statMTime(info), int(info.Size()), 0)
+	led.Mu().Lock()
+	st.Cwd = cwd // 台账 cwd(富化替身不填,手工对齐生产形态)
+	led.Mu().Unlock()
+	setLastWrite(led, st, now-7)
+	return st, path
+}
+
+func TestSameModelHotExecutesAndSavesHandoff(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	led := ledger.New()
+	tmp := t.TempDir()
+	stt, err := store.New(filepath.Join(tmp, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := accounts.New(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := newSkipSink()
+	w := newTestWatcherW(smGateCfg(), led, acc, nil, nil, nil)
+	w.Store = stt
+	w.smSyncExec = true
+	w.bookSameModelSkipFn = sink.record
+	w.ArmVerdict = func(string) (bool, bool) { return true, true }
+	w.ReqClock.Note("sm-exec1", *now-100)
+	fake := &smFakeSender{}
+	w.sameModelSendFn = fake.SendAppendReplay
+	// 冻结时钟对齐真转录:covers_until 有效(交接条目可经 RestoreCandidates 断言)。
+	st, _ := smSession(t, led, tmp, "sm-exec1", "C:/smproj", *now)
+	w.maybeSameModel(st)
+
+	if got := sink.count("sm-exec1"); got != 0 {
+		t.Fatalf("判热进档不得记跳过事件, got %d", got)
+	}
+	if fake.count() != 1 {
+		t.Fatalf("追加重放应单发, got %d", fake.count())
+	}
+	p := fake.plan(0)
+	if p.SessionID != "sm-exec1" || p.Instruction != ferry.SameModelInstruction {
+		t.Fatalf("计划形状: sid=%q 指令模板匹配=%v", p.SessionID, p.Instruction == ferry.SameModelInstruction)
+	}
+	if p.MaxTokens != ferry.SameModelMaxTokens || p.MaxTokens <= 0 {
+		t.Fatalf("max_tokens 封顶 = %d, want %d(可配缝)", p.MaxTokens, ferry.SameModelMaxTokens)
+	}
+	// 产物:叙事+骨架合成的 fresh 交接(两层结构不变)。
+	e := smEntryWithStatus(t, stt, "C:/smproj", "fresh")
+	if e == nil {
+		t.Fatal("成功路径应落 fresh 交接")
+	}
+	md, err := os.ReadFile(e.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{ferry.InjectOpen, "做完A",
+		"确定性骨架（程序化抽取，未经模型）", "same_model"} {
+		if !strings.Contains(string(md), want) {
+			t.Fatalf("产物缺 %q:\n%s", want, md)
+		}
+	}
+	// 记账:lane=same_model、usage 口径(prompt=未命中前缀+缓存读)。
+	row := smHandoffRow(t, acc, "sm-exec1")
+	if row["lane"] != ferry.HandoffLaneSameModel || row["outcome"] != "fresh" {
+		t.Fatalf("行 = %v", row)
+	}
+	if row["provider"] != "zhipu" || row["prompt_tokens"] != float64(2000) ||
+		row["completion_tokens"] != float64(220) {
+		t.Fatalf("记账口径: %v", row)
+	}
+	// 派发章保留(执行期间 25 分钟档不重复入队);判热时钟被喂入。
+	if qwRead(led, st).handedOff == 0 {
+		t.Fatal("成功应保留派发章")
+	}
+	if ts, ok := w.ReqClock.Last("sm-exec1"); !ok || ts != *now {
+		t.Fatalf("追加重放应喂判热时钟: %v,%v want %v", ts, ok, *now)
+	}
+}
+
+func TestSameModelToolUseZeroRetryFallsToExistingChainThenSkeleton(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	led := ledger.New()
+	tmp := t.TempDir()
+	stt, err := store.New(filepath.Join(tmp, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := accounts.New(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var enqueued []*ledger.SessionState
+	w := NewWatcher(smGateCfg(), led, stt, func(s *ledger.SessionState) bool {
+		enqueued = append(enqueued, s)
+		return true
+	}, 0, acc, nil, nil, nil)
+	w.enrich = func(st *ledger.SessionState) { // newTestWatcherW 同款富化替身
+		led.Mu().Lock()
+		st.PeakCtx = 50000
+		led.Mu().Unlock()
+	}
+	w.harvest = nil
+	w.smSyncExec = true
+	w.ArmVerdict = func(string) (bool, bool) { return true, true }
+	w.ReqClock.Note("sm-tu1", *now-100)
+	fake := &smFakeSender{results: []beat.AppendReplayResult{{
+		Sent: true, OK: true, StopReason: "tool_use", Text: "调了工具",
+		InputTokens: 50, CacheReadTokens: 1950, OutputTokens: 5, Model: "glm-5.3",
+	}}}
+	w.sameModelSendFn = fake.SendAppendReplay
+	st, path := smSession(t, led, tmp, "sm-tu1", "C:/smfail", *now)
+	w.maybeSameModel(st)
+	w.maybeSameModel(st) // 同版本再判:零重试(smSeen 已章)
+
+	if fake.count() != 1 {
+		t.Fatalf("同模型档零重试, got %d 发", fake.count())
+	}
+	if got := len(enqueued); got != 0 {
+		t.Fatalf("失败当场不得入队(交还既有调度,不提前第三方时机), got %d", got)
+	}
+	// 失败行:lane=same_model、outcome=failed。
+	row := smHandoffRow(t, acc, "sm-tu1")
+	if row["lane"] != ferry.HandoffLaneSameModel || row["outcome"] != "failed" {
+		t.Fatalf("失败行 = %v", row)
+	}
+	// 无 fresh 产物;派发章被清(既有 25 分钟档重武装)。
+	if e := smEntryWithStatus(t, stt, "C:/smfail", "fresh"); e != nil {
+		t.Fatal("tool_use 失败不得落 fresh 产物")
+	}
+	if qwRead(led, st).handedOff != 0 {
+		t.Fatal("失败应清派发章(25 分钟档重武装)")
+	}
+	// 交还兑现:闲置越过总结阈值 → 既有链入队(第三方档接管)。
+	setLastWrite(led, st, *now-12)
+	w.maybeEnqueue(st)
+	if got := len(enqueued); got != 1 {
+		t.Fatalf("25 分钟档应照常入队, got %d", got)
+	}
+	if qwRead(led, st).handedOff == 0 {
+		t.Fatal("入队即记(既有语义)")
+	}
+	// 再败落骨架(既有 worker 链,一行不改):第三方执行器恒败 → 骨架交接。
+	cfg := smGateCfg()
+	cfg.FerryProvider = "fake"
+	worker := NewWorker(cfg, stt, acc, map[string]ferry.Provider{"fake": {
+		Name: "fake", BaseURL: "http://127.0.0.1:9/v1", Model: "fake"}}, explodingFerry)
+	worker.do(map[string]any{"transcript_path": path, "agent": "cc",
+		"session_id": "sm-tu1", "cwd": "C:/smfail"})
+	if e := smEntryWithStatus(t, stt, "C:/smfail", "skeleton"); e == nil {
+		t.Fatal("第三方再败应落骨架(既有链)")
+	}
+}
+
+func TestSameModelBadFormatFallsBack(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	led := ledger.New()
+	tmp := t.TempDir()
+	stt, err := store.New(filepath.Join(tmp, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := accounts.New(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := newSkipSink()
+	w := newTestWatcherW(smGateCfg(), led, acc, nil, nil, nil)
+	w.Store = stt
+	w.smSyncExec = true
+	w.bookSameModelSkipFn = sink.record
+	w.ArmVerdict = func(string) (bool, bool) { return true, true }
+	w.ReqClock.Note("sm-bf1", *now-100)
+	fake := &smFakeSender{results: []beat.AppendReplayResult{{
+		Sent: true, OK: true, StopReason: "end_turn",
+		Text:  "没有标记的散文输出", // 不合交接 MD 结构
+		Model: "glm-5.3", InputTokens: 10, CacheReadTokens: 90, OutputTokens: 7,
+	}}}
+	w.sameModelSendFn = fake.SendAppendReplay
+	st, _ := smSession(t, led, tmp, "sm-bf1", "C:/smbf", *now)
+	w.maybeSameModel(st)
+
+	if fake.count() != 1 {
+		t.Fatalf("单发, got %d", fake.count())
+	}
+	row := smHandoffRow(t, acc, "sm-bf1")
+	if row["lane"] != ferry.HandoffLaneSameModel || row["outcome"] != "failed" {
+		t.Fatalf("格式不符应记 failed 行: %v", row)
+	}
+	if e := smEntryWithStatus(t, stt, "C:/smbf", "fresh"); e != nil {
+		t.Fatal("格式不符不得落 fresh 产物")
+	}
+	if qwRead(led, st).handedOff != 0 {
+		t.Fatal("格式不符应清章交还既有调度")
+	}
+}
+
+func TestSameModelInFlightGuardSkipsDispatch(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	led := ledger.New()
+	tmp := t.TempDir()
+	sink := newSkipSink()
+	w := newTestWatcherW(smGateCfg(), led, nil, nil, nil, nil)
+	w.smSyncExec = true
+	w.bookSameModelSkipFn = sink.record
+	w.ArmVerdict = func(string) (bool, bool) { return true, true }
+	w.ReqClock.Note("sm-if1", *now-100)
+	fake := &smFakeSender{}
+	w.sameModelSendFn = fake.SendAppendReplay
+	st, _ := bareSession(t, led, tmp, "sm-if1")
+	setLastWrite(led, st, *now-7)
+	w.sameModelInFlight.Store(true) // 已有追加重放在途
+	w.maybeSameModel(st)
+	if fake.count() != 0 {
+		t.Fatalf("在途占用期不得再派发, got %d", fake.count())
+	}
+	if qwRead(led, st).handedOff != 0 {
+		t.Fatal("占用期跳过不得盖派发章")
+	}
+}
+
+func TestSameModelSkipBooksTelemetryRow(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	led := ledger.New()
+	tmp := t.TempDir()
+	acc, err := accounts.New(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 真实账本走默认通道(票02 遗留:same_model_skip 科目白名单在票03 落地)。
+	w := newTestWatcherW(smGateCfg(), led, acc, nil, nil, nil)
+	w.smSyncExec = true
+	w.ArmVerdict = func(string) (bool, bool) { return true, true }
+	st, _ := bareSession(t, led, tmp, "sm-tr1")
+	setLastWrite(led, st, *now-7)
+	w.maybeSameModel(st) // 无判热观测 → cold
+	rows := acc.Read(accounts.ReadOpts{Kind: "same_model_skip", Session: "sm-tr1"})
+	if len(rows) != 1 {
+		t.Fatalf("跳过遥测应落一行, got %d", len(rows))
+	}
+	if rows[0]["reason"] != ferry.SameModelSkipCold || rows[0]["upstream"] != "zhipu" {
+		t.Fatalf("行 = %v", rows[0])
 	}
 }
