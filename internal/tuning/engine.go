@@ -243,7 +243,11 @@ func (s *Store) Rollback(upstream, mode string, now float64) (*Calibration, erro
 		Mode: mode, Calibration: prev, PrevCalibration: cur}); err != nil {
 		return nil, err
 	}
-	if err := s.writeCalibFile(prev); err != nil { // nil = 删投影(还原无校准态)
+	if prev != nil {
+		if err := s.writeCalibFile(prev); err != nil {
+			return nil, err
+		}
+	} else if err := s.deleteCalibFile(upstream); err != nil { // 还原无校准态:显式按上游删投影
 		return nil, err
 	}
 	return prev, nil

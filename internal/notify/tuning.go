@@ -38,6 +38,19 @@ func NotifyTuningPending(cfg *config.Config, upstream string, suggestMin,
 	NotifyAlert(title, msg, cfg)
 }
 
+// TuningNoticeText 「只提醒不产出建议」文案(样本不足/建议值拒算两分支专用;
+// 没有建议值就不印建议值数字——不走 TuningPendingText 防"建议:0.0 分钟"
+// 自相矛盾,票07 评审缺陷3)。
+func TuningNoticeText(upstream, note string) (string, string) {
+	return tuningTitle, fmt.Sprintf("%s 上游调参提醒:%s\n详见 ferryman tuning status", upstream, note)
+}
+
+// NotifyTuningNotice 发送「只提醒不产出建议」气泡。
+func NotifyTuningNotice(cfg *config.Config, upstream, note string) {
+	title, msg := TuningNoticeText(upstream, note)
+	NotifyAlert(title, msg, cfg)
+}
+
 // TuningAppliedText 「auto 已应用」文案(含此前值与一键回滚指引)。
 func TuningAppliedText(upstream string, appliedMin, prevMin float64,
 	hasPrev bool) (string, string) {

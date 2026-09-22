@@ -78,3 +78,18 @@ func TestNotifyTuningBubblesRespectFlags(t *testing.T) {
 		t.Fatalf("enabled=false 应全静默: push=%d toast=%d", ps.count(), len(*toastCalls))
 	}
 }
+
+// TestTuningNoticeText 票07 评审缺陷3回归:样本不足/拒算分支的"只提醒"文案
+// 不应出现建议值数字("建议:0.0 分钟"自相矛盾)。
+func TestTuningNoticeText(t *testing.T) {
+	title, msg := TuningNoticeText("glm", "样本不足（窗内摆渡事件 12 < 门槛 30），仅提醒不产出建议")
+	if title != "Ferryman 调参" {
+		t.Fatalf("标题不符: %s", title)
+	}
+	if strings.Contains(msg, "0.0 分钟") || strings.Contains(msg, "建议：") {
+		t.Fatalf("只提醒文案不应出现建议值数字: %s", msg)
+	}
+	if !strings.Contains(msg, "样本不足") || !strings.Contains(msg, "ferryman tuning status") {
+		t.Fatalf("文案缺关键信息: %s", msg)
+	}
+}

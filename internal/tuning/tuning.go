@@ -222,16 +222,8 @@ func (s *Store) calibFile(upstream string) string {
 	return filepath.Join(s.Dir, "calibration-"+safeName(upstream)+".json")
 }
 
-// writeCalibFile 校准投影落盘(nil = 删除投影,还原无校准态);投影删除后
-// 状态仍可由流水重放——投影非事实源。
+// writeCalibFile 校准投影落盘;投影删除后状态仍可由流水重放——投影非事实源。
 func (s *Store) writeCalibFile(cal *Calibration) error {
-	if cal == nil {
-		err := os.Remove(s.calibFile(calUpstream(cal)))
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return err
 	}
@@ -242,12 +234,14 @@ func (s *Store) writeCalibFile(cal *Calibration) error {
 	return os.WriteFile(s.calibFile(cal.Upstream), b, 0o644)
 }
 
-// calUpstream nil 安全取上游名(删除投影时 cal 为 nil)。
-func calUpstream(cal *Calibration) string {
-	if cal == nil {
-		return ""
+// deleteCalibFile 删除该上游的校准投影(还原无校准态);文件不存在视为已删。
+// 上游名必须显式传——nil 校准推不出上游名,曾因此把删除路径推导成
+// calibration--*.json 而真投影残留(票07 评审缺陷1,静默 no-op)。
+func (s *Store) deleteCalibFile(upstream string) error {
+	if err := os.Remove(s.calibFile(upstream)); err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	return cal.Upstream
+	return nil
 }
 
 // RecordSuggestion 记录一条新建议(EvSuggestionCreated;台账登记,非生效)。

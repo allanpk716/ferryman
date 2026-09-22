@@ -399,3 +399,27 @@ func TestUnknownModeConservative(t *testing.T) {
 		t.Fatalf("未知档位不得应用: %+v", st2.Calib)
 	}
 }
+
+// TestRollbackToNilDeletesProjection 回归(票07 评审缺陷1):回滚到无校准态
+// 必须真删该上游的校准投影——曾因 nil 校准推不出上游名,把删除路径推导成
+// calibration--*.json 而真投影残留,注释声称"删投影"实为静默 no-op。
+func TestRollbackToNilDeletesProjection(t *testing.T) {
+	st := newTestStore(t)
+	sug := testSug("sN-glm", "glm", 20, 42, 30)
+	if _, err := st.AutoApply(sug, ModeAuto, 25, testNow, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(st.calibFile("glm")); err != nil {
+		t.Fatalf("应用后应存在校准投影: %v", err)
+	}
+	prev, err := st.Rollback("glm", ModeAuto, testNow+86400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prev != nil {
+		t.Fatalf("首次生效前快照应为 nil(还原无校准态): %+v", prev)
+	}
+	if _, err := os.Stat(st.calibFile("glm")); !os.IsNotExist(err) {
+		t.Fatalf("回滚到无校准态后投影文件应被删除,得到 err=%v", err)
+	}
+}

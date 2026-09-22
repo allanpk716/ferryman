@@ -1102,7 +1102,7 @@ func cmdTuningSweep(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "%s:样本不足（窗内摆渡事件 %d < 门槛 %d）——不产出建议,报告:%s\n",
 				up, res.Sample.FerryEvents, res.Sample.MinEvents, reportPath)
 			if mode != tuning.ModeManual {
-				notify.NotifyTuningPending(cfg, up, 0, cur, false, fmt.Sprintf(
+				notify.NotifyTuningNotice(cfg, up, fmt.Sprintf(
 					"样本不足（窗内摆渡事件 %d < 门槛 %d），仅提醒不产出建议",
 					res.Sample.FerryEvents, res.Sample.MinEvents))
 			}
@@ -1110,7 +1110,7 @@ func cmdTuningSweep(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "%s:建议值拒算（%s）——不产出建议,报告:%s\n",
 				up, res.DerivedErrKind, reportPath)
 			if mode != tuning.ModeManual {
-				notify.NotifyTuningPending(cfg, up, 0, cur, false,
+				notify.NotifyTuningNotice(cfg, up,
 					"建议值拒算（"+res.DerivedErrKind+"）:按当前分布与价格，任何合法触发点净亏或输入不可算，仅提醒")
 			}
 		default:
@@ -1154,8 +1154,16 @@ func cmdTuningApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	st, _ := store.Replay()
+	st, err := store.Replay()
+	if err != nil {
+		fmt.Fprintf(stderr, "已接受 %s,但流水重放失败: %v——用 ferryman tuning status 核对\n", id, err)
+		return 1
+	}
 	sug := st.Suggestions[id]
+	if sug == nil {
+		fmt.Fprintf(stderr, "已接受 %s,但流水重放后未见该建议——用 ferryman tuning status 核对\n", id)
+		return 1
+	}
 	fmt.Fprintf(stdout, "已接受 %s:%s 上游建议值 %.1f 分钟已写入公式输入校准；生效值由策略计算器现算（ferryman tuning status 可查）。\n回滚:ferryman tuning rollback %s\n",
 		id, sug.Upstream, sug.SuggestMin, sug.Upstream)
 	return 0
