@@ -31,6 +31,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -43,6 +44,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -51,13 +53,18 @@ import (
 	"github.com/getlantern/systray"
 	"golang.org/x/sys/windows"
 
+	"ferryman/internal/backtest"
+	"ferryman/internal/clock"
 	"ferryman/internal/config"
 	"ferryman/internal/cutover"
 	"ferryman/internal/daemon"
 	"ferryman/internal/installer"
 	"ferryman/internal/mcp"
 	"ferryman/internal/notify"
+	"ferryman/internal/policy"
+	"ferryman/internal/prices"
 	"ferryman/internal/report"
+	"ferryman/internal/tuning"
 	"ferryman/internal/update"
 	"ferryman/internal/viewer/demo"
 	"ferryman/internal/viewer/server"
@@ -122,6 +129,17 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman upstream use <名> [--config 路径]   # 切换 active 并自动重启守护
                                              #   （在途请求中断；守护未起来时如实
                                              #   报告，不自动回滚/重试）
+  ferryman tuning status [--config 路径] [--json]  # 调参面板：建议摘要与状态+
+                                                #   当前公式输入校准（只读）
+  ferryman tuning sweep [--config 路径] [--projects glob]… [--exclude glob]…
+                      [--ttl-min 分,分,…]      # 同模型阈值扫参（票06）：报告落
+                                                #   状态目录+产出建议，三态分流
+                                                #   （manual 只报告/recommend 提醒/
+                                                #   auto 护栏内自动应用）
+  ferryman tuning apply <id> [--config 路径]    # 接受建议（人工应用；唯一写路径）
+  ferryman tuning reject <id> [--reason 文本] [--config 路径]  # 拒绝建议
+  ferryman tuning rollback <上游> [--config 路径]  # 一键回滚该上游最近一次生效
+                                                #   （恢复生效前公式输入快照）
 
 面板（时间线查看器，viewer 原样）:
   ferryman --demo [--port N] [--no-tray] [--no-browser]
@@ -178,6 +196,8 @@ func run(args []string) int {
 		return cmdCutover(args[1:])
 	case "upstream":
 		return cmdUpstream(args[1:], os.Stdout)
+	case "tuning":
+		return cmdTuning(args[1:], os.Stdout, os.Stderr)
 	case "mcp":
 		return cmdMCP(args[1:])
 	case "backtest":
@@ -597,7 +617,7 @@ func cmdUpdate(args []string, w io.Writer) int {
 	pre := fs.Bool("prerelease", false, "检查纳入预发布版（rc/beta；缺省只看稳定版）")
 	_ = fs.Bool("supervise", false, "内部旗标：托盘隐藏派生用，行为与无参一致")
 	selfRelay := fs.Bool("self-relay", false, "内部旗标：本进程是自中继副本，不再自中继")
-	if err := fs.Parse(orderFlagsFirst(args)); err != nil {
+	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason")); err != nil {
 		return 2
 	}
 	if fs.NArg() > 1 {
@@ -630,6 +650,33 @@ func orderFlagsFirst(args []string) []string {
 			flags = append(flags, a)
 		} else {
 			pos = append(pos, a)
+		}
+	}
+	return append(flags, pos...)
+}
+
+// orderFlagPairsFirst 带值旗标连值前置规整（票07 tuning 子命令）：`tuning
+// apply <id> --config 路径` 形态下，orderFlagsFirst 的逐词重排会把旗标与其
+// 值拆开（值落在位置参数之后，被 flag 当作旗标的参数吃掉）。本函数把带值
+// 旗标连同其值整体搬最前，位置参数保序垫后；valueFlags 键为去横线旗标名
+// （如 "config"）。自包含形态（--x=y）与无值旗标原样归旗标侧。
+func orderFlagPairsFirst(args []string, valueFlags ...string) []string {
+	vf := map[string]bool{}
+	for _, v := range valueFlags {
+		vf[v] = true
+	}
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			pos = append(pos, a)
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		flags = append(flags, a)
+		if vf[name] && !strings.Contains(a, "=") && i+1 < len(args) {
+			flags = append(flags, args[i+1]) // 带值旗标:值随行
+			i++
 		}
 	}
 	return append(flags, pos...)
@@ -813,7 +860,458 @@ func exePathOrFallback() string {
 	return exe
 }
 
-// ---- 面板族（原 cmd/viewer 形态原样） ----
+// ---- tuning 族（票07：调参三态应用引擎+护栏+调参流水+CLI） ----
+//
+// status 只读；sweep 扫参产出（票06 接线）；apply/reject/rollback 为人工写
+// 路径——写操作唯一路径在 CLI（ADR-0015 决定五，D11），托盘/面板永不承担。
+
+// cmdTuning 调参子命令分发。
+func cmdTuning(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "用法: ferryman tuning <status|sweep|apply|reject|rollback> [flags]")
+		return 2
+	}
+	switch args[0] {
+	case "status":
+		return cmdTuningStatus(args[1:], stdout, stderr)
+	case "sweep":
+		return cmdTuningSweep(args[1:], stdout, stderr)
+	case "apply":
+		return cmdTuningApply(args[1:], stdout, stderr)
+	case "reject":
+		return cmdTuningReject(args[1:], stdout, stderr)
+	case "rollback":
+		return cmdTuningRollback(args[1:], stdout, stderr)
+	}
+	fmt.Fprintf(stderr, "未知 tuning 子命令: %q（status|sweep|apply|reject|rollback）\n", args[0])
+	return 2
+}
+
+// tuningLoad config+store 装配（tuning 族共用；config 优先级同 backtest：
+// 显式 --config > FERRYMAN_CONFIG > ~/ferryman/config.toml，价格表同源）。
+func tuningLoad(cfgPath string, stderr io.Writer) (*config.Config, string, *tuning.Store, bool) {
+	p := resolveConfigPath(cfgPath)
+	cfg, err := config.Load(p, false)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return nil, "", nil, false
+	}
+	return cfg, p, tuning.NewStore(cfg.DataDir()), true
+}
+
+// tuningEffectiveUps 生效值行上游集(status 每上游一行):校准在案上游 ∪
+// 同模型白名单,排序去重。
+func tuningEffectiveUps(calUps, whitelist []string) []string {
+	set := map[string]bool{}
+	for _, up := range calUps {
+		set[up] = true
+	}
+	for _, up := range whitelist {
+		set[up] = true
+	}
+	ups := make([]string, 0, len(set))
+	for up := range set {
+		ups = append(ups, up)
+	}
+	sort.Strings(ups)
+	return ups
+}
+
+// tuningEffErrKind 生效值拒算分类(票05 稳定字符串;非该类型归 error)。
+func tuningEffErrKind(err error) string {
+	var e *policy.SameModelError
+	if errors.As(err, &e) {
+		return e.Kind
+	}
+	return "error"
+}
+
+// tuningNotifier 两类托盘气泡接线（票07：经 internal/notify 双通道尽力而为；
+// [notify] enabled=false 全静默）。
+func tuningNotifier(cfg *config.Config) *tuning.Notifier {
+	return &tuning.Notifier{
+		SuggestionPending: func(sug *tuning.Suggestion, reason string) {
+			notify.NotifyTuningPending(cfg, sug.Upstream, sug.SuggestMin,
+				sug.CurrentMin, sug.HasCurrent, reason)
+		},
+		AutoApplied: func(sug *tuning.Suggestion, prev *tuning.Calibration) {
+			hasPrev := prev != nil
+			var prevMin float64
+			if hasPrev {
+				prevMin = prev.SuggestMin
+			}
+			notify.NotifyTuningApplied(cfg, sug.Upstream, sug.SuggestMin, prevMin, hasPrev)
+		},
+	}
+}
+
+// tuningStatusText 建议状态人话（status 输出用）。
+func tuningStatusText(s string) string {
+	switch s {
+	case tuning.StPending:
+		return "待审"
+	case tuning.StAccepted:
+		return "已接受"
+	case tuning.StRejected:
+		return "已拒绝"
+	case tuning.StAutoApplied:
+		return "已自动应用"
+	}
+	return s
+}
+
+// cmdTuningStatus 只读面板：建议摘要与状态+当前公式输入校准（--json 结构化）。
+func cmdTuningStatus(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tuning status", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "配置文件路径（缺省 = FERRYMAN_CONFIG 或 ~/ferryman/config.toml）")
+	asJSON := fs.Bool("json", false, "输出 JSON")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, _, store, ok := tuningLoad(*cfgPath, stderr)
+	if !ok {
+		return 1
+	}
+	st, err := store.Replay()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	sugIDs := make([]string, 0, len(st.Suggestions))
+	for id := range st.Suggestions {
+		sugIDs = append(sugIDs, id)
+	}
+	sort.Slice(sugIDs, func(i, j int) bool {
+		a, b := st.Suggestions[sugIDs[i]], st.Suggestions[sugIDs[j]]
+		if a.CreatedAt != b.CreatedAt {
+			return a.CreatedAt < b.CreatedAt
+		}
+		return a.ID < b.ID
+	})
+	calUps := make([]string, 0, len(st.Calib))
+	for up := range st.Calib {
+		calUps = append(calUps, up)
+	}
+	sort.Strings(calUps)
+
+	// 终局修复(回执与 status 如实):每上游一行生效值——经 Store.
+	// EffectiveThreshold 现算(运行侧基线观测+校准注入),拒算带原因与守望
+	// 回落种子,不编造数字。上游集=校准在案 ∪ 同模型白名单。
+	books := prices.LoadPrices(*cfgPath)
+	seed := policy.SameModelSeedThreshold(cfg.Thresholds.SummarizeS / 60.0)
+	type effRow struct {
+		Upstream string  `json:"upstream"`
+		OK       bool    `json:"ok"`
+		Min      float64 `json:"threshold_min,omitempty"`
+		Mode     string  `json:"mode,omitempty"`
+		Seed     bool    `json:"seed_fallback,omitempty"`
+		ErrKind  string  `json:"err_kind,omitempty"`
+		ErrText  string  `json:"err_text,omitempty"`
+		Fallback float64 `json:"fallback_min,omitempty"`
+	}
+	effUps := tuningEffectiveUps(calUps, cfg.SameModel.Upstreams)
+	effs := make([]effRow, 0, len(effUps))
+	for _, up := range effUps {
+		res, err := store.EffectiveThreshold(cfg, books, up, tuning.RuntimeBaselineObs())
+		if err != nil {
+			effs = append(effs, effRow{Upstream: up, OK: false,
+				ErrKind: tuningEffErrKind(err), ErrText: err.Error(), Fallback: seed})
+			continue
+		}
+		effs = append(effs, effRow{Upstream: up, OK: true, Min: res.ThresholdMin,
+			Mode: res.Mode, Seed: res.SeedFallback})
+	}
+
+	if *asJSON {
+		type sugView struct {
+			*tuning.Suggestion
+			Status string `json:"status"`
+		}
+		sugs := make([]sugView, 0, len(sugIDs))
+		for _, id := range sugIDs {
+			sugs = append(sugs, sugView{st.Suggestions[id], st.Status[id]})
+		}
+		cals := make([]*tuning.Calibration, 0, len(calUps))
+		for _, up := range calUps {
+			cals = append(cals, st.Calib[up])
+		}
+		b, err := json.Marshal(map[string]any{
+			"mode": cfg.Tuning.Mode, "dir": store.Dir, "events": st.Events,
+			"calibrations": cals, "suggestions": sugs, "effective": effs,
+		})
+		if err != nil { // 全字段可序列化，理论不可达；护底线
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(b))
+		return 0
+	}
+
+	fmt.Fprintf(stdout, "调参档位:%s（永不自动升档，只认 config.toml [tuning].mode 手改）\n", cfg.Tuning.Mode)
+	fmt.Fprintf(stdout, "调参流水:%s（共 %d 条事件）\n", filepath.Join(store.Dir, tuning.LogFileName), st.Events)
+	fmt.Fprintln(stdout, "当前公式输入校准（生效值仍由策略计算器现算）:")
+	if len(calUps) == 0 {
+		fmt.Fprintln(stdout, "  （无——建议接受/自动应用后此处按上游显示校准）")
+	}
+	for _, up := range calUps {
+		c := st.Calib[up]
+		fmt.Fprintf(stdout, "  %s:建议值 %.1f 分钟（TTL 观测 %v，来源 %s，%s）\n",
+			up, c.SuggestMin, c.TTLObsMin, c.SourceID,
+			time.Unix(int64(c.AppliedAt), 0).Format("2006-01-02 15:04:05"))
+	}
+	fmt.Fprintln(stdout, "生效值（经策略计算器现算；拒算时守望回落冷启动种子）:")
+	if len(effs) == 0 {
+		fmt.Fprintln(stdout, "  （无——同模型白名单与校准均为空）")
+	}
+	for _, e := range effs {
+		if !e.OK {
+			fmt.Fprintf(stdout, "  %s:拒算（%s）——%s；守望回落冷启动种子 %.1f 分钟\n",
+				e.Upstream, e.ErrKind, e.ErrText, e.Fallback)
+			continue
+		}
+		detail := "计算器现算"
+		switch {
+		case e.Mode == tuning.ModeManual:
+			detail = "manual 档，配置值即生效值"
+		case e.Seed:
+			detail = "冷启动种子层（无 TTL 观测）"
+		}
+		fmt.Fprintf(stdout, "  %s:%.1f 分钟（%s）\n", e.Upstream, e.Min, detail)
+	}
+	fmt.Fprintf(stdout, "建议（共 %d 条）:\n", len(sugIDs))
+	if len(sugIDs) == 0 {
+		fmt.Fprintln(stdout, "  （尚无调参记录——先跑 ferryman tuning sweep 产出建议）")
+	}
+	for _, id := range sugIDs {
+		sug := st.Suggestions[id]
+		fmt.Fprintf(stdout, "  %s  %s  建议 %.1f 分钟（现值 %.1f）  [%s]  依据:扫参最优 %.0f 分钟/净额 %.2f/窗内事件 %d（门槛 %d）  %s\n",
+			sug.ID, sug.Upstream, sug.SuggestMin, sug.CurrentMin,
+			tuningStatusText(st.Status[id]), sug.BestMin, sug.NetSavings,
+			sug.FerryEvents, sug.MinEvents,
+			time.Unix(int64(sug.CreatedAt), 0).Format("2006-01-02 15:04:05"))
+	}
+	return 0
+}
+
+// cmdTuningSweep 同模型阈值扫参（票06 遗留接线）：逐白名单上游
+// LoadIdle+SameModelSweep+WriteSameModelReport，报告落状态目录，产出建议
+// 并按三态分流（manual 只报告 / recommend 提醒 / auto 护栏内自动应用）。
+// 只读账本与 config；写目标仅报告/调参流水/校准投影（状态目录内）。
+func cmdTuningSweep(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tuning sweep", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "配置文件路径（缺省 = FERRYMAN_CONFIG 或 ~/ferryman/config.toml）")
+	var projects, excludes globList
+	fs.Var(&projects, "projects", "项目正集 glob（可多次；缺省全量）")
+	fs.Var(&excludes, "exclude", "排除项目 glob（可多次）")
+	ttlFlag := fs.String("ttl-min", "", "TTL 场景观测（分钟，逗号分隔；缺省 = 种子隐含中位 25）")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	cfg, cfgResolved, store, ok := tuningLoad(*cfgPath, stderr)
+	if !ok {
+		return 1
+	}
+	if len(cfg.SameModel.Upstreams) == 0 {
+		fmt.Fprintln(stdout, "同模型白名单为空（[ferry.same_model].upstreams）——无上游可扫参")
+		return 0
+	}
+	books := prices.LoadPrices(cfgResolved)
+	sumMin := cfg.Thresholds.SummarizeS / 60.0
+	var ttlObs []float64
+	if s := strings.TrimSpace(*ttlFlag); s != "" {
+		for _, p := range strings.Split(s, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			v, err := strconv.ParseFloat(p, 64)
+			if err != nil || v <= 0 {
+				fmt.Fprintf(stderr, "--ttl-min 含非法值 %q（须为正数分钟）\n", p)
+				return 2
+			}
+			ttlObs = append(ttlObs, v)
+		}
+	}
+	ds, err := backtest.LoadIdle(backtest.IdleLoadOptions{
+		DataDir: cfg.DataDir(), Projects: projects, Exclude: excludes,
+		Books: books, WindowDays: cfg.Tuning.WindowDays,
+	})
+	if err != nil { // 账本读不到是硬错误（backtest 同纪律）
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	c := ds.Counts
+	fmt.Fprintf(stdout, "装载:%d 天窗 span %d（返回 %d / 摆渡 %d / 截断 %d）+ 孤儿摆渡行 %d;窗内摆渡事件 %d（门槛 %d）;档位 %s\n",
+		c.WindowDays, c.TotalSpans, c.ReturnedSpans, c.FerrySpans, c.CensoredSpans,
+		c.OrphanHandoffRows, c.FerryEventsInWindow, cfg.Tuning.MinEvents, cfg.Tuning.Mode)
+
+	notifier := tuningNotifier(cfg)
+	mode := cfg.Tuning.Mode
+	now := clock.Now()
+	code := 0
+	for _, up := range cfg.SameModel.Upstreams {
+		res, err := backtest.SameModelSweep(ds, backtest.SameModelSweepOptions{
+			Books: books, Upstream: up, SummarizeMin: sumMin, TTLObsMin: ttlObs,
+			CurrentThresholdMin: cfg.SameModel.CeilingFor(up), HasCurrent: true,
+			MinEvents: cfg.Tuning.MinEvents,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "%s:扫参失败: %v\n", up, err)
+			code = 1
+			continue
+		}
+		reportPath, err := backtest.WriteSameModelReport(store.ReportDir(up), res, ds)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s:报告落盘失败: %v\n", up, err)
+			code = 1
+			continue
+		}
+		cur := cfg.SameModel.CeilingFor(up)
+		switch {
+		case !res.Sample.Sufficient: // 护栏④:样本不足不产出建议,报告照落
+			fmt.Fprintf(stdout, "%s:样本不足（窗内摆渡事件 %d < 门槛 %d）——不产出建议,报告:%s\n",
+				up, res.Sample.FerryEvents, res.Sample.MinEvents, reportPath)
+			if mode != tuning.ModeManual {
+				notify.NotifyTuningNotice(cfg, up, fmt.Sprintf(
+					"样本不足（窗内摆渡事件 %d < 门槛 %d），仅提醒不产出建议",
+					res.Sample.FerryEvents, res.Sample.MinEvents))
+			}
+		case res.Derived == nil: // 建议值拒算（宁可不算不造数）
+			fmt.Fprintf(stdout, "%s:建议值拒算（%s）——不产出建议,报告:%s\n",
+				up, res.DerivedErrKind, reportPath)
+			if mode != tuning.ModeManual {
+				notify.NotifyTuningNotice(cfg, up,
+					"建议值拒算（"+res.DerivedErrKind+"）:按当前分布与价格，任何合法触发点净亏或输入不可算，仅提醒")
+			}
+		default:
+			sug := tuning.SuggestionFromSweep(res, up, reportPath, cur, true, now)
+			if err := store.RecordSuggestion(sug, now); err != nil {
+				fmt.Fprintf(stderr, "%s:建议落流水失败: %v\n", up, err)
+				code = 1
+				continue
+			}
+			d, err := store.AutoApply(sug, mode, sumMin, now, notifier)
+			if err != nil {
+				fmt.Fprintf(stderr, "%s:调参引擎执行失败: %v\n", up, err)
+				code = 1
+				continue
+			}
+			fmt.Fprintf(stdout, "%s:建议 %s——建议值 %.1f 分钟（现值 %.1f） | %s\n",
+				up, sug.ID, sug.SuggestMin, cur, d.Reason)
+		}
+	}
+	return code
+}
+
+// cmdTuningApply 人工接受（唯一人工写路径之一）：建议值写入公式输入校准，
+// 生效值由策略计算器现算；回滚指引随回执打印。
+func cmdTuningApply(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tuning apply", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "配置文件路径（缺省 = FERRYMAN_CONFIG 或 ~/ferryman/config.toml）")
+	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason")); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "用法: ferryman tuning apply <建议id>（id 见 ferryman tuning status）")
+		return 2
+	}
+	cfg, cfgFile, store, ok := tuningLoad(*cfgPath, stderr)
+	if !ok {
+		return 1
+	}
+	id := fs.Arg(0)
+	if err := store.Accept(id, cfg.Tuning.Mode, cfg.Thresholds.SummarizeS/60.0, clock.Now()); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	st, err := store.Replay()
+	if err != nil {
+		fmt.Fprintf(stderr, "已接受 %s,但流水重放失败: %v——用 ferryman tuning status 核对\n", id, err)
+		return 1
+	}
+	sug := st.Suggestions[id]
+	if sug == nil {
+		fmt.Fprintf(stderr, "已接受 %s,但流水重放后未见该建议——用 ferryman tuning status 核对\n", id)
+		return 1
+	}
+	// 终局修复:回执兑现"可查"——现算当前生效值如实打印(拒算带回落种子),
+	// 不再留无法兑现的表述。
+	books := prices.LoadPrices(cfgFile)
+	res, effErr := store.EffectiveThreshold(cfg, books, sug.Upstream, tuning.RuntimeBaselineObs())
+	if effErr != nil {
+		fmt.Fprintf(stdout, "已接受 %s:%s 上游建议值 %.1f 分钟已写入公式输入校准；生效值现算拒算（%s）——守望回落冷启动种子 %.1f 分钟（ferryman tuning status 可查）。\n回滚:ferryman tuning rollback %s\n",
+			id, sug.Upstream, sug.SuggestMin, tuningEffErrKind(effErr),
+			policy.SameModelSeedThreshold(cfg.Thresholds.SummarizeS/60.0), sug.Upstream)
+		return 0
+	}
+	fmt.Fprintf(stdout, "已接受 %s:%s 上游建议值 %.1f 分钟已写入公式输入校准；当前生效值 %.1f 分钟（策略计算器现算，ferryman tuning status 可查）。\n回滚:ferryman tuning rollback %s\n",
+		id, sug.Upstream, sug.SuggestMin, res.ThresholdMin, sug.Upstream)
+	return 0
+}
+
+// cmdTuningReject 人工拒绝：落调参流水，建议退出待审。
+func cmdTuningReject(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tuning reject", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "配置文件路径（缺省 = FERRYMAN_CONFIG 或 ~/ferryman/config.toml）")
+	reason := fs.String("reason", "", "拒绝理由（记入调参流水）")
+	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason")); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "用法: ferryman tuning reject <建议id> [--reason 文本]")
+		return 2
+	}
+	if _, _, store, ok := tuningLoad(*cfgPath, stderr); !ok {
+		return 1
+	} else if err := store.Reject(fs.Arg(0), *reason, clock.Now()); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	r := *reason
+	if r == "" {
+		r = "未填"
+	}
+	fmt.Fprintf(stdout, "已拒绝 %s（理由:%s）——已落调参流水,建议退出待审。\n", fs.Arg(0), r)
+	return 0
+}
+
+// cmdTuningRollback 一键回滚（护栏⑤）：恢复该上游最近一次生效前的公式输入
+// 快照（undo 交换，可再回滚）；回滚亦计入频控窗。
+func cmdTuningRollback(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tuning rollback", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "配置文件路径（缺省 = FERRYMAN_CONFIG 或 ~/ferryman/config.toml）")
+	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason")); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "用法: ferryman tuning rollback <上游名>（上游名见 ferryman tuning status）")
+		return 2
+	}
+	cfg, _, store, ok := tuningLoad(*cfgPath, stderr)
+	if !ok {
+		return 1
+	}
+	up := fs.Arg(0)
+	prev, err := store.Rollback(up, cfg.Tuning.Mode, clock.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if prev == nil {
+		fmt.Fprintf(stdout, "已回滚 %s:公式输入校准已清空（还原到首次生效前状态）。\n", up)
+		return 0
+	}
+	fmt.Fprintf(stdout, "已回滚 %s:公式输入校准还原为 %.1f 分钟档（来源 %s，最近一次生效前快照）；生效值由策略计算器现算。\n",
+		up, prev.SuggestMin, prev.SourceID)
+	return 0
+}
+
+
 
 // runPanel 只起面板（不带子命令、带面板族 flags 的入口；viewer 原样）：
 // --demo 合成账本 / --port 固定口 / --no-tray / --no-browser / --install-shortcuts。

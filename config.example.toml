@@ -6,6 +6,33 @@
 # 摆渡用 provider —— 必须对应下面某个 [providers.X] 的名字；不配则摆渡降级骨架
 provider = "deepseek"
 
+[ferry.same_model]
+# 同模型摆渡（ADR-0015）：会话快凉时用自家渡口上游追加重放（前缀原样+末尾
+# 追加一条写交接叙事的指令）生成模型叙事，命中缓存则前缀按缓存读计价。
+# 默认 off（进 E1 评测后才考虑默认）。
+enabled = false
+# 触发阈值（分钟）：全局上限/冷启动种子。钳位 [10, 总结阈值]（默认 20 ≤ 25
+# 成立），越界/倒挂配置拒绝启动；不变量链：同模型 ≤ 总结 ≤ 拦截。
+threshold_min = 20
+# 上游白名单（名字 = [dock.upstreams] 条目键）：白名单预置 ≠ 启用——每家
+# 上游须先通过"追加重放实跳臂"实验（四条成功标准全过）才真正启用。
+# upstreams = ["智谱"]
+
+[ferry.same_model.ceiling]
+# 每上游阈值上限覆盖（分钟）：不写的上游用 threshold_min；同样是生效值上限
+# （manual 档即生效值），不得低于 10、不得高于总结阈值。
+# "智谱" = 20
+
+[tuning]
+# 调参三态（ADR-0015 决定四）：扫参建议由谁应用。manual=只出报告人手改；
+# recommend=默认（自动扫参+托盘提醒，人工应用）；auto=护栏内自动应用+
+# 事后通报+一键回滚。永不自动升档。
+mode = "recommend"
+# 滚动观察窗（天）与样本不足门槛（窗内摆渡事件数）：窗内样本少于 min_events
+# 时 auto 收敛为只提醒（护栏④）。
+window_days = 30
+min_events = 30
+
 [dock]
 # 渡口（票01 多上游，ADR-0012）：CC 与上游之间的本机转发层。
 # CC 的 ANTHROPIC_BASE_URL 指到 http://127.0.0.1:15722 是人工一次性步骤，
@@ -104,6 +131,8 @@ p_out = 24
 enabled = false
 # 实测缓存 TTL（跑 experiments/cache-ttl 套件后填；report 策略对比依赖此值）
 # ttl_s = 600
+# 注意：同模型摆渡的判热也用此值——[ferry.same_model] 开而不设 ttl_s 时判热恒冷，
+# 同模型档永不触发（doctor same_model_heat_ttl 同款检查）。
 # ttl_measured_at = "2026-09-17"
 # ttl_source = "docs/20260917_1630_GLM缓存TTL实测与心跳保温可行性_实验报告.md"
 

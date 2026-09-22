@@ -1229,3 +1229,44 @@ func TestDoctorStructuredTempTargets(t *testing.T) {
 		t.Fatalf("daemon 离线活性应 fail: %+v", r)
 	}
 }
+
+// TestDoctorSameModelHeatTTLMissing 终局修复(防静默死档,终局评审普通建议):
+// same_model 开而 [heartbeat].ttl_s 未设(=0)→ ferry.PredictHot 恒判冷,同模型
+// 档永不触发——fail 行点名修法;已设 → pass;same_model 关 → 零新增行。
+func TestDoctorSameModelHeatTTLMissing(t *testing.T) {
+	mk := func(enabled bool, ttls float64) doctorDeps {
+		cfg := config.Default()
+		cfg.FerryProvider = "glm"
+		cfg.SameModel.Enabled = enabled
+		cfg.SameModel.Upstreams = []string{"glm"}
+		cfg.Heartbeat.TTLS = ttls
+		return doctorDeps{
+			LoadCfg: func() (*config.Config, error) { return cfg, nil },
+			LoadProviders: func() (map[string]ferry.Provider, error) {
+				return map[string]ferry.Provider{"glm": {Name: "glm", BaseURL: "http://x", Model: "m"}}, nil
+			},
+			Probe: func() map[string]any { return map[string]any{"health_alert": false} },
+		}
+	}
+	find := func(rs []CheckResult) *CheckResult {
+		for i := range rs {
+			if rs[i].Name == "same_model_heat_ttl" {
+				return &rs[i]
+			}
+		}
+		return nil
+	}
+	// 未设:fail,点名"恒冷"与填 ttl_s 修法。
+	if r := find(doctorResults(mk(true, 0))); r == nil || r.Status != StatusFail ||
+		!strings.Contains(r.Detail, "恒冷") || !strings.Contains(r.Detail, "ttl_s") {
+		t.Fatalf("ttl_s 未设应 fail 并点名修法: %+v", r)
+	}
+	// 已设:pass。
+	if r := find(doctorResults(mk(true, 600))); r == nil || r.Status != StatusPass {
+		t.Fatalf("ttl_s 已设应 pass: %+v", r)
+	}
+	// same_model 关:零新增行(存量用户 doctor 输出零漂移)。
+	if r := find(doctorResults(mk(false, 0))); r != nil {
+		t.Fatalf("same_model 关闭不应出判热 TTL 行: %+v", r)
+	}
+}

@@ -35,6 +35,7 @@ import (
 	"ferryman/internal/codextrans"
 	"ferryman/internal/config"
 	"ferryman/internal/extract"
+	"ferryman/internal/ferry"
 	"ferryman/internal/harvest"
 	"ferryman/internal/ledger"
 	"ferryman/internal/mathx"
@@ -44,6 +45,7 @@ import (
 	"ferryman/internal/prices"
 	"ferryman/internal/qwatch"
 	"ferryman/internal/store"
+	"ferryman/internal/tuning"
 )
 
 // CodexWatchDirs codex 会话目录清单：主目录（默认 ~/.codex/sessions）+ 配置额外目录 +
@@ -134,6 +136,42 @@ type Watcher struct {
 	detect func(path string, minQuestions int) qwatch.Verdict // 测试注入缝（Python monkeypatch daemon_mod.detect 同位）
 	enrich func(*ledger.SessionState)                         // 测试注入缝（Python _enrich 覆写同位）
 
+	// ---- 票02:同模型判热门(ADR-0015 决定一/二;F3 判热时钟口径、F6 跳过原因) ----
+	// ReqClock 判热时钟数据源(钉死,见 beat.LastRequestClock):每会话最后上游
+	// 请求时刻,含体外心跳重放。台账闲置(闸门语义)不含心跳、完全不动——两钟
+	// 各司其职。nil(旧测试裸构造形态)按无观测处理 → 保守判冷。
+	ReqClock *beat.LastRequestClock
+	// ArmVerdict 实跳臂结论查询缝(票01 config.ArmVerdictResolver 预留):nil =
+	// 状态源未装配 → 无结论 = 未启用(D6 启用硬门槛;票04 接线真源)。
+	ArmVerdict config.ArmVerdictResolver
+	// smSeen 同模型触发版本章(stampMu 叶子锁守护):(agent, sid) → 已判定过的
+	// last_write——每写入版本只判一次,防跳过事件逐轮刷屏(qwatchSeen 同款纪律)。
+	smSeen map[winKey]float64
+	// smEffWarned 生效值现算失败告警一次(票08 接线:回落冷启动种子时提示,防刷屏)。
+	smEffWarned atomic.Bool
+	// TuningStore 调参状态库(票08:票07 遗留接线——同模型触发阈值读取改经
+	// tuning.Store.EffectiveThreshold 三态生效值出口;NewWatcher 按 DataDir
+	// 装配,测试可注入替身)。nil=未装配(裸构造形态)→ 直回配置值。
+	TuningStore *tuning.Store
+	// bookSameModelSkipFn 跳过遥测缝(测试注入);nil = 默认走 bookQwatch 通道记
+	// "same_model_skip" 科目(usage/qwatch 同层遥测;Accounts nil 时静默跳过)。
+	bookSameModelSkipFn func(st *ledger.SessionState, reason string, ff accounts.Fields)
+
+	// ---- 票03:同模型执行档(追加重放;ADR-0015 决定一/决定三/决定六) ----
+	// AppendSender 追加重放发送器:NewWatcher 对注入的 BeatSender 做类型断言
+	// 装配(HttpBeatSender 双实现;serve 侧零改动即接上)。nil=未装配(渡口关/
+	// 旧测试形态)——判热通过也无法执行,告警一次静默交还既有调度。
+	AppendSender beat.AppendReplaySender
+	// sameModelInFlight 全局同时最多 1 个追加重放在途(执行体在独立 goroutine,
+	// 不占守望线程;占用期错过的触发版本交还既有调度,不排队)。
+	sameModelInFlight atomic.Bool
+	// sameModelSendFn 发送缝(测试注入);nil=走 AppendSender 生产装配。
+	sameModelSendFn func(beat.AppendReplayPlan) beat.AppendReplayResult
+	// smSyncExec 测试直调形态:dispatchSameModel 同步执行(免竞态等待);
+	// 生产恒 false(异步 goroutine)。
+	smSyncExec       bool
+	smNoSenderWarned atomic.Bool // 无发送器降级告警一次
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
@@ -160,10 +198,21 @@ func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 		qwatchHitSeen: map[winKey]float64{},
 		waitLane:      map[winKey]*waitLaneRec{},
 		lanePins:      map[winKey]bool{},
-		stopCh:        make(chan struct{}),
+		ReqClock:      beat.NewLastRequestClock(), // 票02:判热时钟(数据源钉死)
+		smSeen:        map[winKey]float64{},       // 票02:同模型触发版本章
+		TuningStore:   tuning.NewStore(cfg.DataDir()), // 票08:生效值出口库(票07 遗留接线)
+		// 票04 收口:实跳臂结论缝接真源(arm_verdict.jsonl last-wins;
+		// 无状态文件→全 not_enabled 保守缺省,doctor 如实体检)。
+		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
+		stopCh:     make(chan struct{}),
 	}
 	w.detect = qwatch.Detect
 	w.enrich = w.enrichImpl
+	// 票03:追加重放发送器装配——注入的 BeatSender 若实现 AppendReplaySender
+	// (HttpBeatSender 真身)即接上;serve 侧零改动。
+	if ap, ok := sender.(beat.AppendReplaySender); ok {
+		w.AppendSender = ap
+	}
 	if acc != nil && cfg.Watch.HarvestUsage {
 		w.harvest = harvest.NewHarvestState(acc)
 	}
@@ -269,6 +318,7 @@ func (w *Watcher) pollCC() {
 		w.maybeFireBeats(st)
 		w.maybeWaitBeats(st) // 票04：等待窗泳道（在问询跳之后——两泳道共用单在途）
 		w.reconcilePins(st)  // 票04：两泳道快照 Pin 对账（窗开→Pin/窗关且结算→Unpin）
+		w.maybeSameModel(st) // 票02：同模型判热门（先于总结阈值；off 时零开销零行为）
 		w.maybeEnqueue(st)
 		return nil
 	})
@@ -783,6 +833,7 @@ func (w *Watcher) settleBeat(st *ledger.SessionState, result beat.BeatResult) {
 			fmt.Printf("[qwatch] 心跳结账异常（忽略）: %v\n", r)
 		}
 	}()
+	w.noteUpstreamRequest(st.SessionID, result) // 票02:真发重放计入判热时钟(F3)
 	outcome := beat.Classify(result)
 	w.bookBeat(st, outcome, result, "qwatch")
 	if w.QWatchStats != nil { // 票04：/stats 计数与累计实收
@@ -1029,6 +1080,7 @@ func (w *Watcher) settleWaitBeat(st *ledger.SessionState,
 			fmt.Printf("[wait] 等待窗心跳结账异常（忽略）: %v\n", r)
 		}
 	}()
+	w.noteUpstreamRequest(st.SessionID, result) // 票02:真发重放计入判热时钟(F3)
 	outcome := beat.Classify(result)
 	w.bookBeat(st, outcome, result, "wait")
 	alertTitle, alertMsg := "", ""
@@ -1153,6 +1205,340 @@ func (w *Watcher) reconcilePins(st *ledger.SessionState) {
 	}
 }
 
+// ---- 票02:同模型判热门(ADR-0015 决定一/决定二;F1 冷分支静默交还、
+// F3 判热时钟口径、F6 跳过原因编码) ----
+
+// maybeSameModel 同模型触发点:台账闲置达生效阈值(票08 起 经 tuning.Store.
+// EffectiveThreshold 三态出口现算——票05 计算器单源;现算失败回落冷启动种子,
+// 见 sameModelEffectiveMin)先判热,再决定是否进同模型档。判冷/上游不在
+// 白名单/上游未启用三种情况:该次触发零模型调用、静默交还既有调度——
+// 第三方/骨架仍走总结阈值(25 分钟档一行不改),遥测记"同模型跳过"事件,
+// 原因独立编码(F6)。
+//
+// 两个时钟各司其职(ADR-0015 决定一):触发时钟=台账闲置(与总结阈值同基,
+// 闸门语义完全不动);判热时钟=ReqClock(距该会话最后一次上游请求,含体外
+// 心跳重放)。一切异常吞掉——绝不影响守望与摆渡主路径。
+func (w *Watcher) maybeSameModel(st *ledger.SessionState) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[samemodel] 判热门异常（忽略继续）: %v\n", r)
+		}
+	}()
+	if w.Cfg == nil || !w.Cfg.SameModel.Enabled || st.Agent != "cc" {
+		return // off 零开销(默认);同模型仅 CC 轨(ADR-0015 决定一)
+	}
+	key := winKey{st.Agent, st.SessionID}
+	w.Ledger.Mu().Lock()
+	observed := st.ObservedActive
+	lastWrite := st.LastWrite
+	handedOff := st.HandedOffAt
+	opened := st.QWatchOpenedTS != nil
+	w.Ledger.Mu().Unlock()
+	if !observed {
+		return // 与摆渡同纪律:启动后只见登记不动作
+	}
+	if w.stampGet(&w.smSeen, key) == lastWrite {
+		return // 该写入版本已判定过(每版本一次,防跳过事件逐轮刷屏)
+	}
+	now := clock.Now()
+	upstream := w.activeUpstreamName()
+	effMin := w.sameModelEffectiveMin(upstream) // 票08:生效值出口读取(票07 遗留接线)
+	effS := effMin * 60                         // 生效阈值(分钟→秒)
+	if now-lastWrite < effS {
+		return // 未到触发点(不盖版本章——闲置继续增长后仍要判)
+	}
+	// 瞬态让路(不盖版本章):等答复窗/子代理在飞/等待窗(含停车)期间,时机归
+	// 各窗口机制管;同模型的提前只服务"普通闲置"的会话。
+	if opened {
+		return
+	}
+	if w.Ledger.SubagentActive(st.Agent, st.SessionID) {
+		return
+	}
+	if w.Daemon != nil && w.Daemon.WindowWait(st.Agent, st.SessionID) {
+		return
+	}
+	if handedOff >= lastWrite {
+		w.stampSet(&w.smSeen, key, lastWrite)
+		return // 既有调度已接管(交接覆盖最新活动):此项无谓,静默盖章
+	}
+	// 门序:白名单 → 启用 → 判热(前两道纯配置判定,过了才有资格花判热成本;
+	// 首个拦下的门即上报原因,防误统计)。
+	reason := w.sameModelSkipReason(st.SessionID, upstream, now)
+	w.stampSet(&w.smSeen, key, lastWrite)
+	if reason == "" {
+		// 判热+白名单+已启用 → 进同模型档:派发追加重放执行体(票03)。执行
+		// 失败按失败链交还既有调度(见 dispatchSameModel);同模型档零重试
+		// (smSeen 版本章已盖)。
+		w.dispatchSameModel(st, upstream)
+		return
+	}
+	w.emitSameModelSkip(st, reason, upstream, now, now-lastWrite, effMin)
+}
+
+// sameModelEffectiveMin 同模型触发阈值的生效值读取(分钟;票08:票07 遗留接线)
+// :一律经 tuning.Store.EffectiveThreshold——三态生效值唯一出口,票05 计算器
+// 单源(manual 档下即配置值,语义由出口保证;装配见 same_model_effective.go)。
+// 现算失败(无价格本/钳位矛盾/缺闲置的旧档位校准 bad_obs 等)回落冷启动种子
+// (D9 三层供给第一层,policy.SameModelSeedThreshold 单源——CeilingFor 是上限
+// 不是缺省,终局修复:不再以配置上限充当缺省把触发点反向推后)并告警一次
+// ——宁可保守回落,绝不阻断守望(一切异常吞掉的总纪律);TuningStore nil
+// (裸构造形态)由装配层直调票05 出口,不经本回落。
+func (w *Watcher) sameModelEffectiveMin(upstream string) float64 {
+	seed := policy.SameModelSeedThreshold(w.Cfg.Thresholds.SummarizeS / 60.0)
+	res, err := sameModelEffective(w.Cfg, w.TuningStore, w.waitBooks, upstream)
+	if err == nil {
+		return res.ThresholdMin
+	}
+	if !w.smEffWarned.Swap(true) {
+		fmt.Printf("[samemodel] ⚠ 生效值现算失败(%v)——触发阈值回落冷启动种子 %.1f 分钟"+
+			"(D9 第一层;检查 [prices.*] 价格表与调参校准)\n", err, seed)
+	}
+	return seed
+}
+
+// activeUpstreamName 渡口活动上游条目键(白名单按 [dock.upstreams] 键登记)。
+// 渡口关/旧单值形态(无条目键)返回 ""——空名不入白名单=whitelist_miss,如实。
+func (w *Watcher) activeUpstreamName() string {
+	if w.Cfg.Dock == nil {
+		return ""
+	}
+	name, _ := w.Cfg.Dock.ActiveUpstream()
+	return name
+}
+
+// sameModelEnabled 该上游是否已过追加重放实跳臂硬门槛(D6):缝未装配(nil)
+// 或无结论 → 未启用,如实(白名单预置 ≠ 启用;票04 接线真源)。
+func (w *Watcher) sameModelEnabled(upstream string) bool {
+	if w.ArmVerdict == nil {
+		return false
+	}
+	has, enabled := w.ArmVerdict(upstream)
+	return has && enabled
+}
+
+// heatClockSeconds 判热时钟读数(秒;now − 最后上游请求)。无观测返回 -1。
+func (w *Watcher) heatClockSeconds(sid string, now float64) float64 {
+	if w.ReqClock == nil {
+		return -1
+	}
+	last, ok := w.ReqClock.Last(sid)
+	if !ok {
+		return -1
+	}
+	return now - last
+}
+
+// sameModelHot 判热:判热时钟 + 该上游 TTL 观测闭式预判(ferry.PredictHot,
+// 公式单源)。无最后请求观测(如重启后)→ 保守判冷。
+func (w *Watcher) sameModelHot(sid string, now float64) bool {
+	clockS := w.heatClockSeconds(sid, now)
+	if clockS < 0 {
+		return false // 无观测 → 保守判冷(F5 同款,绝不伪造热)
+	}
+	return ferry.PredictHot(clockS, ferry.TTLObs{TTLS: w.Cfg.Heartbeat.TTLS})
+}
+
+// sameModelSkipReason 门序判定,返回跳过原因;"" = 判热进档。
+func (w *Watcher) sameModelSkipReason(sid, upstream string, now float64) string {
+	if !slices.Contains(w.Cfg.SameModel.Upstreams, upstream) {
+		return ferry.SameModelSkipWhitelistMiss
+	}
+	if !w.sameModelEnabled(upstream) {
+		return ferry.SameModelSkipNotEnabled
+	}
+	if !w.sameModelHot(sid, now) {
+		return ferry.SameModelSkipCold
+	}
+	return ""
+}
+
+// emitSameModelSkip "同模型跳过"遥测事件(usage/qwatch 同层;不入 handoff 科目
+// ——决定六)。只记元数据(原因/上游/闲置与判热两钟读数/TTL/生效阈值),
+// 永不落消息正文(隐私铁律);clock_s=-1 = 无最后请求观测(保守判冷形态)。
+// threshold_min 记本次判定的生效值(票08:经票05 出口现算,或现算失败回落后
+// 的实际用值)。记账永不弄断守望(bookQwatch 同款)。
+func (w *Watcher) emitSameModelSkip(st *ledger.SessionState, reason, upstream string, now, idleS, effMin float64) {
+	ff := accounts.Fields{
+		"reason":        reason,
+		"upstream":      upstream,
+		"idle_s":        mathx.Round(idleS, 1),
+		"clock_s":       mathx.Round(w.heatClockSeconds(st.SessionID, now), 1),
+		"ttl_s":         mathx.Round(w.Cfg.Heartbeat.TTLS, 1),
+		"threshold_min": mathx.Round(effMin, 3),
+	}
+	if w.bookSameModelSkipFn != nil {
+		w.bookSameModelSkipFn(st, reason, ff)
+		return
+	}
+	w.bookQwatch("same_model_skip", st, ff)
+}
+
+// noteUpstreamRequest 票02:一次真发拿到结论的上游请求观测入判热时钟(F3 数据
+// 源②:心跳重放)。Sent 且 OK 才计——miss 亦计(上游已处理全前缀,缓存重建);
+// transport-ERROR 缓存状态未知不计;observe 演练(Sent=false)未真发不计。
+// 时刻取结算点现在(发送已在秒级前完成,对 20min 量级的判热时钟误差可忽略)。
+func (w *Watcher) noteUpstreamRequest(sid string, result beat.BeatResult) {
+	if w.ReqClock == nil || !result.Sent || !result.OK {
+		return
+	}
+	w.ReqClock.Note(sid, clock.Now())
+}
+
+// ---- 票03:同模型执行档(追加重放;ADR-0015 决定一/决定三、决定六) ----
+
+// smExecTask 追加重放执行任务快照(派发点一次性抄齐;执行在独立 goroutine,
+// 绝不持台账锁跑网络/读盘——Agent/SessionID/TranscriptPath 建后不变,Cwd
+// 可变故锁内快照)。
+type smExecTask struct {
+	agent, sid, path, cwd string
+}
+
+// dispatchSameModel 派发同模型执行:占全局在途位 → 派发即记 handed_off
+// (maybeEnqueue「入队即记」同款——执行期间 25 分钟档不重复入队)→ 独立
+// goroutine 执行(追加重放是分钟级,绝不能挂守望线程,beat.go Sender 注释
+// 的时限铁律由本形态的 goroutine 承载)。失败清章重武装、交还既有 25 分钟
+// 档(ADR-0015 决定二:同模型的提前只服务于判热会话吃缓存价差,不为任何
+// 会话提前第三方时机);成功保留派发章(覆盖语义=触发点;执行期间会话恢复
+// 写入则 last_write 越线,既有调度自然重判)。
+func (w *Watcher) dispatchSameModel(st *ledger.SessionState, upstream string) {
+	if !w.sameModelInFlight.CompareAndSwap(false, true) {
+		return // 已有追加重放在途:本版本交还既有调度(smSeen 已章,不重试)
+	}
+	stamp := clock.Now()
+	w.Ledger.Mu().Lock()
+	st.HandedOffAt = stamp // 派发即记;失败路径 sameModelFailed 只清自己的章
+	task := smExecTask{agent: st.Agent, sid: st.SessionID,
+		path: st.TranscriptPath, cwd: st.Cwd}
+	w.Ledger.Mu().Unlock()
+	run := func() {
+		defer w.sameModelInFlight.Store(false)
+		ok := true
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[samemodel] 执行异常(按该档失败处理,交还既有调度): %v\n", r)
+					ok = false
+				}
+			}()
+			ok = w.runSameModel(task, upstream)
+		}()
+		if !ok {
+			w.sameModelFailed(st, stamp)
+		}
+	}
+	if w.smSyncExec { // 测试直调形态(生产恒异步)
+		run()
+		return
+	}
+	go run()
+}
+
+// sameModelFailed 该档失败收口:清派发章(仅当仍是自己的章——执行期间既有
+// 调度可能因会话恢复写入而另立新章,不得误伤),交还既有 25 分钟档;同模型
+// 档零重试(smSeen 版本章已盖,ADR-0015 决定三)。
+func (w *Watcher) sameModelFailed(st *ledger.SessionState, stamp float64) {
+	w.Ledger.Mu().Lock()
+	if st.HandedOffAt == stamp {
+		st.HandedOffAt = 0 // 派发前 handed_off < last_write(零覆盖),清零不改覆盖语义
+	}
+	w.Ledger.Mu().Unlock()
+}
+
+// runSameModel 同模型执行核心(同步;测试直调,生产经 dispatchSameModel 的
+// goroutine 进入):追加重放单发 → stop_reason/结构校验 → 骨架合成产物落盘
+// → handoff 科目记账(lane=same_model)。任一步不合 → 记 failed 行、交还既有
+// 调度(返回 false;第三方再败落骨架由既有 worker 链承载)。发送后真发拿到
+// 结论即喂判热时钟(票02 F3 口径:追加重放亦属体外上游请求)。
+func (w *Watcher) runSameModel(task smExecTask, upstream string) bool {
+	send := w.sameModelSendFn
+	if send == nil && w.AppendSender != nil {
+		send = w.AppendSender.SendAppendReplay
+	}
+	if send == nil {
+		if !w.smNoSenderWarned.Swap(true) {
+			fmt.Printf("[samemodel] ⚠ 判热通过但追加重放发送器未装配(渡口关/注入形态)" +
+				"——本进程内同模型档静默交还既有调度\n")
+		}
+		return false
+	}
+	t0 := clock.Now()
+	mt := ferry.SameModelMaxTokens
+	if mt <= 0 {
+		mt = 4096 // 可配缝的零值回落(保守值)
+	}
+	res := send(beat.AppendReplayPlan{
+		SessionID:   task.sid,
+		Instruction: ferry.SameModelInstruction,
+		MaxTokens:   mt,
+	})
+	if res.Sent && res.OK && w.ReqClock != nil {
+		w.ReqClock.Note(task.sid, clock.Now()) // F3:真发拿到结论的上游请求入判热时钟
+	}
+	wall := clock.Now() - t0
+	if res.OK && res.StopReason != "tool_use" {
+		// 骨架仍程序抽取(ADR-0015:确定性骨架不经模型;读盘在执行 goroutine,锁外)。
+		facts, _, _ := extractFacts(task.path)
+		meta := map[string]any{
+			"model":  res.Model,
+			"mode":   "same_model",
+			"wall_s": mathx.Round(wall, 1),
+		}
+		if md, _, err := ferry.SameModelMarkdown(facts.Title, res.Text,
+			facts.SkeletonText(), meta); err == nil {
+			if w.Store != nil {
+				w.Store.SaveHandoff(task.sid, task.agent, task.cwd, facts.Title,
+					facts.LastTS, "fresh", md)
+			}
+			w.bookSameModelHandoff(task, upstream, res, "fresh", wall)
+			fmt.Printf("[samemodel] %s/%s same_model %ss -> handoff\n", task.agent,
+				runeCap8(task.sid), config.PyFloatStr(mathx.Round(wall, 1)))
+			return true
+		}
+		// 输出不合交接 MD 结构:落下方统一 failed 记账,交还既有调度
+	}
+	w.bookSameModelHandoff(task, upstream, res, "failed", wall)
+	return false
+}
+
+// bookSameModelHandoff 同模型档 handoff 科目记账(决定六:lane=same_model,
+// 与第三方/骨架分档核算)。prompt=未命中前缀+缓存读(上游实收全量输入),
+// completion=输出。记账永不弄断该档(bookHandoffImpl 同款护栏)。
+func (w *Watcher) bookSameModelHandoff(task smExecTask, upstream string,
+	res beat.AppendReplayResult, outcome string, wallS float64) {
+	if w.Accounts == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[account] handoff 记账失败(忽略,同模型档不受影响): %v\n", r)
+		}
+	}()
+	var priceVer any                           // nil ≡ Python None(未配价格表;bookHandoffErr 同款)
+	if book, ok := w.waitBooks[upstream]; ok { // NewWatcher 一次读盘(config 重启生效)
+		if pv := book.At(clock.Now()); pv != nil {
+			priceVer = prices.PriceTag(upstream, *pv)
+		}
+	}
+	_, err := w.Accounts.Record("handoff", -1, accounts.Fields{
+		"agent":             task.agent,
+		"session_id":        task.sid,
+		"lineage_id":        pathsx.NormPath(task.path),
+		"project":           task.cwd,
+		"provider":          upstream,
+		"model":             res.Model,
+		"price_ver":         priceVer,
+		"prompt_tokens":     res.InputTokens + res.CacheReadTokens,
+		"completion_tokens": res.OutputTokens,
+		"outcome":           outcome,
+		"wall_s":            mathx.Round(wallS, 1),
+		"lane":              ferry.HandoffLaneSameModel,
+	})
+	if err != nil {
+		fmt.Printf("[account] handoff 记账失败(忽略,同模型档不受影响): %v\n", err)
+	}
+}
+
 // ---- 懒富化与用量采集（daemon.py:441-490 逐字） ----
 
 // enrichImpl 标题/峰值上下文懒提取；同一 last_write 版本只做一次。
@@ -1248,6 +1634,12 @@ func (w *Watcher) harvestUsage(path string, size int64, st *ledger.SessionState)
 	// T48 票03：新 usage 行的最大 ts 喂给停车状态机——主会话恢复调用
 	// 的闭窗判据（note_usage 保证不炸；agent 取会话自身，不硬编码 cc）。
 	// 坏行（无 timestamp）滤掉不参与 max；default=0 时 ts 越线判据不成立=安全 no-op。
+	// 票02:同一 tsMax 入判热时钟(F3 数据源①:主转录 usage 行=真实上游流量的
+	// 最后请求时刻;子代理转录不经此处——子代理前缀 ≠ 主会话前缀,不刷主会话
+	// 缓存)。台账闲置(闸门语义)不动。
+	if tsMax > 0 && w.ReqClock != nil {
+		w.ReqClock.Note(sid, tsMax)
+	}
 	if w.Daemon != nil {
 		w.Daemon.NoteUsage(agent, sid, tsMax)
 	}

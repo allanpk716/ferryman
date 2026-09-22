@@ -133,6 +133,8 @@ type Config struct {
 	QuestionWatch QuestionWatchCfg
 	WaitWindow    WaitWindowCfg // 票04：等待窗心跳三态（默认 off，缺节即 off）
 	FerryProvider string        // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	SameModel     SameModelCfg  // [ferry.same_model]（票01，ADR-0015：默认 off）
+	Tuning        TuningCfg     // [tuning]（票01，D10：默认 recommend）
 	Dock          *DockCfg      // nil=[dock] 节缺失＝渡口不启动（F11 opt-in）
 }
 
@@ -167,6 +169,15 @@ func Default() *Config {
 		},
 		WaitWindow:    WaitWindowCfg{Mode: "off", ManualWaitCapS: 0},
 		FerryProvider: "",
+		// 票01（ADR-0015）：同模型默认 off（D5）、种子 20min（D2）；调参默认
+		// recommend（D10）、护栏④窗/样本 30/30。
+		SameModel: SameModelCfg{
+			Enabled:      false,
+			Upstreams:    []string{},
+			ThresholdMin: SameModelSeedMin,
+			CeilingMin:   map[string]float64{},
+		},
+		Tuning: TuningCfg{Mode: "recommend", WindowDays: TuningWindowDays, MinEvents: TuningMinEvents},
 	}
 }
 
@@ -366,6 +377,40 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			return err
 		}
 		cfg.FerryProvider = pyStr(get(f, "provider", cfg.FerryProvider))
+		// [ferry.same_model]（票01，ADR-0015）：子节存在才整节重建，缺字段
+		// 回落默认（off/种子 20min/空表）；解析集中在 parseSameModelSection。
+		if rawSM, ok := f["same_model"]; ok {
+			smt, err := asTable(rawSM, "ferry.same_model")
+			if err != nil {
+				return err
+			}
+			sm, err := parseSameModelSection(smt)
+			if err != nil {
+				return err
+			}
+			cfg.SameModel = sm
+		}
+	}
+	// [tuning]（票01，D10）：缺字段回落默认（recommend/30/30）。mode 枚举与
+	// 正值校验在 Validate——解析层不替校验做决定（dock 条目同款分工）。
+	if raw, ok := data["tuning"]; ok {
+		tn, err := asTable(raw, "tuning")
+		if err != nil {
+			return err
+		}
+		wd, err := pyInt(get(tn, "window_days", cfg.Tuning.WindowDays))
+		if err != nil {
+			return err
+		}
+		me, err := pyInt(get(tn, "min_events", cfg.Tuning.MinEvents))
+		if err != nil {
+			return err
+		}
+		cfg.Tuning = TuningCfg{
+			Mode:       pyStr(get(tn, "mode", cfg.Tuning.Mode)),
+			WindowDays: wd,
+			MinEvents:  me,
+		}
 	}
 	// [dock]（票01）：节存在才构造（Default() 里 Dock 恒 nil——nil 即 F11 的
 	// "完全不启动"判据，daemon 侧据此不绑端口）；解析集中在 parseDockSection
@@ -507,6 +552,18 @@ func Validate(c *Config, relaxMinGap bool) error {
 		problems = append(problems, fmt.Sprintf("wait_window.manual_wait_cap_s 须 ≥ 0（当前 %gs；0=未配置）",
 			ww.ManualWaitCapS))
 	}
+	// [tuning]（票01，D10）：三态枚举恒校验（枚举键与 gate 同款无条件）；
+	// 窗/样本门槛须为正（护栏④的样本比较依赖正数语义）。
+	if !slices.Contains(TuningModes[:], c.Tuning.Mode) {
+		problems = append(problems, fmt.Sprintf("tuning.mode 非法: %s（可选 %s）",
+			c.Tuning.Mode, pyTuple(TuningModes[:])))
+	}
+	if c.Tuning.WindowDays <= 0 {
+		problems = append(problems, fmt.Sprintf("tuning.window_days 须 > 0（当前 %d）", c.Tuning.WindowDays))
+	}
+	if c.Tuning.MinEvents <= 0 {
+		problems = append(problems, fmt.Sprintf("tuning.min_events 须 > 0（当前 %d）", c.Tuning.MinEvents))
+	}
 	if qw.Mode != "off" { // 功能关闭时不校验 lead（存量小阈值配置零影响）
 		t := c.ThresholdFor("cc")
 		if qw.FerryDeadlineLeadS < QwatchMinLeadS {
@@ -537,6 +594,13 @@ func Validate(c *Config, relaxMinGap bool) error {
 			problems = append(problems, fmt.Sprintf("[%s] 阈值差须 ≥120s（当前 %.0fs）",
 				agent, t.BlockS-t.SummarizeS))
 		}
+	}
+	// [ferry.same_model]（票01，ADR-0015 决定二）：enabled 才校验钳位——关闭
+	// 态休眠键不拦启动（问询守望 lead 同款口径），休眠冲突由 doctor
+	// same_model_clamp 提示。钳位 [10min, 总结阈值]；不变量链同模型 ≤ 总结 ≤
+	// 拦截（后半链即上方 summarize<block 既有校验）。
+	if c.SameModel.Enabled {
+		problems = append(problems, c.validateSameModelClamp()...)
 	}
 	if c.Watch.PollIntervalS <= 0 {
 		problems = append(problems, "watch.poll_interval_s 须 > 0")

@@ -53,6 +53,14 @@ type ledgerRow struct {
 	CloseReason  string  `json:"close_reason"`
 	// usage 科目（还原候选：subagent="" 主会话行，非空 = 子代理行 stem）
 	Subagent string `json:"subagent"`
+	// handoff 科目（票06：摆渡事件事实金额的折算输入）
+	PromptTokens     float64 `json:"prompt_tokens"`
+	CompletionTokens float64 `json:"completion_tokens"`
+	PriceVer         string  `json:"price_ver"`
+	// usage 科目 token 规模（票06：闲置事件代表性前缀 S = input+cache_read+cache_creation）
+	InputTokens         float64 `json:"input_tokens"`
+	CacheReadTokens     float64 `json:"cache_read_tokens"`
+	CacheCreationTokens float64 `json:"cache_creation_tokens"`
 }
 
 // projCand 一条还原候选（usage 行的裁剪形）。

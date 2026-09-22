@@ -42,6 +42,7 @@ import (
 	"ferryman/internal/config"
 	"ferryman/internal/dock"
 	"ferryman/internal/ferry"
+	"ferryman/internal/prices"
 	"ferryman/internal/update"
 )
 
@@ -638,7 +639,13 @@ type doctorDeps struct {
 	CodexHooks, CodexConfig string
 	LoadCfg                 func() (*config.Config, error)
 	LoadProviders           func() (map[string]ferry.Provider, error)
-	Probe                   func() map[string]any
+	// 票01（ADR-0015）：价格表源（tuning=auto 的 p_cache 检查用）；nil =
+	// 未装配 → 该项显式 not_checked（如实标注不伪造）。ArmVerdict 实跳臂
+	// 结论查询缝（票04 启用门实施后注入）；nil = 状态源未装配 → 按无结论
+	// 对待（启用硬门槛：无结论 = 未启用）。
+	LoadPrices func() map[string]prices.PriceBook
+	ArmVerdict config.ArmVerdictResolver
+	Probe      func() map[string]any
 	// 票02：常驻保障两查（Run 键三态 + 看门任务在位/缺失）。
 	Autostart    func() (autostartStatus, error)
 	WatchdogTask func() (TaskStatus, error)
@@ -679,7 +686,11 @@ func RunDoctor(version string) int {
 		LoadProviders: func() (map[string]ferry.Provider, error) {
 			return ferry.LoadProviders("")
 		},
-		Probe: realStatsProbe(filepath.Join(home, "ferryman"), port),
+		// 票01：价格表源（CLI 面 "" → ~/ferryman/config.toml）
+		LoadPrices: func() map[string]prices.PriceBook { return prices.LoadPrices("") },
+		// 票04 收口：实跳臂结论真源（无状态文件→条目未启用,如实体检）
+		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
+		Probe:      realStatsProbe(filepath.Join(home, "ferryman"), port),
 		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
 		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
 		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
@@ -715,6 +726,40 @@ func doctorResults(d doctorDeps) []CheckResult {
 		out = append(out, Check{false, fmt.Sprintf("摆渡配置加载失败: %v", err)}.named("ferry_provider"))
 	} else {
 		out = append(out, CheckFerryProvider(cfg.FerryProvider, providers).named("ferry_provider"))
+		// 票01（ADR-0015）：同模型/调参配置矛盾四查——判定与文案单源
+		// internal/config.SameModelDoctorChecks，此处只换装 CheckResult（与
+		// dock 检查组同款公式单源）。默认配置（off/recommend/空白名单）零新增
+		// 行；books 未装配 → p_cache 项 not_checked；实跳臂结论缝未装配（票04
+		// 启用门）→ 按无结论如实报 fail。
+		var books map[string]prices.PriceBook
+		if d.LoadPrices != nil {
+			books = d.LoadPrices()
+		}
+		for _, dc := range config.SameModelDoctorChecks(cfg, books, d.ArmVerdict) {
+			st := StatusPass
+			switch {
+			case dc.Skip:
+				st = StatusNotChecked
+			case !dc.OK:
+				st = StatusFail
+			}
+			out = append(out, CheckResult{Name: dc.Name, Status: st, Detail: dc.Detail})
+		}
+		// 终局修复(终局评审普通建议,防静默死档):same_model 开而判热 TTL 未设
+		// ([heartbeat].ttl_s = 0)→ ferry.PredictHot 恒判冷,同模型档永不触发
+		// ——如实警告并指向实测(判热界 τ = 0.8×ttl_s)。same_model 关 = 零新增
+		// 行(存量用户 doctor 输出零漂移)。
+		if cfg.SameModel.Enabled {
+			if cfg.Heartbeat.TTLS <= 0 {
+				out = append(out, CheckResult{Name: "same_model_heat_ttl", Status: StatusFail,
+					Detail: "same_model 已开启但 [heartbeat].ttl_s 未设（=0）——判热将恒冷，" +
+						"同模型档永不触发，请实测填 ttl_s（experiments/cache-ttl 套件）"})
+			} else {
+				out = append(out, CheckResult{Name: "same_model_heat_ttl", Status: StatusPass,
+					Detail: fmt.Sprintf("判热 TTL 已设 %g 秒（判热界 τ=0.8×TTL=%g 秒）",
+						cfg.Heartbeat.TTLS, 0.8*cfg.Heartbeat.TTLS)})
+			}
+		}
 		// 票06：渡口配置了才查（无 [dock] 的存量用户零新增检查行）
 		if cfg.Dock != nil {
 			out = append(out, CheckDockRewrite(cfg.Dock).named("dock_rewrite"))
@@ -788,7 +833,11 @@ func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, res
 		LoadProviders: func() (map[string]ferry.Provider, error) {
 			return ferry.LoadProviders(cfgPath)
 		},
-		Probe: realStatsProbe(cfg.DataDir(), cfg.Server.Port),
+		// 票01：价格表源（与 providers 同一配置路径——"" 回落默认路径）
+		LoadPrices: func() map[string]prices.PriceBook { return prices.LoadPrices(cfgPath) },
+		// 票04 收口：实跳臂结论真源（agent 面与 CLI 面同源）
+		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
+		Probe:      realStatsProbe(cfg.DataDir(), cfg.Server.Port),
 	}
 	if residency {
 		d.Autostart = func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) }

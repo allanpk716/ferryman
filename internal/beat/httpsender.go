@@ -59,7 +59,10 @@ type HttpBeatSender struct {
 	dockURL string              // 渡口入站地址（beat 与真流量同路径同改写）
 	store   *dock.SnapshotStore // 快照只读句柄（Main 取主快照）
 	timeout time.Duration       // 单跳总超时（同包测试可缩短，生产行为不变）
-	client  *http.Client
+	// appendTimeout 票03：追加重放总超时（交接生成分钟级；执行方在独立
+	// goroutine，不占守望线程）。零值（裸构造防御）由发送侧回落默认。
+	appendTimeout time.Duration
+	client        *http.Client
 }
 
 // 编译期接口形状钉死（beat.Sender）。
@@ -72,10 +75,11 @@ func NewHttpBeatSender(dockURL string, store *dock.SnapshotStore) *HttpBeatSende
 		dockURL = DefaultDockURL
 	}
 	return &HttpBeatSender{
-		dockURL: dockURL,
-		store:   store,
-		timeout: beatTimeout,
-		client:  &http.Client{}, // 超时按跳由请求 ctx 携带（见 Send）
+		dockURL:       dockURL,
+		store:         store,
+		timeout:       beatTimeout,
+		appendTimeout: appendReplayTimeout, // 票03：追加重放形态
+		client:        &http.Client{},      // 超时按跳由请求 ctx 携带（见 Send）
 	}
 }
 

@@ -28,8 +28,11 @@ const SchemaV = 1
 // kindFields 十科目字段白名单（accounts.py:20-45 逐字照抄）。
 var kindFields = map[string][]string{
 	// 摆渡的每次模型调用（含分块/重试/失败）
+	// lane 三档标注（票03，ADR-0015 决定六：same_model|third_party|skeleton，
+	// 分档核算不混淆）——Go 版在 Python 白名单之上追加（beat.lane 同款先例）；
+	// 当前为可选字段（见 kindOptional：worker 存量产线暂未带 lane）。
 	"handoff": {"provider", "model", "price_ver", "prompt_tokens",
-		"completion_tokens", "outcome", "wall_s"},
+		"completion_tokens", "outcome", "wall_s", "lane"},
 	// 心跳（T41 占坑，T51 票03 起有生产者）：三态 outcome ∈ hit|miss|error
 	// + observe（演练跳未真发）。T41 的 hit 布尔被三态取代（当时无生产者）。
 	// lane 泳道标记（票04 双泳道：qwatch|wait）——Go 版在 Python 白名单之上
@@ -67,12 +70,26 @@ var kindFields = map[string][]string{
 	// 携带恢复所需键成分），主会话行恒写空串（白名单"必填"语义不变）。
 	"usage": {"model", "title", "input_tokens", "cache_read_tokens",
 		"cache_creation_tokens", "output_tokens", "offset", "subagent"},
+	// 同模型跳过遥测（票02 遗留、票03 落账）：判冷/白名单未中/未启用三种
+	// 原因的「该次触发零模型调用」事件——usage/qwatch 同层，不入 handoff
+	// 科目（决定六：分档核算不混淆）。字段＝跳过原因/上游/闲置与判热两钟
+	// 读数/TTL 观测/生效阈值（分钟）；clock_s=-1 = 无最后请求观测。
+	"same_model_skip": {"reason", "upstream", "idle_s", "clock_s", "ttl_s",
+		"threshold_min"},
 }
 
+// kindOptional 科目可选字段：白名单放行（未知字段照拒的隐私铁律不动）、
+// 但必填豁免——存量生产者未带也不拒行。handoff.lane（票03）：lane 标注随
+// 同模型档引入，worker 存量行（第三方/骨架产线，不在票03 涉及路径）暂未
+// 带 lane；后续票接线补写后可移出本表恢复必填。
+var kindOptional = map[string][]string{"handoff": {"lane"}}
+
 // kindOrder 科目顺序 = Python dict 插入序（KINDS 元组），未知科目报错文案用。
-// wait_close 为 Go 版新增（票04），列于 qwatch 系之后。
+// wait_close 为 Go 版新增（票04），列于 qwatch 系之后；same_model_skip 为
+// Go 版新增（票03），列于末位。
 var kindOrder = []string{"handoff", "beat", "block", "inject", "bypass", "window",
-	"qwatch_hit", "qwatch_open", "qwatch_close", "wait_close", "dock", "usage"}
+	"qwatch_hit", "qwatch_open", "qwatch_close", "wait_close", "dock", "usage",
+	"same_model_skip"}
 
 // commonFields 公共字段（模块盖章；白名单校验不拒，但不随传入 Fields 覆盖）。
 var commonFields = map[string]bool{
@@ -122,8 +139,9 @@ func (a *Accounts) Record(kind string, ts float64, f Fields) (map[string]any, er
 		return nil, fmt.Errorf("账本不落这些字段（隐私不变量）: %s", pyList(bad))
 	}
 	var missing []string
+	opt := kindOptional[kind]
 	for _, k := range allowed {
-		if _, present := f[k]; !present {
+		if _, present := f[k]; !present && !contains(opt, k) {
 			missing = append(missing, k)
 		}
 	}

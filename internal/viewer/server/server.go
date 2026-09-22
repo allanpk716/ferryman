@@ -50,6 +50,9 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/timeline", s.handleTimeline)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("POST /api/backtest", s.handleBacktest)
+	// 票08：配置与调参页（只读）——数据代理 + 自包含页面（config_tuning.go）。
+	mux.HandleFunc("GET /api/config-tuning", s.handleConfigTuningAPI)
+	mux.HandleFunc("GET /config-tuning", s.handleConfigTuningPage)
 	return mux
 }
 

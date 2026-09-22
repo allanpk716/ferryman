@@ -33,6 +33,8 @@ var (
 		"tracestate":   true,
 		"baggage":      true,
 		"sentry-trace": true,
+		// 票03：自产重放标记头出站剥离（渡口内部识别用，不泄漏上游）。
+		HeaderFerrymanReplay: true,
 	}
 	stripPrefixes = []string{"x-forwarded-", "cdn-"}
 )
