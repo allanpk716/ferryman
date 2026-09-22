@@ -13,3 +13,7 @@ eval/
 .playwright-cli/
 ferryman.exe.old-*
 *.exe~
+
+# widget 子项目（ADR-0014：独立构建面）
+widget/src-tauri/target/
+widget/node_modules/

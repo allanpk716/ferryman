@@ -1,0 +1,12 @@
+{
+  "name": "ferryman-widget",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Ferryman 用量悬浮窗：只读消费 daemon 聚合端点的置顶小窗（独立发布线，见 widget/docs）",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
