@@ -16,7 +16,7 @@
 ## 涉及路径
 internal/config/
 config.example.toml
-internal/daemon/serve.go(doctor 检查注册)
+internal/installer/doctor.go(doctor 检查注册;协调者订正:单源装配在此,初稿误注 serve.go——泳道 2026-09-22 查实)
 
 ## 副作用声明
 go test ./internal/config/...;go build ./...(类型检查)
