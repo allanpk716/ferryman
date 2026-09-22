@@ -688,6 +688,8 @@ func RunDoctor(version string) int {
 		},
 		// 票01：价格表源（CLI 面 "" → ~/ferryman/config.toml）
 		LoadPrices: func() map[string]prices.PriceBook { return prices.LoadPrices("") },
+		// 票04 收口：实跳臂结论真源（无状态文件→条目未启用,如实体检）
+		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
 		Probe:      realStatsProbe(filepath.Join(home, "ferryman"), port),
 		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
 		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
@@ -818,6 +820,8 @@ func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, res
 		},
 		// 票01：价格表源（与 providers 同一配置路径——"" 回落默认路径）
 		LoadPrices: func() map[string]prices.PriceBook { return prices.LoadPrices(cfgPath) },
+		// 票04 收口：实跳臂结论真源（agent 面与 CLI 面同源）
+		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
 		Probe:      realStatsProbe(cfg.DataDir(), cfg.Server.Port),
 	}
 	if residency {

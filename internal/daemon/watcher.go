@@ -201,7 +201,10 @@ func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 		ReqClock:      beat.NewLastRequestClock(), // 票02:判热时钟(数据源钉死)
 		smSeen:        map[winKey]float64{},       // 票02:同模型触发版本章
 		TuningStore:   tuning.NewStore(cfg.DataDir()), // 票08:生效值出口库(票07 遗留接线)
-		stopCh:        make(chan struct{}),
+		// 票04 收口:实跳臂结论缝接真源(arm_verdict.jsonl last-wins;
+		// 无状态文件→全 not_enabled 保守缺省,doctor 如实体检)。
+		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
+		stopCh:     make(chan struct{}),
 	}
 	w.detect = qwatch.Detect
 	w.enrich = w.enrichImpl
