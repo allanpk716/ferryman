@@ -45,6 +45,7 @@ import (
 	"ferryman/internal/prices"
 	"ferryman/internal/qwatch"
 	"ferryman/internal/store"
+	"ferryman/internal/tuning"
 )
 
 // CodexWatchDirs codex 会话目录清单：主目录（默认 ~/.codex/sessions）+ 配置额外目录 +
@@ -146,6 +147,12 @@ type Watcher struct {
 	// smSeen 同模型触发版本章(stampMu 叶子锁守护):(agent, sid) → 已判定过的
 	// last_write——每写入版本只判一次,防跳过事件逐轮刷屏(qwatchSeen 同款纪律)。
 	smSeen map[winKey]float64
+	// smEffWarned 生效值现算失败告警一次(票08 接线:回落配置值时提示,防刷屏)。
+	smEffWarned atomic.Bool
+	// TuningStore 调参状态库(票08:票07 遗留接线——同模型触发阈值读取改经
+	// tuning.Store.EffectiveThreshold 三态生效值出口;NewWatcher 按 DataDir
+	// 装配,测试可注入替身)。nil=未装配(裸构造形态)→ 直回配置值。
+	TuningStore *tuning.Store
 	// bookSameModelSkipFn 跳过遥测缝(测试注入);nil = 默认走 bookQwatch 通道记
 	// "same_model_skip" 科目(usage/qwatch 同层遥测;Accounts nil 时静默跳过)。
 	bookSameModelSkipFn func(st *ledger.SessionState, reason string, ff accounts.Fields)
@@ -193,6 +200,7 @@ func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 		lanePins:      map[winKey]bool{},
 		ReqClock:      beat.NewLastRequestClock(), // 票02:判热时钟(数据源钉死)
 		smSeen:        map[winKey]float64{},       // 票02:同模型触发版本章
+		TuningStore:   tuning.NewStore(cfg.DataDir()), // 票08:生效值出口库(票07 遗留接线)
 		stopCh:        make(chan struct{}),
 	}
 	w.detect = qwatch.Detect
@@ -1156,10 +1164,12 @@ func (w *Watcher) reconcilePins(st *ledger.SessionState) {
 // ---- 票02:同模型判热门(ADR-0015 决定一/决定二;F1 冷分支静默交还、
 // F3 判热时钟口径、F6 跳过原因编码) ----
 
-// maybeSameModel 同模型触发点:台账闲置达生效阈值(票01 CeilingFor 单源,冷启动
-// 种子 20min)先判热,再决定是否进同模型档。判冷/上游不在白名单/上游未启用
-// 三种情况:该次触发零模型调用、静默交还既有调度——第三方/骨架仍走总结阈值
-// (25 分钟档一行不改),遥测记"同模型跳过"事件,原因独立编码(F6)。
+// maybeSameModel 同模型触发点:台账闲置达生效阈值(票08 起 经 tuning.Store.
+// EffectiveThreshold 三态出口现算——票05 计算器单源;现算失败回落配置值,
+// 见 sameModelEffectiveMin)先判热,再决定是否进同模型档。判冷/上游不在
+// 白名单/上游未启用三种情况:该次触发零模型调用、静默交还既有调度——
+// 第三方/骨架仍走总结阈值(25 分钟档一行不改),遥测记"同模型跳过"事件,
+// 原因独立编码(F6)。
 //
 // 两个时钟各司其职(ADR-0015 决定一):触发时钟=台账闲置(与总结阈值同基,
 // 闸门语义完全不动);判热时钟=ReqClock(距该会话最后一次上游请求,含体外
@@ -1188,7 +1198,8 @@ func (w *Watcher) maybeSameModel(st *ledger.SessionState) {
 	}
 	now := clock.Now()
 	upstream := w.activeUpstreamName()
-	effS := w.Cfg.SameModel.CeilingFor(upstream) * 60 // 生效阈值(分钟→秒);无覆盖=全局种子
+	effMin := w.sameModelEffectiveMin(upstream) // 票08:生效值出口读取(票07 遗留接线)
+	effS := effMin * 60                         // 生效阈值(分钟→秒)
 	if now-lastWrite < effS {
 		return // 未到触发点(不盖版本章——闲置继续增长后仍要判)
 	}
@@ -1218,7 +1229,29 @@ func (w *Watcher) maybeSameModel(st *ledger.SessionState) {
 		w.dispatchSameModel(st, upstream)
 		return
 	}
-	w.emitSameModelSkip(st, reason, upstream, now, now-lastWrite)
+	w.emitSameModelSkip(st, reason, upstream, now, now-lastWrite, effMin)
+}
+
+// sameModelEffectiveMin 同模型触发阈值的生效值读取(分钟;票08:票07 遗留接线)
+// :一律经 tuning.Store.EffectiveThreshold——三态生效值唯一出口,票05 计算器
+// 单源(manual 档下即配置值,语义由出口保证;装配见 same_model_effective.go)。
+// 现算失败(无价格本/钳位矛盾/校准输入缺闲置观测等)回落配置值 CeilingFor 并
+// 告警一次——宁可保守回落,绝不阻断守望(一切异常吞掉的总纪律);TuningStore
+// nil(裸构造形态)同理直回配置值。
+func (w *Watcher) sameModelEffectiveMin(upstream string) float64 {
+	fallback := w.Cfg.SameModel.CeilingFor(upstream)
+	if w.TuningStore == nil {
+		return fallback
+	}
+	res, err := sameModelEffective(w.Cfg, w.TuningStore, w.waitBooks, upstream)
+	if err == nil {
+		return res.ThresholdMin
+	}
+	if !w.smEffWarned.Swap(true) {
+		fmt.Printf("[samemodel] ⚠ 生效值现算失败(%v)——触发阈值回落配置值 %.1f 分钟"+
+			"(检查 [prices.*] 价格表与调参校准)\n", err, fallback)
+	}
+	return fallback
 }
 
 // activeUpstreamName 渡口活动上游条目键(白名单按 [dock.upstreams] 键登记)。
@@ -1280,15 +1313,16 @@ func (w *Watcher) sameModelSkipReason(sid, upstream string, now float64) string 
 // emitSameModelSkip "同模型跳过"遥测事件(usage/qwatch 同层;不入 handoff 科目
 // ——决定六)。只记元数据(原因/上游/闲置与判热两钟读数/TTL/生效阈值),
 // 永不落消息正文(隐私铁律);clock_s=-1 = 无最后请求观测(保守判冷形态)。
-// 记账永不弄断守望(bookQwatch 同款)。
-func (w *Watcher) emitSameModelSkip(st *ledger.SessionState, reason, upstream string, now, idleS float64) {
+// threshold_min 记本次判定的生效值(票08:经票05 出口现算,或现算失败回落后
+// 的实际用值)。记账永不弄断守望(bookQwatch 同款)。
+func (w *Watcher) emitSameModelSkip(st *ledger.SessionState, reason, upstream string, now, idleS, effMin float64) {
 	ff := accounts.Fields{
 		"reason":        reason,
 		"upstream":      upstream,
 		"idle_s":        mathx.Round(idleS, 1),
 		"clock_s":       mathx.Round(w.heatClockSeconds(st.SessionID, now), 1),
 		"ttl_s":         mathx.Round(w.Cfg.Heartbeat.TTLS, 1),
-		"threshold_min": mathx.Round(w.Cfg.SameModel.CeilingFor(upstream), 3),
+		"threshold_min": mathx.Round(effMin, 3),
 	}
 	if w.bookSameModelSkipFn != nil {
 		w.bookSameModelSkipFn(st, reason, ff)

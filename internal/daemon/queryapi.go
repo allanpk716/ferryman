@@ -4,10 +4,10 @@ package daemon
 // 20260920-agent-surface-mcp-readonly-spec.md「daemon 只读端点」节，ADR-0009
 // agent 面：一切读经 daemon）。
 //
-// 五个只读 GET 端点（/sessions、/session、/gate_check、/report、/beats）统一
-// 注册于 queryEndpoints 分派表；鉴权（Bearer）与 127.0.0.1 绑定复用既有面
-// （httpapi.doGet 在 auth 之后经 dispatchQuery 单块接线进来，ListenAndServe
-// 不动——不新开监听、不复制鉴权）。
+// 六个只读 GET 端点（/sessions、/session、/gate_check、/report、/beats、
+// /config_tuning）统一注册于 queryEndpoints 分派表；鉴权（Bearer）与
+// 127.0.0.1 绑定复用既有面（httpapi.doGet 在 auth 之后经 dispatchQuery 单块
+// 接线进来，ListenAndServe 不动——不新开监听、不复制鉴权）。
 //
 // 红线（本面全部 handler 共同遵守）：响应永不包含消息内容（台账标题/路径/
 // 计数/金额可以，对话原文不行）、永不包含凭据字段；全部只读，无任何状态
@@ -26,13 +26,14 @@ import (
 // queryEndpoint 查询面 handler 形状（端点注册表的值类型）。
 type queryEndpoint func(d *Daemon, w http.ResponseWriter, r *http.Request)
 
-// queryEndpoints 只读 GET 端点注册表（五端点全部为真实现，见票间路径互斥注）。
+// queryEndpoints 只读 GET 端点注册表(六端点全部为真实现,见票间路径互斥注)。
 var queryEndpoints = map[string]queryEndpoint{
-	"/sessions":   handleSessions,
-	"/session":    handleSessionDetail,
-	"/gate_check": handleGateCheck,
-	"/report":     handleReport, // 票03 实现（query_report.go）
-	"/beats":      handleBeats,  // 票03 实现（query_beats.go）
+	"/sessions":      handleSessions,
+	"/session":       handleSessionDetail,
+	"/gate_check":    handleGateCheck,
+	"/report":        handleReport,       // 票03 实现（query_report.go）
+	"/beats":         handleBeats,        // 票03 实现（query_beats.go）
+	"/config_tuning": handleConfigTuning, // 票08 实现（query_config_tuning.go）
 }
 
 // dispatchQuery 查询面分派入口（httpapi.doGet default 分支的单块接线点）：
