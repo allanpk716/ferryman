@@ -471,3 +471,56 @@ func TestAITitleAndFirstUserHashBasics(t *testing.T) {
 		t.Fatalf("无 user 行应为空串, got %q", got)
 	}
 }
+
+// TestLastTimestamp ADR-0013 内容时钟取值器：文件序最后带顶层 timestamp 的行；
+// 状态块（无 timestamp）天然跳过；缺文件/全无时间戳 → false。
+func TestLastTimestamp(t *testing.T) {
+	tsA := "2026-09-20T09:06:26.708Z"
+	tsB := "2026-09-20T09:10:28.116Z"
+	lines := []string{
+		lineOf(map[string]any{"type": "user", "timestamp": tsA,
+			"message": map[string]any{"role": "user", "content": "干活"}}),
+		lineOf(map[string]any{"type": "assistant", "timestamp": tsB,
+			"message": map[string]any{"role": "assistant", "content": "完成"}}),
+		// CC 周期性状态块（实测形状：无 timestamp 字段）。
+		lineOf(map[string]any{"type": "last-prompt", "leafUuid": "d1", "sessionId": "s"}),
+		lineOf(map[string]any{"type": "mode", "mode": "normal", "sessionId": "s"}),
+		lineOf(map[string]any{"type": "atis-latch", "atis": "", "sessionId": "s"}),
+	}
+	f := writeLines(t, lines)
+	ts, ok := LastTimestamp(f)
+	if !ok {
+		t.Fatal("LastTimestamp 应取到")
+	}
+	want, _ := TSToEpoch(tsB)
+	if ts != want {
+		t.Fatalf("LastTimestamp = %v, want %v（状态块后的最后时间戳）", ts, want)
+	}
+	// 追加更多状态块：内容时钟不动。
+	append := []string{
+		lineOf(map[string]any{"type": "ai-title", "aiTitle": "标题", "sessionId": "s"}),
+		lineOf(map[string]any{"type": "permission-mode", "permissionMode": "default"}),
+	}
+	fh, err := os.OpenFile(f, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ln := range append {
+		fh.WriteString(ln + "\n")
+	}
+	fh.Close()
+	ts2, ok := LastTimestamp(f)
+	if !ok || ts2 != want {
+		t.Fatalf("追加状态块后 = (%v,%v), want (%v,true)", ts2, ok, want)
+	}
+	// 缺文件 / 全无时间戳 → false。
+	if _, ok := LastTimestamp(filepath.Join(t.TempDir(), "none.jsonl")); ok {
+		t.Fatal("缺文件应 false")
+	}
+	f2 := writeLines(t, []string{
+		lineOf(map[string]any{"type": "mode", "mode": "normal"}),
+	})
+	if _, ok := LastTimestamp(f2); ok {
+		t.Fatal("全无时间戳应 false")
+	}
+}

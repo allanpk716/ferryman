@@ -43,6 +43,9 @@ const (
 	FreshWindowS = 86400.0
 	// CoversToleranceS covers_until 与 last_write 的容差（transcript 异步落盘）。
 	CoversToleranceS = 60.0
+	// PruneAge 交接库清理年龄（DESIGN §6.15「30 天归档」；与 transcript 的
+	// 30 天清理同数量级，交接库独立生命周期见 CONTEXT）。
+	PruneAge = 30 * 24 * time.Hour
 
 	idTimeFmt   = "20060102_150405"     // handoff_id 前缀（本地时区）
 	dispTimeFmt = "2006-01-02 15:04:05" // created_at/blocked_at（本地时区）
@@ -281,6 +284,52 @@ func (s *Store) ValidHandoff(agent, cwd string, lastWrite float64) *Entry {
 	cp := *best
 	cp.Injected = slices.Clone(best.Injected)
 	return &cp
+}
+
+// PruneOlderThan 30 天清理（DESIGN §6.15 TODO 落地；ADR-0013 顺手项）：
+// 交接 MD 超龄（文件名时间前缀早于 cutoff）一律删——含 index 条目与无索引
+// 的孤儿文件；index 条目按 created_at 同步清行。文件名前缀与 created_at 同
+// 钟（本地时区，idTimeFmt/dispTimeFmt 同源），解析失败的文件名/条目不具
+// 时间性 → 保留（宁留勿删）。返回删除的文件数。
+func (s *Store) PruneOlderThan(olderThan time.Duration) int {
+	cutoff := time.Now().Add(-olderThan)
+	// 先按文件名前缀清文件（条目与孤儿同一把尺：前缀解析失败 → 跳过）。
+	n := 0
+	if ents, err := os.ReadDir(s.dir); err == nil {
+		for _, e := range ents {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if len(name) < len(idTimeFmt) || !strings.HasSuffix(name, ".md") {
+				continue // 非交接命名（如用户误放的文件）：不具时间性，保留
+			}
+			ts, err := time.ParseInLocation(idTimeFmt, name[:len(idTimeFmt)], time.Local)
+			if err != nil || !ts.Before(cutoff) {
+				continue
+			}
+			if rmErr := os.Remove(filepath.Join(s.dir, name)); rmErr == nil {
+				n++ // 删除失败（占用/权限）静默留待下轮，不中断
+			}
+		}
+	}
+	// 再清 index 行（created_at 同钟；行没了文件在第一步已删，反之文件缺失
+	// 也不阻碍清行）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := make([]Entry, 0, len(s.index.Handoffs))
+	for _, e := range s.index.Handoffs {
+		ts, err := time.ParseInLocation(dispTimeFmt, e.CreatedAt, time.Local)
+		if err == nil && ts.Before(cutoff) {
+			continue // 超龄：弃行
+		}
+		kept = append(kept, e)
+	}
+	if len(kept) != len(s.index.Handoffs) {
+		s.index.Handoffs = kept
+		s.flush()
+	}
+	return n
 }
 
 // MarkBlocked 按条目标记阻塞时刻（本地时间串）；未命中也照常 flush（Python 同）。

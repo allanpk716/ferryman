@@ -147,6 +147,44 @@ func AssistantTurns(path string) []Turn {
 // tailWindow 已收口至 internal/jsonl.TailWindow（票 10 骑手：qwatch/cctrans
 // 两份私有副本归一单源；统一 ToValidUTF8 语义即 Python decode(errors="replace")）。
 
+// MaxLastTSWindowBytes LastTimestamp 尾窗上限（窗内找不到带时间戳行时的
+// 翻倍扩张封顶）。真超限（>2MB 无时间戳尾段）按 not-ok 返回，调用方走
+// mtime 兜底语义——宁可多摆渡一次，不误判内容未推进。
+const MaxLastTSWindowBytes = 2 * 1024 * 1024
+
+// LastTimestamp 转录内最后一条带顶层 timestamp 记录的 epoch 秒（内容时钟的
+// 取值器，ADR-0013）。
+//
+// 与 extract 的 covers_until 同语义（extract.go：文件序最后一条含 timestamp 的
+// 行，任意 type）——CC 的周期性状态块（last-prompt/ai-title/mode/…，无
+// timestamp 字段）天然被跳过。CC 与 codex rollout 同形（顶层 timestamp），
+// 两轨通用。防御纪律同包：任何坏行/读失败静默跳过；窗内无带时间戳行 →
+// 窗口翻倍重试至 MaxLastTSWindowBytes，仍无 → false（fail-open 回 mtime 口径）。
+func LastTimestamp(path string) (float64, bool) {
+	for window := int64(DefaultTailBytes); ; window *= 2 {
+		lines, ok := jsonl.TailWindow(path, window)
+		if !ok {
+			return 0, false
+		}
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := lines[i]
+			if !strings.Contains(line, `"timestamp"`) { // 子串预筛快速跳行
+				continue
+			}
+			d, ok := jsonl.DecodeDict(line)
+			if !ok {
+				continue
+			}
+			if ts, ok := TSToEpoch(d["timestamp"]); ok {
+				return ts, true
+			}
+		}
+		if window >= MaxLastTSWindowBytes {
+			return 0, false
+		}
+	}
+}
+
 // HasDanglingToolUse 尾部悬空 tool_use 判定（默认 256KB 尾窗）。
 func HasDanglingToolUse(path string) bool {
 	return HasDanglingToolUseWindow(path, DefaultTailBytes)

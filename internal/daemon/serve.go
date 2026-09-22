@@ -107,6 +107,7 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		providers = map[string]ferry.Provider{}
 	}
 	worker := NewWorker(cfg, st, acc, providers, FerrySession)
+	worker.Ledger = led // ADR-0013：摆渡产出回写处置边界（HandledContentTS）
 	startedAt := clock.Now()
 	qwatchStats := beat.NewQWatchStats() // 票04：daemon/watcher 共享计数器
 	enqueue := func(s *ledger.SessionState) bool {
@@ -203,6 +204,31 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
 	go watcher.Run(ctx)
 	go worker.Run(ctx)
+	// 交接库 30 天清理（DESIGN §6.15 TODO 落地，ADR-0013）：启动一次 + 每日
+	// 例行；异常吞掉（清理是尽力而为的卫生件，绝不拖垮守护）。
+	go func() {
+		prune := func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[store] ⚠ 30 天清理异常（忽略继续）: %v\n", r)
+				}
+			}()
+			if n := st.PruneOlderThan(store.PruneAge); n > 0 {
+				fmt.Printf("[store] 交接库 30 天清理：%d 个超龄文件已删\n", n)
+			}
+		}
+		prune()
+		tk := time.NewTicker(24 * time.Hour)
+		defer tk.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tk.C:
+				prune()
+			}
+		}
+	}()
 	fmt.Printf("[ferryman] serve: 127.0.0.1:%d · gate cc=%s codex=%s · "+
 		"总结%ss/拦截%ss · provider=%s · 数据目录 %s\n",
 		cfg.Server.Port, cfg.GateCC, cfg.GateCodex,

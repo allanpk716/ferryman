@@ -124,6 +124,7 @@ func handleSessionDetail(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	agent, path, cwd, title := found.Agent, found.TranscriptPath, found.Cwd, found.Title
 	lastWrite, handedOff := found.LastWrite, found.HandedOffAt
 	size, peak, observed := found.Size, found.PeakCtx, found.ObservedActive
+	contentTS := found.ContentTS // 内容时钟（ADR-0013）——有效交接判定基准
 	// 问询窗（等答复窗口）挂在台账态上——快照一并抄出。
 	var qwOpen bool
 	var qwOpenedTS float64
@@ -149,11 +150,16 @@ func handleSessionDetail(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 有效交接覆盖：复用闸门 block 的唯一依据（同 agent+cwd、fresh|skeleton、
-	// covers_until ≥ last_write 含 60s 容差、24h 新鲜窗）。ValidHandoff 纯读
-	// （无落盘）；无有效交接 → null。
+	// covers_until ≥ 覆盖基准含 60s 容差、24h 新鲜窗）。基准＝内容时钟
+	// （ADR-0013，0=未算回落 last_write）。ValidHandoff 纯读（无落盘）；
+	// 无有效交接 → null。
+	bar := contentTS
+	if bar <= 0 {
+		bar = lastWrite
+	}
 	var handoff any
 	if d.Store != nil {
-		if h := d.Store.ValidHandoff(agent, cwd, lastWrite); h != nil {
+		if h := d.Store.ValidHandoff(agent, cwd, bar); h != nil {
 			handoff = map[string]any{
 				"handoff_id":     h.HandoffID,
 				"status":         h.Status, // fresh | skeleton
@@ -197,6 +203,7 @@ func handleSessionDetail(d *Daemon, w http.ResponseWriter, r *http.Request) {
 			"peak_ctx":        peak,
 			"observed_active": observed,
 			"handed_off_at":   handedOff,
+			"content_ts":      mathx.Round(contentTS, 3), // 内容时钟（ADR-0013；0=未算）
 			"lineage_id":      lineage,
 		},
 		"usage_total": map[string]any{

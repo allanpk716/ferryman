@@ -68,8 +68,9 @@ func (d *Daemon) parkedWindow(agent, sessionID string) bool {
 // probeGate 真闸门七分支的只读推演（gate.go Gate 的镜像，去全部写副作用；
 // 分支顺序与真闸门一致：mode off → 机器等机器（只停车窗道）→ observe →
 // enforce 的 5/6/7）。bypass/台账 miss 两分支对查询面不存在（查询按
-// session_id 定位台账条目，miss 即 404）。
-func (d *Daemon) probeGate(agent, sid, cwd string, lastWrite float64) gateCheckResult {
+// session_id 定位台账条目，miss 即 404）。contentTS 为内容时钟（ADR-0013，
+// 0=未算 → 覆盖基准回落 lastWrite，与真闸门 coversBar 同口径）。
+func (d *Daemon) probeGate(agent, sid, cwd string, lastWrite, contentTS float64) gateCheckResult {
 	now := clock.Now()
 	idle := now - lastWrite
 	th := d.Cfg.ThresholdFor(agent)
@@ -77,9 +78,13 @@ func (d *Daemon) probeGate(agent, sid, cwd string, lastWrite float64) gateCheckR
 	if agent != "cc" {
 		mode = d.Cfg.GateCodex
 	}
+	bar := contentTS
+	if bar <= 0 {
+		bar = lastWrite
+	}
 	var handoff *store.Entry
 	if d.Store != nil { // 汇总排序键需要全量行的交接在场性——无条件先算（纯读）
-		handoff = d.Store.ValidHandoff(agent, cwd, lastWrite)
+		handoff = d.Store.ValidHandoff(agent, cwd, bar)
 	}
 	res := gateCheckResult{mode: mode, idle: idle, stale: idle >= th.BlockS,
 		handoff: handoff}
@@ -155,9 +160,9 @@ func handleGateCheck(d *Daemon, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var agent, cwd string
-	var lastWrite float64
+	var lastWrite, contentTS float64
 	if found != nil {
-		agent, cwd, lastWrite = found.Agent, found.Cwd, found.LastWrite
+		agent, cwd, lastWrite, contentTS = found.Agent, found.Cwd, found.LastWrite, found.ContentTS
 	}
 	d.Ledger.Mu().Unlock()
 	if found == nil {
@@ -165,7 +170,7 @@ func handleGateCheck(d *Daemon, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	th := d.Cfg.ThresholdFor(agent)
-	res := d.probeGate(agent, sid, cwd, lastWrite)
+	res := d.probeGate(agent, sid, cwd, lastWrite, contentTS)
 	basis := map[string]any{"reason": res.reason}
 	if res.handoff != nil { // 判定依据：有效交接要素（路径可以；正文永不）
 		basis["handoff_id"] = res.handoff.HandoffID
@@ -206,18 +211,19 @@ func (d *Daemon) handleGateCheckSummary(w http.ResponseWriter, r *http.Request) 
 	type snapEnt struct {
 		agent, sid, cwd string
 		lastWrite       float64
+		contentTS       float64
 	}
 	snaps := make([]snapEnt, 0, 16)
 	for _, st := range d.Ledger.AllSessionsLocked() {
 		snaps = append(snaps, snapEnt{agent: st.Agent, sid: st.SessionID,
-			cwd: st.Cwd, lastWrite: st.LastWrite})
+			cwd: st.Cwd, lastWrite: st.LastWrite, contentTS: st.ContentTS})
 	}
 	d.Ledger.Mu().Unlock()
 
 	rows := make([]row, 0, len(snaps))
 	for _, s := range snaps {
 		th := d.Cfg.ThresholdFor(s.agent)
-		res := d.probeGate(s.agent, s.sid, s.cwd, s.lastWrite)
+		res := d.probeGate(s.agent, s.sid, s.cwd, s.lastWrite, s.contentTS)
 		rows = append(rows, row{sid: s.sid, agent: s.agent, verdict: res.verdict,
 			blockAt:    s.lastWrite + th.BlockS,
 			blockInMin: gateBlockInMin(th.BlockS, res.idle),

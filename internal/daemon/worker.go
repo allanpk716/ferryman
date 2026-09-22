@@ -21,11 +21,13 @@ import (
 	"time"
 
 	"ferryman/internal/accounts"
+	"ferryman/internal/cctrans"
 	"ferryman/internal/clock"
 	"ferryman/internal/codextrans"
 	"ferryman/internal/config"
 	"ferryman/internal/extract"
 	"ferryman/internal/ferry"
+	"ferryman/internal/ledger"
 	"ferryman/internal/pathsx"
 	"ferryman/internal/prices"
 	"ferryman/internal/store"
@@ -52,6 +54,9 @@ type Worker struct {
 	Accounts  *accounts.Accounts
 	Ferry     FerryFunc
 	Providers map[string]ferry.Provider
+	// Ledger nil = 不回写处置边界（旧测试/旧调用零改动）；生产接线后摆渡
+	// 产出把 covers 记入 HandledContentTS（ADR-0013 内容推进守卫的数据源）。
+	Ledger *ledger.Ledger
 
 	// BookHandoff 摆渡记账缝（Python monkeypatch FerryWorker._book_handoff
 	// 的同位注入面；NewWorker 缺省绑 bookHandoffImpl——仅测试注入炸点用）。
@@ -185,6 +190,7 @@ func (w *Worker) do(item map[string]any) {
 	meta := r.meta
 	w.Store.SaveHandoff(sid, agent, pyStr(item["cwd"]), metaStr(meta, "title"),
 		metaStr(meta, "covers_until_iso"), "fresh", r.md)
+	w.markHandledContent(agent, sid, metaStr(meta, "covers_until_iso"))
 	w.BookHandoff(item, agent, sid, meta, "fresh")
 	fmt.Printf("[ferry] %s/%s %s %ss -> handoff\n", agent, runeCap8(sid),
 		metaRepr(meta, "mode"), pyFloatStrAny(meta["wall_s"]))
@@ -212,6 +218,26 @@ func (w *Worker) saveSkeleton(path, agent, sid, cwd string) {
 		cwd = facts.Cwd
 	}
 	w.Store.SaveHandoff(sid, agent, cwd, facts.Title, facts.LastTS, "skeleton", md)
+	w.markHandledContent(agent, sid, facts.LastTS)
+}
+
+// markHandledContent 处置边界回写（ADR-0013）：摆渡产出（fresh/skeleton）后
+// 把 covers 的 epoch 记入台账 HandledContentTS——内容时钟未越过它即不再重摆渡
+// （CC 状态块幻影写入防重复环的闭环节）。ISO 解析失败/台账无此会话/未接线 →
+// 静默跳过（守卫 fail-open，最坏多摆渡一轮，与旧行为一致）。
+func (w *Worker) markHandledContent(agent, sid, coversISO string) {
+	if w.Ledger == nil || coversISO == "" {
+		return
+	}
+	ts, ok := cctrans.TSToEpoch(coversISO)
+	if !ok {
+		return
+	}
+	if st := w.Ledger.Get(agent, sid); st != nil {
+		w.Ledger.Mu().Lock()
+		st.HandledContentTS = ts
+		w.Ledger.Mu().Unlock()
+	}
 }
 
 // bookHandoffImpl 摆渡记账（daemon.py:576-603 逐字）：usage 失败记 0（墙钟

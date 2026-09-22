@@ -316,7 +316,7 @@ func TestQuerySessionDetailAggregation(t *testing.T) {
 	lg := resp["ledger"].(map[string]any)
 	if !keySetEqual(keys(lg), "session_id", "agent", "transcript_path", "cwd",
 		"title", "last_write", "idle_s", "size", "peak_ctx", "observed_active",
-		"handed_off_at", "lineage_id") {
+		"handed_off_at", "content_ts", "lineage_id") {
 		t.Fatalf("ledger 键集: %v", keys(lg))
 	}
 	if lg["session_id"] != "sd-1" || lg["agent"] != "cc" || lg["cwd"] != `C:\proj` ||

@@ -42,11 +42,21 @@ type SessionState struct {
 	TranscriptPath string
 	Cwd            string
 	Title          string  // Python str|None 的 Go 形："" 即 None
-	LastWrite      float64 // UTC epoch 秒（文件 mtime 口径）
+	LastWrite      float64 // UTC epoch 秒（文件时钟：mtime 口径）
 	Size           int
 	PeakCtx        int
 	ObservedActive bool    // daemon 启动后是否见过其活动（lookback=0 的摆渡闸）
 	HandedOffAt    float64 // 最近一次成功摆渡时间（防重复入队）
+	// 内容时钟三字段（ADR-0013，防 CC 状态块幻影写入反复重摆渡）：
+	//   ContentTS        转录内最后带时间戳记录的 epoch（懒尾解析，0=未算）；
+	//   ContentStamp     ContentTS 计算所依据的 last_write 版本（mtime 变才重算）；
+	//   HandledContentTS 最近一次处置（摆渡 covers / 小会话标记）所覆盖的内容
+	//                    时钟——入队重查的判定基准：内容未越过它即不再摆渡。
+	// 均仅内存（同 HandedOffAt）：daemon 重启归零=重启后多摆渡一轮（无害，既有
+	// 语义不变）。
+	ContentTS       float64
+	ContentStamp    float64
+	HandledContentTS float64
 	EnrichedWrite  float64 // 已富化(标题/峰值)到哪个 last_write 版本；初值 -1
 	// T51 等答复窗口（问询守望）：QWatchOpenedTS nil=无窗。开窗在 daemon 问询
 	// 守望（命中谓词四条件），关窗只在 Touch 新写入分支（任何新写入=用户已
@@ -123,6 +133,7 @@ func (l *Ledger) TouchFull(agent, sid, path string, mtime float64, size int,
 			st.Title = prev.Title
 			st.PeakCtx = prev.PeakCtx
 			st.HandedOffAt = prev.HandedOffAt
+			st.HandledContentTS = prev.HandledContentTS // 内容时钟：处置边界随族系继承（ContentTS 缓存不继承，重算一次）
 		}
 		l.byKey[key] = st
 		l.byPath[norm] = st

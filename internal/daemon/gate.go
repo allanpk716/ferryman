@@ -65,6 +65,18 @@ type sessionSnap struct {
 	lastWrite float64
 	observed  bool
 	peak      int
+	contentTS float64 // 内容时钟（ADR-0013；0=未算 → coversBar 回落 lastWrite）
+}
+
+// coversBar 有效交接判定的覆盖基准（ADR-0013）：优先内容时钟（转录内最后
+// 带时间戳记录——CC 状态块幻影写入不推进它），回落文件时钟。旧口径
+// （covers ≥ mtime）在状态块写入下永不满足 → 交接结构性无效 → 闸门拦而
+// 无交接可用；内容时钟口径恢复"被拦 ⇒ 交接必已存在"的可达性。
+func (s sessionSnap) coversBar() float64 {
+	if s.contentTS > 0 {
+		return s.contentTS
+	}
+	return s.lastWrite
 }
 
 // Gate 闸门状态机主入口（server.py:135-249 逐字；七分支顺序即权威序）。
@@ -118,7 +130,8 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	// 台账快照（锁内抄齐；其后闸门逻辑不持台账锁）。
 	d.Ledger.Mu().Lock()
 	snap := sessionSnap{sid: st.SessionID, path: st.TranscriptPath,
-		lastWrite: st.LastWrite, observed: st.ObservedActive, peak: st.PeakCtx}
+		lastWrite: st.LastWrite, observed: st.ObservedActive, peak: st.PeakCtx,
+		contentTS: st.ContentTS}
 	d.Ledger.Mu().Unlock()
 
 	// 2.5 机器等机器豁免（缺口A，rev2 规格 docs/superpowers/specs/
@@ -147,7 +160,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	// observe：只警告不拦（验证期默认）
 	if mode == "observe" {
 		if inWindow {
-			h := d.Store.ValidHandoff(agent, cwd, snap.lastWrite)
+			h := d.Store.ValidHandoff(agent, cwd, snap.coversBar())
 			if h == nil && snap.observed && snap.peak >= th.MinCtxTokens {
 				d.EnqueueFerry(st)
 			}
@@ -161,7 +174,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	if !inWindow {
 		return allowAllow(d.cacheInfoCtx(idle, th))
 	}
-	h := d.Store.ValidHandoff(agent, cwd, snap.lastWrite)
+	h := d.Store.ValidHandoff(agent, cwd, snap.coversBar())
 	if h != nil { // 分支 5
 		d.Pending.Clear(key)
 		d.Stats.addBlocks()

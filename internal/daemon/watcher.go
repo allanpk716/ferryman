@@ -390,6 +390,7 @@ func (w *Watcher) maybeEnqueue(st *ledger.SessionState) {
 	observed := st.ObservedActive
 	lastWrite := st.LastWrite
 	handedOff := st.HandedOffAt
+	handedContent := st.HandledContentTS
 	opened := st.QWatchOpenedTS != nil
 	w.Ledger.Mu().Unlock()
 	if !observed {
@@ -400,6 +401,16 @@ func (w *Watcher) maybeEnqueue(st *ledger.SessionState) {
 	}
 	if handedOff >= lastWrite {
 		return // 交接仍覆盖最新活动
+	}
+	// ADR-0013 内容推进守卫：CC 对仍开着的会话周期性落无时间戳状态块
+	// （last-prompt/ai-title/mode/permission-mode/atis-latch）——文件时钟前进
+	// 而内容不动，handedOff/lastWrite 双 mtime 口径对此失守（2026-09-21
+	// archify 案：6 天 356 次无效重复摆渡、covers 冻结致交接结构性无效）。
+	// 内容时钟未越过最近处置边界即不再入队；取不到内容时钟（尾段超窗/读败）
+	// 时 contentTS=0 恒放行＝fail-open 回旧行为。
+	contentTS := w.contentClock(st)
+	if contentTS > 0 && contentTS <= handedContent+store.CoversToleranceS {
+		return
 	}
 	// T51：(死线已到, 窗口开着)
 	due, window := w.qwatchDeadline(opened, lastWrite, th)
@@ -429,6 +440,9 @@ func (w *Watcher) maybeEnqueue(st *ledger.SessionState) {
 	if peak < th.MinCtxTokens {
 		w.Ledger.Mu().Lock()
 		st.HandedOffAt = st.LastWrite // 过小会话：标记已处理防反复读盘
+		if contentTS > 0 {
+			st.HandledContentTS = contentTS // 同基准防状态块幻影写入的反复富化读盘
+		}
 		w.Ledger.Mu().Unlock()
 		return
 	}
@@ -437,6 +451,33 @@ func (w *Watcher) maybeEnqueue(st *ledger.SessionState) {
 		st.HandedOffAt = clock.Now() // 入队即记（防重复入队；失败由队列重试语义覆盖）
 		w.Ledger.Mu().Unlock()
 	}
+}
+
+// contentClock 内容时钟的懒维护（ADR-0013）：last_write 版本变更才尾读转录
+// 取最后带时间戳记录（cctrans.LastTimestamp；CC 与 codex rollout 顶层
+// timestamp 同形，两轨通用）。读盘在台账锁外（enrich 同纪律），回写带版本
+// 复验（读盘中 mtime 又进的新值下轮再算）。取不到（尾段 >2MB 无时间戳/
+// 打不开/坏行）连同成功值一并缓存版本——同版本内零重复读盘，守卫侧 0 恒
+// 放行＝fail-open。
+func (w *Watcher) contentClock(st *ledger.SessionState) float64 {
+	w.Ledger.Mu().Lock()
+	path := st.TranscriptPath
+	lastWrite := st.LastWrite
+	ts, stamp := st.ContentTS, st.ContentStamp
+	w.Ledger.Mu().Unlock()
+	if stamp == lastWrite {
+		return ts
+	}
+	ts2, ok := cctrans.LastTimestamp(path)
+	w.Ledger.Mu().Lock()
+	if st.LastWrite == lastWrite {
+		st.ContentTS, st.ContentStamp = ts2, lastWrite
+	}
+	w.Ledger.Mu().Unlock()
+	if !ok {
+		return 0
+	}
+	return ts2
 }
 
 // qwatchDeadline T51 等答复窗摆渡死线判定 →（死线已到, 窗口开着）。
