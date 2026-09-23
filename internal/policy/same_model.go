@@ -139,20 +139,12 @@ func DeriveSameModelThreshold(b prices.PriceBook, pv prices.PriceVersion, obs Sa
 	}
 
 	// 成本（价格本货币单位，按 per 归一；与心跳公式同族但独立成式——见文件头）。
-	per := float64(b.Per)
-	if per <= 0 {
-		per = 1
-	}
-	pcache := *pv.PCache
-	c := obs.PrefixTokens/per*pcache + obs.OutTokens/per*pv.POut
-	tCost := obs.PrefixTokens / per * pv.PIn
-	gap := tCost - c
+	c, tCost, costErr := SameModelCosts(b, pv, obs.PrefixTokens, obs.OutTokens)
 	res.FerryCost, res.RefCost = c, tCost
-	if gap <= 0 {
-		return res, &SameModelError{KindNoGap, fmt.Sprintf(
-			`"%s"@%s 价差 ≤ 0（全价读 T=%g，摆渡成本 C=%g）：同模型摆渡不比参照成本便宜，拒绝推导`,
-			b.Key, pv.EffectiveFrom, tCost, c)}
+	if costErr != nil {
+		return res, costErr
 	}
+	gap := tCost - c
 
 	// TTL 侧：缓存安全点。
 	median := medianOf(obs.TTLObsMin)
@@ -184,6 +176,39 @@ func DeriveSameModelThreshold(b prices.PriceBook, pv prices.PriceVersion, obs Sa
 			econ, suggest)}
 	}
 	return res, nil
+}
+
+// SameModelCosts 单事件成本常数：C＝摆渡成本（热缓存，S/per·p_cache +
+// OUT/per·p_out）、T＝参照成本（同一前缀全价读，S/per·p_in）——自
+// DeriveSameModelThreshold 的成本段逐字抽出（2026-09-23 为修扫参逐事件
+// 调用的平方级性能而开：算术仍只此一份，推导出口与扫参共用，红线不动）。
+// 拒算口径与推导一致（p_cache 缺省 / prefix、out 非正 / 价差 ≤ 0）；
+// no_gap 错误时 C/T 照样返回（推导同款——调用方可继续用成本记账）。
+func SameModelCosts(b prices.PriceBook, pv prices.PriceVersion, prefixTokens, outTokens float64) (c, t float64, err error) {
+	if pv.PCache == nil {
+		return 0, 0, &SameModelError{KindNoPCache, fmt.Sprintf(
+			`"%s"@%s 无 p_cache，拒绝推导同模型阈值（无缓存经济红线：前缀按缓存读计价的前提不存在）`,
+			b.Key, pv.EffectiveFrom)}
+	}
+	if prefixTokens <= 0 {
+		return 0, 0, &SameModelError{KindBadObs, "prefix_tokens 须 > 0（代表性前缀规模，由观测侧供给）"}
+	}
+	if outTokens <= 0 {
+		return 0, 0, &SameModelError{KindBadObs, "out_tokens 须 > 0（追加重放的叙事输出预留）"}
+	}
+	per := float64(b.Per)
+	if per <= 0 {
+		per = 1
+	}
+	pcache := *pv.PCache
+	c = prefixTokens/per*pcache + outTokens/per*pv.POut
+	t = prefixTokens / per * pv.PIn
+	if t-c <= 0 {
+		return c, t, &SameModelError{KindNoGap, fmt.Sprintf(
+			`"%s"@%s 价差 ≤ 0（全价读 T=%g，摆渡成本 C=%g）：同模型摆渡不比参照成本便宜，拒绝推导`,
+			b.Key, pv.EffectiveFrom, t, c)}
+	}
+	return c, t, nil
 }
 
 // DeriveSameModelForUpstream 建议值出口（按上游分列，F4）：定位价格本 → 取

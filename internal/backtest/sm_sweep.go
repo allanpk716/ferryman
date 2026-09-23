@@ -237,18 +237,21 @@ func SameModelSweep(ds *IdleDataset, opts SameModelSweepOptions) (*SameModelSwee
 			res.Uncomputable[policy.KindNoPCache]++
 			continue
 		}
-		d, err := policy.DeriveSameModelThreshold(*book, *pv, policy.SameModelObs{
-			PrefixTokens: float64(s.ev.PrefixTokens), OutTokens: out,
-			TTLObsMin: ttlObs, IdleObsMin: idles,
-		}, opts.SummarizeMin)
+		// 2026-09-23 性能修复：逐事件改调单源成本出口 policy.SameModelCosts
+		// （成本算术仍只此一份，红线不动）——旧实现逐事件全量推导，推导内部
+		// 每次克隆+排序 7 万级闲置样本，平方级（真机 74k 事件 >10 分钟未完，
+		// 夜链小测试集未暴露）。语义差如实记：逐事件 infeasible 警告不再计算
+		// （其文本本就是全局分布陈述），聚合推导（DeriveSameModelForUpstream）
+		// 仍给上游级 infeasible 警告；no_gap 语义逐字保留（错误照报、C/T 照记）。
+		c, t, err := policy.SameModelCosts(*book, *pv, float64(s.ev.PrefixTokens), out)
+		s.c, s.t = c, t
 		if err != nil {
 			noteWarn(err)
-			if kind := smErrKind(err); kind != policy.KindInfeasible && kind != policy.KindNoGap {
+			if kind := smErrKind(err); kind != policy.KindNoGap {
 				res.Uncomputable[kind]++
 				continue
 			}
 		}
-		s.c, s.t = d.FerryCost, d.RefCost
 		active = append(active, s)
 	}
 
