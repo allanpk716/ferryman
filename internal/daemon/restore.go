@@ -26,7 +26,11 @@ func (d *Daemon) Restore(agent, cwd, sessionID string) map[string]any {
 	}
 	if len(cands) > 1 { // 多候选：只列清单不默认注入
 		lines := make([]string, 0, 5)
-		for _, c := range cands[:5] {
+		top := cands
+		if len(top) > 5 { // 2026-09-23 修复：候选 2~4 个时 cands[:5] 越界 panic（serve.err.log 三次实炸）
+			top = top[:5]
+		}
+		for _, c := range top {
 			title := c.Title
 			if title == "" { // Python c['title'] or c['handoff_id']
 				title = c.HandoffID

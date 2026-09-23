@@ -1105,7 +1105,7 @@ func cmdTuningSweep(args []string, stdout, stderr io.Writer) int {
 	var projects, excludes globList
 	fs.Var(&projects, "projects", "项目正集 glob（可多次；缺省全量）")
 	fs.Var(&excludes, "exclude", "排除项目 glob（可多次）")
-	ttlFlag := fs.String("ttl-min", "", "TTL 场景观测（分钟，逗号分隔；缺省 = 种子隐含中位 25）")
+	ttlFlag := fs.String("ttl-min", "", "TTL 场景观测（分钟，逗号分隔；缺省 = beat 遥测实测收割（管子一），无实测回落种子隐含中位 25）")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -1145,6 +1145,31 @@ func cmdTuningSweep(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	// 管子一（2026-09-23）：--ttl-min 缺省时收割 beat 遥测 TTL 观测（每窗
+	// 最强 hit 证据，provider=价格本键分桶）；收割失败降级告警走既有场景/
+	// 种子路径，不阻塞扫参。
+	var ttlSet *backtest.TTLObsSet
+	if ttlObs == nil {
+		if ttlSet, err = backtest.HarvestTTLObs(cfg.DataDir()); err != nil {
+			fmt.Fprintf(stderr, "TTL 观测收割失败（降级：手传 --ttl-min 或种子隐含中位）: %v\n", err)
+			ttlSet = nil
+		} else {
+			fmt.Fprintf(stdout, "TTL 观测：beat 遥测实测 %d 窗 / %d 条 hit（beat 行 %d，参与窗 %d）\n",
+				ttlSet.HitWindows, ttlSet.HitBeats, ttlSet.Beats, ttlSet.Windows)
+		}
+	} else {
+		fmt.Fprintf(stdout, "TTL 观测：手传场景值 %d 条\n", len(ttlObs))
+	}
+	// ttlObsFor 上游 → 实测观测（按其价格本键取桶；无书/无桶 = nil = 场景/种子路径）
+	ttlObsFor := func(up string) []float64 {
+		if ttlObs != nil || ttlSet == nil {
+			return ttlObs
+		}
+		if book := prices.BookFor(books, up); book != nil {
+			return ttlSet.ObsFor(book.Key)
+		}
+		return nil
+	}
 	c := ds.Counts
 	fmt.Fprintf(stdout, "装载:%d 天窗 span %d（返回 %d / 摆渡 %d / 截断 %d）+ 孤儿摆渡行 %d;窗内摆渡事件 %d（门槛 %d）;档位 %s\n",
 		c.WindowDays, c.TotalSpans, c.ReturnedSpans, c.FerrySpans, c.CensoredSpans,
@@ -1155,8 +1180,9 @@ func cmdTuningSweep(args []string, stdout, stderr io.Writer) int {
 	now := clock.Now()
 	code := 0
 	for _, up := range cfg.SameModel.Upstreams {
+		upTTL := ttlObsFor(up)
 		res, err := backtest.SameModelSweep(ds, backtest.SameModelSweepOptions{
-			Books: books, Upstream: up, SummarizeMin: sumMin, TTLObsMin: ttlObs,
+			Books: books, Upstream: up, SummarizeMin: sumMin, TTLObsMin: upTTL,
 			CurrentThresholdMin: cfg.SameModel.CeilingFor(up), HasCurrent: true,
 			MinEvents: cfg.Tuning.MinEvents,
 		})

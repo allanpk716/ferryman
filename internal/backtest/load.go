@@ -61,6 +61,10 @@ type ledgerRow struct {
 	InputTokens         float64 `json:"input_tokens"`
 	CacheReadTokens     float64 `json:"cache_read_tokens"`
 	CacheCreationTokens float64 `json:"cache_creation_tokens"`
+	// beat 科目（2026-09-23 管子一：TTL 观测收割的配对输入）
+	Outcome  string `json:"outcome"`  // hit | miss | error | observe
+	Provider string `json:"provider"` // 记账时的价格本键（归属分桶用）
+	Lane     string `json:"lane"`     // qwatch | wait
 }
 
 // projCand 一条还原候选（usage 行的裁剪形）。

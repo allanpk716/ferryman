@@ -61,6 +61,23 @@ func TestRestoreMultiCandidateListsTopFiveOnly(t *testing.T) {
 	}
 }
 
+// 2026-09-23 回归：候选 2~4 个时旧实现 cands[:5] 越界 panic（serve.err.log
+// 三次实炸，slice bounds out of range [:5] with capacity 2）——两候选必须
+// 正常列清单不炸。
+func TestRestoreTwoCandidatesListsBothNoPanic(t *testing.T) {
+	e := newGateEnv(t)
+	saveCand(t, e, "s1", "h1", 100, "md")
+	saveCand(t, e, "s2", "h2", 200, "md")
+	r := e.d.Restore("cc", "C:/proj", "newsid")
+	ctx, _ := r["context"].(string)
+	if !strings.HasPrefix(ctx, "[Ferryman] 本项目有 2 份可用交接") {
+		t.Fatalf("清单头不符: %q", ctx)
+	}
+	if got := strings.Count(ctx, "\n- "); got != 2 {
+		t.Fatalf("清单条数 = %d, want 2", got)
+	}
+}
+
 func TestRestoreSingleCandidateInjectLayerAndPending(t *testing.T) {
 	// 单候选：INJECT 层提取（strip），头部/免责声明/待续 prompt/完整文档行逐字。
 	e := newGateEnv(t)
