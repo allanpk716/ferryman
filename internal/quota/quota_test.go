@@ -249,6 +249,62 @@ func TestParseKimiPercentScaleDefense(t *testing.T) {
 	}
 }
 
+func TestResetTimeOfStringForms(t *testing.T) {
+	// 数字串兼容（票 01）：ISO 布局全败后按纯数字解析、秒/毫秒自动判位
+	// （阈值 1e12，与数字形态同款）；非数字/空串/≤0 判无重置；TrimSpace
+	// 顺带放宽带空白串（显式申报的宽容化）。
+	cases := []struct {
+		name string
+		in   string
+		want time.Time
+		ok   bool
+	}{
+		{"秒级数字串", "1761412800", time.Unix(1761412800, 0), true},
+		{"毫秒级数字串", "1790280000000", time.UnixMilli(1790280000000), true},
+		{"ISO 不回归", "2026-09-28T00:00:00+08:00",
+			time.Date(2026, 9, 28, 0, 0, 0, 0, time.FixedZone("", 8*3600)), true},
+		{"带空白数字串", " 1761412800 ", time.Unix(1761412800, 0), true},
+		{"带空白ISO", "\t2026-09-28T00:00:00+08:00\n",
+			time.Date(2026, 9, 28, 0, 0, 0, 0, time.FixedZone("", 8*3600)), true},
+		{"非数字", "abc", time.Time{}, false},
+		{"空串", "", time.Time{}, false},
+		{"零", "0", time.Time{}, false},
+		{"负数", "-5", time.Time{}, false},
+	}
+	for _, c := range cases {
+		got, ok := resetTimeOf(c.in)
+		if ok != c.ok {
+			t.Errorf("%s: ok = %v, want %v", c.name, ok, c.ok)
+			continue
+		}
+		if ok && !got.Equal(c.want) {
+			t.Errorf("%s: 时刻 = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestParseKimiNumericStringResetTime(t *testing.T) {
+	// 全链路（票 01）：resetTime 以数字字符串到达——周窗顶层 usage 秒级、
+	// 5h limits[].detail 毫秒级；修复前 ISO 全败即判无重置，倒计时静默丢失。
+	body := []byte(`{
+		"usage": {"limit": 5000, "remaining": 2500, "resetTime": "1790280000"},
+		"limits": [{"detail": {"limit": "1500", "remaining": "1200", "resetTime": "1790280000000"}}]
+	}`)
+	q, err := parseKimi(body)
+	if err != nil {
+		t.Fatalf("parseKimi: %v", err)
+	}
+	if q.Week == nil || q.FiveHour == nil {
+		t.Fatalf("双窗缺一: %+v", q)
+	}
+	if !q.Week.HasReset || q.Week.ResetsAt != time.Unix(1790280000, 0) {
+		t.Errorf("周 resetTime = %v has=%v, want Unix(1790280000)", q.Week.ResetsAt, q.Week.HasReset)
+	}
+	if !q.FiveHour.HasReset || q.FiveHour.ResetsAt != time.UnixMilli(1790280000000) {
+		t.Errorf("5h resetTime = %v has=%v, want UnixMilli(1790280000000)", q.FiveHour.ResetsAt, q.FiveHour.HasReset)
+	}
+}
+
 func TestParseKimiBadShapes(t *testing.T) {
 	for name, body := range map[string][]byte{
 		"非JSON":   []byte(`{`),

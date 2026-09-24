@@ -3,7 +3,7 @@
 // GET https://api.kimi.com/coding/v1/usages（Bearer；端点固定，不随 base_url
 // 派生——cc-switch query_kimi 逐字先例）。响应顶层 usage=周窗、
 // limits[].detail=5h 窗；limit/remaining 数字/字符串两形态；resetTime
-// 字符串（ISO 直传）或秒/毫秒数字（自动判位，≤0 视为无重置）。
+// 字符串（ISO 或数字串，票 01）或秒/毫秒数字（自动判位，≤0 视为无重置）。
 //
 // 口径漂移防御（票面钉死）：limit≈100 整数疑百分比口径 → 不展示绝对数
 // （HasAbs=false），remaining/limit 归一化照出。
@@ -11,6 +11,8 @@ package quota
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"ferryman/internal/config"
@@ -98,11 +100,12 @@ func suspiciousPercentScale(limit float64) bool {
 }
 
 // resetTimeOf resetTime 多格式兼容（cc-switch extract_reset_time 同款）：
-// 字符串按常见 ISO 形态解析（缺时区按本地）；数字秒/毫秒自动判位，≤0 无。
+// 字符串先剪首尾空白，按常见 ISO 形态解析（缺时区按本地），ISO 全败后按
+// 纯数字解析（票 01：数字串形态）；数字（含数字串）秒/毫秒自动判位，≤0 无。
 func resetTimeOf(v any) (time.Time, bool) {
 	switch x := v.(type) {
 	case string:
-		s := x
+		s := strings.TrimSpace(x)
 		if s == "" {
 			return time.Time{}, false
 		}
@@ -111,6 +114,13 @@ func resetTimeOf(v any) (time.Time, bool) {
 			if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
 				return t, true
 			}
+		}
+		// 数字串（"1761412800" 秒/毫秒）——ISO 全败后按数字判位（阈值与数字支同款）。
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			if n < 1_000_000_000_000 {
+				n *= 1000
+			}
+			return time.UnixMilli(n), true
 		}
 		return time.Time{}, false
 	default:
