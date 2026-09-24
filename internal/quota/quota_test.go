@@ -87,6 +87,68 @@ func TestParseGLMOldPlanSingleEntry(t *testing.T) {
 	}
 }
 
+func TestParseGLMOldPlanDualEntriesHeuristic(t *testing.T) {
+	// 老形态双条（全无 unit）：启发式=无 reset 优先归 5h、其余 reset 升序填槽
+	body := []byte(`{"data":{"limits":[
+		{"type":"TOKENS_LIMIT","percentage":20,"nextResetTime":1790700000000},
+		{"type":"TOKENS_LIMIT","percentage":60}]}}`)
+	q, err := parseGLM(body)
+	if err != nil {
+		t.Fatalf("parseGLM: %v", err)
+	}
+	if q.FiveHour == nil || q.Week == nil {
+		t.Fatalf("老形态双条应双窗: %+v", q)
+	}
+	if q.FiveHour.RemainingPct != 40 { // 无 reset 的 60% 条归 5h
+		t.Errorf("5h 剩余 = %v, want 40", q.FiveHour.RemainingPct)
+	}
+	if q.Week.RemainingPct != 80 {
+		t.Errorf("周剩余 = %v, want 80", q.Week.RemainingPct)
+	}
+}
+
+func TestParseGLMV1ShapeReal(t *testing.T) {
+	// V1 套餐真机形状（2026-09-25 max 档实测）：TIME_LIMIT(unit:5 工具/时间
+	// 额度) 过滤 + TOKENS_LIMIT(unit:3) 单窗——无周窗（V1 无周/月限制）。
+	body := []byte(`{"code":200,"msg":"操作成功","data":{"limits":[
+		{"type":"TIME_LIMIT","unit":5,"number":1,"usage":4000,"currentValue":3526,
+		 "remaining":474,"percentage":88,"nextResetTime":1790511415998,
+		 "usageDetails":[{"modelCode":"search-prime","usage":2987}]},
+		{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":1,
+		 "nextResetTime":1790281688643}],"level":"max"},"success":true}`)
+	q, err := parseGLM(body)
+	if err != nil {
+		t.Fatalf("parseGLM: %v", err)
+	}
+	if q.Plan != "max" {
+		t.Errorf("plan = %q, want max", q.Plan)
+	}
+	if q.FiveHour == nil || q.Week != nil {
+		t.Fatalf("V1 应仅 5h 单环: %+v", q)
+	}
+	if q.FiveHour.RemainingPct != 99 { // percentage=1 已用 → 剩 99
+		t.Errorf("5h 剩余 = %v, want 99", q.FiveHour.RemainingPct)
+	}
+}
+
+func TestParseGLMUnknownUnitNotMisfiled(t *testing.T) {
+	// 版本差异防错标（V2+ 假想月窗 unit:9）：unit 在场 → 严格锚定，未知 unit
+	// 条目不进周槽（宁可缺失展示，不错标数据）。
+	body := []byte(`{"data":{"limits":[
+		{"type":"TOKENS_LIMIT","unit":3,"percentage":10,"nextResetTime":1790281688643},
+		{"type":"TOKENS_LIMIT","unit":9,"percentage":50,"nextResetTime":1790900000000}]}}`)
+	q, err := parseGLM(body)
+	if err != nil {
+		t.Fatalf("parseGLM: %v", err)
+	}
+	if q.FiveHour == nil {
+		t.Fatalf("5h 窗缺席: %+v", q)
+	}
+	if q.Week != nil {
+		t.Fatalf("未知 unit:9 不得错标进周槽: %+v", q.Week)
+	}
+}
+
 func TestParseGLMTypeAnchorTwoStates(t *testing.T) {
 	// type 大小写不敏感 + CREDIT_LIMIT 改名两态都认；未知 type 过滤
 	cases := []struct {

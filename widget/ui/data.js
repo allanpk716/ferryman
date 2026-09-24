@@ -29,6 +29,8 @@
  * @property {UpstreamKind} kind
  * @property {string} label 展示名
  * @property {string} [plan] 套餐名（coding_plan）
+ * @property {string} [note] 版本语义注记（2026-09-25 追加；如智谱 V1 套餐
+ *           无周/月配额窗——周环缺席是套餐本身无此限制，非数据缺失）
  * @property {Metric[]} metrics
  * @property {{category:string, message?:string}} [error] 该上游整体查询失败（类别永不含钥/URL）
  *

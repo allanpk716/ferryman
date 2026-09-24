@@ -244,6 +244,7 @@ function renderDetail(p) {
   }).join('');
   detail.innerHTML = `<h3>${DETAIL_NAME_OF[p.id] || p.label || p.id}</h3>
     <div class="plan">${(PLAN_LINE[p.kind] || (() => ''))(p)}</div>
+    ${p.note ? `<div class="plan">${p.note}</div>` : ''}
     ${rows}
     <div class="prov">${p.metrics.map((m) => provenanceOf(p, m)).filter(Boolean).map((s) => `• ${s}`).join('<br>')}</div>
     <div class="dfoot">最后更新 ${p.metrics[0]?.as_of ?? '—'}（远端 5–15 分钟缓存） · 每 30s 轮询 /widget/summary</div>`;

@@ -160,6 +160,9 @@ func TestWidgetSummaryGolden(t *testing.T) {
 	if up["plan"] != "PRO_MAX" {
 		t.Errorf("plan = %v", up["plan"])
 	}
+	if _, has := up["note"]; has {
+		t.Errorf("双窗（V2+ 语义）不应带版本注记: %v", up["note"])
+	}
 
 	fh := metricOf(t, up, "window_5h")
 	if fh["source"] != "fetched" || fh["remaining_pct"].(float64) != 62 {
@@ -260,6 +263,40 @@ func TestWidgetSummaryPartialFailure(t *testing.T) {
 	// 失败上游仍带台账估算（数据可用性照实）
 	if mt := metricOf(t, byID["Kimi"], "month_tokens"); mt["source"] != "estimated" {
 		t.Errorf("Kimi month_tokens = %+v", mt)
+	}
+}
+
+// ---- V1 套餐语义：单窗 + 版本注记（真机 max 档同形） ----
+
+func TestWidgetSummaryGLMV1Note(t *testing.T) {
+	e := newQueryEnv(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"level":"max","limits":[
+			{"type":"TIME_LIMIT","unit":5,"percentage":88,"nextResetTime":1790511415998},
+			{"type":"TOKENS_LIMIT","unit":3,"percentage":1,"nextResetTime":1790281688643}]}}`)
+	}))
+	defer ts.Close()
+	widgetTestReset(t, widgetRewriteClient(t, ts))
+	e.d.Cfg.Dock = &config.DockCfg{Active: "智谱",
+		Upstreams: map[string]config.DockUpstream{"智谱": widgetGLMUp("k")}}
+
+	resp := widgetGET(t, e)
+	ups, _ := resp["upstreams"].([]any)
+	up, _ := ups[0].(map[string]any)
+	if up["plan"] != "max" {
+		t.Errorf("plan = %v", up["plan"])
+	}
+	note, _ := up["note"].(string)
+	if note == "" || !strings.Contains(note, "V1") {
+		t.Errorf("V1 注记缺席: %q", note)
+	}
+	// 周窗 metric 缺席（缺席窗不造行），5h 在
+	metrics := map[string]bool{}
+	for _, m := range up["metrics"].([]any) {
+		metrics[m.(map[string]any)["key"].(string)] = true
+	}
+	if !metrics["window_5h"] || metrics["week"] {
+		t.Errorf("V1 metric 集 = %v（want 有 5h 无 week）", metrics)
 	}
 }
 

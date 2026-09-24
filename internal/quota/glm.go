@@ -53,12 +53,18 @@ type glmEntry struct {
 
 // parseGLM 响应体解析（纯函数，测试直喂夹具）。
 //
-// 分类优先级（cc-switch parse_zhipu_token_tiers 逐字纪律）：
-//  1. 显式 unit 锚：unit:3→5h、unit:6→周（唯一可信分类，#3036）；
-//  2. unit 缺失/不识别的条目走兜底启发式：无 nextResetTime 的优先归 5h
-//     （5h 桶在 0% 等状态可能没有 reset），其余按 reset 升序填仍空缺的槽。
+// 套餐版本差异（2026-09-25 用户口径：智谱 Coding Plan 分 V1/V2/V3，V1 无周
+// 限制与月度限制，后续版本才有）：
+//   - V1：仅 TOKENS_LIMIT(unit:3) 一条 → FiveHour 有、Week=nil（端点侧据此
+//     带「V1 语义」注记）；真机 max 档实测同形。
+//   - V2+：unit:3 + unit:6 双窗。月度窗的 unit 码无实证——**未知 unit 一律
+//     不做启发式兜底**（防把月窗错标进周槽），等实证再接。
+//   - 老形态（条目全无 unit 字段，cc-switch 2026-02-12 前订阅实证）：保留
+//     兜底启发式——无 nextResetTime 的优先归 5h（5h 桶在 0% 等状态可能没有
+//     reset），其余按 reset 升序填仍空缺的槽。
 //
-// 老套餐（2026-02-12 前订阅）只回 1 条 → 仅 5h 单环；新套餐回 2 条。
+// unit 锚纪律（#3036）：禁按 nextResetTime 排序代替——周期末尾每周窗会比
+// 5h 窗更早重置必标反。
 func parseGLM(body []byte) (*GLMQuota, error) {
 	root, err := decodeObject(body)
 	if err != nil {
@@ -79,6 +85,7 @@ func parseGLM(body []byte) (*GLMQuota, error) {
 
 	var fiveHour, weekly *glmEntry
 	var unclassified []glmEntry
+	sawUnit := false // 任一条目带显式 unit → 严格 unit 锚模式（不做启发式兜底）
 	if limits, _ := data["limits"].([]any); limits != nil {
 		for _, it := range limits {
 			m, _ := it.(map[string]any)
@@ -96,14 +103,18 @@ func parseGLM(body []byte) (*GLMQuota, error) {
 			if n, ok := asInt64(m["nextResetTime"]); ok {
 				e.resetMs = &n
 			}
-			switch unit, _ := asInt64(m["unit"]); unit {
+			unit, hasUnit := asInt64(m["unit"])
+			if hasUnit {
+				sawUnit = true
+			}
+			switch unit {
 			case 3:
-				if fiveHour == nil {
+				if hasUnit && fiveHour == nil {
 					fiveHour = &e
 					continue
 				}
 			case 6:
-				if weekly == nil {
+				if hasUnit && weekly == nil {
 					weekly = &e
 					continue
 				}
@@ -111,28 +122,31 @@ func parseGLM(body []byte) (*GLMQuota, error) {
 			unclassified = append(unclassified, e)
 		}
 	}
-	// 兜底启发式：无 reset 优先（归 5h），其余 reset 升序填空缺槽。
-	sort.SliceStable(unclassified, func(i, j int) bool {
-		a, b := unclassified[i], unclassified[j]
-		switch {
-		case a.resetMs == nil && b.resetMs != nil:
-			return true
-		case a.resetMs != nil && b.resetMs == nil:
-			return false
-		case a.resetMs == nil:
-			return false
+	// 老形态（全无 unit）才走启发式兜底；unit 在场时未知 unit 条目宁可
+	// 不展示也不错标（V2+ 月窗防错标进周槽）。
+	if !sawUnit {
+		sort.SliceStable(unclassified, func(i, j int) bool {
+			a, b := unclassified[i], unclassified[j]
+			switch {
+			case a.resetMs == nil && b.resetMs != nil:
+				return true
+			case a.resetMs != nil && b.resetMs == nil:
+				return false
+			case a.resetMs == nil:
+				return false
+			}
+			return *a.resetMs < *b.resetMs
+		})
+		for _, e := range unclassified {
+			if fiveHour == nil {
+				c := e
+				fiveHour = &c
+			} else if weekly == nil {
+				c := e
+				weekly = &c
+			}
+			// 智谱当前最多两条 TOKENS_LIMIT，多余的忽略
 		}
-		return *a.resetMs < *b.resetMs
-	})
-	for _, e := range unclassified {
-		if fiveHour == nil {
-			c := e
-			fiveHour = &c
-		} else if weekly == nil {
-			c := e
-			weekly = &c
-		}
-		// 智谱当前最多两条 TOKENS_LIMIT，多余的忽略
 	}
 
 	if fiveHour != nil {

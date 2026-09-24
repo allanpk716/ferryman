@@ -62,6 +62,7 @@ type widgetRemote struct {
 	kind     string // coding_plan|paygo
 	label    string
 	plan     string
+	note     string // 版本语义注记（如智谱 V1 无周/月窗）；空=无注记
 	metrics  []map[string]any
 	errCat   string  // 非空=该上游整体查询失败（error.category）
 	expireAt float64 // 缓存截止（clock 秒——冻结时钟下测试确定性）
@@ -140,6 +141,9 @@ func handleWidgetSummary(d *Daemon, w http.ResponseWriter, r *http.Request) {
 		if e.plan != "" {
 			entry["plan"] = e.plan
 		}
+		if e.note != "" {
+			entry["note"] = e.note
+		}
 		if e.errCat != "" {
 			entry["error"] = map[string]any{"category": e.errCat}
 		}
@@ -209,8 +213,15 @@ func widgetFetchUncached(u *config.DockUpstream) *widgetRemote {
 		if err != nil {
 			return widgetErrRemote(err, kl[0], kl[1])
 		}
-		return &widgetRemote{kind: kl[0], label: kl[1], plan: q.Plan,
+		e := &widgetRemote{kind: kl[0], label: kl[1], plan: q.Plan,
 			metrics: widgetWindowMetrics(q.FiveHour, q.Week, asOf)}
+		// 套餐版本语义注记（2026-09-25 用户口径）：智谱 Coding Plan V1 无周
+		// 限制与月度限制（V2+ 才有）——周窗缺席按响应如实判定，注记让「为何
+		// 没有周环」在详情卡可读；月度用量无论版本都是台账估算值（带估标）。
+		if q.Week == nil {
+			e.note = "V1 套餐语义：无周/月配额窗（仅 5h 窗；周环缺席是套餐本身无此限制）"
+		}
+		return e
 	case "kimi":
 		q, err := quota.FetchKimiWithClient(widgetHTTPClient, u)
 		if err != nil {
