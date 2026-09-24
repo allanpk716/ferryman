@@ -210,20 +210,36 @@ pub fn run() {
         .setup(|app| {
             let w = app.get_webview_window("widget").expect("conf 未配置 widget 窗口");
 
-            // 位置记忆：恢复上次位置；无记录（首启）= 贴右缘竖排默认位
-            // （spec UI 定稿：默认竖排贴右缘——Tauri conf 无位置字段时落在
-            // 系统默认位，此处显式给首启一个可见且不挡事的位）。
+            // 位置记忆：恢复上次位置；无记录（首启）= 贴主屏右缘竖排默认位
+            // （spec UI 定稿：默认竖排贴右缘）。恢复位必须落在某块显示器内——
+            // 拔屏/换布局后旧坐标可能在所有屏外（2026-09-25 真机：09-21 存的
+            // x=3357 在单屏 1920 布局下不可见），屏外即弃用、走默认位。
             let mut restored = false;
             if let Some(p) = state_path(app.handle()) {
                 if let Ok(json) = fs::read_to_string(&p) {
                     if let Ok(st) = serde_json::from_str::<WindowState>(&json) {
                         let _ = w.set_position(PhysicalPosition::new(st.x, st.y));
-                        restored = true;
+                        if let Ok(mons) = app.available_monitors() {
+                            restored = mons.iter().any(|m| {
+                                let s = m.size();
+                                let mp = m.position();
+                                st.x >= mp.x
+                                    && st.x < mp.x + s.width as i32
+                                    && st.y >= mp.y
+                                    && st.y < mp.y + s.height as i32
+                            });
+                        }
                     }
                 }
             }
             if !restored {
-                if let Ok(Some(monitor)) = w.current_monitor() {
+                // 多显示器：锚主显示器右缘（current_monitor 会跟着 OS 初放走——
+                // 初放落在副屏时 widget 会钉在用户看不到的屏上；主屏缺探测不到
+                // 再回落 current）。
+                let monitor = app.primary_monitor().ok().flatten().or_else(|| {
+                    w.current_monitor().ok().flatten()
+                });
+                if let Some(monitor) = monitor {
                     if let Ok(ws) = w.outer_size() {
                         let size = monitor.size();
                         let pos = monitor.position();
