@@ -1,5 +1,12 @@
 # 票 06 · 余量查询器 ×3（GLM/Kimi/DeepSeek）
 
+> **状态（2026-09-25 夜）**：已完成——internal/quota/（glm.go/kimi.go/deepseek.go + quota_test.go）
+> 验收标准六分支全覆盖、零真实外呼、错误串防钥/URL 断言在位。真机干跑实证：
+> 智谱 max 档实回 TIME_LIMIT(unit:5)+TOKENS_LIMIT(unit:3)，**无 unit:6 周窗**（解析按
+> cc-switch 先例降级单环）；level="max"。阻塞条件已解除：渡口多上游已入 main；
+> observe 周约束由用户 2026-09-25「本机部署余额显示」明示指令取代（改动纯增量，
+> 不触闸门/摆渡热路径）。
+
 ## What to build
 
 Ferryman 本体内每上游一个余量查询器（独立 `internal/quota/` 包或 dock 内子模块，实施期定）：

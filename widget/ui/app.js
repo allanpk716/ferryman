@@ -63,6 +63,10 @@ const PROVENANCE_BASE = {
   'paygo:spend_month_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）', // 票 04 起 demo 已补实例（DS 预算环已用值）
   'handoff:spend_month_cny': '账本 handoff 科目 · 本自然月（估算）',
   'handoff:spend_week_cny': '账本 handoff 科目 · 本周（估算）',
+  // 票 09 起追加（daemon 侧同 commit）：摆渡执行器 provider 无价格表时 spend_*
+  // 不可算不造数——计数是唯一诚实可显示
+  'handoff:handoffs_month': '账本 handoff 科目 · 本自然月计数（摆渡 provider 无价格表，花费不可算）',
+  'handoff:handoffs_week': '账本 handoff 科目 · 本周计数（同上，花费不可算）',
 };
 /** 演示上游 id 级覆写（同 kind 不同供应商文案有别，保设计稿逐字一致）。 */
 const PROVENANCE_BY_ID = {
@@ -112,7 +116,9 @@ function cdSpan(p, m) {
 }
 function cdlineInner(p) {
   const m = (k) => p.metrics.find((x) => x.key === k);
-  return `${cdSpan(p, m('window_5h'))}<span class="sep"> · </span>${cdSpan(p, m('week'))}`;
+  // 缺席窗（如智谱 max 档无 unit:6 周窗）不造段——过滤空段防悬空分隔符
+  return [cdSpan(p, m('window_5h')), cdSpan(p, m('week'))]
+    .filter(Boolean).join('<span class="sep"> · </span>');
 }
 const cdlineHTML = (p) => `<div class="cap cdline${state.profile.show_countdown ? '' : ' hidden'}">${cdlineInner(p)}</div>`;
 
@@ -170,10 +176,11 @@ function discHTML(p) {
     cap = `<div class="cap">${[sm, st, sw].filter(Boolean).map((m) => `${m.text}${estBadge(m)}`).join(' · ')}</div>`;
   } else { // handoff
     const sm = metricOf(p, 'spend_month_cny'), sw = metricOf(p, 'spend_week_cny');
+    const hm = metricOf(p, 'handoffs_month'), hw = metricOf(p, 'handoffs_week');
     svgInner = `<circle class="houtline" cx="50" cy="50" r="43"></circle>`;
     center = `<text x="50" y="47" class="c-label">${label}</text>
               <text x="50" y="60" class="c-sub">handoff</text>`;
-    cap = `<div class="cap">${sm ? sm.text : ''}${estBadge(sm)} · ${sw ? sw.text : ''}${estBadge(sw)}</div>`;
+    cap = `<div class="cap">${[sm, hm, sw, hw].filter(Boolean).map((m) => `${m.text}${estBadge(m)}`).join(' · ')}</div>`;
   }
   return `<div class="disc${p.kind === 'handoff' ? ' handoff' : ''}" data-id="${p.id}" tabindex="0">
             <svg viewBox="0 0 100 100">${svgInner}${center}</svg>${cap}</div>`;

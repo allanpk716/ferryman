@@ -1,5 +1,13 @@
 # 票 07 · 台账窗聚合与花费估算
 
+> **状态（2026-09-25 夜）**：部分完成（query_widget.go widgetLedgerAggregate）——
+> usage 四列本自然月按上游聚合（model_map 值域归属+单上游兜底口径，见头注）、
+> handoff 月/周计数（新键 handoffs_month/handoffs_week）。**未做**：5h 滚动窗聚合、
+> 自然周 usage 聚合、DeepSeek 今/周花费计价（本机无 DS 上游/无流水）、handoff
+> spend_* 计价（摆渡 provider=local 无价格表，price_ver=null，不造数）——待有
+> paygo 上游或价格表补齐后续做。与 /report month 口径一致性：同源（usage 科目
+> 四列纯加总 + 同月界推导），交叉对账数字见 2026-09-25 晨报。
+
 ## What to build
 
 台账/账本侧新增聚合维度（现只有 project/session/month）：

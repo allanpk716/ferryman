@@ -1,5 +1,11 @@
 # 票 08 · /widget/summary 聚合端点
 
+> **状态（2026-09-25 夜）**：已完成——internal/daemon/query_widget.go（注册
+> queryapi.go；鉴权复用 Bearer 面）。golden 形状/401/部分降级/缓存零外呼/空表
+> 空数组/未配置零外呼测试全绿（query_widget_test.go）。缓存：成功 10min、失败
+> 负缓存 1min（防 30s 轮询钉死坏上游）；按上游可配留后续。追加
+> handoffs_month/handoffs_week 两键（spec 枚举同 commit 更新）。
+
 ## What to build
 
 daemon 新增只读聚合端点 `GET /widget/summary`（127.0.0.1:7311，复用现有 Bearer token 鉴权）：一次返回契约 v0——`{version, generated_at, upstreams[], handoff{}}`；metric=`{key, remaining_pct|text, abs?, breakdown?, source: fetched|estimated, as_of, resets_at?}`（ISO）；provenance 不传（widget 内置映射；upstreams/handoff/error 结构按 spec 契约 v0 节，rev1）。数据 = 票 06 查询器 + 票 07 台账聚合的拼装。缓存策略：远端余量 5–15 分钟（按上游可配，默认 10；各家限流差异）、台账聚合秒级；单上游失败=该 metric 缺席或 error 类别，**整体不失败**。

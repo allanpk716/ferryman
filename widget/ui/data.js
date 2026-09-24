@@ -6,7 +6,7 @@
  *
  * 前端栈铁律（spec rev1）：vanilla ES 模块 + JSDoc 承载类型，零构建链、零外部引用。
  *
- * @typedef {'window_5h'|'week'|'month_tokens'|'balance_cny'|'spend_today_cny'|'spend_week_cny'|'spend_month_cny'} MetricKey
+ * @typedef {'window_5h'|'week'|'month_tokens'|'balance_cny'|'spend_today_cny'|'spend_week_cny'|'spend_month_cny'|'handoffs_month'|'handoffs_week'} MetricKey
  * @typedef {'fetched'|'estimated'} MetricSource
  *
  * @typedef {Object} Metric 契约 v0 metric 元素
@@ -147,9 +147,29 @@ export function now() {
 }
 
 /**
- * 30s 轮询框架。demo 模式对内嵌副本空转（可选注入灰化）；live 模式取
- * window.__WIDGET_DAEMON_URL__（票 08 接线前为空=不可达，如实灰化）。
- * 立即回调一次，随后每 POLL_MS 一次。
+ * 票 09 · live 取数目标解析：
+ * 壳内=invoke get_daemon_config（Rust 每次现读 ~/ferryman/daemon.token——daemon
+ * 重启换 token 后下次轮询自动生效；端点=127.0.0.1:7311/widget/summary）；
+ * 浏览器/测试语境=window.__WIDGET_DAEMON_URL__ 注入（缺省=不可达，如实灰化）。
+ * @returns {Promise<{url:string, token:string}|null>} null=不可达
+ */
+async function resolveDaemonTarget() {
+  const t = window.__TAURI__;
+  if (t && t.core && t.core.invoke) {
+    try {
+      const cfg = await t.core.invoke('get_daemon_config');
+      if (cfg && typeof cfg.url === 'string' && cfg.url) return cfg;
+    } catch { /* 读 token 失败：如实灰化（不假造可达） */ }
+    return null;
+  }
+  const url = String(window.__WIDGET_DAEMON_URL__ || '');
+  return url ? { url, token: String(window.__WIDGET_TOKEN__ || '') } : null;
+}
+
+/**
+ * 30s 轮询框架。demo 模式对内嵌副本空转（可选注入灰化）；live 模式经
+ * resolveDaemonTarget 拿端点+Bearer token（票 09 接线；壳外无注入=不可达，
+ * 如实灰化）。立即回调一次，随后每 POLL_MS 一次。
  *
  * @param {(summary:Summary|null, reachable:boolean)=>void} onUpdate
  * @returns {()=>void} stop()
@@ -160,10 +180,13 @@ export function startPolling(onUpdate) {
       onUpdate(maybeSuperset(DEMO_SUMMARY), !forceGray());
       return;
     }
-    const url = String(window.__WIDGET_DAEMON_URL__ || '');
-    if (!url) { onUpdate(null, false); return; } // 端点未接线：不可达，不假造
+    const target = await resolveDaemonTarget();
+    if (!target) { onUpdate(null, false); return; }
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      const r = await fetch(target.url, {
+        headers: target.token ? { Authorization: `Bearer ${target.token}` } : {},
+        signal: AbortSignal.timeout(8000), // daemon 冷缓存最长 5s 外呼+装配，留 8s
+      });
       if (!r.ok) throw new Error(String(r.status));
       onUpdate(/** @type {Summary} */ (await r.json()), true);
     } catch {

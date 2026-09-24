@@ -137,6 +137,24 @@ async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
     Ok(()) // 到不了这行也无妨：Windows 上 install 会拉起安装器退出本进程
 }
 
+// ── 票 09 · daemon 端点发现：读 ~/ferryman/daemon.token（daemon EnsureToken
+// 落盘）；地址钦定 http://127.0.0.1:7311/widget/summary（票 09 票面原文；
+// [server].port 缺省即 7311，读 config.toml 属越界解析，不做）。token 每次
+// 现读：daemon 重启换 token 后下次轮询自动生效。失败返回 Err，前端如实灰化
+// （不假造可达）。悬浮窗进程内永不出现服务商凭据（只有 daemon 的本机 token）。 ──
+#[tauri::command]
+fn get_daemon_config() -> Result<serde_json::Value, String> {
+    let home =
+        std::env::var("USERPROFILE").map_err(|_| "无法定位用户目录（USERPROFILE）".to_string())?;
+    let path = std::path::Path::new(&home).join("ferryman").join("daemon.token");
+    let text = fs::read_to_string(&path).map_err(|e| format!("读取 daemon.token 失败: {e}"))?;
+    let token = text.trim();
+    if token.is_empty() {
+        return Err("daemon.token 为空".into());
+    }
+    Ok(serde_json::json!({ "url": "http://127.0.0.1:7311/widget/summary", "token": token }))
+}
+
 /// 设置窗：按需创建、关闭即销毁（防双 WebView 常驻内存）；已开则只聚焦不重复建。
 fn open_settings(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("settings") {
@@ -181,16 +199,39 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(MoveThrottle(Mutex::new(None)))
         .manage(PendingUpdate(Mutex::new(None)))
-        // 自定义命令（票 04/05）：get_profile / save_profile / update_install
-        .invoke_handler(tauri::generate_handler![get_profile, save_profile, update_install])
+        // 自定义命令（票 04/05/09）：get_profile / save_profile / update_install /
+        // get_daemon_config（live 取数目标：url+token）
+        .invoke_handler(tauri::generate_handler![
+            get_profile,
+            save_profile,
+            update_install,
+            get_daemon_config
+        ])
         .setup(|app| {
             let w = app.get_webview_window("widget").expect("conf 未配置 widget 窗口");
 
-            // 位置记忆：恢复上次位置（无记录/损坏=回落 conf 默认，不崩）
+            // 位置记忆：恢复上次位置；无记录（首启）= 贴右缘竖排默认位
+            // （spec UI 定稿：默认竖排贴右缘——Tauri conf 无位置字段时落在
+            // 系统默认位，此处显式给首启一个可见且不挡事的位）。
+            let mut restored = false;
             if let Some(p) = state_path(app.handle()) {
                 if let Ok(json) = fs::read_to_string(&p) {
                     if let Ok(st) = serde_json::from_str::<WindowState>(&json) {
                         let _ = w.set_position(PhysicalPosition::new(st.x, st.y));
+                        restored = true;
+                    }
+                }
+            }
+            if !restored {
+                if let Ok(Some(monitor)) = w.current_monitor() {
+                    if let Ok(ws) = w.outer_size() {
+                        let size = monitor.size();
+                        let pos = monitor.position();
+                        let (ww, wh) = (ws.width as i32, ws.height as i32);
+                        let x = pos.x + (size.width as i32 - ww - 12).max(0);
+                        // 垂直大致居中，底部让开任务栏余量
+                        let y = pos.y + (size.height as i32 - wh - 56).max(0) / 2;
+                        let _ = w.set_position(PhysicalPosition::new(x, y));
                     }
                 }
             }

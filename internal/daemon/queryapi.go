@@ -28,12 +28,13 @@ type queryEndpoint func(d *Daemon, w http.ResponseWriter, r *http.Request)
 
 // queryEndpoints 只读 GET 端点注册表(六端点全部为真实现,见票间路径互斥注)。
 var queryEndpoints = map[string]queryEndpoint{
-	"/sessions":      handleSessions,
-	"/session":       handleSessionDetail,
-	"/gate_check":    handleGateCheck,
-	"/report":        handleReport,       // 票03 实现（query_report.go）
-	"/beats":         handleBeats,        // 票03 实现（query_beats.go）
-	"/config_tuning": handleConfigTuning, // 票08 实现（query_config_tuning.go）
+	"/sessions":       handleSessions,
+	"/session":        handleSessionDetail,
+	"/gate_check":     handleGateCheck,
+	"/report":         handleReport,        // 票03 实现（query_report.go）
+	"/beats":          handleBeats,         // 票03 实现（query_beats.go）
+	"/config_tuning":  handleConfigTuning,  // 票08 实现（query_config_tuning.go）
+	"/widget/summary": handleWidgetSummary, // 用量悬浮窗票08 实现（query_widget.go）
 }
 
 // dispatchQuery 查询面分派入口（httpapi.doGet default 分支的单块接线点）：
