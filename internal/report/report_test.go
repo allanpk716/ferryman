@@ -234,9 +234,31 @@ func TestStrategyTableSkipsWithoutTTLorCache(t *testing.T) {
 
 func TestRunJSONOutput(t *testing.T) {
 	env := testEnv(t)
+	// 遗留②回归钉(2026-09-25):project 含 Windows 反斜杠路径的行进 --json,
+	// 输出必须是合法 JSON(历史缺陷形态:裸 \ 转义,json.loads 炸;实测出自
+	// v0.1.3-2-g5af93ea 来路存疑构建,现行 json.Encoder 路径不复发——本钉防
+	// 未来任何手拼 JSON 发射器回归)。
+	if _, err := env.acc.Record("bypass", -1, accounts.Fields{
+		"agent": "cc", "session_id": "s9", "lineage_id": "L9",
+		"project": `C:\Users\allan716\proj`, "prefix_tokens": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	stubRun(t, env)
-	if Run(Args{}) != 0 {
-		t.Fatal("run != 0")
+	out := captureStdout(t, func() {
+		if Run(Args{JSON: true}) != 0 {
+			t.Fatal("run != 0")
+		}
+	})
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("--json 输出不是合法 JSON(裸反斜杠转义?): %.120s", out)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := parsed["savings"]; !ok {
+		t.Fatal("输出缺 savings 键")
 	}
 }
 
