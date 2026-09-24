@@ -1,7 +1,7 @@
 /* 票 03 · 悬浮窗样式（语义基线=已验收 mock；去演示台 chrome，窗体即面板）。
    v1 窗底不透明深色（spec：真透明待票 02 实测后定）。 */
 :root{
-  --c5h:#5B9BD5; --cweek:#E8A33D; --cmonth:#9B7EDE; --cds:#6BBF8A;
+  --c5h:#5B9BD5; --cweek:#E8A33D; --cmonth:#9B7EDE; --cds:#6BBF8A; --ctools:#4FC3C8;
   --alert-y:#E8C33D; --alert-r:#E85D5D;
   --wbg:#101218; --wborder:rgba(255,255,255,.09);
   --txt:#E8EAF0; --txt-dim:rgba(232,234,240,.55); --txt-faint:rgba(232,234,240,.35);

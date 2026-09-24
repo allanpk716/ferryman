@@ -6,7 +6,7 @@
  *
  * 前端栈铁律（spec rev1）：vanilla ES 模块 + JSDoc 承载类型，零构建链、零外部引用。
  *
- * @typedef {'window_5h'|'week'|'month_tokens'|'balance_cny'|'spend_today_cny'|'spend_week_cny'|'spend_month_cny'|'handoffs_month'|'handoffs_week'} MetricKey
+ * @typedef {'window_5h'|'week'|'month_tokens'|'balance_cny'|'spend_today_cny'|'spend_week_cny'|'spend_month_cny'|'handoffs_month'|'handoffs_week'|'tools_quota'} MetricKey
  * @typedef {'fetched'|'estimated'} MetricSource
  *
  * @typedef {Object} Metric 契约 v0 metric 元素
@@ -17,6 +17,8 @@
  *            month_tokens=本月 tok 数；spend_*=CNY 金额——票 04 预算环的分母计算（剩余制）用它
  * @property {string} [abs] 绝对数展示（如「1200 / 1500」）
  * @property {{granted:string, topped_up:string}} [breakdown] 余额拆分（DS 赠送/充值）
+ * @property {{name:string, used:number}[]} [details] 分项计数（2026-09-25 追加：
+ *           tools_quota 的分工具已用次数，如 search-prime/web-reader）
  * @property {boolean} [available] v0 之外的附加字段（DS 余额可用性）；widget 向前兼容读取
  * @property {MetricSource} source 查询值 fetched / 台账估算值 estimated
  * @property {string} [as_of] 最后更新时刻（展示串，如「12:03」）

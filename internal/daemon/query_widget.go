@@ -215,6 +215,25 @@ func widgetFetchUncached(u *config.DockUpstream) *widgetRemote {
 		}
 		e := &widgetRemote{kind: kl[0], label: kl[1], plan: q.Plan,
 			metrics: widgetWindowMetrics(q.FiveHour, q.Week, asOf)}
+		// MCP 工具增值服务额度（TIME_LIMIT unit:5 按次数，所有版本/档位都有
+		// ——2026-09-25 用户口径）：环+绝对数+分工具明细。
+		if q.Tools != nil {
+			tq := map[string]any{"key": "tools_quota",
+				"remaining_pct": q.Tools.RemainingPct, "value": q.Tools.Remaining,
+				"source": "fetched", "as_of": asOf}
+			tq["abs"] = fmt.Sprintf("%.0f / %.0f", q.Tools.Remaining, q.Tools.Total)
+			if q.Tools.HasReset {
+				tq["resets_at"] = q.Tools.ResetsAt.Format(time.RFC3339)
+			}
+			if len(q.Tools.Details) > 0 {
+				ds := make([]map[string]any, 0, len(q.Tools.Details))
+				for _, d := range q.Tools.Details {
+					ds = append(ds, map[string]any{"name": d.Name, "used": d.Used})
+				}
+				tq["details"] = ds
+			}
+			e.metrics = append(e.metrics, tq)
+		}
 		// 套餐版本语义注记（2026-09-25 用户口径）：智谱 Coding Plan V1 无周
 		// 限制与月度限制（V2+ 才有）——周窗缺席按响应如实判定，注记让「为何
 		// 没有周环」在详情卡可读；月度用量无论版本都是台账估算值（带估标）。

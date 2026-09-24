@@ -92,10 +92,21 @@ func parseGLM(body []byte) (*GLMQuota, error) {
 			if m == nil {
 				continue
 			}
-			// type 锚：只认 TOKENS_LIMIT/CREDIT_LIMIT（大小写不敏感——上游
-			// 改名 TOKENS_LIMIT→CREDIT_LIMIT 已实测发生，两态都认）
+			// type 锚：TOKENS_LIMIT/CREDIT_LIMIT 是配额窗（大小写不敏感——上游
+			// 改名 TOKENS_LIMIT→CREDIT_LIMIT 已实测发生，两态都认）；TIME_LIMIT
+			// 是 MCP 工具增值服务额度（unit:5，按次数，所有版本/档位都有——
+			// 2026-09-25 用户口径），单走 tools 槽。
 			t := strings.ToLower(asLiteral(m["type"]))
-			if t != "tokens_limit" && t != "credit_limit" {
+			switch t {
+			case "tokens_limit", "credit_limit":
+			case "time_limit":
+				if q.Tools == nil {
+					if u, has := asInt64(m["unit"]); has && u == 5 {
+						q.Tools = parseGLMTools(m)
+					}
+				}
+				continue
+			default:
 				continue
 			}
 			p, _ := asF64(m["percentage"]) // 已用%；缺失按 0（cc-switch 同款）
@@ -169,6 +180,45 @@ func glmWindow(e glmEntry) *Window {
 		w.HasReset = true
 	}
 	return w
+}
+
+// parseGLMTools TIME_LIMIT(unit:5) 条目 → 工具额度（字段语义真机实证：
+// usage=总额度/currentValue=已用/remaining=剩余/percentage=已用%/usageDetails=
+// 分工具计数；数字字符串两形态通吃；总额度≤0 或两绝对数全缺 → nil 不造数）。
+func parseGLMTools(m map[string]any) *ToolQuota {
+	total, hasTotal := asF64(m["usage"])
+	remaining, hasRemaining := asF64(m["remaining"])
+	if !hasTotal || total <= 0 {
+		return nil
+	}
+	q := &ToolQuota{Total: total}
+	if hasRemaining {
+		q.Remaining = remaining
+		q.RemainingPct = remaining / total * 100
+	} else if p, ok := asF64(m["percentage"]); ok {
+		q.RemainingPct = 100 - p
+	} else {
+		return nil
+	}
+	if n, ok := asInt64(m["nextResetTime"]); ok && n > 0 {
+		q.ResetsAt = time.UnixMilli(n)
+		q.HasReset = true
+	}
+	if ds, _ := m["usageDetails"].([]any); ds != nil {
+		for _, d := range ds {
+			dm, _ := d.(map[string]any)
+			if dm == nil {
+				continue
+			}
+			name := asLiteral(dm["modelCode"])
+			used, ok := asF64(dm["usage"])
+			if name == "" || !ok {
+				continue
+			}
+			q.Details = append(q.Details, ToolUsage{Name: name, Used: used})
+		}
+	}
+	return q
 }
 
 // bizError 业务级错误（success=false）：类别+上游 msg 原文（不含钥/URL）。

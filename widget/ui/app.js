@@ -39,7 +39,8 @@ const inShell = () => !!window.__TAURI_INTERNALS__;
 // ── 配色（环基色/告警色与 mock 同源） ──
 function getVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 const COLORS = { window_5h: getVar('--c5h'), week: getVar('--cweek'),
-                 month_budget: getVar('--cmonth'), ds_budget: getVar('--cds') };
+                 month_budget: getVar('--cmonth'), ds_budget: getVar('--cds'),
+                 tools_quota: getVar('--ctools') };
 /** 断言调色板（profile.ringStrokeColor 消费）：基色 + 告警色。 */
 const PALETTE = { base: COLORS, yellow: getVar('--alert-y'), red: getVar('--alert-r') };
 
@@ -57,6 +58,7 @@ const PROVENANCE_BASE = {
   'coding_plan:window_5h': 'quota/limit → data.limits[unit:3] → 剩余 = 100 − percentage(38)',
   'coding_plan:week': 'quota/limit → data.limits[unit:6] → 剩余 = 100 − percentage(92)',
   'coding_plan:month_tokens': '台账四列 · 本自然月聚合（智谱端点无绝对值，月度只能本地估算）',
+  'coding_plan:tools_quota': 'quota/limit → limits[type=TIME_LIMIT,unit:5] → remaining/usage（MCP 工具增值服务，按调用次数；所有套餐版本/档位都有）',
   'paygo:balance_cny': 'user/balance → balance_infos[0].total_balance = granted + topped_up',
   'paygo:spend_today_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）',
   'paygo:spend_week_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）',
@@ -116,8 +118,9 @@ function cdSpan(p, m) {
 }
 function cdlineInner(p) {
   const m = (k) => p.metrics.find((x) => x.key === k);
-  // 缺席窗（如智谱 max 档无 unit:6 周窗）不造段——过滤空段防悬空分隔符
-  return [cdSpan(p, m('window_5h')), cdSpan(p, m('week'))]
+  // 缺席窗（如智谱 max 档无 unit:6 周窗）不造段——过滤空段防悬空分隔符；
+  // 工具额度倒计时（tools_quota）常驻参与（有重置时刻才出段）
+  return [cdSpan(p, m('window_5h')), cdSpan(p, m('week')), cdSpan(p, m('tools_quota'))]
     .filter(Boolean).join('<span class="sep"> · </span>');
 }
 const cdlineHTML = (p) => `<div class="cap cdline${state.profile.show_countdown ? '' : ' hidden'}">${cdlineInner(p)}</div>`;
@@ -157,12 +160,18 @@ function discHTML(p) {
     cap = `<div class="cap">查询失败 · ${p.error.category}</div>`;
   } else if (p.kind === 'coding_plan') {
     const mt = metricOf(p, 'month_tokens');
-    // 月预算环（内圈紫环，票 04）：不设预算=不画环（文字计数现状）；设了=caption 保留 + 环
-    svgInner = ringSVG(p, metricOf(p, 'window_5h'), metricOf(p, 'week'),
+    const tq = metricOf(p, 'tools_quota');
+    // 中环槽位（r33）：周窗在=周环（V2+）；V1 无周窗 → 工具额度环占位
+    //（TIME_LIMIT 按次数，青色）。有周窗时工具降文字行——槽位冲突，V2+ 布局届时再议。
+    const mid = metricOf(p, 'week') || tq;
+    svgInner = ringSVG(p, metricOf(p, 'window_5h'), mid,
       budgetRing(p, 'month_budget', mt && mt.value));
     center = `<text x="50" y="47" class="c-label">${label}</text>
               <text x="50" y="60" class="c-sub">${p.plan || 'Coding Plan'}</text>`;
     cap = cdlineHTML(p) + `<div class="cap">${mt ? mt.text : ''}${estBadge(mt)}</div>`;
+    if (metricOf(p, 'week') && tq) { // V2+：工具环无槽位，文字行兜底
+      cap += `<div class="cap">${labelOf('tools_quota')} 剩 ${Math.round(tq.remaining_pct)}%${tq.abs ? ` · ${tq.abs}` : ''}</div>`;
+    }
   } else if (p.kind === 'paygo') {
     const bal = metricOf(p, 'balance_cny'), st = metricOf(p, 'spend_today_cny'),
           sw = metricOf(p, 'spend_week_cny'), sm = metricOf(p, 'spend_month_cny');
@@ -202,7 +211,7 @@ const findUpstream = (id) => state.summary &&
   [...state.summary.upstreams, state.summary.handoff].find((x) => x.id === id);
 
 // ── tooltip（hover 各环数字） ──
-function labelOf(k) { return { window_5h: '5h', week: '周', month_budget: '月预算', ds_budget: '预算' }[k] || k; }
+function labelOf(k) { return { window_5h: '5h', week: '周', month_budget: '月预算', ds_budget: '预算', tools_quota: '工具' }[k] || k; }
 widget.addEventListener('mouseover', (e) => {
   const disc = e.target.closest('.disc'); if (!disc) return;
   const p = findUpstream(disc.dataset.id); if (!p) return;
@@ -229,11 +238,15 @@ function renderDetail(p) {
       const reset = m.resets_at
         ? `<span class="d-reset" style="color:${resetColor(p, m)}${m.remaining_pct < 20 ? ';font-weight:600' : ''}">重置 ${absTimeText(m.resets_at)}（${countdownText(m.resets_at)} 后）</span>`
         : '<span class="d-reset"></span>';
+      const sub = Array.isArray(m.details) && m.details.length // 工具额度分项（按次数）
+        ? `<div class="drow"><span class="d-sw" style="background:${resetColor(p, m)};opacity:.4"></span>
+           <span class="d-key">分项</span><span class="d-val">${m.details.map((d) => `${d.name} ${Math.round(d.used)}`).join(' · ')}</span></div>`
+        : '';
       return `<div class="drow"><span class="d-sw" style="background:${ringColor(p, m.key, m.remaining_pct)}"></span>
         <span class="d-key">${labelOf(m.key)}剩</span>
         <span class="d-val">${m.remaining_pct}%<span class="b ${m.source === 'fetched' ? 'fetch' : 'est'}">${m.source === 'fetched' ? '查询' : '估'}</span></span>
         ${m.abs ? `<span class="d-abs">${m.abs}</span>` : ''}
-        ${reset}</div>`;
+        ${reset}</div>${sub}`;
     }
     let extra = '';
     if (m.breakdown) extra = `<span class="d-abs">赠送 ${m.breakdown.granted} + 充值 ${m.breakdown.topped_up}</span>`;

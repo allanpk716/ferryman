@@ -68,7 +68,26 @@ type Window struct {
 type GLMQuota struct {
 	FiveHour *Window
 	Week     *Window
-	Plan     string // data.level 套餐档（可空）
+	Tools    *ToolQuota // MCP 工具增值服务额度（TIME_LIMIT，所有版本/档位都有）
+	Plan     string     // data.level 套餐档（可空）
+}
+
+// ToolQuota MCP 工具增值服务额度（按调用次数；2026-09-25 用户口径+真机实证：
+// usage=总额度、currentValue=已用、remaining=剩余、percentage=已用%、
+// usageDetails=分工具计数、nextResetTime=重置）。结构即白名单。
+type ToolQuota struct {
+	Remaining    float64 // 剩余次数
+	Total        float64 // 总额度
+	RemainingPct float64 // 剩余 %（绝对数口径现算；绝对数缺失回落 100−percentage）
+	Details      []ToolUsage
+	ResetsAt     time.Time
+	HasReset     bool
+}
+
+// ToolUsage 分工具计数（usageDetails[].modelCode/usage）。
+type ToolUsage struct {
+	Name string
+	Used float64
 }
 
 // KimiQuota Kimi Coding Plan 查询结果。

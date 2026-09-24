@@ -304,6 +304,76 @@ func TestParseDeepSeekBadShapes(t *testing.T) {
 	}
 }
 
+func TestParseGLMToolsQuota(t *testing.T) {
+	// MCP 工具增值服务额度（TIME_LIMIT unit:5，按次数，所有版本/档位都有——
+	// 2026-09-25 用户口径；字段语义真机实证）
+	body := []byte(`{"data":{"limits":[
+		{"type":"TIME_LIMIT","unit":5,"number":1,"usage":4000,"currentValue":3526,
+		 "remaining":474,"percentage":88,"nextResetTime":1790511415998,
+		 "usageDetails":[{"modelCode":"search-prime","usage":2987},
+		                 {"modelCode":"web-reader","usage":538},{"modelCode":"zread","usage":1}]},
+		{"type":"TOKENS_LIMIT","unit":3,"percentage":1,"nextResetTime":1790281688643}]}}`)
+	q, err := parseGLM(body)
+	if err != nil {
+		t.Fatalf("parseGLM: %v", err)
+	}
+	tq := q.Tools
+	if tq == nil {
+		t.Fatalf("工具额度缺席")
+	}
+	if tq.Total != 4000 || tq.Remaining != 474 {
+		t.Errorf("总额/剩余 = %v/%v, want 4000/474", tq.Total, tq.Remaining)
+	}
+	if mathRound(tq.RemainingPct) != 12 { // 474/4000=11.85≈12
+		t.Errorf("剩余%% = %v, want ≈12", tq.RemainingPct)
+	}
+	if !tq.HasReset || tq.ResetsAt != time.UnixMilli(1790511415998) {
+		t.Errorf("重置 = %v has=%v", tq.ResetsAt, tq.HasReset)
+	}
+	if len(tq.Details) != 3 || tq.Details[0].Name != "search-prime" || tq.Details[0].Used != 2987 {
+		t.Errorf("明细 = %+v", tq.Details)
+	}
+	// 配额窗不受影响：5h 照出
+	if q.FiveHour == nil || q.FiveHour.RemainingPct != 99 {
+		t.Errorf("5h = %+v", q.FiveHour)
+	}
+}
+
+func TestParseGLMToolsFallbackAndBadShapes(t *testing.T) {
+	// 缺 remaining → 回落 100−percentage
+	q, err := parseGLM([]byte(`{"data":{"limits":[
+		{"type":"time_limit","unit":5,"usage":"5000","percentage":30},
+		{"type":"TOKENS_LIMIT","unit":3,"percentage":1}]}}`))
+	if err != nil {
+		t.Fatalf("parseGLM: %v", err)
+	}
+	if q.Tools == nil || mathRound(q.Tools.RemainingPct) != 70 || q.Tools.Total != 5000 {
+		t.Errorf("回落口径: %+v", q.Tools)
+	}
+	// 总额度≤0 / 非 unit:5 的 TIME_LIMIT → 不造数
+	for name, body := range map[string][]byte{
+		"总额0": []byte(`{"data":{"limits":[{"type":"TIME_LIMIT","unit":5,"usage":0,"remaining":0},
+			{"type":"TOKENS_LIMIT","unit":3,"percentage":1}]}}`),
+		"unit错": []byte(`{"data":{"limits":[{"type":"TIME_LIMIT","unit":7,"usage":100,"remaining":9},
+			{"type":"TOKENS_LIMIT","unit":3,"percentage":1}]}}`),
+		"绝对数全缺": []byte(`{"data":{"limits":[{"type":"TIME_LIMIT","unit":5,"usage":100},
+			{"type":"TOKENS_LIMIT","unit":3,"percentage":1}]}}`),
+	} {
+		q, err := parseGLM(body)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if q.Tools != nil {
+			t.Errorf("%s: 不应造工具额度: %+v", name, q.Tools)
+		}
+	}
+}
+
+// mathRound 半价四舍五入（仅测试断言用）。
+func mathRound(v float64) float64 {
+	return float64(int64(v + 0.5))
+}
+
 // ---- Wire 层（httptest：鉴权形态/超时/状态码/未配置/错误串防泄漏） ----
 
 func TestFetchGLMWireBareKeyAndPath(t *testing.T) {

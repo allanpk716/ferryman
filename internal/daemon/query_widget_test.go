@@ -272,7 +272,9 @@ func TestWidgetSummaryGLMV1Note(t *testing.T) {
 	e := newQueryEnv(t)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":{"level":"max","limits":[
-			{"type":"TIME_LIMIT","unit":5,"percentage":88,"nextResetTime":1790511415998},
+			{"type":"TIME_LIMIT","unit":5,"usage":4000,"currentValue":3526,"remaining":474,
+			 "percentage":88,"nextResetTime":1790511415998,
+			 "usageDetails":[{"modelCode":"search-prime","usage":2987},{"modelCode":"web-reader","usage":538}]},
 			{"type":"TOKENS_LIMIT","unit":3,"percentage":1,"nextResetTime":1790281688643}]}}`)
 	}))
 	defer ts.Close()
@@ -290,13 +292,27 @@ func TestWidgetSummaryGLMV1Note(t *testing.T) {
 	if note == "" || !strings.Contains(note, "V1") {
 		t.Errorf("V1 注记缺席: %q", note)
 	}
-	// 周窗 metric 缺席（缺席窗不造行），5h 在
+	// 周窗 metric 缺席（缺席窗不造行），5h 在；工具额度在（真机同形 TIME_LIMIT）
 	metrics := map[string]bool{}
 	for _, m := range up["metrics"].([]any) {
 		metrics[m.(map[string]any)["key"].(string)] = true
 	}
 	if !metrics["window_5h"] || metrics["week"] {
 		t.Errorf("V1 metric 集 = %v（want 有 5h 无 week）", metrics)
+	}
+	if !metrics["tools_quota"] {
+		t.Fatalf("工具额度 metric 缺席: %v", metrics)
+	}
+	tq := metricOf(t, up, "tools_quota")
+	if v := tq["remaining_pct"].(float64); v < 11.8 || v > 11.9 { // 474/4000=11.85
+		t.Errorf("tools remaining_pct = %v, want ≈11.85", v)
+	}
+	if tq["abs"] != "474 / 4000" {
+		t.Errorf("tools abs = %v", tq["abs"])
+	}
+	ds, _ := tq["details"].([]any)
+	if len(ds) != 2 { // 夹具 TIME_LIMIT usageDetails 两条
+		t.Fatalf("tools details = %v", tq["details"])
 	}
 }
 
