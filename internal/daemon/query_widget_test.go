@@ -325,11 +325,12 @@ func TestWidgetSummaryEmptyAndUnconfigured(t *testing.T) {
 
 func TestWidgetTokText(t *testing.T) {
 	cases := map[float64]string{
-		0:         "月 0 tok",
-		980:       "月 980 tok",
-		1200:      "月 1.2k tok",
-		3_200_000: "月 3.2M tok",
-		4_000_000: "月 4M tok",
+		0:             "月 0 tok",
+		980:           "月 980 tok",
+		1200:          "月 1.2k tok",
+		3_200_000:     "月 3.2M tok",
+		4_000_000:     "月 4M tok",
+		9_223_359_693: "月 9.2G tok",
 	}
 	for in, want := range cases {
 		if got := widgetTokText(in); got != want {

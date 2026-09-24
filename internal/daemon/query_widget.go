@@ -269,11 +269,13 @@ func widgetWindowMetrics(fiveHour, week *quota.Window, asOf string) []map[string
 	return out
 }
 
-// widgetTokText 月 token 文本（demo 契约同款「月 3.2M tok」形态；k/M 一位
-// 小数、尾 0 剥离）。
+// widgetTokText 月 token 文本（demo 契约同款「月 3.2M tok」形态；G/M/k 一位
+// 小数、尾 0 剥离——重缓存月账可到 1e9 量级，无 G 档会出「9223.4M」怪相）。
 func widgetTokText(n float64) string {
 	v, unit := n, ""
 	switch {
+	case n >= 1e9:
+		v, unit = n/1e9, "G"
 	case n >= 1e6:
 		v, unit = n/1e6, "M"
 	case n >= 1e3:
