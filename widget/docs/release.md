@@ -13,12 +13,12 @@
 **本仓主程序与 widget 共用同一个 GitHub Releases 空间。** tauri.conf.json 里 updater 的 endpoint 是：
 
 ```
-https://github.com/allanpk716/ferryman/releases/latest/download/latest.json
+https://github.com/allanpk716/ferryman/releases/download/widget-latest/latest.json
 ```
 
 `releases/latest` 指向的是**全仓最新的那个 Release**（按创建时间，不含 prerelease/draft）。问题：主程序发一版（比如 `v0.4.0`），它就变成 latest——这个 URL 会 404（主程序 Release 里没有 latest.json）或指到旧版 widget 的清单。也就是说：**主程序发版穿插时，widget 的自动更新会被打断**。
 
-三个缓解选项（互斥，选一个；**今晚不定，晨间人工拍板后改 endpoint 并重发**）：
+三个缓解选项（互斥，选一个；**2026-09-25 用户已拍板选项 2**，CI 已自动化——机制为"移 tag + 维护 widget-latest 常驻 Release 资产（`--prerelease` 防顶掉仓库 Latest 位与主程序 latest 通道）"，endpoint 已指向 `releases/download/widget-latest/latest.json`；裸 tag 无 Release 资产会永久 404，评审已修正此点）：
 
 1. **独立 widget 仓库**：widget 用 subtree 拆出去（ADR-0014 本来就留了这出口），Releases 完全分开，endpoint 永远指向自己的 latest。最干净，成本是仓库管理。
 2. **固定 tag 指针**：发版后把一个常驻 tag（如 `widget-latest`）强制移到最新 widget Release 上，endpoint 改成 `.../releases/download/widget-latest/latest.json`。零新仓库，成本是发版流程多一步 `git tag -f`（可塞进 CI 自动做）。
@@ -52,7 +52,7 @@ npx tauri signer generate -w ~/.tauri/ferryman-widget.key
   "updater": {
     "pubkey": "<整串替换成 ferryman-widget.key.pub 的内容>",
     "endpoints": [
-      "https://github.com/allanpk716/ferryman/releases/latest/download/latest.json"
+      "https://github.com/allanpk716/ferryman/releases/download/widget-latest/latest.json"
     ]
   }
 }

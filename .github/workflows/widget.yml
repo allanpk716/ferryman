@@ -162,3 +162,25 @@ jobs:
             gh release create "$TAG_NAME" dist-upload/* \
               --title "$TAG_NAME" --notes-file tag_notes.txt "${args[@]}"
           fi
+
+      # 2026-09-25 用户拍板选项 2（固定 tag 指针）：维护 widget-latest 常驻 Release。
+      # 机制：releases/download/<tag>/<file> 只服务 Release 对象上的资产——裸 git tag
+      # 不产生 Release，所以必须 delete+create 同名 Release 并挂 latest.json（其内
+      # url 指向版本化 Release 的 setup.exe，资产无需重复挂）。
+      # --prerelease：防该常驻 Release 占据仓库 Latest 展示位、劫持 releases/latest
+      # 语义（主程序升级通道依赖它）；秒级 404 重建窗口对周期轮询无影响（评审 S2）。
+      - name: 维护 widget-latest 常驻 Release（updater endpoint 指向它）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f widget-latest "$GITHUB_SHA"
+          git push -f origin widget-latest
+          gh release delete widget-latest -y || true
+          gh release create widget-latest dist-upload/latest.json \
+            --prerelease \
+            --title "widget-latest（updater 常驻通道）" \
+            --notes "自动维护：随最新 widget-v* 发版刷新，勿手工编辑"

@@ -41,7 +41,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IFBMQUNFSE9MREVSIC0gcnVuOiBucHggdGF1cmkgc2lnbmVyIGdlbmVyYXRlIC13IH4vLnRhdXJpL2ZlcnJ5bWFuLXdpZGdldC5rZXksIHBhc3RlIC5wdWIgY29udGVudCBoZXJlClJXUlhNVVJITTFRd01RQUFBQUFBQUFBQVdscGFXbHBhV2xwYVdscGFXbHBhV2xwYVdscGFXbHBhV2xwYVdscGFXbG89Cg==",
       "endpoints": [
-        "https://github.com/allanpk716/ferryman/releases/latest/download/latest.json"
+        "https://github.com/allanpk716/ferryman/releases/download/widget-latest/latest.json"
       ]
     }
   }
