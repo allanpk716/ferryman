@@ -153,7 +153,9 @@ jobs:
           git fetch --force origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
           git tag -l --format='%(contents)' "${TAG_NAME}" > tag_notes.txt
           args=()
-          if [[ "${TAG_NAME#widget-v}" == *-* ]]; then args+=(--prerelease); fi
+          # widget 版本化发布一律 prerelease:直链下载不受影响,且永不占据 releases/latest
+          # (主程序自升级依赖该语义——防 widget 发版顶掉主程序最新版位)
+          args+=(--prerelease)
           if gh release view "$TAG_NAME" > /dev/null 2>&1; then
             gh release upload "$TAG_NAME" dist-upload/* --clobber
             gh release edit "$TAG_NAME" --notes-file tag_notes.txt
