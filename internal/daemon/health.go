@@ -4,16 +4,12 @@ package daemon
 // 逐字即 API 契约——gate_calls_total / gate_calls_by_agent /
 // last_gate_call_s_ago / last_transcript_write_s_ago / subagents_active /
 // subagent_events_total / health_alert / health_msg / qwatch（含
-// miss_signals 与 mode 活值）。glm_balance 为票07 Go 侧增量字段（余额展示行，
-// 按需查询一次；Python 契约字段不动）；version 为票02 Go 侧增量字段（发布与
-// 自升级规格 §A：版本可见）。
+// miss_signals 与 mode 活值）。version 为票02 Go 侧增量字段（发布与
+// 自升级规格 §A：版本可见）。（glm_balance 行已于 2026-09-25 下线：编码套餐
+// key 不适用 user/balance，恒为失败文案的死面；悬浮窗余额走 quota 端点。）
 
 import (
-	"errors"
-
 	"ferryman/internal/clock"
-	"ferryman/internal/config"
-	"ferryman/internal/dock"
 	"ferryman/internal/mathx"
 )
 
@@ -86,26 +82,5 @@ func (d *Daemon) Health() map[string]any {
 		"health_alert":                alert,
 		"health_msg":                  msg,
 		"qwatch":                      qw,
-		"glm_balance":                 d.glmBalance(),
 	}
-}
-
-// glmBalance 票07：余额展示行值（/stats 面板拉取时按需查询一次，无后台轮询/
-// 定时器）。票01 起按 active 条目取值（ActiveUpstream 单源——无表时旧单值
-// 兜底包装）。未配置（无条目/无 api_key/无 balance_url——不配不显示）→
-// 「未配置」（零 HTTP）；失败 →「余额查询失败：<类别>」（类别文案 dock 侧
-// 单源，永不携带真钥）；成功 → 余额数值字面量。
-func (d *Daemon) glmBalance() string {
-	var up *config.DockUpstream
-	if d.Cfg != nil && d.Cfg.Dock != nil {
-		_, up = d.Cfg.Dock.ActiveUpstream()
-	}
-	info, err := dock.FetchBalance(up)
-	if errors.Is(err, dock.ErrBalanceNotConfigured) {
-		return "未配置"
-	}
-	if err != nil {
-		return "余额查询失败：" + err.Error()
-	}
-	return info.Balance
 }

@@ -2,8 +2,7 @@
 //
 //   - 装配点不再读旧单值字段：新表+active 与旧单值并存时，转发目的地/出站
 //     真钥/model_map 全部来自 active 条目（F9 解析优先级的端到端证明）；
-//   - 首启迁移经 ServeContext 全链路发生（加载配置后、渡口构造前）；
-//   - /stats 余额行按 active 条目取 balance_url（不配不显示，D11）。
+//   - 首启迁移经 ServeContext 全链路发生（加载配置后、渡口构造前）。
 package daemon
 
 import (
@@ -191,38 +190,5 @@ default = "glm-4.7-flash"
 	// 横幅：渡口按 active 装配
 	if !strings.Contains(out, "active=cc-switch") {
 		t.Fatalf("横幅缺 active=cc-switch:\n%s", out)
-	}
-}
-
-func TestHealthGLMBalanceFollowsActiveUpstream(t *testing.T) {
-	// /stats 余额行按 active 条目：无 balance_url 的条目＝未配置（D11 不配
-	// 不显示，零 HTTP）；切到带 key+url 的条目＝查询该端点。
-	e := newGateEnv(t)
-	var hits atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		_, _ = w.Write([]byte(`{"data":{"balance":"7.7"}}`))
-	}))
-	defer srv.Close()
-
-	e.d.Cfg.Dock = &config.DockCfg{
-		Active: "no-balance",
-		Upstreams: map[string]config.DockUpstream{
-			"no-balance": {BaseURL: "https://open.bigmodel.cn/api/anthropic", APIKey: "k"},
-			"with-url":   {BaseURL: "https://api.deepseek.com/anthropic", APIKey: balancePanelKey, BalanceURL: srv.URL},
-		},
-	}
-	if got := e.d.Health()["glm_balance"]; got != "未配置" {
-		t.Fatalf("无 balance_url 条目: glm_balance = %v, want 未配置", got)
-	}
-	if hits.Load() != 0 {
-		t.Fatalf("不配不显示却发出 %d 次 HTTP", hits.Load())
-	}
-	e.d.Cfg.Dock.Active = "with-url"
-	if got := e.d.Health()["glm_balance"]; got != "7.7" {
-		t.Fatalf("带 balance_url 条目: glm_balance = %v, want 7.7", got)
-	}
-	if hits.Load() != 1 {
-		t.Fatalf("hits = %d, want 1", hits.Load())
 	}
 }
