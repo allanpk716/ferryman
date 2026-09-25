@@ -86,8 +86,12 @@ export const DEMO_SUMMARY = {
   },
 };
 
-/** 轮询周期（spec：30s 轮询 /widget/summary）。 */
+/** 轮询周期（spec：30s 轮询 /widget/summary；自适应框架下=成功后的重访间隔）。 */
 export const POLL_MS = 30000;
+/** 失败重试基值（评审 M2）：失败后 10s 起指数退避。 */
+export const RETRY_MS = 10000;
+/** 退避封顶（评审 M2）：间隔 10→20→40→60s 封顶，连续失败计数封顶 4，成功复位 30s。 */
+export const RETRY_MAX_MS = 60000;
 
 const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 
@@ -171,33 +175,61 @@ async function resolveDaemonTarget() {
 }
 
 /**
- * 30s 轮询框架。demo 模式对内嵌副本空转（可选注入灰化）；live 模式经
- * resolveDaemonTarget 拿端点+Bearer token（票 09 接线；壳外无注入=不可达，
- * 如实灰化）。立即回调一次，随后每 POLL_MS 一次。
+ * 自适应轮询框架（票 03 · 评审 M2）：成功后 30s；失败后 10s 起指数退避
+ * （10→20→40→60s 封顶，连续失败计数封顶 4），成功即复位 30s。
+ *
+ * 并发不变量：任意时刻至多一条调度链——poke() 递增代际 gen，旧链在下一个
+ * 调度点比对失效即自弃；请求在途时 poke 允许两个幂等只读 fetch 短暂并行，
+ * 但旧链绝不二次 setTimeout（不产生第二条常驻链、不泄漏定时器）。
+ * 兜底硬化：tick 内任何意外异常（含 resolveDaemonTarget 的意外 rejection）
+ * 视同本轮不可达，onUpdate(null,false) 走退避——绝不因意外 rejection 永久杀死链。
+ * demo 模式对内嵌副本空转（无网络语义，恒成功不退避；gray 只影响 reachable 旗标）；
+ * live 模式经 resolveDaemonTarget 拿端点+Bearer token，壳外无注入=不可达，如实灰化。
  *
  * @param {(summary:Summary|null, reachable:boolean)=>void} onUpdate
- * @returns {()=>void} stop()
+ * @returns {{stop:()=>void, poke:()=>void}} stop=停链；poke=立即刷新（恢复即拉）
  */
 export function startPolling(onUpdate) {
   async function tick() {
     if (isDev()) {
       onUpdate(maybeSuperset(DEMO_SUMMARY), !forceGray());
-      return;
+      return true;
     }
-    const target = await resolveDaemonTarget();
-    if (!target) { onUpdate(null, false); return; }
     try {
-      const r = await fetch(target.url, {
-        headers: target.token ? { Authorization: `Bearer ${target.token}` } : {},
-        signal: AbortSignal.timeout(8000), // daemon 冷缓存最长 5s 外呼+装配，留 8s
-      });
-      if (!r.ok) throw new Error(String(r.status));
-      onUpdate(/** @type {Summary} */ (await r.json()), true);
+      const target = await resolveDaemonTarget(); // 兜底硬化：意外异常视同本轮不可达
+      if (!target) { onUpdate(null, false); return false; }
+      try {
+        const r = await fetch(target.url, {
+          headers: target.token ? { Authorization: `Bearer ${target.token}` } : {},
+          signal: AbortSignal.timeout(8000), // daemon 冷缓存最长 5s 外呼+装配，留 8s
+        });
+        if (!r.ok) throw new Error(String(r.status));
+        onUpdate(/** @type {Summary} */ (await r.json()), true);
+        return true;
+      } catch {
+        onUpdate(null, false); // daemon 不可达=整体灰化+⚠（不假造数据）
+        return false;
+      }
     } catch {
-      onUpdate(null, false); // daemon 不可达=整体灰化+⚠（不假造数据）
+      onUpdate(null, false);
+      return false;
     }
   }
-  tick(); // 立即一次（同步落定首屏）
-  const h = setInterval(tick, POLL_MS);
-  return () => clearInterval(h);
+  let timer = null, stopped = false, fails = 0, gen = 0;
+  async function loop(myGen) {
+    if (stopped || myGen !== gen) return; // 代际闸：旧链在此自弃
+    const ok = await tick();
+    if (stopped || myGen !== gen) return; // 在途期间被 poke/stop：不二次 setTimeout
+    fails = ok ? 0 : Math.min(fails + 1, 4);
+    const delay = ok ? POLL_MS : Math.min(RETRY_MS * 2 ** (fails - 1), RETRY_MAX_MS);
+    timer = setTimeout(() => loop(myGen), delay);
+  }
+  function poke() {
+    if (stopped) return;
+    gen += 1; // 旧链自弃凭据；其在途请求无害（幂等只读，弃的是再调度权）
+    if (timer) clearTimeout(timer);
+    loop(gen);
+  }
+  loop(gen); // 立即一次（同步落定首屏；恢复即拉的“立即”语义同源）
+  return { stop: () => { stopped = true; if (timer) clearTimeout(timer); }, poke };
 }

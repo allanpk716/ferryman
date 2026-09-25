@@ -296,6 +296,21 @@ async function main() {
     check('split.settings.js 无演示数据字面量', !['generated_at', '3.2M', '87.50', '12:03'].some((s) => sjs.includes(s)), '');
     check('split.profile.js 无演示数据字面量', !['generated_at', '3.2M', '87.50', '12:03'].some((s) => pjs.includes(s)), '');
 
+    // m2 · 收尾票 03 · 自适应轮询（评审 M2）：退避常量/代际防护/poke 暴露/恢复事件接线。
+    // 断言正则与所开代码形态逐字匹配（F9 教训：箭头包装调用不得用裸函数名字面量匹配，
+    // 轮询在场必须命中 `setTimeout(() => loop` 形，严禁裸 /setTimeout\(loop/ 永假断言）。
+    check('m2.退避常量与自适应轮询在场',
+      datajs.includes('export const RETRY_MS = 10000;') &&
+      datajs.includes('export const RETRY_MAX_MS = 60000;') &&
+      /setTimeout\(\(\) => loop/.test(datajs), '');
+    check('m2.代际防护在场（声明行 gen=0 + myGen !== gen 双闸）',
+      /let timer = null, stopped = false, fails = 0, gen = 0;/.test(datajs) &&
+      datajs.includes('myGen !== gen'), '');
+    check('m2.startPolling 暴露 poke（return { stop: 形）',
+      /function poke\(\)/.test(datajs) && datajs.includes('return { stop:'), '');
+    check('m2.app 监听 widget-restored 即拉',
+      appjs.includes("'widget-restored'") && appjs.includes('poller.poke()'), '');
+
     // ⑦ 离线铁律：无外部引用（运行时源零 URL 字面量；dump 无外链资源；票 04 起含设置窗三件）
     const runtime = { 'index.html': html, 'style.css': css, 'app.js': appjs, 'data.js': datajs,
                       'settings.html': shtml, 'settings.js': sjs, 'profile.js': pjs };

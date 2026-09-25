@@ -430,6 +430,10 @@ applyProfile();
       state.profile = profile.normalizeProfile(e && e.payload).profile;
       applyProfile();
     });
+    // 恢复即拉（评审 M2）：壳层在托盘「显示悬浮窗」/单实例拉起时 emit widget-restored，
+    // 这里立即戳一轮刷新，不等下一个轮询间隔。daemon 自行复活无事件可感知，
+    // 靠退避收敛（最坏 ≤60s）——“立即”语义只属于托盘路径。poller 在下方 startPolling 处声明。
+    t.event.listen('widget-restored', () => poller.poke());
   }
 })();
 
@@ -465,7 +469,7 @@ applyProfile();
   });
 })();
 
-data.startPolling((summary, reachable) => {
+const poller = data.startPolling((summary, reachable) => {
   state.summary = summary; state.reachable = reachable;
   render();
 });

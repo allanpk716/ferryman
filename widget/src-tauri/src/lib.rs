@@ -190,6 +190,8 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("widget") {
                 let _ = w.show();
                 let _ = w.set_focus();
+                // 评审 M2 · 恢复即拉：二次启动拉起既有窗口后，通知前端立即刷新一轮
+                let _ = app.emit("widget-restored", ());
             }
         }))
         // 自启插件只接线；默认关（不 enable），票 04 设置里给开关
@@ -269,6 +271,8 @@ pub fn run() {
                         if let Some(w) = app.get_webview_window("widget") {
                             let _ = w.show();
                             let _ = w.set_focus();
+                            // 评审 M2 · 恢复即拉：托盘恢复显示后，通知前端立即刷新一轮
+                            let _ = app.emit("widget-restored", ());
                         }
                     }
                     "hide" => {
