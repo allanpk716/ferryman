@@ -15,6 +15,7 @@
 
 ## 涉及路径
 - internal/daemon/（serve.go＋托盘/信号相关文件＋测试）
+- cmd/ferryman/main.go（**协调者实施中裁定并入**：托盘退出的真实 cancel 点在此（quit 点击→systray.Quit→stop()），不并入则只能排除法兜底——有误归因风险，违背第 5 件初衷；改动=onQuit 回调挂 NoteShutdownSource 预记缝）
 
 ## 副作用声明
 测试跑 `go test ./internal/daemon/...`（票内独占）。

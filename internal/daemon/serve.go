@@ -18,6 +18,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"ferryman/internal/accounts"
@@ -130,7 +132,24 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// （渡口/watcher/worker/pid）一起收。
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ln, srv, err := ListenAndServeWithShutdown(d, cfg.Server.Port, token, cancel)
+	// 关停来源落日志（票03，spec 热修第 5 件；扩票路径后三源皆真源头）：三个
+	// 自愿退出源各记一行（来源＋时间），首源锁存（sourceMarker）防双记。
+	// 端点源＝下方 cancel 包装处（取消动作发生处）；Ctrl+C 源＝信号观察者
+	// （signal.Notify 多路广播挂同一信号，与上游 NotifyContext 互不干扰，信号
+	// 到达即记）；托盘退出＝合并 exe 托盘「退出」点击动作处（cmd/ferryman
+	// trayReady 菜单事件循环，票03 扩票路径纳入）经 NoteShutdownSource 预记，
+	// Done 汇聚点（见下）消费落日志——三源共用同一把锁存，双源竞发不双记。
+	// 外部强杀/崩溃无进程内日志机会（声明式残余，日志措辞不承诺全覆盖）；托盘
+	// GUI 点击链本身不可单测（仅人工冒烟可验），daemon 侧预记→消费机制另有单测。
+	marker := &sourceMarker{}
+	srcCh := make(chan os.Signal, 1)
+	signal.Notify(srcCh, os.Interrupt)
+	defer signal.Stop(srcCh)
+	go watchInterruptOnce(ctx, srcCh, marker.mark)
+	ln, srv, err := ListenAndServeWithShutdown(d, cfg.Server.Port, token, func() {
+		marker.mark("shutdown端点")
+		cancel()
+	})
 	if err != nil {
 		// 唯一化（钩子自举的并发兜底）：绑定失败 = 端口已有监听者
 		if AlreadyRunning(cfg.Server.Port, token) {
@@ -236,10 +255,22 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		config.PyFloatStr(cfg.Thresholds.BlockS),
 		cfg.FerryProvider, dataDir)
 	<-ctx.Done() // serve_forever 阻塞；KeyboardInterrupt ≈ ctx 取消
+	// 托盘源消费（票03 扩票路径）：合并 exe 托盘「退出」点击处已在取消链真源头
+	// 预记（NoteShutdownSource → externalShutdownSource，stop() 取消 ctx 之前），
+	// 这里经首源锁存落日志。未预记（守护被外部编排直取消/测试直 cancel）不误记
+	// ——旧排除法兜底（睡 50ms 后「无端点无信号即记托盘」）已废：三源皆真源头，
+	// 无源即无行，不再从「都没有」倒推归因。Ctrl+C 行由信号观察者自行落（信号
+	// 到达即成为可运行，先于关停序的网络/落盘步骤完成，无须在此兜底查通道）。
+	if src, ok := externalShutdownSource.Load().(string); ok && src != "" {
+		marker.mark(src)
+	}
 	fmt.Println("\n[ferryman] 停止中…")
 	_ = srv.Close() // server.shutdown()
+	// 渡口随主服务优雅停（票03 接线：先 Shutdown 排水——上限取
+	// [dock].drain_timeout_s，到期收尾由 Server 内部完成——再 Close 兜底；
+	// 快照随进程消失，不持久化）。cfg.Dock == nil（未启用）不取键不解引用。
 	if dockSrv != nil {
-		_ = dockSrv.Close() // 渡口随主服务优雅停（快照随进程消失，不持久化）
+		shutdownDockGracefully(dockSrv, cfg.Dock.DrainTimeoutS)
 	}
 	watcher.Stop()         // watcher.stop()
 	worker.Stop()          // worker.stop()
@@ -260,4 +291,76 @@ func newBeatSender(cfg *config.Config, dockSnap *dock.SnapshotStore) beat.Sender
 		return nil
 	}
 	return beat.NewHttpBeatSender("http://"+cfg.Dock.Listen, dockSnap)
+}
+
+// ---- 票03（spec 错误契约热修 1/5 的 daemon 侧）：排水接线与关停来源日志 ----
+
+// externalShutdownSource 托盘退出源的进程级预记（票03 扩票路径）：合并 exe 的
+// 托盘菜单事件循环（cmd/ferryman，daemon 包外）在取消 ctx 前写入，serveConfig
+// 于 Done 汇聚点消费——跨包传递只经此一缝，不导出 marker 本体。仅生产托盘路径
+// 写入（直取消形态/测试不触碰；未写或空串 = 无托盘源，Done 汇聚点不误记）。
+var externalShutdownSource atomic.Value // 存 string
+
+// NoteShutdownSource 预记关停来源（票03 扩票路径）：cmd/ferryman 托盘「退出」
+// 点击动作处（取消链真源头：点击 → systray.Quit → Run 返回 → stop() → ctx
+// 取消）在 systray.Quit 前调用；serveConfig 于 Done 汇聚点经首源锁存落日志，
+// 与端点/Ctrl+C 源同锁存，双源竞发不双记。仅 serve 形态消费；面板形态托盘
+// 退出无守护可归因，不调本函数。
+func NoteShutdownSource(source string) {
+	externalShutdownSource.Store(source)
+}
+
+// logShutdownSource 关停来源一行日志（来源＋时间）。var 形＝测试缝（对齐
+// FerrySession 惯例——fmt 直写 stdout 的行经桩收形断言，不真采 stdout）。
+var logShutdownSource = func(source string) {
+	fmt.Printf("[ferryman] 关停来源: %s（%s）\n", source, time.Now().Format("2006-01-02 15:04:05"))
+}
+
+// sourceMarker 关停来源首源锁存：一次关停只有一个发起者，首个到源者记日志，
+// 后到者静默——双源竞发（如排水期间又按 Ctrl+C）不重复记、不顶替已记事实。
+type sourceMarker struct {
+	mu  sync.Mutex
+	set bool
+}
+
+func (m *sourceMarker) mark(source string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.set {
+		return
+	}
+	m.set = true
+	logShutdownSource(source)
+}
+
+// watchInterruptOnce Ctrl+C 源的信号观察者：信号到达即记（这就是"取消动作
+// 发生处"——os.Interrupt 一到，上游 signal.NotifyContext 同瞬取消 ctx）。
+// 注册侧用 signal.Notify 多路广播挂同一信号，与上游 NotifyContext 互不干扰、
+// 互不抢道；ctx 结束（含 serveConfig 各早退路径的 defer cancel）即退出。
+func watchInterruptOnce(ctx context.Context, ch <-chan os.Signal, mark func(string)) {
+	select {
+	case <-ch:
+		mark("Ctrl+C中断")
+	case <-ctx.Done():
+	}
+}
+
+// shutdownDockGracefully 渡口排水关停（票03 接线，spec 热修第 1 件 daemon
+// 侧）：Shutdown(排水ctx)——上限取 [dock].drain_timeout_s（config 解析层保证
+// >0），传入 ctx 即排水上限的时钟（票02 语义）；到期收尾（流内 error 事件＋
+// 硬收）由 Server 内部完成，daemon 不重复造收尾逻辑。之后 Close 兜底（票02
+// 幂等，自然结束时重复收无害）。不悬挂：Shutdown 必在排水上限＋注入交付宽限
+// 内返回。dockSrv 为 nil（[dock] 未配 / 构造或绑定失败降级）直接跳过——关停
+// 路径不空引用，行为与未启用时不变。
+func shutdownDockGracefully(dockSrv *dock.Server, drainTimeoutS float64) {
+	if dockSrv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration(drainTimeoutS*float64(time.Second)))
+	defer cancel()
+	if err := dockSrv.Shutdown(ctx); err != nil {
+		fmt.Printf("[ferryman] ⚠ 渡口排水到期强收: %v\n", err)
+	}
+	_ = dockSrv.Close() // 兜底硬收
 }

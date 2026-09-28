@@ -306,7 +306,12 @@ func serveAll(o serveOpts) int {
 	if ln != nil {
 		url = fmt.Sprintf("http://%s", ln.Addr())
 	}
-	systray.Run(func() { trayReady(url); close(trayReadyCh) }, func() {})
+	// 托盘「退出」点击 = 取消链真源头（票03 扩票路径）：点击回调先预记关停来源
+	// 再 systray.Quit——Run 返回后下方 stop() 取消 ctx，daemon 侧 Done 汇聚点
+	// 消费预记落日志（首源锁存，与端点/Ctrl+C 源不双记）。GUI 点击链不可单测，
+	// 托盘源仅人工冒烟可验（daemon 侧预记→消费机制另有单测）。
+	onTrayQuit := func() { daemon.NoteShutdownSource("托盘退出") }
+	systray.Run(func() { trayReady(url, onTrayQuit); close(trayReadyCh) }, func() {})
 	close(trayExitedCh)
 	stop() // 「退出」= 停守护（ctx 取消 → serveConfig 优雅停）
 	<-done
@@ -371,8 +376,12 @@ func trayMenuItems(ver, url string) []trayItem {
 
 // trayReady 托盘就绪：帆船图标 + 面板地址 tooltip + 菜单（装配见 trayMenuItems；
 // 票07 新增检查更新/立即升级）。退出 = 停守护——systray.Run 返回后主流程取消
-// ctx；检查/升级动作在各自 goroutine 里跑，不堵菜单事件循环。
-func trayReady(url string) {
+// ctx；检查/升级动作在各自 goroutine 里跑，不堵菜单事件循环。onQuit＝「退出」
+// 点击动作回调（票03 扩票路径：serve 形态在此预记关停来源——这里是托盘退出
+// 取消链的真源头，点击 → systray.Quit → Run 返回 → stop() → ctx 取消；
+// 面板形态传 nil，无守护可归因）。托盘 GUI 点击链不可单测，托盘源仅人工冒烟
+// 可验；daemon 侧预记→消费机制另有单测（internal/daemon）。
+func trayReady(url string, onQuit func()) {
 	systray.SetIcon(iconICO)
 	systray.SetTooltip("Ferryman 守护+面板 · " + url)
 	it := trayMenuItems(version, url)
@@ -393,6 +402,9 @@ func trayReady(url string) {
 			case <-upNow.ClickedCh:
 				go trayUpgradeNow()
 			case <-quit.ClickedCh:
+				if onQuit != nil {
+					onQuit() // 票03：预记「托盘退出」关停来源（取消链真源头，先于 Quit/stop）
+				}
 				systray.Quit()
 				return
 			}
@@ -1425,7 +1437,7 @@ func runPanel(args []string) int {
 		log.Fatal(httpsrv.Serve(ln)) // 前台阻塞，Ctrl+C 即退
 	}
 	go func() { log.Fatal(httpsrv.Serve(ln)) }()
-	systray.Run(func() { trayReady(url) }, func() {})
+	systray.Run(func() { trayReady(url, nil) }, func() {}) // 面板形态：无守护可归因，退出无预记
 	return 0
 }
 
