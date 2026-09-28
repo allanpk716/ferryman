@@ -14,7 +14,7 @@
 | 首包闸门 60s → 504＋错误体 | 行 10 |
 | 排水到期·流已建立（`event: error` 后断＋truncated） | 行 11 |
 | 排水期在途流跑完（窗内自然结束） | 行 12 |
-| 换装窗口闭环（停-拉间隙拒连→CC 退避→新守护成功） | 行 13 |
+| 换装窗口闭环（停-拉间隙拒连→CC 退避→新守护成功）——行定义出自票面 What-to-build；spec 仅以「13 行清单」括号涵盖 | 行 13 |
 
 ## 0. 前置环境
 
@@ -218,7 +218,7 @@ B='{"model":"claude-sonnet-5","max_tokens":64,"stream":true,"messages":[{"role":
 ### 行 8 · 流中段断（上游干净 EOF 截断）
 
 - [ ] **触发**：`curl -siN -X POST 'http://127.0.0.1:15732/v1/messages?stub=cut' -H 'content-type: application/json' -d "$B"`
-- [ ] **渡口回**：`200`＋`text/event-stream`，`message_start`、`content_block_delta` 两事件实时到达后**连接即结束**——无 `message_stop`、无错误事件（契约：上游流中段断不抢救）；账本该行带 `"truncated":true`，实例控制台出现 `[dock] 截断流: session= status=200（EOF 前未见 message_stop）`
+- [ ] **渡口回**：`200`＋`text/event-stream`，`message_start`、`content_block_delta` 两事件实时到达后**连接即结束**——无 `message_stop`、无错误事件（契约：上游流中段断不抢救）；账本该行带 `"truncated":true`，实例控制台出现 `[dock] 截断流: session= mode=rewrite status=200（EOF 前未见 message_stop）`
 - [ ] **CC 预期**：响应中途连接结束，呈现中断类错误（2026-09-28 事故的 "Connection lost mid-response" 即此形），由用户重试回合；排查时账本 `truncated` 提供证据
 
 ## 2. 渡口自产组（行 9–13）
@@ -247,12 +247,13 @@ B='{"model":"claude-sonnet-5","max_tokens":64,"stream":true,"messages":[{"role":
 
   ```
   （空行）
+  （空行）
   event: error
   data: {"type":"error","error":{"type":"api_error","message":"渡口正在关停（排水到期收尾），流在此时被截断；请重试以继续"}}
 
   ```
 
-  随后连接关闭。事件前的**空行是故意的**（终结可能挂起的半行，防止错误事件被 SSE 解析器吞进上一个事件）。实例控制台依次出现：`[ferryman] 关停来源: Ctrl+C中断（…）`（走端点则为 `关停来源: shutdown端点`）→ `[ferryman] 停止中…` → `[ferryman] ⚠ 渡口排水到期强收: context deadline exceeded` → 进程退出；`[dock] 截断流: … status=200（EOF 前未见 message_stop）`；账本行 `status":200`＋`"truncated":true`
+  随后连接关闭。事件前的**两个连续空行属预期**：第一个是桩自身事件的结束空行（SSE 事件以空行收尾），第二个是排水注入的前导空行——它终结可能挂起的半行，防止错误事件被 SSE 解析器吞进上一个事件。实例控制台依次出现：`[ferryman] 关停来源: Ctrl+C中断（…）`（走端点则为 `关停来源: shutdown端点`）→ `[ferryman] 停止中…` → `[ferryman] ⚠ 渡口排水到期强收: context deadline exceeded` → 进程退出；`[dock] 截断流: … status=200（EOF 前未见 message_stop）`；账本行 `status":200`＋`"truncated":true`
 - [ ] **CC 预期**：流内 `event: error` 是 CC 认识的 Anthropic 错误事件——按可重试 API 错误退避重试，**不是无解释断连**
 
 ### 行 12 · 排水期在途流存活（窗内跑完）
