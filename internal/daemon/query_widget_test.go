@@ -10,6 +10,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -371,6 +372,106 @@ func TestWidgetSummaryEmptyAndUnconfigured(t *testing.T) {
 	}
 	if hits != 0 {
 		t.Errorf("未配置不应外呼, got %d", hits)
+	}
+}
+
+// ---- CORS：壳内 webview 跨源 fetch 的预检与响应头（票08 补遗） ----
+// Tauri 壳页面源是 tauri.localhost，fetch 127.0.0.1:7311 且带 Authorization 头
+// → WebView2 强制预检；daemon 不答预检则 fetch 永远失败（widget 恒「不可达」
+// ——2026-09-28 真机所见，curl 不走浏览器 CORS 故终检未逮）。
+
+// widgetPreflightDo 发一条不带 Bearer 的 OPTIONS 预检（浏览器预检本就不带凭据）。
+func widgetPreflightDo(t *testing.T, e *queryEnv, origin string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodOptions,
+		fmt.Sprintf("http://127.0.0.1:%d/widget/summary", e.port), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("OPTIONS 预检: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// widgetGetWithOrigin 带可选 Origin 的 GET，回状态码+响应头。
+func widgetGetWithOrigin(t *testing.T, e *queryEnv, origin string) (int, http.Header) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/widget/summary", e.port), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("GET /widget/summary: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, resp.Header
+}
+
+func TestWidgetCORSPreflight(t *testing.T) {
+	e := newQueryEnv(t)
+
+	// 白名单源：204 + 回声 ACAO + 放行 GET 与 Authorization（免鉴权）
+	for _, origin := range []string{
+		"http://tauri.localhost", "https://tauri.localhost", "tauri://localhost",
+	} {
+		resp := widgetPreflightDo(t, e, origin)
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("预检[%s] = %d, want 204", origin, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+			t.Errorf("预检[%s] ACAO = %q, want 回声", origin, got)
+		}
+		if m := resp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(m, "GET") {
+			t.Errorf("预检[%s] Allow-Methods = %q, 缺 GET", origin, m)
+		}
+		if h := resp.Header.Get("Access-Control-Allow-Headers"); !strings.Contains(h, "Authorization") {
+			t.Errorf("预检[%s] Allow-Headers = %q, 缺 Authorization", origin, h)
+		}
+	}
+
+	// 白名单外：无 ACAO、不 204（维持未实现 501 原样——任意网页不得过预检）
+	resp := widgetPreflightDo(t, e, "https://evil.example")
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("白名单外 ACAO = %q, want 空", got)
+	}
+	if resp.StatusCode == http.StatusNoContent {
+		t.Errorf("白名单外预检 = 204, want 非 204")
+	}
+}
+
+func TestWidgetCORSONGET(t *testing.T) {
+	e := newQueryEnv(t)
+	widgetTestReset(t, widgetRewriteClient(t, httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))))
+	e.d.Cfg.Dock = &config.DockCfg{} // 空上游表：装配走通即够（断言头不断言数）
+
+	// 带 Origin 的真 GET：200 + 回声 ACAO（实际请求也要过 CORS，非只预检）
+	code, hdr := widgetGetWithOrigin(t, e, "http://tauri.localhost")
+	if code != 200 {
+		t.Errorf("带 Origin GET = %d, want 200", code)
+	}
+	if got := hdr.Get("Access-Control-Allow-Origin"); got != "http://tauri.localhost" {
+		t.Errorf("GET ACAO = %q, want 回声", got)
+	}
+
+	// 无 Origin（curl/壳外语境）：行为原样，不带 CORS 头
+	code, hdr = widgetGetWithOrigin(t, e, "")
+	if code != 200 {
+		t.Errorf("无 Origin GET = %d, want 200", code)
+	}
+	if got := hdr.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("无 Origin GET ACAO = %q, want 空", got)
 	}
 }
 

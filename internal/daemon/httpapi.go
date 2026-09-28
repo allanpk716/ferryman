@@ -130,6 +130,14 @@ func makeHandler(d DaemonLike, token string, onShutdown func()) http.Handler {
 			doPost(d, token, w, r)
 		case http.MethodGet:
 			doGet(d, token, w, r)
+		case http.MethodOptions:
+			// 票08 补遗（widget CORS）：白名单源（Tauri 壳 webview）的预检
+			// 免鉴权答 204——浏览器预检不带 Bearer，auth 面看不见它；白名单
+			// 外维持 501（BaseHTTPRequestHandler 未定义 do_OPTIONS 同位）。
+			if !handleWidgetPreflight(w, r) {
+				w.WriteHeader(http.StatusNotImplemented)
+				_, _ = w.Write([]byte("Unsupported method"))
+			}
 		default: // BaseHTTPRequestHandler 未定义 do_X → send_error(501) 同位
 			w.WriteHeader(http.StatusNotImplemented)
 			_, _ = w.Write([]byte("Unsupported method"))

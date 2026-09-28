@@ -85,8 +85,43 @@ func widgetCacheFresh(id string) *widgetRemote {
 	return e
 }
 
+// widgetAllowedOrigins CORS 源白名单：Tauri 2 壳的 webview 页面源（Windows
+// WebView2=http://tauri.localhost，https 变体与 macOS/Linux WKWebView 的
+// tauri://localhost 一并收录）。回声式 ACAO 而非 *——放行 Authorization 头
+// 预检时，不让任意网页借通配符过关（实际 GET 仍要 Bearer，401 面不变）。
+var widgetAllowedOrigins = map[string]bool{
+	"http://tauri.localhost":  true,
+	"https://tauri.localhost": true,
+	"tauri://localhost":       true,
+}
+
+// handleWidgetPreflight OPTIONS 预检（票08 补遗）：壳内 webview 跨源 fetch
+// 本端点且带 Authorization 头 → WebView2 强制先发预检（预检不带凭据）——
+// 故在 auth 面之前免鉴权答 204+头；实际 GET 仍走既有 Bearer 面。白名单外
+// 返回 false，调用方维持未实现 501 原样（非浏览器 OPTIONS 不受影响）。
+// 按 Origin 白名单而非路径卡：其余端点的预检即便过了，实际请求仍 401，
+// 不构成放权。
+func handleWidgetPreflight(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if !widgetAllowedOrigins[origin] {
+		return false
+	}
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", origin)
+	h.Set("Access-Control-Allow-Methods", http.MethodGet)
+	h.Set("Access-Control-Allow-Headers", "Authorization")
+	h.Set("Access-Control-Max-Age", "86400") // 预检缓存一天：30s 轮询不必每次多一跳
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
 // handleWidgetSummary GET /widget/summary：契约 v0 装配。
 func handleWidgetSummary(d *Daemon, w http.ResponseWriter, r *http.Request) {
+	// CORS：实际响应也要回声 ACAO（预检过了、响应没头照样被 WebView2 拦）。
+	// 无 Origin（curl/壳外语境）不设头，行为原样。
+	if origin := r.Header.Get("Origin"); widgetAllowedOrigins[origin] {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
 	now := time.Unix(int64(clock.Now()), 0)
 	asOf := now.Format("15:04")
 
