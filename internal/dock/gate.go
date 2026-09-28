@@ -138,15 +138,22 @@ func (b *drainBody) Read(p []byte) (int, error) {
 	}
 }
 
-// expire 排水收尾一次交付：流式体交付合成错误事件（必要时分多次 Read 交付
-// 完，交完转 EOF）；定长体直接 EOF 截断（无合法错误投递通道，残余边界）。
+// expire 排水收尾一次交付：流式体交付合成错误事件（负载前带空行——终结
+// 可能挂起的半行，见下；必要时分多次 Read 交付完，交完转 EOF）；定长体直接
+// EOF 截断（无合法错误投递通道，残余边界）。
 func (b *drainBody) expire(p []byte) (int, error) {
 	if b.fixedLen {
 		b.doneEOF = true
 		return 0, io.EOF
 	}
 	if len(b.pend) == 0 {
-		b.pend = sseErrorEvent("渡口正在关停（排水到期收尾），流在此时被截断；请重试以继续")
+		// 前导空行终结挂起半行：排水可能命中 SSE 事件中段（已放行字节停在
+		// 无换行的半行 data 上），直接拼 "event: error" 会并入半行、被客户端
+		// SSE 解析器当上一个事件的 data 内容吞掉；先补空行让半行自成事件
+		// 收尾。命中事件边界（前文已以空行收尾）时，空行不派发任何事件，
+		// 无副作用。
+		b.pend = append([]byte("\n\n"),
+			sseErrorEvent("渡口正在关停（排水到期收尾），流在此时被截断；请重试以继续")...)
 	}
 	n := copy(p, b.pend)
 	b.pend = b.pend[n:]

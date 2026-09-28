@@ -27,6 +27,7 @@
 ## 涉及路径
 - internal/dock/（dock.go、server.go、可新建 shutdown.go/errorshape.go 等＋测试）
 - internal/config/config.go（[dock] 节新键＋测试）
+- internal/accounts/accounts.go（**协调者实施中裁定并入**：dock 科目白名单加 truncated＋kindOptional 可选放行——账本拒未知字段，不并入则验收项「流水行带 truncated」不可达；改动 2 处带注释）
 
 ## 副作用声明
 测试跑 `go test ./internal/dock/... ./internal/config/...`（票内独占）；构建产物落 GOCACHE，不入仓。

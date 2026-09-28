@@ -107,7 +107,7 @@ var commonFields = map[string]bool{
 // commonKeyOrder 落盘行公共八字段定序（票面验收：v,kind,ts,ts_iso,agent,session_id,lineage_id,project）。
 var commonKeyOrder = []string{"v", "kind", "ts", "ts_iso", "agent", "session_id", "lineage_id", "project"}
 
-// Fields 单条流水的科目字段集；值仅 string/float64/int/nil。
+// Fields 单条流水的科目字段集；值仅 string/float64/int/bool/nil。
 type Fields map[string]any
 
 // Accounts append-only 账本；Record 走 mu 互斥。
