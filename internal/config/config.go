@@ -101,6 +101,9 @@ type WaitWindowCfg struct {
 // 防御回落共用此单源；同一把 [dock].api_key 出 Bearer，只读）。
 const DefaultDockBalanceURL = "https://open.bigmodel.cn/api/user/balance"
 
+// DefaultDockDrainTimeoutS 票02：优雅排水上限缺省（秒，spec 错误契约热修 1）。
+const DefaultDockDrainTimeoutS = 180.0
+
 // DockCfg 渡口（本机 API 中转，票01）配置。注意语义是 opt-in：Config.Dock
 // 为 nil 指针（[dock] 节缺失）＝渡口完全不启动——不绑端口、零行为变化
 // （评审 F11 裁定）；节存在才构造本结构，缺字段回落默认值。
@@ -119,6 +122,10 @@ type DockCfg struct {
 	ModelMap        map[string]string   // 别名→GLM 档；含 default 键（改写模式必须非空）
 	TextOnly        []string            // text-only 模型名单（命中则 image 块降级文本占位）
 	BalanceURL      string              // 余额端点覆写；解析层缺省回落 DefaultDockBalanceURL
+	// DrainTimeoutS 票02（错误契约热修 1）：优雅排水上限（秒）。daemon 侧以
+	// 它造 dock Server.Shutdown 的排水 ctx；须 > 0（0/负＝即时掐流，即旧
+	// Close 语义，配置层直接拒）。
+	DrainTimeoutS float64
 }
 
 // Config 全量配置（字段=Python dataclass 1:1）。
@@ -435,6 +442,14 @@ func applyTOML(cfg *Config, data map[string]any) error {
 // 默认值；新表（upstreams+active）与旧单值可并存——并存时解析层两层都收，
 // 取用由 ActiveUpstream 裁决（新表+active 优先，F9）。
 func parseDockSection(dk map[string]any) (*DockCfg, error) {
+	// 票02：排水上限（缺省 180；非法值对齐既有键纪律报解析错误）。
+	dts, err := pyFloat(get(dk, "drain_timeout_s", DefaultDockDrainTimeoutS))
+	if err != nil {
+		return nil, err
+	}
+	if dts <= 0 {
+		return nil, fmt.Errorf("config: dock.drain_timeout_s 须 > 0（当前 %gs）", dts)
+	}
 	dcfg := &DockCfg{
 		UpstreamBaseURL: pyStr(get(dk, "upstream_base_url", "http://127.0.0.1:15721")),
 		Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
@@ -442,8 +457,9 @@ func parseDockSection(dk map[string]any) (*DockCfg, error) {
 		APIKey:          pyStr(get(dk, "api_key", "")),
 		// 票07：缺省回落内置默认端点（旧单值行为；条目级 balance_url 无此默认——
 		// 不配不显示，D11）。
-		BalanceURL: pyStr(get(dk, "balance_url", DefaultDockBalanceURL)),
-		Active:     pyStr(get(dk, "active", "")),
+		BalanceURL:    pyStr(get(dk, "balance_url", DefaultDockBalanceURL)),
+		Active:        pyStr(get(dk, "active", "")),
+		DrainTimeoutS: dts,
 	}
 	if rawMM, ok := dk["model_map"]; ok {
 		mm, ok := rawMM.(map[string]any)

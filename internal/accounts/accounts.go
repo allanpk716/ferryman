@@ -62,8 +62,10 @@ var kindFields = map[string][]string{
 	// 透传模式不解析上游响应（保真优先），token 列尽力而为记 0；改写模式
 	// 解析上游 SSE usage（message_delta 真值，Q14）。消息内容永不入账
 	// （隐私铁律，白名单拒 messages 等内容字段）。
+	// truncated（票02 错误契约热修 4）：截断标记——见过 SSE 事件但流尾无
+	// message_stop 的行才携带 true；可选字段（见 kindOptional，缺省不写）。
 	"dock": {"mode", "model_in", "model_out", "input_tokens", "cache_read_tokens",
-		"cache_creation_tokens", "output_tokens", "latency_s", "status"},
+		"cache_creation_tokens", "output_tokens", "latency_s", "status", "truncated"},
 	// 逐次请求的用量遥测（设计 §3.7；会话文件 30 天清理后的审计地基）。
 	// subagent 子代理标记字段（票01，ADR-0008 的 Go 版追加先例同 beat.lane）：
 	// 值=子代理转录文件 stem（agent-<agentId>，完整文件名去扩展名——账本行自身
@@ -81,8 +83,13 @@ var kindFields = map[string][]string{
 // kindOptional 科目可选字段：白名单放行（未知字段照拒的隐私铁律不动）、
 // 但必填豁免——存量生产者未带也不拒行。handoff.lane（票03）：lane 标注随
 // 同模型档引入，worker 存量行（第三方/骨架产线，不在票03 涉及路径）暂未
-// 带 lane；后续票接线补写后可移出本表恢复必填。
-var kindOptional = map[string][]string{"handoff": {"lane"}}
+// 带 lane；后续票接线补写后可移出本表恢复必填。dock.truncated（票02 错误
+// 契约热修 4）：截断标记仅出现在截断行（spec 接口与兼容：缺省不写，旧流水
+// 不受影响），恒可选。
+var kindOptional = map[string][]string{
+	"handoff": {"lane"},
+	"dock":    {"truncated"},
+}
 
 // kindOrder 科目顺序 = Python dict 插入序（KINDS 元组），未知科目报错文案用。
 // wait_close 为 Go 版新增（票04），列于 qwatch 系之后；same_model_skip 为

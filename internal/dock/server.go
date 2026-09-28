@@ -27,6 +27,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"ferryman/internal/accounts"
@@ -66,6 +67,9 @@ type Options struct {
 // reqMeta 单请求记账元数据。指针经 context 从 handler 带到出站 transport
 // （状态码/usage 在响应链上回填）；usage 喂养与读尾都在 handler goroutine
 // 的同步链上（proxy.ServeHTTP 内拷贝循环读毕后才 recordRow），无并发访问。
+// 票02 增设：gate（首包闸门开，流式 messages POST）与 entry（排水注册句柄，
+// expireDrain 从 Shutdown goroutine 侧访问——一律经 Server.mu，见
+// markResponded/expireDrain）。
 type reqMeta struct {
 	start    time.Time
 	session  string
@@ -74,6 +78,8 @@ type reqMeta struct {
 	modelOut string
 	usage    sseUsageAcc // 上游响应 SSE usage 累计（响应体读穿透时喂养）
 	status   int         // 上游状态码（transport 层捕获）
+	gate     bool        // 首包闸门：流式 messages POST（热修 3）
+	entry    *inflight   // 排水注册句柄（热修 1；nil＝非记账路径不参与排水）
 }
 
 // ctxKeyMeta context 私有键。
@@ -95,6 +101,15 @@ type Server struct {
 	acc       *accounts.Accounts // nil＝不记账
 
 	srv *http.Server
+
+	// 票02 优雅排水（热修 1）：在途记账请求注册表＋排水广播。drainCh 关闭
+	// 即全体收尾（闸门转 504、drainBody 转注入）；drained 为幂等位。字段
+	// 一律经 mu 访问（expireDrain 从 Shutdown 调用方 goroutine 侧进来）。
+	mu        sync.Mutex
+	drained   bool
+	drainCh   chan struct{}
+	idleCh    chan struct{}
+	inflights map[*inflight]struct{}
 }
 
 // New 构造纯透传渡口（票01 形状：签名与行为保持不变，daemon 既有调用点
@@ -114,10 +129,16 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 	if err != nil || target.Scheme == "" || target.Host == "" {
 		return nil, fmt.Errorf("dock: 上游地址无效: %q", upstreamBaseURL)
 	}
+	// 票02 排水通道初值：idleCh 初始关闭（零在途＝空载）；drainCh 待到期广播。
+	idle := make(chan struct{})
+	close(idle)
 	s := &Server{
-		listen: listen,
-		target: target,
-		store:  NewSnapshotStore(),
+		listen:    listen,
+		target:    target,
+		store:     NewSnapshotStore(),
+		drainCh:   make(chan struct{}),
+		idleCh:    idle,
+		inflights: make(map[*inflight]struct{}),
 	}
 	if o.Upstream != nil {
 		s.drift = NewDriftTracker(o.Alert)
@@ -152,17 +173,26 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 		// SSE 必须立即冲刷：不设会缓冲流式响应，下游看成断流/超时 →
 		// 客户端重试风暴（forwarder.go 实测教训，红线条款）
 		FlushInterval: -1,
+		// 票02（热修 2）：出站失败的标准形状（拨号失败 502＋错误体＋
+		// Retry-After；闸门/排水 504；客户端先断静默）。两模式同接——自产
+		// 错误不属于上游字节，透传保真不管辖（契约：渡口自产错误一律标准
+		// 形状，替换 Go 默认空体 502）。
+		ErrorHandler: s.proxyErrorHandler,
 		// metaTransport 读穿透包装（meta 为 nil 时零行为）——纯 New 的
-		// 票01 路径字节行为不变
-		Transport: metaTransport{base: &http.Transport{
-			Proxy:                 nil, // 显式不走环境代理：上游是直连目标
-			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   16, // 默认 2 太小：CC 并发请求会频繁重建连接
-			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: TransportTimeoutS,
-			// 不设整体 Timeout/正文超时：长 SSE 流按需无限流（见常量注释）
-		}},
+		// 票01 路径字节行为不变；票02 起附带首包闸门与排水注入（仅记账
+		// 路径的流式 200 响应，见 gate.go）
+		Transport: metaTransport{
+			base: &http.Transport{
+				Proxy:                 nil, // 显式不走环境代理：上游是直连目标
+				DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   16, // 默认 2 太小：CC 并发请求会频繁重建连接
+				IdleConnTimeout:       90 * time.Second,
+				ResponseHeaderTimeout: TransportTimeoutS,
+				// 不设整体 Timeout/正文超时：长 SSE 流按需无限流（见常量注释）
+			},
+			s: s,
+		},
 	}
 	return s, nil
 }
@@ -252,13 +282,35 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			meta.modelIn = extractModelName(body)
 			meta.modelOut = meta.modelIn // 透传：前后同值
 		}
-		r = r.WithContext(context.WithValue(r.Context(), ctxKeyMeta{}, meta))
+		// 票02（热修 3）：首包闸门只对流式 messages POST（判定自已读请求体；
+		// count_tokens 与非流式不闸，纯透传不读体不闸——daemon 生产接线恒记账）。
+		meta.gate = messagesPost && bodyIsStream(body)
+		// 票02（热修 1）：注册排水句柄——出站挂上可取消 ctx，到期时未获响应
+		// 的请求由 expireDrain 取消（ErrorHandler 回 504），响应已确立的流
+		// 走 drainBody 注入。defers 在 recordRow 之后才跑（LIFO），行落账时
+		// 仍在册，宽限等待据此涵盖注入交付。
+		rctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		s.trackInflight(meta, cancel)
+		defer s.untrackInflight(meta)
+		r = r.WithContext(context.WithValue(rctx, ctxKeyMeta{}, meta))
 		sw := &statusWriter{ResponseWriter: w}
 		s.proxy.ServeHTTP(sw, r)
 		s.recordRow(meta, sw)
 		return
 	}
 	s.proxy.ServeHTTP(w, r)
+}
+
+// bodyIsStream 顶层 stream 布尔提取（首包闸门判定）；非 JSON/缺失＝false。
+func bodyIsStream(body []byte) bool {
+	var probe struct {
+		Stream bool `json:"stream"`
+	}
+	if json.Unmarshal(body, &probe) != nil {
+		return false
+	}
+	return probe.Stream
 }
 
 // applyRewritten 改写体回填：Content-Length 须随体长重写，否则传输层按旧
@@ -316,7 +368,7 @@ func mapCountTokensModel(body []byte, cfg RewriteConfig) (out []byte, modelIn, m
 // recordRow dock 科目落一行（纯元数据，F13）。任何失败只记日志，绝不影响
 // 转发（已在转发完成之后）。
 func (s *Server) recordRow(m *reqMeta, sw *statusWriter) {
-	m.usage.flushTail() // 流尾残段兜底（EOF 无换行的末事件）
+	u := m.usage.finish() // 流尾残段兜底＋定版（锁语义见 sseUsageAcc 注释）
 	status := m.status
 	if status == 0 && sw.code != 0 {
 		status = sw.code // 代理自答（如上游拨号失败 502）：以客户端实收为准
@@ -333,12 +385,21 @@ func (s *Server) recordRow(m *reqMeta, sw *statusWriter) {
 		"mode":                  m.mode,
 		"model_in":              m.modelIn,
 		"model_out":             m.modelOut,
-		"input_tokens":          m.usage.input,
-		"cache_read_tokens":     m.usage.cacheRead,
-		"cache_creation_tokens": m.usage.cacheCreation,
-		"output_tokens":         m.usage.output,
+		"input_tokens":          u.input,
+		"cache_read_tokens":     u.cacheRead,
+		"cache_creation_tokens": u.cacheCreation,
+		"output_tokens":         u.output,
 		"latency_s":             time.Since(m.start).Seconds(),
 		"status":                status,
+	}
+	// 票02（热修 4）：干净 EOF 观测——见过至少一个 SSE 事件但流尾无
+	// message_stop 即截断（上游自断与排水注入收尾都算）。仅截断行携带
+	// truncated（缺省不写，旧流水与读侧不受影响）；非 SSE 响应无事件可见，
+	// 不标记；不改转发字节。
+	if u.truncated {
+		f["truncated"] = true
+		logger.Printf("截断流: session=%s mode=%s status=%d（EOF 前未见 message_stop）",
+			m.session, m.mode, status)
 	}
 	if _, err := s.acc.Record("dock", -1, f); err != nil {
 		logger.Printf("dock 科目记账失败（不影响转发）: %v", err)
@@ -378,20 +439,34 @@ func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // metaTransport 出站 transport 包装：把上游状态码与响应体扫描器挂回该请求的
 // reqMeta（指针经 context 从 handler 带来）。对请求/响应零改写——只读穿透；
-// meta 为 nil（纯透传不记账）时与裸 transport 无异。
-type metaTransport struct{ base http.RoundTripper }
+// meta 为 nil（纯透传不记账）时与裸 transport 无异。票02 起对流式 200 记账
+// 响应加首包闸门（gate.go—— withhold 响应头至首字节，静默 60s 判失败）。
+type metaTransport struct {
+	base http.RoundTripper
+	s    *Server // 排水广播/注册表访问（闸门与注入需要）
+}
 
 func (m metaTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := m.base.RoundTrip(req)
+	if err != nil {
+		return resp, err // 出站失败：ErrorHandler 统一形状（errorshape.go）
+	}
 	meta, _ := req.Context().Value(ctxKeyMeta{}).(*reqMeta)
 	if meta == nil || resp == nil {
 		return resp, err
 	}
 	meta.status = resp.StatusCode
-	if resp.Body != nil {
-		resp.Body = &usageBody{ReadCloser: resp.Body, acc: &meta.usage}
+	if resp.Body == nil {
+		m.s.markResponded(meta)
+		return resp, nil
 	}
-	return resp, err
+	ub := &usageBody{ReadCloser: resp.Body, acc: &meta.usage}
+	if meta.gate && resp.StatusCode == http.StatusOK {
+		return m.s.gateFirstByte(meta, resp, ub)
+	}
+	m.s.markResponded(meta)
+	resp.Body = ub
+	return resp, nil
 }
 
 // usageBody 读穿透的响应体：字节原样上行给代理拷贝循环，顺手喂 usage 扫描器。
@@ -413,13 +488,25 @@ func (b *usageBody) Read(p []byte) (int, error) {
 // 侧短响应），这边必须边流边扫——渡口响应要实时透传给 CC，绝不能为解析攒
 // 整条流（SSE 缓冲＝重试风暴）。非 SSE 响应（count_tokens 的 JSON 应答、
 // 压缩体等）无 data: 行＝扫不出，token 记 0（尽力而为条款）。
+//
+// 票02 并发边界：闸门/排水的弃读 goroutine（gate.go）可能在 handler 收账
+// 之后才把末次读取喂进来——mu 把喂食与 finish 定版互斥，弃读迟到即无害。
 type sseUsageAcc struct {
+	mu            sync.Mutex
 	lineBuf       []byte
 	data          []string
 	input         int
 	cacheRead     int
 	cacheCreation int
 	output        int
+	sawEvent      bool // 见过至少一个 SSE 事件（截断判定分子，热修 4）
+	sawStop       bool // 见过 message_stop（完整流的标志）
+}
+
+// usageSnapshot finish() 的定版快照（锁外消费）。
+type usageSnapshot struct {
+	input, cacheRead, cacheCreation, output int
+	truncated                               bool
 }
 
 // dockUsageJSON 指针字段＝列级覆盖合并（与 beat usageJSON 同语义，多一列
@@ -458,8 +545,11 @@ func (a *sseUsageAcc) apply(u *dockUsageJSON) {
 	}
 }
 
-// feed 喂原始字节：按 \n 切行（增量，行尾残段留 buf）。
+// feed 喂原始字节：按 \n 切行（增量，行尾残段留 buf）。锁内（并发边界见
+// 结构体注释）。
 func (a *sseUsageAcc) feed(p []byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	for len(p) > 0 {
 		if i := bytes.IndexByte(p, '\n'); i >= 0 {
 			a.lineBuf = append(a.lineBuf, p[:i]...)
@@ -491,6 +581,7 @@ func (a *sseUsageAcc) flushEvent() {
 	if len(a.data) == 0 {
 		return
 	}
+	a.sawEvent = true // 事件边界到达即"见过事件"（非 JSON data 也算，热修 4）
 	payload := strings.Join(a.data, "\n") // SSE 多行 data 并接（规范行为）
 	a.data = a.data[:0]
 	var ev dockSSEEvent
@@ -506,13 +597,25 @@ func (a *sseUsageAcc) flushEvent() {
 		if ev.Usage != nil {
 			a.apply(ev.Usage) // delta 列级覆盖 start（Q14 真值语义）
 		}
+	case "message_stop":
+		a.sawStop = true // 完整流标志（截断判定分母，热修 4）
 	}
 }
 
-// flushTail 流尾兜底：EOF 无换行时残段仍算一行（与 beat parseSSEUsage 同款）。
-func (a *sseUsageAcc) flushTail() {
+// finish 流尾收账：锁内做残段兜底（EOF 无换行的末事件）并定版快照——此后
+// 迟到的弃读喂食不会再与本快照竞争。截断判定（热修 4）在此定版。
+func (a *sseUsageAcc) finish() usageSnapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if len(a.lineBuf) > 0 {
 		a.handleLine()
 	}
 	a.flushEvent()
+	return usageSnapshot{
+		input:          a.input,
+		cacheRead:      a.cacheRead,
+		cacheCreation:  a.cacheCreation,
+		output:         a.output,
+		truncated:      a.sawEvent && !a.sawStop,
+	}
 }

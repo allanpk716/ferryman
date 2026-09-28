@@ -154,3 +154,51 @@ func TestLoadDockRewriteDefaultsOff(t *testing.T) {
 		t.Fatalf("dock 改写字段默认应为零值: %+v", d)
 	}
 }
+
+// ---- 票02：排水上限键 drain_timeout_s ----
+
+func TestLoadDockDrainTimeoutDefault180(t *testing.T) {
+	// 节存在但未配：缺省 180 秒（spec 热修 1）
+	f := filepath.Join(t.TempDir(), "dock-drain-def.toml")
+	if err := os.WriteFile(f, []byte("[dock]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dock == nil || cfg.Dock.DrainTimeoutS != 180 {
+		t.Fatalf("DrainTimeoutS = %+v, want 缺省 180", cfg.Dock)
+	}
+}
+
+func TestLoadDockDrainTimeoutExplicit(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "dock-drain.toml")
+	if err := os.WriteFile(f, []byte("[dock]\ndrain_timeout_s = 300\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dock == nil || cfg.Dock.DrainTimeoutS != 300 {
+		t.Fatalf("DrainTimeoutS = %+v, want 显式 300", cfg.Dock)
+	}
+}
+
+func TestLoadDockDrainTimeoutInvalidRejected(t *testing.T) {
+	// 0／负数／非数：对齐既有键纪律报解析错误
+	for _, src := range []string{
+		"[dock]\ndrain_timeout_s = 0\n",
+		"[dock]\ndrain_timeout_s = -5\n",
+		"[dock]\ndrain_timeout_s = \"abc\"\n",
+	} {
+		f := filepath.Join(t.TempDir(), "dock-drain-bad.toml")
+		if err := os.WriteFile(f, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(f, false); err == nil {
+			t.Fatalf("Load(%q) err = nil, want 解析错误", src)
+		}
+	}
+}
