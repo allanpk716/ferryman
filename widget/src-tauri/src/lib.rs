@@ -1,6 +1,9 @@
 // 票 02 · 窗口与常驻形态：托盘 / 单实例 / 自启 / 位置记忆 / 关窗收托盘。
 // 零闪窗铁律不变：conf visible:false，setup 末尾（位置恢复之后）才 show。
-use std::{fs, path::PathBuf, sync::Mutex, time::{Duration, Instant}};
+use std::{
+    fs, path::PathBuf, sync::mpsc, sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -19,6 +22,88 @@ struct WindowState {
 
 /// Moved 事件节流：拖动中每 500ms 至多写一次盘。
 struct MoveThrottle(Mutex<Option<Instant>>);
+
+/// 磁吸贴边（2026-09-28 用户需求）的事件通道句柄：Moved 每发必喂（防抖要
+/// 全量事件流，不走 500ms 节流）；worker 线程持有接收端。Sender 包 Mutex
+/// 进 manage（Sender 是 Send 非 Sync）。
+struct SnapFeed(Mutex<mpsc::Sender<PhysicalPosition<i32>>>);
+
+/// 磁吸参数：松手判定静止时长 / 吸附距离（16 逻辑 px，×scale 换物理）/
+/// 启动静默窗（位置恢复的 Moved 不得吸走用户存的边距）。
+const SNAP_SETTLE_MS: u64 = 250;
+const SNAP_NEAR_LOGICAL: f64 = 16.0;
+const SNAP_ARM_DELAY: Duration = Duration::from_secs(2);
+
+/// 贴边求值（worker 线程调）：窗口左上角落在哪块屏就贴哪块屏的工作区
+/// （工作区=扣任务栏，任务栏在哪侧都不吸到屏外）；四边独立判定，角落
+/// 两边同吸。已在目标位（x,y 未变）不 set——避免 set→Moved→再评估的
+/// 自激循环。贴齐位立即落盘（不等 500ms 节流）。
+fn snap_if_near(app: &tauri::AppHandle, pos: PhysicalPosition<i32>) {
+    let Some(w) = app.get_webview_window("widget") else { return };
+    let Ok(ws) = w.outer_size() else { return };
+    let Ok(mons) = app.available_monitors() else { return };
+    let Some(mon) = mons.into_iter().find(|m| {
+        // 含屏判定与位置恢复同口径：左上角落点
+        let p = m.position();
+        let s = m.size();
+        pos.x >= p.x && pos.x < p.x + s.width as i32 && pos.y >= p.y && pos.y < p.y + s.height as i32
+    }) else {
+        return;
+    };
+    let wa = mon.work_area();
+    let (wx, wy, ww, wh) = (
+        wa.position.x,
+        wa.position.y,
+        wa.size.width as i32,
+        wa.size.height as i32,
+    );
+    let thr = (SNAP_NEAR_LOGICAL * mon.scale_factor()).round() as i32;
+    let (cw, ch) = (ws.width as i32, ws.height as i32);
+    let (mut x, mut y, mut snapped) = (pos.x, pos.y, false);
+    if (pos.x - wx).abs() <= thr {
+        x = wx;
+        snapped = true;
+    } else if (wx + ww - (pos.x + cw)).abs() <= thr {
+        x = wx + ww - cw;
+        snapped = true;
+    }
+    if (pos.y - wy).abs() <= thr {
+        y = wy;
+        snapped = true;
+    } else if (wy + wh - (pos.y + ch)).abs() <= thr {
+        y = wy + wh - ch;
+        snapped = true;
+    }
+    if !snapped || (x == pos.x && y == pos.y) {
+        return;
+    }
+    let _ = w.set_position(PhysicalPosition::new(x, y));
+    save_state(app, x, y);
+}
+
+/// 磁吸 worker：常驻线程，事件流静止 SNAP_SETTLE_MS 即视为松手，此刻贴边。
+/// 松手判定用「吸干-超时」软防抖：拖动进行中每个新事件都重置 250ms 计时，
+/// 不需要在 Moved 里区分拖动/程序性移动。启动 SNAP_ARM_DELAY 内不贴（恢复
+/// 位/默认位自身的 Moved 不得触发吸附——用户存了 12px 边距，开机不该被吸走）。
+fn spawn_snap_worker(app: tauri::AppHandle, rx: mpsc::Receiver<PhysicalPosition<i32>>) {
+    std::thread::spawn(move || {
+        let arm_at = Instant::now() + SNAP_ARM_DELAY;
+        while let Ok(mut last) = rx.recv() {
+            loop {
+                match rx.recv_timeout(Duration::from_millis(SNAP_SETTLE_MS)) {
+                    Ok(p) => last = p,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if Instant::now() >= arm_at {
+                            snap_if_near(&app, last);
+                        }
+                        break;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        }
+    });
+}
 
 fn state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join("window-state.json"))
@@ -212,6 +297,13 @@ pub fn run() {
         .setup(|app| {
             let w = app.get_webview_window("widget").expect("conf 未配置 widget 窗口");
 
+            // 磁吸贴边（2026-09-28 用户需求）：通道先建、worker 先起（带 2s 启动
+            // 静默），下面位置恢复的 set_position 触发的 Moved 落在静默窗内，天然
+            // 不吸附——用户存的边距不被开机吸走。
+            let (snap_tx, snap_rx) = mpsc::channel::<PhysicalPosition<i32>>();
+            app.manage(SnapFeed(Mutex::new(snap_tx)));
+            spawn_snap_worker(app.handle().clone(), snap_rx);
+
             // 位置记忆：恢复上次位置；无记录（首启）= 贴主屏右缘竖排默认位
             // （spec UI 定稿：默认竖排贴右缘）。恢复位必须落在某块显示器内——
             // 拔屏/换布局后旧坐标可能在所有屏外（2026-09-25 真机：09-21 存的
@@ -314,10 +406,16 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
-            // 拖动中节流保存位置（≥500ms 一次）；只针对悬浮窗（设置窗位置不记）
+            // 拖动中节流保存位置（≥500ms 一次）；只针对悬浮窗（设置窗位置不记）。
+            // 磁吸喂流不走节流：防抖要全量 Moved 事件流（250ms 静止=松手）。
             WindowEvent::Moved(pos) => {
                 if window.label() != "widget" {
                     return;
+                }
+                if let Some(feed) = window.try_state::<SnapFeed>() {
+                    if let Ok(tx) = feed.0.lock() {
+                        let _ = tx.send(*pos); // 接收端亡=worker 已退，丢事件无碍
+                    }
                 }
                 let throttle = window.state::<MoveThrottle>();
                 let due = throttle
