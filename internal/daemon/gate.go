@@ -164,6 +164,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			if h == nil && snap.observed && snap.peak >= th.MinCtxTokens {
 				d.EnqueueFerry(st)
 			}
+			d.gateWarn(agent, snap.sid, "observe", idle)
 			return map[string]any{"decision": "allow",
 				"additional_context": d.warnCtx(idle, h, false)}
 		}
@@ -201,6 +202,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		n := d.Pending.BumpBlocks(key)
 		if n > DegradeAfterBlocks { // 连续 3 次 block 之后降级（DESIGN §6.10-6）
 			d.Pending.Clear(key)
+			d.gateWarn(agent, snap.sid, "enforce-degrade", idle)
 			return map[string]any{"decision": "allow",
 				"additional_context": d.warnCtx(idle, nil, true)}
 		}
@@ -218,6 +220,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	// 分支 7：警告一次 + 置 pending + 触发摆渡
 	d.Pending.Set(key)
 	d.Stats.addWarns()
+	d.gateWarn(agent, snap.sid, "enforce", idle)
 	if snap.observed && snap.peak >= th.MinCtxTokens {
 		d.EnqueueFerry(st)
 	}
