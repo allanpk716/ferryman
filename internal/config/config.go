@@ -171,7 +171,7 @@ func Default() *Config {
 			CodexExtraDirs: []string{},
 			HarvestUsage:   true,
 		},
-		Server: ServerCfg{Port: 7311},
+		Server: ServerCfg{Port: 15700},
 		Notify: NotifyCfg{Enabled: false, Pushover: true, Toast: true},
 		Heartbeat: HeartbeatCfg{
 			Enabled: false,

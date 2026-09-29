@@ -16,7 +16,7 @@
 //
 // 探活目标：daemon 无 /health 路由（httpapi.go 五端点），按票面指示探 GET
 // /stats——GET 先 auth 后判路径，无 token 也回 401，语义同为「HTTP 有响应」。
-// 端口 FERRYMAN_PORT 环境变量（缺省 7311，钩子自举 ferryman-ensure.ps1 同源）。
+// 端口 FERRYMAN_PORT 环境变量（缺省 15700，钩子自举 ferryman-ensure.ps1 同源）。
 //
 // 真实冒烟清单（runbook 票引用；本票单测走 httptest/注入 fake/构造层，
 // 绝不真建/删计划任务、不真写注册表）：
@@ -50,9 +50,10 @@ import (
 	"time"
 )
 
-// 常量：口/环境变量/任务名/超时（票面逐字：2s 短超时、每 5 分钟、缺省 7311）。
+// 常量：口/环境变量/任务名/超时（票面逐字：2s 短超时、每 5 分钟；缺省口
+// 2026-09-29 由 7311 改 15700——旧数字含不吉联想，用户令换）。
 const (
-	DefaultDaemonPort = 7311
+	DefaultDaemonPort = 15700
 	DaemonPortEnv     = "FERRYMAN_PORT"
 	// DefaultDockPort 渡口缺省口（config [dock].listen 缺省 15722 同值；看门无
 	// config 访问面，环境变量可覆写——DaemonPortEnv 同款模式）。
@@ -64,7 +65,7 @@ const (
 	watchdogLogName  = "watchdog.log"
 )
 
-// DaemonPort 探活口：FERRYMAN_PORT 数值优先，缺省/坏值回落 7311。
+// DaemonPort 探活口：FERRYMAN_PORT 数值优先，缺省/坏值回落 15700。
 func DaemonPort() int {
 	if v := strings.TrimSpace(os.Getenv(DaemonPortEnv)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -131,7 +132,7 @@ func isConnRefused(err error) bool {
 
 // WatchdogDeps 看门可注入面（测试注 fake 探针/拉起；真装配 realWatchdogDeps）。
 type WatchdogDeps struct {
-	Port    int // 0 = FERRYMAN_PORT 或 7311
+	Port    int // 0 = FERRYMAN_PORT 或 15700
 	Timeout time.Duration
 	Probe   func(url string, timeout time.Duration) error
 	Launch  func() error

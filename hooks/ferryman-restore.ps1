@@ -1,6 +1,6 @@
 ﻿# Ferryman 归还钩子（CC SessionStart，matcher=clear|startup 由 settings.json 限定）
 # 仅 clear/startup 注入（resume/compact 不注入，DESIGN §5）；任何故障静默退出
-# 可配环境变量：FERRYMAN_PORT（默认 7311）；FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
+# 可配环境变量：FERRYMAN_PORT（默认 15700）；FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
 $ErrorActionPreference = 'Stop'
 try {
     try {
@@ -13,7 +13,7 @@ try {
     $raw = [Console]::In.ReadToEnd()
     $j = $raw | ConvertFrom-Json
     if ($j.source -and ($j.source -ne 'clear') -and ($j.source -ne 'startup')) { exit 0 }
-    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 7311 }
+    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 15700 }
     $tokenFile = if ($env:FERRYMAN_TOKEN_FILE) { $env:FERRYMAN_TOKEN_FILE }
                  else { "$env:USERPROFILE\ferryman\daemon.token" }
     $token = (Get-Content $tokenFile -Raw -ErrorAction Stop).Trim()

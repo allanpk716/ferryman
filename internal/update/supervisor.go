@@ -26,8 +26,8 @@ import (
 // 复盘.md）：30s 会让监督者在排水中抢跑换装，新守护渡口绑定失败进半死形态。
 const (
 	// DefaultDaemonPort 守护口(与 installer.DefaultDaemonPort 同值;不 import
-	// installer,避免 update→installer 的面拉宽)。
-	DefaultDaemonPort = 7311
+	// installer,避免 update→installer 的面拉宽)。2026-09-29 由 7311 改 15700。
+	DefaultDaemonPort = 15700
 	defaultPortWait   = 240 * time.Second
 	defaultPollWait   = 90 * time.Second
 	defaultPollEvery  = 1 * time.Second
@@ -38,7 +38,7 @@ const (
 // Config 监督者装配面:全部路径/口/时限可注入——测试世界零生产面触碰。
 type Config struct {
 	DataDir      string // ~/ferryman:锁/journal/token/pid;空 = 回落 ~/ferryman
-	Port         int    // 守护口;0 = 7311
+	Port         int    // 守护口;0 = 15700
 	Endpoints    Endpoints
 	Current      string        // 当前版本(main.version)
 	Spec         string        // 显式目标版本(可空;含降级)

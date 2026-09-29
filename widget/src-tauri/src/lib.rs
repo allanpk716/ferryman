@@ -223,8 +223,8 @@ async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 // ── 票 09 · daemon 端点发现：读 ~/ferryman/daemon.token（daemon EnsureToken
-// 落盘）；地址钦定 http://127.0.0.1:7311/widget/summary（票 09 票面原文；
-// [server].port 缺省即 7311，读 config.toml 属越界解析，不做）。token 每次
+// 落盘）；地址钦定 http://127.0.0.1:15700/widget/summary（票 09 票面原文；
+// [server].port 缺省即 15700（2026-09-29 由 7311 改），读 config.toml 属越界解析，不做）。token 每次
 // 现读：daemon 重启换 token 后下次轮询自动生效。失败返回 Err，前端如实灰化
 // （不假造可达）。悬浮窗进程内永不出现服务商凭据（只有 daemon 的本机 token）。 ──
 #[tauri::command]
@@ -237,7 +237,7 @@ fn get_daemon_config() -> Result<serde_json::Value, String> {
     if token.is_empty() {
         return Err("daemon.token 为空".into());
     }
-    Ok(serde_json::json!({ "url": "http://127.0.0.1:7311/widget/summary", "token": token }))
+    Ok(serde_json::json!({ "url": "http://127.0.0.1:15700/widget/summary", "token": token }))
 }
 
 /// 设置窗：按需创建、关闭即销毁（防双 WebView 常驻内存）；已开则只聚焦不重复建。

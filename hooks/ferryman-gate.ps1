@@ -1,5 +1,5 @@
 ﻿# Ferryman 闸门钩子（CC UserPromptSubmit）—— 任何故障一律放行（DESIGN §4 fail-open）
-# 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 7311）；
+# 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 15700）；
 #               FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
 if ($env:FERRYMAN_DISABLE -eq '1') { exit 0 }
 # 自举：daemon 不在则拉起（gate 只等 400ms——新会话本就无需拦截，POST 失败即放行）
@@ -10,7 +10,7 @@ try {
         [Console]::InputEncoding = [System.Text.Encoding]::UTF8
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     } catch {}
-    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 7311 }
+    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 15700 }
     $tokenFile = if ($env:FERRYMAN_TOKEN_FILE) { $env:FERRYMAN_TOKEN_FILE }
                  else { "$env:USERPROFILE\ferryman\daemon.token" }
     $raw = [Console]::In.ReadToEnd()

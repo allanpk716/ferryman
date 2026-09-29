@@ -472,7 +472,7 @@ func TestDefaultValuesVerbatim(t *testing.T) {
 		d.Watch.CodexSessionsDir != "" || len(d.Watch.CodexExtraDirs) != 0 || !d.Watch.HarvestUsage {
 		t.Fatalf("watch 默认 = %+v", d.Watch)
 	}
-	if d.Server.Port != 7311 || d.Server.DataDir != "" {
+	if d.Server.Port != 15700 || d.Server.DataDir != "" {
 		t.Fatalf("server 默认 = %+v", d.Server)
 	}
 	if d.Notify.Enabled || !d.Notify.Pushover || d.Notify.PushoverToken != "" ||

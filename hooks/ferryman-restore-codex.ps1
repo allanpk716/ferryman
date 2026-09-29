@@ -1,6 +1,6 @@
 ﻿# Ferryman 归还钩子（Codex SessionStart，T23 准备）—— 仅 clear/startup 注入，任何故障静默
 # Codex hooks.json 无 matcher 字段（Orca 全套注册即证）→ source 过滤在脚本内做。
-# 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 7311）；
+# 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 15700）；
 #               FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）；FERRYMAN_HOOK_DEBUG=<文件>
 if ($env:FERRYMAN_DISABLE -eq '1') { exit 0 }
 # 自举：daemon 不在则拉起并等就绪（注入最怕缺席，等 2.5s）
@@ -22,7 +22,7 @@ try {
     }
     $j = $raw | ConvertFrom-Json
     if ($j.source -and ($j.source -ne 'clear') -and ($j.source -ne 'startup')) { exit 0 }
-    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 7311 }
+    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 15700 }
     $tokenFile = if ($env:FERRYMAN_TOKEN_FILE) { $env:FERRYMAN_TOKEN_FILE }
                  else { "$env:USERPROFILE\ferryman\daemon.token" }
     $token = (Get-Content $tokenFile -Raw -ErrorAction Stop).Trim()

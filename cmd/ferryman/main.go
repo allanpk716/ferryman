@@ -2,7 +2,7 @@
 //
 // 行为面（spec C9 console 子系统：终端输出全部可见，窗口性交给启动方）：
 //
-//	ferryman                     # 无参 = serve：守护(7311) + 面板(15900) + 托盘
+//	ferryman                     # 无参 = serve：守护(15700) + 面板(15900) + 托盘
 //	ferryman serve               # 同上（点火脚本 start-daemon.cmd 调它）
 //	ferryman doctor              # 一键体检
 //	ferryman version             # 版本号（dev = 非 release 构建）
@@ -101,7 +101,7 @@ var version = "dev"
 const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交接守护（守望→摆渡→闸门→归还）
 
 用法:
-  ferryman                # 无参 = serve：守护(127.0.0.1:7311) + 面板(15900) + 托盘
+  ferryman                # 无参 = serve：守护(127.0.0.1:15700) + 面板(15900) + 托盘
   ferryman serve [--port N] [--no-tray] [--smoke]
   ferryman doctor         # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
   ferryman version        # 打印版本号（dev = 非 release 构建）
@@ -695,7 +695,7 @@ func orderFlagPairsFirst(args []string, valueFlags ...string) []string {
 }
 
 // runUpdateExecute 监督者执行路径（var 形 = main_test 注入缝，不真升级）。
-// 装配：config 可载则用其 DataDir/守护口，载不动回落缺省（~/ferryman、7311）
+// 装配：config 可载则用其 DataDir/守护口，载不动回落缺省（~/ferryman、15700）
 // ——升级不应因配置坏而不可用。结果 stdout 报告 + notify 通道推送（seam F，
 // 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）。
 var runUpdateExecute = func(spec string, pre, selfRelay bool, w io.Writer) int {

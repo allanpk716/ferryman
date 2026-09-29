@@ -27,7 +27,7 @@ import (
 )
 
 // ctDaemonDefaultPort 守护默认端口(config.toml 缺 [server].port 时)。
-const ctDaemonDefaultPort = 7311
+const ctDaemonDefaultPort = 15700
 
 // ctProxyClient 代理出站客户端:短超时——守护没起时页面要快拿降级说明。
 var ctProxyClient = &http.Client{Timeout: 4 * time.Second}

@@ -221,7 +221,7 @@ func TestEnsureWatchdogVBSWrites(t *testing.T) {
 	}
 }
 
-// FERRYMAN_PORT：数值生效；坏值/缺省回落 7311。
+// FERRYMAN_PORT：数值生效；坏值/缺省回落 15700。
 func TestDaemonPortEnv(t *testing.T) {
 	t.Setenv(DaemonPortEnv, "8123")
 	if got := DaemonPort(); got != 8123 {

@@ -1082,7 +1082,7 @@ func TestRunDoctorDockHintsDoNotFail(t *testing.T) {
 // 守护/面板——测试一律临时口）。
 func notProdPort(t *testing.T, port int) {
 	t.Helper()
-	for _, p := range []int{15721, 15722, 15724, 7311, 15900} {
+	for _, p := range []int{15721, 15722, 15724, 7311, 15700, 15900} {
 		if port == p {
 			t.Fatalf("测试撞生产端口 %d——换口", port)
 		}
