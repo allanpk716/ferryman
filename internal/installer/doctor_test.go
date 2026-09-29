@@ -318,13 +318,49 @@ func TestLauncher(t *testing.T) {
 	}
 }
 
-// ---- 附录#14：HttpBeatSender 功能退化声明（信息行不判 FAIL） ----
+// ---- 附录#14：心跳能力声明（信息行不判 FAIL；2026-09-29 修订文案） ----
 
 func TestHttpBeatNoticeContent(t *testing.T) {
-	if !strings.Contains(HttpBeatNotice, "心跳真实发送未实装") ||
-		!strings.Contains(HttpBeatNotice, "Q14") ||
-		!strings.Contains(HttpBeatNotice, "observe") {
+	if !strings.Contains(HttpBeatNotice, "心跳真发送已实装") ||
+		!strings.Contains(HttpBeatNotice, "Q14 已过") ||
+		!strings.Contains(HttpBeatNotice, "opt-in") {
 		t.Fatalf("声明文案不符: %s", HttpBeatNotice)
+	}
+}
+
+// ---- 2026-09-29 复盘件：dock_listening 半死形态检查 ----
+
+func TestCheckDockListeningPassAndFail(t *testing.T) {
+	// pass：真 listener 在听。
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	addr := ln.Addr().String()
+	if c := CheckDockListening(addr, realDialTCP); !c.OK {
+		t.Fatalf("在听应通过: %+v", c)
+	}
+	// fail：真拒绝（关闭口）——文案须点名半死与处置。
+	refusedAddr := func() string {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := l.Addr().String()
+		l.Close()
+		return a
+	}()
+	c := CheckDockListening(refusedAddr, realDialTCP)
+	if c.OK {
+		t.Fatal("无监听应失败")
+	}
+	if !strings.Contains(c.Msg, "半死形态") || !strings.Contains(c.Msg, "restart-daemon.ps1") {
+		t.Fatalf("失败文案应含半死与处置: %+v", c)
+	}
+	// nil 探针：不伪造。
+	if c := CheckDockListening(addr, nil); c.OK {
+		t.Fatal("探针未装配不应伪装通过")
 	}
 }
 

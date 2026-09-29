@@ -104,6 +104,11 @@ const DefaultDockBalanceURL = "https://open.bigmodel.cn/api/user/balance"
 // DefaultDockDrainTimeoutS 票02：优雅排水上限缺省（秒，spec 错误契约热修 1）。
 const DefaultDockDrainTimeoutS = 180.0
 
+// DefaultDockBindRetryS 渡口绑定重试上限缺省（秒）。对齐停旧预算 240s：升级/
+// 重启竞态里旧守护排水占口最长 drain_timeout_s=180s，新守护须等得起才能接上
+// （2026-09-29 复盘：抢跑进"无渡口"半死形态）。0 = 关重试（旧单发行为）。
+const DefaultDockBindRetryS = 240.0
+
 // DockCfg 渡口（本机 API 中转，票01）配置。注意语义是 opt-in：Config.Dock
 // 为 nil 指针（[dock] 节缺失）＝渡口完全不启动——不绑端口、零行为变化
 // （评审 F11 裁定）；节存在才构造本结构，缺字段回落默认值。
@@ -126,6 +131,11 @@ type DockCfg struct {
 	// 它造 dock Server.Shutdown 的排水 ctx；须 > 0（0/负＝即时掐流，即旧
 	// Close 语义，配置层直接拒）。
 	DrainTimeoutS float64
+	// BindRetryS 渡口绑定重试上限（秒，缺省 240；0=关重试）。绑定失败（典型：
+	// 升级/重启竞态里旧守护排水仍占渡口口）按 2s 间隔重试至上限，耗尽才降级
+	// "无渡口"——控制口 7311 先于渡口绑定，重试期间看门探活看到的仍是健康
+	// 控制面（2026-09-29 复盘的守护侧根修）。负值配置层拒。
+	BindRetryS float64
 }
 
 // Config 全量配置（字段=Python dataclass 1:1）。
@@ -450,6 +460,14 @@ func parseDockSection(dk map[string]any) (*DockCfg, error) {
 	if dts <= 0 {
 		return nil, fmt.Errorf("config: dock.drain_timeout_s 须 > 0（当前 %gs）", dts)
 	}
+	// 绑定重试上限（缺省 240；0=关重试；负值拒——与 drain 同款键纪律）。
+	brs, err := pyFloat(get(dk, "bind_retry_s", DefaultDockBindRetryS))
+	if err != nil {
+		return nil, err
+	}
+	if brs < 0 {
+		return nil, fmt.Errorf("config: dock.bind_retry_s 须 >= 0（当前 %gs）", brs)
+	}
 	dcfg := &DockCfg{
 		UpstreamBaseURL: pyStr(get(dk, "upstream_base_url", "http://127.0.0.1:15721")),
 		Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
@@ -460,6 +478,7 @@ func parseDockSection(dk map[string]any) (*DockCfg, error) {
 		BalanceURL:    pyStr(get(dk, "balance_url", DefaultDockBalanceURL)),
 		Active:        pyStr(get(dk, "active", "")),
 		DrainTimeoutS: dts,
+		BindRetryS:    brs,
 	}
 	if rawMM, ok := dk["model_map"]; ok {
 		mm, ok := rawMM.(map[string]any)

@@ -9,6 +9,7 @@ package installer
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -310,5 +311,81 @@ func TestWatchdogTaskStatusParse(t *testing.T) {
 func TestDaemonProbeURL(t *testing.T) {
 	if got, want := DaemonProbeURL(7311), "http://127.0.0.1:7311/stats"; got != want {
 		t.Fatalf("探活 URL 不符: got %s want %s", got, want)
+	}
+}
+
+// ---- ①b 半死形态（2026-09-29 复盘件）：控制口活 + 渡口无监听 ----
+
+// halfDeadDeps 装配带渡口探针的 deps：dockErr 为渡口探测返回值（nil=可连）。
+func halfDeadDeps(port int, l *fakeLauncher, dockErr error, logs *[]string) WatchdogDeps {
+	return WatchdogDeps{
+		Port: port, Timeout: 2 * time.Second, Probe: probeHTTP, Launch: l.launch,
+		Logf: func(f string, a ...any) { *logs = append(*logs, fmt.Sprintf(f, a...)) },
+		DockPort: 15722,
+		DockProbe: func(int, time.Duration) error { return dockErr },
+	}
+}
+
+// ①b 半死：控制口有响应 + 渡口 connection refused → 告警落日志、不拉起、退 0。
+func TestWatchdogHalfDeadNoLaunch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	l := &fakeLauncher{}
+	var logs []string
+	got := runWatchdog(halfDeadDeps(port, l,
+		fmt.Errorf("dial: %w", wsaEConnRefused), &logs)) // 拒绝形态错误（errors.As 钻得到）
+	if got != 0 {
+		t.Fatalf("半死告警应退出 0, got %d", got)
+	}
+	if l.calls != 0 {
+		t.Fatalf("半死不应拉起（控制口被占，拉起是唯一化空转）, calls=%d", l.calls)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "半死形态") || !strings.Contains(joined, "restart-daemon.ps1") {
+		t.Fatalf("应留半死告警与处置指引: %v", logs)
+	}
+	if strings.Contains(joined, "正常退出") {
+		t.Fatalf("半死不应同时打'正常退出': %v", logs)
+	}
+}
+
+// ① 健康全绿：控制口有响应 + 渡口可连 → 正常退出日志。
+func TestWatchdogHealthyWithDockProbe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	l := &fakeLauncher{}
+	var logs []string
+	if got := runWatchdog(halfDeadDeps(port, l, nil, &logs)); got != 0 {
+		t.Fatalf("健康应退出 0, got %d", got)
+	}
+	if l.calls != 0 {
+		t.Fatalf("健康不应拉起, calls=%d", l.calls)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "正常退出") {
+		t.Fatalf("应打正常退出: %v", logs)
+	}
+}
+
+// ①b 渡口探测异常但非拒绝（如占用超时）→ 只记录，不升级为半死告警。
+func TestWatchdogDockProbeOddityOnlyLogged(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	l := &fakeLauncher{}
+	var logs []string
+	if got := runWatchdog(halfDeadDeps(port, l, errors.New("i/o timeout"), &logs)); got != 0 {
+		t.Fatalf("探测异常应退出 0, got %d", got)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "正常退出") || strings.Contains(joined, "半死形态") {
+		t.Fatalf("非拒绝异常只记录不告警半死: %v", logs)
 	}
 }

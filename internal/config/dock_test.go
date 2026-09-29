@@ -202,3 +202,54 @@ func TestLoadDockDrainTimeoutInvalidRejected(t *testing.T) {
 		}
 	}
 }
+
+// ---- 2026-09-29 复盘件：绑定重试键 bind_retry_s ----
+
+func TestLoadDockBindRetryDefault240(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "dock-retry-def.toml")
+	if err := os.WriteFile(f, []byte("[dock]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dock == nil || cfg.Dock.BindRetryS != 240 {
+		t.Fatalf("BindRetryS = %+v, want 缺省 240", cfg.Dock)
+	}
+}
+
+func TestLoadDockBindRetryExplicitAndZeroOff(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "dock-retry.toml")
+	if err := os.WriteFile(f, []byte("[dock]\nbind_retry_s = 60\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dock == nil || cfg.Dock.BindRetryS != 60 {
+		t.Fatalf("BindRetryS = %+v, want 显式 60", cfg.Dock)
+	}
+	f2 := filepath.Join(t.TempDir(), "dock-retry-off.toml")
+	if err := os.WriteFile(f2, []byte("[dock]\nbind_retry_s = 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Load(f2, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg2.Dock == nil || cfg2.Dock.BindRetryS != 0 {
+		t.Fatalf("BindRetryS = %+v, want 0（关重试=旧单发）", cfg2.Dock)
+	}
+}
+
+func TestLoadDockBindRetryNegativeRejected(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "dock-retry-bad.toml")
+	if err := os.WriteFile(f, []byte("[dock]\nbind_retry_s = -1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(f, false); err == nil {
+		t.Fatal("Load(bind_retry_s=-1) err = nil, want 解析错误")
+	}
+}

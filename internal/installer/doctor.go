@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -81,10 +82,10 @@ func (c Check) named(name string) CheckResult {
 	return CheckResult{Name: name, Status: st, Detail: c.Msg}
 }
 
-// HttpBeatNotice HttpBeatSender 功能退化声明（评审附录#14）：心跳真实发送
-// 未实装（Q14 未授权），enforce 模式自动回落 observe 演练。信息行，不计入
-// 检查项、不判 FAIL。
-const HttpBeatNotice = "[提示] 心跳真实发送未实装（Q14 未授权），enforce 模式自动回落 observe 演练"
+// HttpBeatNotice 心跳能力声明（2026-09-29 修订文案：旧文"未实装/Q14 未授权"
+// 已与现实不符——Q14 早已通过、HttpBeatSender 已实装接线；实际发跳由
+// [heartbeat].enabled 与等待窗 opt-in 控制）。信息行，不计入检查项、不判 FAIL。
+const HttpBeatNotice = "[提示] 心跳真发送已实装（Q14 已过）；实际发跳由 [heartbeat].enabled 与等待窗 opt-in 控制"
 
 // 条目 JSON 里 -File "<path>" 的两种形（json 转义串 / 原文；doctor.py 正则逐字）。
 var (
@@ -338,6 +339,35 @@ func CheckDaemon(probe func() map[string]any, pidFile string) Check {
 		alert = " · ⚠ 健康告警: 疑似钩子失效"
 	}
 	return Check{true, "daemon 活着" + extra + alert}
+}
+
+// realDialTCP 渡口监听真探针：TCP 拨号，连上即 nil（watchdog.probeTCPPort 同
+// 语义；渡口是流式端点，可连＝在听）。
+func realDialTCP(addr string, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// dockListenTimeout CheckDockListening 拨号超时。
+const dockListenTimeout = 2 * time.Second
+
+// CheckDockListening 半死形态权威检查（2026-09-29 复盘件）：daemon 活着且
+// 配置了渡口 → 渡口必须在听。典型成因：升级/重启排水竞态里新守护渡口绑定
+// 失败降级"无渡口"（控制口活/渡口死，看门探活看不见）；dial 未装配时由
+// 调用方落 not_checked（本函数不伪造）。
+func CheckDockListening(listen string, dial func(addr string, timeout time.Duration) error) Check {
+	if dial == nil {
+		return Check{false, "渡口探针未装配"}
+	}
+	err := dial(listen, dockListenTimeout)
+	if err == nil {
+		return Check{true, fmt.Sprintf("渡口在听 %s", listen)}
+	}
+	return Check{false, fmt.Sprintf("半死形态：daemon 活着但渡口 %s 无监听（%v）——"+
+		"处置: restart-daemon.ps1（docs/20260929_守护重启事故复盘.md）", listen, err)}
 }
 
 // CheckFerryProvider 摆渡 provider 已配置且在 [providers.*] 有定义（T39 去内置
@@ -646,6 +676,9 @@ type doctorDeps struct {
 	LoadPrices func() map[string]prices.PriceBook
 	ArmVerdict config.ArmVerdictResolver
 	Probe      func() map[string]any
+	// DialTCP 渡口监听探针（2026-09-29 复盘件 dock_listening 检查用）；
+	// nil = 未装配 → 该项显式 not_checked（如实标注不伪造，LoadPrices 同款）。
+	DialTCP func(addr string, timeout time.Duration) error
 	// 票02：常驻保障两查（Run 键三态 + 看门任务在位/缺失）。
 	Autostart    func() (autostartStatus, error)
 	WatchdogTask func() (TaskStatus, error)
@@ -691,6 +724,8 @@ func RunDoctor(version string) int {
 		// 票04 收口：实跳臂结论真源（无状态文件→条目未启用,如实体检）
 		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
 		Probe:      realStatsProbe(filepath.Join(home, "ferryman"), port),
+		// 2026-09-29 复盘件：半死形态检查真探针（CLI 面与 agent 面同源）
+		DialTCP: realDialTCP,
 		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
 		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
 		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
@@ -767,6 +802,17 @@ func doctorResults(d doctorDeps) []CheckResult {
 			// dock_upstream_rewrite_hint / dock_upstream_key:<条目名> /
 			// dock_deepseek_boundary——主判紧随 dock_rewrite）。
 			out = append(out, CheckDockUpstreams(cfg.Dock)...)
+			// 2026-09-29 复盘件：半死形态权威检查——daemon 活着且配置了渡口 →
+			// 渡口必须在听（daemon 未跑时渡口不在属预期，不查，由 daemon_liveness
+			// 自报；探针未装配 → not_checked 如实标注）。放 dock 组末位。
+			if d.Probe() != nil {
+				if d.DialTCP == nil {
+					out = append(out, CheckResult{Name: "dock_listening", Status: StatusNotChecked,
+						Detail: "渡口监听未检查（探针未装配——如实标注不伪造）"})
+				} else {
+					out = append(out, CheckDockListening(cfg.Dock.Listen, d.DialTCP).named("dock_listening"))
+				}
+			}
 		}
 	}
 
@@ -838,6 +884,8 @@ func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, res
 		// 票04 收口：实跳臂结论真源（agent 面与 CLI 面同源）
 		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
 		Probe:      realStatsProbe(cfg.DataDir(), cfg.Server.Port),
+		// 2026-09-29 复盘件：半死形态检查真探针（渡口 TCP 拨号）
+		DialTCP: realDialTCP,
 	}
 	if residency {
 		d.Autostart = func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) }

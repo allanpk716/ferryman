@@ -1,8 +1,14 @@
 // watchdog.go — 票02：看门单次探活（规格 F5：HTTP 健康端点探活非探进程）＋
 // 看门计划任务 schtasks 注册（每 5 分钟调 `ferryman watchdog`）。
 //
-// 判定三分支（钉死语义，评审 F5：HTTP 探活/无监听才拉起/占用不双拉）：
+// 判定四分支（钉死语义，评审 F5：HTTP 探活/无监听才拉起/占用不双拉；第四支
+// 2026-09-29 复盘追加——半死形态可见性）：
 //   ① 有 HTTP 响应（任何状态码，含 401/5xx）＝ daemon 在 → 正常退出；
+//      ①b 装配了渡口探针时加查半死：控制口活但渡口口 connection refused ＝
+//      "半死形态"（典型成因：升级/重启排水竞态里渡口绑定失败、或渡口异常挂掉）
+//      ——只落日志告警（watchdog.log 是计划任务的唯一持久留痕），不拉起（控制
+//      口被占，拉起是唯一化空转）、不杀（占口者身份不可知的既有红线），
+//      处置指向 restart-daemon.ps1；
 //   ② connection refused ＝ 无监听 → 拉起 daemon（与 Run 键同一命令构造
 //      daemonStartScript）后本次结束；
 //   ③ 端口被占但非 daemon（超时/断连等一切非拒绝错误）→ 只记日志退出，
@@ -32,6 +38,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -47,10 +54,14 @@ import (
 const (
 	DefaultDaemonPort = 7311
 	DaemonPortEnv     = "FERRYMAN_PORT"
-	WatchdogTaskName  = "FerrymanWatchdog"
-	watchdogTimeout   = 2 * time.Second
-	daemonProbePath   = "/stats"
-	watchdogLogName   = "watchdog.log"
+	// DefaultDockPort 渡口缺省口（config [dock].listen 缺省 15722 同值；看门无
+	// config 访问面，环境变量可覆写——DaemonPortEnv 同款模式）。
+	DefaultDockPort  = 15722
+	DockPortEnv      = "FERRYMAN_DOCK_PORT"
+	WatchdogTaskName = "FerrymanWatchdog"
+	watchdogTimeout  = 2 * time.Second
+	daemonProbePath  = "/stats"
+	watchdogLogName  = "watchdog.log"
 )
 
 // DaemonPort 探活口：FERRYMAN_PORT 数值优先，缺省/坏值回落 7311。
@@ -61,6 +72,16 @@ func DaemonPort() int {
 		}
 	}
 	return DefaultDaemonPort
+}
+
+// DockPort 半死加查的渡口口：FERRYMAN_DOCK_PORT 数值优先，缺省/坏值回落 15722。
+func DockPort() int {
+	if v := strings.TrimSpace(os.Getenv(DockPortEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultDockPort
 }
 
 // DaemonProbeURL 探活目标（/stats：见文件头「探活目标」注）。
@@ -79,6 +100,16 @@ func probeHTTP(url string, timeout time.Duration) error {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)) // 排水礼节（连接可复用）
 	return nil
+}
+
+// probeTCPPort 渡口半死加查真探针：TCP 拨号，连上即 nil（渡口是 Anthropic
+// 协议流式端点，无廉价健康路径——可连＝在听，语义与分支①"有应答"分层即可）。
+func probeTCPPort(port int, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 // wsaEConnRefused Windows 连接拒绝码（10061）；stdlib syscall 不导出 WSA 常量
@@ -105,6 +136,11 @@ type WatchdogDeps struct {
 	Probe   func(url string, timeout time.Duration) error
 	Launch  func() error
 	Logf    func(format string, args ...any)
+	// DockPort 半死加查的渡口口；0 = FERRYMAN_DOCK_PORT 或 15722。
+	DockPort int
+	// DockProbe 渡口 TCP 探针（半死加查）；nil = 不加查（旧三分支行为——
+	// 既有测试/最小装配零改动）。
+	DockProbe func(port int, timeout time.Duration) error
 }
 
 // runWatchdog 单次判定（返回进程退出码：0 = 正常/占用告警；1 = 拉起失败/
@@ -125,7 +161,24 @@ func runWatchdog(d WatchdogDeps) int {
 	url := DaemonProbeURL(port)
 	err := d.Probe(url, timeout)
 	if err == nil {
-		// 分支①：有响应（任何状态码）
+		// 分支①：有响应（任何状态码）。装配了渡口探针时加查半死形态
+		// （①b，2026-09-29 复盘）：控制口活但渡口无监听——只告警，不拉起
+		// 不杀；处置人工/脚本走 restart-daemon.ps1。
+		if d.DockProbe != nil {
+			dockPort := d.DockPort
+			if dockPort == 0 {
+				dockPort = DockPort()
+			}
+			if derr := d.DockProbe(dockPort, timeout); derr != nil {
+				if isConnRefused(derr) {
+					logf("[watchdog] daemon 有响应但渡口 %d 无监听（connection refused）——"+
+						"半死形态（控制口活/渡口死）；只告警不拉起不杀（单实例）。处置: "+
+						"restart-daemon.ps1（详见 docs/20260929_守护重启事故复盘.md）", dockPort)
+					return 0
+				}
+				logf("[watchdog] 渡口 %d 探测异常（%v）——仅记录，不影响本次判定", dockPort, derr)
+			}
+		}
 		logf("[watchdog] daemon 有响应（%s）——正常退出", url)
 		return 0
 	}
@@ -311,9 +364,10 @@ func RunWatchdogCLI() int {
 // 日志双写（见 realWatchdogLogf）。
 func realWatchdogDeps() WatchdogDeps {
 	return WatchdogDeps{
-		Probe:  probeHTTP,
-		Launch: func() error { return LaunchDaemon(filepath.Join(homeDir(), "ferryman", LauncherName)) },
-		Logf:   realWatchdogLogf,
+		Probe:     probeHTTP,
+		DockProbe: probeTCPPort,
+		Launch:    func() error { return LaunchDaemon(filepath.Join(homeDir(), "ferryman", LauncherName)) },
+		Logf:      realWatchdogLogf,
 	}
 }
 

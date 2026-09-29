@@ -192,16 +192,22 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		} else {
 			// 票06 接线（票01 起条目化）：改写隐含开启，守卫/doctor 判定在
 			// dock 包内单源裁决（本地中转地址拒绝即退纯透传）。
-			ds, derr := dock.NewWithOptions(cfg.Dock.Listen, up.BaseURL, dock.Options{
-				Upstream: up,
-				Accounts: acc,
-				Alert:    dock.AlertViaNotify(cfg),
-			})
+			// 2026-09-29 复盘：单发绑定改有界重试（[dock].bind_retry_s 缺省
+			// 240s）——升级/重启排水窗内渡口口被旧守护暂占时等得起，不再直接
+			// 降级"无渡口"半死形态；控制口已先绑，重试期间探活面健康。
+			newDock := func() (*dock.Server, error) {
+				return dock.NewWithOptions(cfg.Dock.Listen, up.BaseURL, dock.Options{
+					Upstream: up,
+					Accounts: acc,
+					Alert:    dock.AlertViaNotify(cfg),
+				})
+			}
+			ds, derr := startDockWithRetry(newDock,
+				time.Duration(cfg.Dock.BindRetryS*float64(time.Second)), dockRetryInterval,
+				func(f string, a ...any) { fmt.Printf("[ferryman] %s\n", fmt.Sprintf(f, a...)) })
 			if derr != nil {
-				fmt.Printf("[ferryman] ⚠ 渡口未启动（配置无效）: %v\n", derr)
-			} else if derr = ds.Start(); derr != nil {
-				fmt.Printf("[ferryman] ⚠ 渡口未启动（监听 %s 失败，主服务不受影响）: %v\n",
-					cfg.Dock.Listen, derr)
+				fmt.Printf("[ferryman] ⚠ 渡口未启动（监听 %s 失败，重试 %.0fs 后放弃，主服务不受影响）: %v\n",
+					cfg.Dock.Listen, cfg.Dock.BindRetryS, derr)
 			} else {
 				dockSrv = ds
 				d.DockSnap = ds.Snapshots()

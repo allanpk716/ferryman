@@ -20,12 +20,15 @@ import (
 	"time"
 )
 
-// 监督者缺省参数(规格 §C 第5/7条:等端口释放 ≤30s、轮询 /stats ≤90s)。
+// 监督者缺省参数。defaultPortWait 240s：v0.2.4 起守护优雅关停先排水（在途流
+// 最长 [dock].drain_timeout_s=180s，期间渡口 15722 仍被旧进程占着、进程未退），
+// 停旧预算必须覆盖排水窗+余量——2026-09-29 复盘（docs/20260929_守护重启事故
+// 复盘.md）：30s 会让监督者在排水中抢跑换装，新守护渡口绑定失败进半死形态。
 const (
 	// DefaultDaemonPort 守护口(与 installer.DefaultDaemonPort 同值;不 import
 	// installer,避免 update→installer 的面拉宽)。
 	DefaultDaemonPort = 7311
-	defaultPortWait   = 30 * time.Second
+	defaultPortWait   = 240 * time.Second
 	defaultPollWait   = 90 * time.Second
 	defaultPollEvery  = 1 * time.Second
 	// startCmdName 点火脚本名(installer.LauncherName 同名同位)。
@@ -43,7 +46,7 @@ type Config struct {
 	SelfRelay    bool          // 本进程已是自中继副本,不再自中继(内部旗标)
 	StartCmd     string        // 点火脚本;空 = <DataDir>/start-daemon.cmd
 	HTTP         *http.Client  // 守护面客户端;空 = 3s 超时内建
-	PortWait     time.Duration // 停旧等端口释放上限;0 = 30s
+	PortWait     time.Duration // 停旧等端口释放+进程退场上限;0 = 240s（覆盖 v0.2.4+ 排水窗）
 	PollTimeout  time.Duration // 拉起校验轮询上限;0 = 90s
 	PollInterval time.Duration // 轮询间隔;0 = 1s
 	Logf         func(format string, args ...any)
@@ -525,7 +528,10 @@ func (s *Supervisor) stopDaemon(targetExe, what string) error {
 		s.logf("%s:/shutdown 端点未应(%v)——走兜底判定", what, err)
 	}
 	if s.waitPortFree(s.cfg.PortWait) {
-		s.waitProcessExit(oldPID, s.cfg.PortWait)
+		if !s.waitProcessExit(oldPID, s.cfg.PortWait) {
+			return fmt.Errorf("%s:端口已释但 PID %d 仍活(排水/退出卡住,等满 %v)——"+
+				"拒绝在旧进程在场时换装,人工介入或稍后重试", what, oldPID, s.cfg.PortWait)
+		}
 		return nil
 	}
 	if !s.probeDaemonAny() {
@@ -551,30 +557,36 @@ func (s *Supervisor) stopDaemon(targetExe, what string) error {
 	if !s.waitPortFree(s.cfg.PortWait) {
 		return fmt.Errorf("%s:kill 后端口 %d 仍未释放", what, s.cfg.Port)
 	}
-	s.waitProcessExit(pid, s.cfg.PortWait)
+	if !s.waitProcessExit(pid, s.cfg.PortWait) {
+		return fmt.Errorf("%s:kill PID %d 后进程仍未退出(等满 %v)", what, pid, s.cfg.PortWait)
+	}
 	s.logf("%s:兜底 kill PID %d(映像已核 == 换装目标)", what, pid)
 	return nil
 }
 
 // waitProcessExit 等进程真正退出(≤budget)。/shutdown 优雅停机里监听口先关、
 // 进程后走——端口释放 ≠ 镜像解锁,swap 若抢跑会 Access denied(v0.1.1 演练
-// 实证)。超时如实放弃并留日志:不静默假装等过,后续步骤撞锁会再如实报错。
-func (s *Supervisor) waitProcessExit(pid int, budget time.Duration) {
+// 实证);v0.2.4 排水落地后更是事故源:渡口 15722 在排水窗内仍被旧进程占着,
+// 抢跑换装会让新守护渡口绑定失败进半死形态(2026-09-29 复盘)。故自该日起
+// 软等待(超时放弃前进)改硬门:超时仍活返回 false,调用方报错中止。
+// pid≤0(pid 文件缺失的罕见形态)视为放行——无从跟踪,保持旧行为。
+func (s *Supervisor) waitProcessExit(pid int, budget time.Duration) bool {
 	if pid <= 0 || budget <= 0 {
-		return
+		return true
 	}
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		if !s.procAlive(pid) {
-			return
+			return true
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	if s.procAlive(pid) {
-		s.logf("PID %d 端口已释但进程未退(等满 %v 放弃;若后续撞锁将如实报错)", pid, budget)
+		s.logf("PID %d 端口已释但进程未退(等满 %v,硬门:中止本次停旧)", pid, budget)
+		return false
 	}
+	return true
 }
-
 // postShutdown POST /shutdown(票04 端点);非 200/网络错都算未应。
 func (s *Supervisor) postShutdown() error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,

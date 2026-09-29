@@ -669,16 +669,51 @@ func TestStopDaemonWaitsForProcessExit(t *testing.T) {
 	}
 }
 
-// TestWaitProcessExitBudgetExhausted 等满预算如实放弃(pid 恒活),不留死等。
+// TestWaitProcessExitBudgetExhausted 等满预算如实返回 false(pid 恒活)——
+// 2026-09-29 起软等待改硬门:超时仍活由调用方报错中止,不再"放弃前进"。
 func TestWaitProcessExitBudgetExhausted(t *testing.T) {
 	_, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
 		c.PortWait = 300 * time.Millisecond
 	})
 	sup.procAlive = func(int) bool { return true }
 	start := time.Now()
-	sup.waitProcessExit(999, sup.cfg.PortWait)
+	if sup.waitProcessExit(999, sup.cfg.PortWait) {
+		t.Fatal("预算耗尽进程仍活应返回 false(硬门)")
+	}
 	if el := time.Since(start); el < 250*time.Millisecond {
 		t.Fatalf("应等满预算: elapsed=%v", el)
+	}
+}
+
+// TestStopDaemonHardGateOnStuckProcess 排水卡死硬门:控制口已释但旧进程
+// 恒活(排水中/退出卡住) → stopDaemon 必须报错中止,绝不带着在场旧进程换装
+// (2026-09-29 复盘:软等待前进会让新守护渡口绑定失败进半死形态)。
+func TestStopDaemonHardGateOnStuckProcess(t *testing.T) {
+	_, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.PortWait = 300 * time.Millisecond
+	})
+	if err := os.WriteFile(filepath.Join(sup.cfg.DataDir, "daemon.pid"),
+		[]byte(`{"pid":424243,"port":7311}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sup.procAlive = func(int) bool { return true }
+	err := sup.stopDaemon("whatever.exe", "测试停旧")
+	if err == nil {
+		t.Fatal("进程恒活时 stopDaemon 应报错(硬门),不得前进")
+	}
+	if !strings.Contains(err.Error(), "424243") {
+		t.Fatalf("报错应点名卡住的 PID: %v", err)
+	}
+}
+
+// TestDefaultPortWaitCoversDrain 停旧预算缺省 240s——必须覆盖 v0.2.4+ 排水窗
+// (drain_timeout_s 缺省 180s)加余量;30s 会抢跑。(newUpdateWorld 为测试速度
+// 硬编码短 PortWait,故此处直构 NewSupervisor 验缺省。)
+func TestDefaultPortWaitCoversDrain(t *testing.T) {
+	sup := NewSupervisor(Config{DataDir: t.TempDir(),
+		Logf: func(string, ...any) {}})
+	if sup.cfg.PortWait != 240*time.Second {
+		t.Fatalf("defaultPortWait = %v, want 240s", sup.cfg.PortWait)
 	}
 }
 
