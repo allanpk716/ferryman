@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,6 +67,11 @@ func newUpdateWorld(t *testing.T, rels []fakeRel, mod func(*Config, *updateWorld
 		PortWait:     1500 * time.Millisecond,
 		PollTimeout:  4 * time.Second,
 		PollInterval: 80 * time.Millisecond,
+		// 探针窗测试尺寸(生产缺省 2s/10s 由 TestProbeDefaultsMatchSpec 钉):
+		// 首测 50ms 后开始,2s 内应答即过——替身启动常在数百 ms,过窗只是
+		// 多一条告警日志,不影响流程断言(探针只报告不裁决)。
+		ProbeDelay:  50 * time.Millisecond,
+		ProbeTimeout: 2 * time.Second,
 		Logf:         func(f string, a ...any) { fmt.Fprintf(logs, f+"\n", a...) },
 	}
 	if mod != nil {
@@ -530,6 +536,178 @@ func TestSupervisorPrunesBackups(t *testing.T) {
 	if _, err := os.Stat(stale1); err == nil {
 		t.Fatal("超出 2 份的最老备份应被清理")
 	}
+}
+
+// ---- W2 票03:事务拉起直连 cmd + 拉起验证探针(ADR-0015 2026-09-29 补记) ----
+
+// TestTransactionalLaunchIsCmdDirect 事务拉起不再走 wscript/VBS:隐藏 VBS 在位
+// (launchCmdImpl 旧形态在此必优先命中 wscript)时,launch 缺省注入仍直拉
+// cmd.exe /c——标记只出现 CMD、绝不出现 VBS。VBS 三级转手吞 stderr 且成败
+// 不验(07:31 事故第一根因),事务级拉起必须直连可验;Run 键/看门/蜂群的
+// VBS 链不经此路径(launchCmdImpl 与 installer 包通道维持不变)。
+func TestTransactionalLaunchIsCmdDirect(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	marker := filepath.Join(w.dataDir, "marker.txt")
+	// 覆写点火脚本:写 CMD 标记即退(探针语义另测,此处只验拉起通道)。
+	if err := os.WriteFile(w.cmdPath,
+		[]byte("@echo off\r\necho CMD>> \""+marker+"\"\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 同目录摆上隐藏点火 VBS:若走 VBS 链,它会先写 VBS 标记再转拉 cmd。
+	vbs := filepath.Join(filepath.Dir(w.cmdPath), hiddenLauncherName)
+	vbsSrc := "CreateObject(\"Scripting.FileSystemObject\").OpenTextFile(\"" + marker +
+		"\", 8, True).WriteLine \"VBS\"\r\n"
+	if err := os.WriteFile(vbs, []byte(vbsSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sup.launch(w.cmdPath); err != nil { // 缺省注入 = 事务拉起形态
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(marker); err == nil {
+			if strings.Contains(string(b), "VBS") {
+				t.Fatal("事务拉起走了 VBS 链——应直连 cmd.exe")
+			}
+			if strings.Contains(string(b), "CMD") {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("10s 内未见 CMD 标记——事务拉起未执行点火脚本")
+}
+
+// TestProbeDefaultsMatchSpec 探针窗缺省:launch 后 2s 起测、10s(自拉起计)
+// 截止(spec W2 Implementation Decisions 3)。(测试世界已显式给小窗,故直构
+// NewSupervisor 验缺省,同 TestDefaultPortWaitCoversDrain 手法。)
+func TestProbeDefaultsMatchSpec(t *testing.T) {
+	sup := NewSupervisor(Config{DataDir: t.TempDir(),
+		Logf: func(string, ...any) {}})
+	if sup.cfg.ProbeDelay != 2*time.Second || sup.cfg.ProbeTimeout != 10*time.Second {
+		t.Fatalf("探针缺省 = delay %v / timeout %v, want 2s / 10s",
+			sup.cfg.ProbeDelay, sup.cfg.ProbeTimeout)
+	}
+}
+
+// TestVerifyLaunchProbeTargetsConfiguredPort 探针端点取 cfg.Port:同款拉起,
+// Port 指向有应答者则通过且零告警;指向死口则报「拉起验证失败（相位错误）」
+// + 告警,且 launchTx 不因此报错(探针只报告,不改变事务走向)。死口分支同时
+// 钉死「不硬编码 15700」——若探针偷瞄生产口,生产守护在场时死口分支必假通过。
+func TestVerifyLaunchProbeTargetsConfiguredPort(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.ProbeDelay, c.ProbeTimeout = 30*time.Millisecond, 400*time.Millisecond
+	})
+	startStandinProcess(t, w.exePath, w.port, w.token, t.TempDir(), false)
+	waitServe(t, w.port, w.token, "v0.1.0")
+
+	var alerts []string
+	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	sup.launch = func(string) error { return nil } // 只验探针语义,不真 spawn
+
+	if err := sup.launchTx(w.cmdPath); err != nil {
+		t.Fatalf("launchTx = %v(探针失败不得改变事务走向)", err)
+	}
+	if len(alerts) != 0 {
+		t.Fatalf("端点应答不应有告警: %v", alerts)
+	}
+	if !strings.Contains(w.logs.String(), "拉起验证通过") {
+		t.Fatalf("应有通过日志:\n%s", w.logs.String())
+	}
+
+	// 同一世界换监督者:Port 指向随机死口(无监听)。
+	logs2 := &syncBuf{}
+	var alerts2 []string
+	cfg2 := w.cfg
+	cfg2.Port = freePort(t)
+	cfg2.ProbeDelay, cfg2.ProbeTimeout = 30*time.Millisecond, 400*time.Millisecond
+	cfg2.Logf = func(f string, a ...any) { fmt.Fprintf(logs2, f+"\n", a...) }
+	cfg2.Alert = func(title, msg string) { alerts2 = append(alerts2, title+"|"+msg) }
+	sup2 := NewSupervisor(cfg2)
+	sup2.launch = func(string) error { return nil }
+
+	if err := sup2.launchTx(w.cmdPath); err != nil {
+		t.Fatalf("launchTx = %v(探针失败只报告,不报错)", err)
+	}
+	if len(alerts2) != 1 || !strings.Contains(alerts2[0], "相位错误") {
+		t.Fatalf("死口应恰一条相位错误告警: %v", alerts2)
+	}
+	if !strings.Contains(logs2.String(), "拉起验证失败（相位错误）") {
+		t.Fatalf("死口应有相位错误日志:\n%s", logs2.String())
+	}
+}
+
+// TestVerifyLaunchProbeAcceptsAnyStatus 成功谓词=任意 HTTP 应答(含 404,
+// probeDaemonAny 同语义):占口者只会 404,探针仍须判过——守护起来即应答,
+// 鉴权与路由不构成前提。
+func TestVerifyLaunchProbeAcceptsAnyStatus(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.ProbeDelay, c.ProbeTimeout = 20*time.Millisecond, 600*time.Millisecond
+	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	srv := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", w.port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	sup.launch = func(string) error { return nil }
+	if err := sup.launchTx(w.cmdPath); err != nil {
+		t.Fatalf("launchTx = %v", err)
+	}
+	if !strings.Contains(w.logs.String(), "拉起验证通过") {
+		t.Fatalf("404 应答应判探针通过:\n%s", w.logs.String())
+	}
+}
+
+// TestAlertFailureDoesNotBlock 告警通道故障(坏回调 panic)绝不传染事务:
+// alert 侧 recover 吞掉、只落日志留证(与 notify 包「尽力而为的旁路」同纪律)。
+func TestAlertFailureDoesNotBlock(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	sup.cfg.Alert = func(string, string) { panic("通知通道坏了") }
+	sup.alert("Ferryman 升级", "拉起验证失败（相位错误）") // 不得外泄 panic
+	if !strings.Contains(w.logs.String(), "告警通道故障") {
+		t.Fatalf("通道故障应落日志留证:\n%s", w.logs.String())
+	}
+}
+
+// TestLaunchVerifyFailAlertsButStillRollsBack 端到端:垃圾新版拉不起 →
+// 探针报「拉起验证失败（相位错误）」+ 告警;事务走向不变——回滚仍由既有
+// 版本校验裁决(结论为校验失败)并成功恢复旧版服务。
+func TestLaunchVerifyFailAlertsButStillRollsBack(t *testing.T) {
+	garbage := []byte("this is not a real windows executable - probe phase regression")
+	w, sup := newUpdateWorld(t, []fakeRel{{tag: "v0.2.0", bytes: garbage}}, nil)
+	var alerts []string
+	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	startStandinProcess(t, w.exePath, w.port, w.token, w.dataDir, false)
+	waitServe(t, w.port, w.token, "v0.1.0")
+
+	res := sup.Run()
+	if res.Success || !res.RolledBack {
+		t.Fatalf("垃圾新版应回滚: %+v\n日志:\n%s", res, w.logs.String())
+	}
+	if !strings.Contains(res.Err.Error(), "校验失败") {
+		t.Fatalf("回滚依据应是版本校验(非探针): %v", res.Err)
+	}
+	phased := false
+	for _, a := range alerts {
+		if strings.Contains(a, "相位错误") {
+			phased = true
+		}
+	}
+	if !phased {
+		t.Fatalf("应有相位错误告警: %v", alerts)
+	}
+	if !strings.Contains(w.logs.String(), "拉起验证失败（相位错误）") {
+		t.Fatalf("应有相位错误日志:\n%s", w.logs.String())
+	}
+	waitServe(t, w.port, w.token, "v0.1.0") // 旧版已恢复服务
 }
 
 // spawnDeadProcess 起一个即刻退出的进程,返回其(已死)PID——陈旧锁造现场。

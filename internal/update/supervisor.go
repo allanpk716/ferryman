@@ -31,6 +31,11 @@ const (
 	defaultPortWait   = 240 * time.Second
 	defaultPollWait   = 90 * time.Second
 	defaultPollEvery  = 1 * time.Second
+	// 拉起验证探针窗(W2/spec Implementation Decisions 3):launch 后 2s 起
+	// 首测(刚 spawn 的守护尚在引导,立刻拨只是白敲连接拒绝),10s(自拉起
+	// 计)截止。
+	defaultProbeDelay   = 2 * time.Second
+	defaultProbeTimeout = 10 * time.Second
 	// startCmdName 点火脚本名(installer.LauncherName 同名同位)。
 	startCmdName = "start-daemon.cmd"
 )
@@ -49,6 +54,9 @@ type Config struct {
 	PortWait     time.Duration // 停旧等端口释放+进程退场上限;0 = 240s（覆盖 v0.2.4+ 排水窗）
 	PollTimeout  time.Duration // 拉起校验轮询上限;0 = 90s
 	PollInterval time.Duration // 轮询间隔;0 = 1s
+	ProbeDelay   time.Duration // 拉起验证探针首测延迟(自拉起计);0 = 2s
+	ProbeTimeout time.Duration // 拉起验证探针截止(自拉起计);0 = 10s
+	Alert        func(title, message string) // 事务告警通道(cmd 侧装配 notify.NotifyAlert);nil = 只落 Logf
 	Logf         func(format string, args ...any)
 }
 
@@ -62,8 +70,10 @@ type Result struct {
 	Err         error
 }
 
-// Supervisor 监督者。proc* 为进程面 seam(测试注桩);launch 为拉起 seam;
-// selfExe/spawnRelay 为自中继 seam(同上)。
+// Supervisor 监督者。proc* 为进程面 seam(测试注桩);launch 为拉起 seam
+// (缺省注入 txLauncher 的事务形态——W2 起固定 cmd.exe 直拉,事务调用点经
+// launchTx 附带拉起验证探针;测试可换桩);selfExe/spawnRelay 为自中继
+// seam(同上)。
 type Supervisor struct {
 	cfg        Config
 	procAlive  func(pid int) bool
@@ -73,6 +83,13 @@ type Supervisor struct {
 	selfExe    func() (string, error)
 	spawnRelay func(exe string, args []string) error
 }
+
+// txLauncher 事务拉起缺省注点(平台面注入):Windows 侧由 proc_windows.go 的
+// init 固定为 launchTxCmdImpl(cmd.exe /c 直拉 + CREATE_NO_WINDOW——W2 弃
+// wscript/VBS,ADR-0015 2026-09-29 补记);非 Windows 世界无该文件,恒 nil,
+// 回落 launchCmdImpl 的新会话直执行(unix 上本无 wscript/cmd 通道之分,
+// 直执行即直连形态)。
+var txLauncher func(cmdPath string) error
 
 // NewSupervisor 装配(平台真实现见 proc_*.go / swap_*.go)。
 func NewSupervisor(cfg Config) *Supervisor {
@@ -96,15 +113,25 @@ func NewSupervisor(cfg Config) *Supervisor {
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = defaultPollEvery
 	}
+	if cfg.ProbeDelay == 0 {
+		cfg.ProbeDelay = defaultProbeDelay
+	}
+	if cfg.ProbeTimeout == 0 {
+		cfg.ProbeTimeout = defaultProbeTimeout
+	}
 	if cfg.Logf == nil {
 		cfg.Logf = fileTeeLogf(cfg.DataDir)
+	}
+	launchFn := launchCmdImpl
+	if txLauncher != nil {
+		launchFn = txLauncher
 	}
 	return &Supervisor{
 		cfg:        cfg,
 		procAlive:  procAliveImpl,
 		procImage:  procImageImpl,
 		killPID:    killImpl,
-		launch:     launchCmdImpl,
+		launch:     launchFn,
 		selfExe:    os.Executable,
 		spawnRelay: spawnRelayImpl,
 	}
@@ -348,7 +375,7 @@ func (s *Supervisor) restoreServiceQuiet(j journal) {
 	if _, ok := s.queryVersion(); ok {
 		return
 	}
-	if err := s.launch(j.StartCmd); err != nil {
+	if err := s.launchTx(j.StartCmd); err != nil {
 		s.logf("swap 失败后拉起旧版失败(看门/自举会兜底): %v", err)
 		return
 	}
@@ -357,10 +384,67 @@ func (s *Supervisor) restoreServiceQuiet(j journal) {
 	}
 }
 
+// launchTx 事务拉起(launchAndVerify/rollback/restoreServiceQuiet 同缝):经
+// launch 缺省注入(launchTxCmdImpl,固定 cmd.exe /c + CREATE_NO_WINDOW——W2
+// 起不再探测 wscript/VBS)拉起,随后做拉起验证活性探针。launch 本体失败照旧
+// 返回错误(探针无意义);探针结论只报告不裁决——launchTx 不因探针失败返回
+// 错误,事务走向仍由既有 PollTimeout(90s)版本校验裁决。探针是相位可见性,
+// 不是第二裁判。
+func (s *Supervisor) launchTx(cmdPath string) error {
+	if err := s.launch(cmdPath); err != nil {
+		return err
+	}
+	s.verifyLaunch()
+	return nil
+}
+
+// verifyLaunch 拉起验证(W2/ADR-0015 2026-09-29 补记):launch 后 ProbeDelay
+// (缺省 2s)起对本事务配置的管理端点(cfg.Port 经 daemonAddr 拼接——不硬
+// 编码 15700)做活性探针,成功谓词=任意 HTTP 应答(含 401/404,probeDaemonAny
+// 同语义:守护起来即应答,鉴权与路由不构成前提),重试至 ProbeTimeout(缺省
+// 10s,自拉起计)截止。端点始终无应答(含拉起进程秒退——口永远不会响,cmd.exe
+// 转手下无法跟踪守护 PID,以端点静默为准)→ 报「拉起验证失败（相位错误）」+
+// 告警;但只报告,不触发回滚——回滚仍由既有版本校验裁决。动机(07:31 事故):
+// VBS 三级转手吞 stderr 且成败不验,拉起静默失败无处追。
+func (s *Supervisor) verifyLaunch() {
+	time.Sleep(s.cfg.ProbeDelay) // 首测自 2s 起:引导期内拨号只是白敲
+	deadline := time.Now().Add(s.cfg.ProbeTimeout - s.cfg.ProbeDelay)
+	for {
+		if s.probeDaemonAny() {
+			s.logf("拉起验证通过: 端点 %s 已应答", s.daemonAddr())
+			return
+		}
+		if !time.Now().Before(deadline) {
+			msg := fmt.Sprintf("拉起验证失败（相位错误）: 端点 %s 于 %v 内无应答——"+
+				"拉起进程可能已退出或未监听;事务继续,以版本校验为准",
+				s.daemonAddr(), s.cfg.ProbeTimeout)
+			s.logf("%s", msg)
+			s.alert("Ferryman 升级", msg)
+			return
+		}
+		time.Sleep(s.cfg.PollInterval)
+	}
+}
+
+// alert 事务告警注入缝(cmd 侧装配 notify.NotifyAlert;nil = 只落 Logf,update
+// 包不 import notify,依赖面不拉宽)。尽力而为的旁路(notify 包同纪律):通道
+// 任何故障 recover 吞掉只记日志,绝不影响事务走向。
+func (s *Supervisor) alert(title, message string) {
+	if s.cfg.Alert == nil {
+		return // 未接通道:正文已由调用方落 Logf/update.log,不重复
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logf("告警通道故障(忽略): %v", r)
+		}
+	}()
+	s.cfg.Alert(title, message)
+}
+
 // launchAndVerify 拉起并校验 want 版本;seam C:失败判定前先查 7311 持有者,
 // 旧版本(看门/自举抢跑重拉)→ 复停一次 → 重拉起 → 重校验一轮。
 func (s *Supervisor) launchAndVerify(j journal, want string) (string, bool) {
-	if err := s.launch(j.StartCmd); err != nil {
+	if err := s.launchTx(j.StartCmd); err != nil {
 		s.logf("拉起失败: %v", err)
 	}
 	seen, ok := s.pollVersionMatch(want, s.cfg.PollTimeout)
@@ -374,7 +458,7 @@ func (s *Supervisor) launchAndVerify(j journal, want string) (string, bool) {
 			s.logf("复停失败: %v", err)
 			return nonEmpty(seen, holder), false
 		}
-		if err := s.launch(j.StartCmd); err != nil {
+		if err := s.launchTx(j.StartCmd); err != nil {
 			s.logf("重拉起失败: %v", err)
 		}
 		seen2, ok2 := s.pollVersionMatch(want, s.cfg.PollTimeout)
@@ -402,7 +486,7 @@ func (s *Supervisor) rollback(j journal, seen string) Result {
 		s.logf("回滚:%v(现场保持,请人工检查)", err)
 		return res
 	}
-	if err := s.launch(j.StartCmd); err != nil {
+	if err := s.launchTx(j.StartCmd); err != nil {
 		s.logf("回滚拉起失败: %v", err)
 	}
 	v, ok := s.pollVersionMatch(j.From, s.cfg.PollTimeout)

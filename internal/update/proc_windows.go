@@ -80,14 +80,14 @@ func hiddenLauncherSibling(cmdPath string) string {
 	return ""
 }
 
-// launchCmdImpl 无窗口拉起点火脚本。优先 wscript 走隐藏点火 VBS——wscript
-// 是 GUI 子系统宿主,永不创建控制台(Run 键/看门/af78f82 零闪窗铁律的同一
-// 通道);脚本自身的 >> 重定向由 cmd 解释,daemon 输出照落 serve 日志。VBS
-// 不在位(或 wscript 缺席,极罕见)回落 cmd.exe /c + CREATE_NO_WINDOW:
-// 注意不能用 DETACHED_PROCESS——cmd.exe 被脱离控制台启动后执行批处理会
-// **自建可见控制台**(2026-09-22 v0.1.4 生产实测:升级失败 restoreService
-// Quiet 拉起的守护常驻一个控制台窗体即此坑),CREATE_NO_WINDOW 给它隐藏
-// 控制台才是对的。Start 不 Wait,拉起即走。
+// launchCmdImpl 无窗口拉起点火脚本(非事务尽力拉起通道)。优先 wscript 走
+// 隐藏点火 VBS——wscript 是 GUI 子系统宿主,永不创建控制台(Run 键/看门/
+// af78f82 零闪窗铁律的同一通道);脚本自身的 >> 重定向由 cmd 解释,daemon
+// 输出照落 serve 日志。VBS 不在位(或 wscript 缺席,极罕见)回落事务同款
+// cmd.exe /c 直拉(见 launchTxCmdImpl)。监督者事务拉起自 W2 起不再走本
+// 函数(改 launchTxCmdImpl 直连,见其注);本函数与 hiddenLauncherSibling
+// 保留——回归测试钉住 wscript/VBS 通道形态,Run 键/看门/蜂群的尽力拉起
+// 同款通道靠冗余自愈、不挂事务,通道一致性仍有价值(ADR-0015 补记)。
 func launchCmdImpl(cmdPath string) error {
 	if vbs := hiddenLauncherSibling(cmdPath); vbs != "" {
 		if _, err := exec.LookPath("wscript.exe"); err == nil {
@@ -96,6 +96,20 @@ func launchCmdImpl(cmdPath string) error {
 			return c.Start()
 		}
 	}
+	return launchTxCmdImpl(cmdPath)
+}
+
+// launchTxCmdImpl 监督者事务拉起(W2/ADR-0015 2026-09-29 补记):固定
+// cmd.exe /c 直拉点火脚本 + CREATE_NO_WINDOW + CREATE_NEW_PROCESS_GROUP
+// ——即 launchCmdImpl 的回落分支形态,不探测、不优先 wscript/VBS。为什么
+// 弃 VBS:wscript 三级转手(监督者→wscript→VBS→cmd→daemon)吞 stderr 且
+// 成败不验(07:31 事故第一根因;10:40 升 v0.2.6 时 90s 校验期 serve 日志零
+// 启动痕迹——拉起静默失败无处追),事务级拉起必须可验证(拉起验证探针
+// supervisor.verifyLaunch 随役)。CREATE_NO_WINDOW 仍是唯一正确旗标:
+// cmd.exe 被脱离控制台启动后执行批处理会自建可见控制台(2026-09-22
+// v0.1.4 生产实测),DETACHED_PROCESS 即此坑。点火脚本仍是「怎么启动
+// daemon」的唯一出处,本函数只换通道、不另立启动知识。
+func launchTxCmdImpl(cmdPath string) error {
 	c := exec.Command("cmd.exe", "/c", cmdPath)
 	c.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
@@ -103,6 +117,11 @@ func launchCmdImpl(cmdPath string) error {
 	}
 	return c.Start()
 }
+
+// init 事务拉起缺省注点:supervisor.go 经 txLauncher 变量取事务拉起缺省
+// (该变量在非 Windows 世界恒 nil,由其 launchCmdImpl 的新会话直执行担任
+// 同位——unix 上本无 wscript/cmd 通道之分)。
+func init() { txLauncher = launchTxCmdImpl }
 
 // spawnRelayImpl detached 隐藏拉起自中继副本(直拉 exe 本体,不经 cmd.exe——
 // 副本是可执行文件不是脚本,DETACHED_PROCESS 对它就是无控制台,无 cmd.exe
