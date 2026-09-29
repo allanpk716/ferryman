@@ -48,6 +48,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"ferryman/internal/update"
 )
 
 // 常量：口/环境变量/任务名/超时（票面逐字：2s 短超时、每 5 分钟；缺省口
@@ -142,6 +144,17 @@ type WatchdogDeps struct {
 	// DockProbe 渡口 TCP 探针（半死加查）；nil = 不加查（旧三分支行为——
 	// 既有测试/最小装配零改动）。
 	DockProbe func(port int, timeout time.Duration) error
+	// DataDir 复位取证的数据目录（P1 守护无痕死亡，2026-09-30）；空 = 不
+	// 取证（既有测试/最小装配零改动）。真装配注 <home>/ferryman。
+	DataDir string
+	// PidAlive PID 活性判定缝（复位取证用，真装配注 update.PIDAlive 单源
+	// 助手）；nil = 活性不可判（取证行如实标注）。
+	PidAlive func(pid int) bool
+	// VerifyDelay 拉起后复核延迟（P1③：09-25 那次 110 分钟不可达里看门
+	// 22 连拉全部"成功"——cmd.Start() 返回 nil 就完事，守护起没起来无人
+	// 验）。>0 = 拉起后睡这么久再探一次并留复核行；0 = 不复核（旧行为）。
+	// 真装配 5s（覆盖冷启实测 3s 余量）。
+	VerifyDelay time.Duration
 }
 
 // runWatchdog 单次判定（返回进程退出码：0 = 正常/占用告警；1 = 拉起失败/
@@ -184,7 +197,10 @@ func runWatchdog(d WatchdogDeps) int {
 		return 0
 	}
 	if isConnRefused(err) {
-		// 分支②：无监听才拉起（单实例约束的正面）
+		// 分支②：无监听才拉起（单实例约束的正面）。拉起前先落复位取证
+		// （P1 守护无痕死亡，2026-09-30）：前守护 pid/末次应答/是否优雅
+		// 退出——旁路尽力而为，不影响判定。
+		logRespawnForensics(d.DataDir, d.PidAlive, logf)
 		logf("[watchdog] %s 无监听（connection refused）——拉起 daemon", url)
 		if d.Launch == nil {
 			logf("[watchdog] 未装配拉起动作（装配错误）")
@@ -193,6 +209,22 @@ func runWatchdog(d WatchdogDeps) int {
 		if lerr := d.Launch(); lerr != nil {
 			logf("[watchdog] daemon 拉起失败: %v", lerr)
 			return 1
+		}
+		// 拉起后复核（P1③）：拉起"成功"只代表 spawn 动作成——守护起没
+		// 起来另说（09-25 实证：22 连拉全"成功"、serve 侧零痕迹）。复核
+		// 只留痕不裁决：失败不是本次看门的失败（拉起动作已尽），下轮
+		// 5 分钟自动再判。
+		if d.VerifyDelay > 0 {
+			time.Sleep(d.VerifyDelay)
+			switch perr := d.Probe(url, timeout); {
+			case perr == nil:
+				logf("[watchdog] 拉起后复核有响应——复位确认")
+			case isConnRefused(perr):
+				logf("[watchdog] 拉起后复核仍无监听——守护疑似引导即死/拉起链吞错"+
+					"（serve.out.log / serve.err.log 无痕则起前死）；下轮 5 分钟自动再试")
+			default:
+				logf("[watchdog] 拉起后复核异常（%v）——仅记录", perr)
+			}
 		}
 		return 0
 	}
@@ -362,13 +394,16 @@ func RunWatchdogCLI() int {
 }
 
 // realWatchdogDeps 真装配：真探针 + 真拉起（点火脚本与 Run 键同款路径）+
-// 日志双写（见 realWatchdogLogf）。
+// 日志双写（见 realWatchdogLogf）+ 复位取证/拉起复核（P1，2026-09-30）。
 func realWatchdogDeps() WatchdogDeps {
 	return WatchdogDeps{
-		Probe:     probeHTTP,
-		DockProbe: probeTCPPort,
-		Launch:    func() error { return LaunchDaemon(filepath.Join(homeDir(), "ferryman", LauncherName)) },
-		Logf:      realWatchdogLogf,
+		Probe:      probeHTTP,
+		DockProbe:  probeTCPPort,
+		Launch:     func() error { return LaunchDaemon(filepath.Join(homeDir(), "ferryman", LauncherName)) },
+		Logf:       realWatchdogLogf,
+		DataDir:    filepath.Join(homeDir(), "ferryman"),
+		PidAlive:   update.PIDAlive,
+		VerifyDelay: 5 * time.Second,
 	}
 }
 

@@ -152,6 +152,12 @@ func LockHeldByLiveSupervisor(dir, targetExe string,
 	return info.PID, true
 }
 
+// PIDAlive PID 活性只读单源助手（P1 看门复位取证跨包复用，2026-09-30：
+// installer 包不复制第二份进程面——与 LockHeldByLiveSupervisor 同一导出
+// 纪律）。daemon 侧让路判定/监督者 seam B 与看门取证共用 procAliveImpl
+// 同一实现。
+func PIDAlive(pid int) bool { return procAliveImpl(pid) }
+
 // selfImage 本进程映像路径(锁内容用;取不到留空,不阻塞取锁)。
 func selfImage() string {
 	p, err := os.Executable()
