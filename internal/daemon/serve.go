@@ -1,6 +1,8 @@
 // serve.go — 票17：serve 装配（规格 ferryman/daemon.py:606-663 逐字平移）。
 //
-// 装配序：配置 → 数据目录 → token → Ledger/Store/Accounts → 工人（队列）→
+// 装配序：配置 → 数据目录 → 升级锁让路查（票04：update.lock 被活监督者
+// 持有即打印一行 + 退出码 0 静默让路，先于一切装配副作用）→ token →
+// Ledger/Store/Accounts → 工人（队列）→
 // QWatchStats → Daemon → 监听（绑定失败分流：唯一化跳过 / 端口被占失败）→
 // pid 文件 → Watcher/Worker 起 → 横幅逐字 → 阻塞 → SIGINT/ctx 优雅停
 // （watcher.Stop/worker 停/pid 删除）；POST /shutdown 管理端点（票04）取消
@@ -30,6 +32,7 @@ import (
 	"ferryman/internal/ferry"
 	"ferryman/internal/ledger"
 	"ferryman/internal/store"
+	"ferryman/internal/update"
 )
 
 // FerrySession 生产摆渡执行器（票18：internal/ferry 落地，票17 的恒错占位
@@ -73,11 +76,35 @@ func ServeContext(ctx context.Context, relaxMinGap bool, version string) int {
 	return serveConfig(cfg, ctx, version)
 }
 
+// ---- 票04（规格 Implementation Decisions 第4条，D8）：守护层锁让路 ----
+
+// serveSelfExe 自身映像路径（让路判定里的换装目标 = 守护自己；var 形 = 测试缝）。
+var serveSelfExe = os.Executable
+
+// lockYieldProbe 锁让路单源判定的接缝（var 形 = 测试缝，对齐 FerrySession
+// 惯例）：update 包导出的只读助手，daemon 只调用、不复制第二份锁逻辑；探针
+// 传 nil 用 update 包平台真实现（daemon 不碰进程面）。锁态→判定的映射矩阵
+// （不存在/坏锁/持有者死/映像无关/目标映像/副本映像）在 update 包
+// TestLockHeldByLiveSupervisor 钉死，此处不重复。
+var lockYieldProbe = update.LockHeldByLiveSupervisor
+
 // serveConfig serve() 的可测核心：cfg 由调用方给定（Serve 走 config.Load），
 // ctx 取消 ≡ KeyboardInterrupt（优雅停）。version 版本号装配进 Daemon（/stats
 // version 字段；测试传 "" 或 "dev" = 未注入回落态）。返回退出码。
 func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	dataDir := cfg.DataDir()
+	// 守护层锁让路（票04，D8）：升级事务进行中（update.lock 被活监督者持有）
+	// → 打印一行 + 静默退出码 0（唯一化跳过 return 0 的同款早退，但更早——
+	// 绑端口与一切装配副作用之前）：升级窗口内蜂群/看门/Run 键抢拉起的实例
+	// 到此为止，事务拉起权归监督者独占。锁不存在/陈旧/映像无关 → 照常启动
+	// ——正常开机/钩子拉起时 update.lock 不存在，零行为变化，只在升级事务
+	// 持锁期间生效。自身映像取不到留空 → samePath 恒 false → 判定恒不持有
+	// → 照常启动（让路面绝不阻塞启动）。
+	selfExe, _ := serveSelfExe()
+	if holderPID, held := lockYieldProbe(dataDir, selfExe, nil, nil); held {
+		fmt.Printf("[ferryman] 升级事务进行中（持有者 PID %d）——本实例静默让路\n", holderPID)
+		return 0
+	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil { // mkdir(parents=True, exist_ok=True)
 		fmt.Println(err)
 		return 1

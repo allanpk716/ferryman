@@ -2,9 +2,11 @@ package update
 
 // update.lock(票05,规格 §C 第1条):<DataDir>/update.lock,O_CREATE|O_EXCL
 // 原子创建;内容 PID+进程映像路径+generation。存活判定(seam B)= PID 活
-// **且**映像路径 == 换装目标 exe 路径;持有者活 → ErrUpdateInProgress 退出;
-// 陈旧(死 PID/映像不符/内容坏)→ 原子接管:remove 后 O_EXCL 重赛,
-// generation 递增——并发接管者只有一方能在重赛中赢。
+// **且**映像路径 ∈ {换装目标 exe, 自中继副本(换装目标+".supervisor-copy")}
+// ——副本纳入是票04 盲区修:监督者 --self-relay 交棒后持锁者映像恒为副本,
+// 修前恒判陈旧 → 并发第二次 update 误接管双监督者。持有者活 →
+// ErrUpdateInProgress 退出;陈旧(死 PID/映像不符/内容坏)→ 原子接管:
+// remove 后 O_EXCL 重赛,generation 递增——并发接管者只有一方能在重赛中赢。
 
 import (
 	"encoding/json"
@@ -111,8 +113,9 @@ func readLockInfo(path string) (lockInfo, error) {
 	return info, nil
 }
 
-// holderAlive 存活判定(seam B):PID 活**且**映像路径 == 换装目标。
-// PID 活但映像查不出(权限面)→ 保守按活——宁误报进行中,不误双跑。
+// holderAlive 存活判定(seam B):PID 活**且**映像路径 ∈ {换装目标, 自中继
+// 副本(relayCopyPath)}。副本纳入是票04 盲区修(理由见文件头)。PID 活但
+// 映像查不出(权限面)→ 保守按活——宁误报进行中,不误双跑。
 func holderAlive(info lockInfo, targetExe string,
 	alive func(int) bool, image func(int) (string, error)) bool {
 	if info.PID <= 0 || !alive(info.PID) {
@@ -122,7 +125,31 @@ func holderAlive(info lockInfo, targetExe string,
 	if err != nil {
 		return true
 	}
-	return samePath(img, targetExe)
+	return samePath(img, targetExe) || samePath(img, relayCopyPath(targetExe))
+}
+
+// LockHeldByLiveSupervisor 只读判定 <dir>/update.lock 是否被活监督者持有
+// (票04 守护层让路的单源判定:daemon serve 启动早期调用本助手,不复制第二
+// 份锁逻辑;持有判据与 acquireUpdateLock 的接管判定同走 holderAlive——同一
+// 语义只会有一份实现)。alive/image 传 nil 用平台真实现(procAliveImpl/
+// procImageImpl,daemon 不碰进程面);测试注入桩。锁不存在/不可读/持有者
+// 死/映像无关 → (0,false)=照常启动;持有者活 → (持有者PID,true)。
+func LockHeldByLiveSupervisor(dir, targetExe string,
+	alive func(int) bool, image func(int) (string, error)) (int, bool) {
+	info, err := readLockInfo(filepath.Join(dir, lockName))
+	if err != nil {
+		return 0, false
+	}
+	if alive == nil {
+		alive = procAliveImpl
+	}
+	if image == nil {
+		image = procImageImpl
+	}
+	if !holderAlive(info, targetExe, alive, image) {
+		return 0, false
+	}
+	return info.PID, true
 }
 
 // selfImage 本进程映像路径(锁内容用;取不到留空,不阻塞取锁)。
