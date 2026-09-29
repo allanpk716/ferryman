@@ -178,6 +178,13 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		return 1
 	}
 
+	// 控制面即刻开始服务（v0.2.6：从渡口段之后提前至此）——pid 落盘后 7311 即
+	// 应答 /stats：渡口绑定重试（最长 bind_retry_s=240s）阻塞装配期间，监督者
+	// 的 90s 版本校验、看门/ensure 探活、restart 脚本的健康等待都必须能看到
+	// 控制面应答（v0.2.5 实战回滚教训：Serve 排在渡口段后＝重试期 7311 只绑
+	// 不服务，版本校验必超时）。
+	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
+
 	// 渡口（票01，F11 opt-in 裁定）：配置 [dock] 节才构造并启动——不配＝
 	// 不绑端口、零行为变化。独立 listener/生命周期：构造或绑定失败只告警
 	// 降级，绝不拖垮主服务（渡口挂＝CC 直连上游旧行为，base_url 指回即回退）。
@@ -226,7 +233,7 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// 演练＋告警一次"降级路径原样保留。
 	watcher := NewWatcher(cfg, led, st, enqueue, startedAt, acc, d,
 		newBeatSender(cfg, d.DockSnap), qwatchStats)
-	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
+	// （srv.Serve 已提前至 pid 落盘后——见上；此处不再重复起服务。）
 	go watcher.Run(ctx)
 	go worker.Run(ctx)
 	// 交接库 30 天清理（DESIGN §6.15 TODO 落地，ADR-0013）：启动一次 + 每日
