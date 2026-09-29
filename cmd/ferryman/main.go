@@ -6,9 +6,11 @@
 //	ferryman serve               # 同上（点火脚本 start-daemon.cmd 调它）
 //	ferryman doctor              # 一键体检
 //	ferryman version             # 版本号（dev = 非 release 构建）
-//	ferryman update [--check] [vX.Y.Z] [--prerelease]  # 无 --check = 执行升级
-//	                                   # （监督者：下载/校验/换装/重启/回滚）；--check
-//	                                   # 只报告不动手；显式版本支持降级
+//	ferryman update [--check] [vX.Y.Z] [--prerelease]          # 无 --check = 执行
+//	                                   # 升级（监督者：静默门/下载/校验/换装/重启/
+//	                                   # 回滚；--wait-quiet=<秒> 等流量空闲预算
+//	                                   # （0=不等，缺省 60s）；--force 跳门硬切；
+//	                                   # --check 只报告不动手；显式版本支持降级
 //	ferryman install-cc [--events E1,E2,…]
 //	ferryman install-ccswitch
 //	ferryman install-codex [--events E1,E2,…]
@@ -620,20 +622,23 @@ func cmdVersion(args []string, w io.Writer) int {
 // cmdUpdate `ferryman update`：--check 解析目标版本并与当前版本比较（已是最新/
 // 发现新版/显式降级注明；dev 等非 semver 如实提示无从比较），只报告不动手
 // （D6：升级纯手动；D8：网络走环境代理；D11：固定产物名）。无 --check =
-// 监督者执行（票05：锁/journal/停旧/原子换装/校验/回滚/崩溃恢复）；--supervise
-// 为托盘派生用的内部旗标（detached 隐藏 spawn），行为与无参一致（规格 §C
-// 统一监督者）——两入口收敛同一 runUpdateExecute。
+// 监督者执行（票05：锁/journal/停旧/原子换装/校验/回滚/崩溃恢复；票02 静默
+// 门：动手前等流量空闲）；--supervise 为托盘派生用的内部旗标（detached 隐藏
+// spawn），行为与无参一致（规格 §C 统一监督者）——两入口收敛同一
+// runUpdateExecute。--wait-quiet=<秒>/--force 为静默门脚本态旗标（票02）。
 func cmdUpdate(args []string, w io.Writer) int {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	check := fs.Bool("check", false, "只检查并报告，不下载不换文件")
 	pre := fs.Bool("prerelease", false, "检查纳入预发布版（rc/beta；缺省只看稳定版）")
 	_ = fs.Bool("supervise", false, "内部旗标：托盘隐藏派生用，行为与无参一致")
 	selfRelay := fs.Bool("self-relay", false, "内部旗标：本进程是自中继副本，不再自中继")
-	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason")); err != nil {
+	waitQuiet := fs.Int("wait-quiet", 60, "静默门等待预算（秒；判据不满足时的轮询上限；0=不等；缺省 60s）")
+	force := fs.Bool("force", false, "跳过静默门直接停旧（脚本态）")
+	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason", "wait-quiet")); err != nil {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "用法: ferryman update [--check] [vX.Y.Z] [--prerelease]")
+		fmt.Fprintln(os.Stderr, "用法: ferryman update [--check] [vX.Y.Z] [--prerelease] [--wait-quiet=<秒>] [--force]")
 		return 2
 	}
 	spec := ""
@@ -641,7 +646,7 @@ func cmdUpdate(args []string, w io.Writer) int {
 		spec = fs.Arg(0)
 	}
 	if !*check {
-		return runUpdateExecute(spec, *pre, *selfRelay, w)
+		return runUpdateExecute(spec, *pre, *selfRelay, *waitQuiet, *force, w)
 	}
 	out, err := update.Check(update.Endpoints{}, version, spec, *pre)
 	if err != nil {
@@ -697,8 +702,10 @@ func orderFlagPairsFirst(args []string, valueFlags ...string) []string {
 // runUpdateExecute 监督者执行路径（var 形 = main_test 注入缝，不真升级）。
 // 装配：config 可载则用其 DataDir/守护口，载不动回落缺省（~/ferryman、15700）
 // ——升级不应因配置坏而不可用。结果 stdout 报告 + notify 通道推送（seam F，
-// 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）。
-var runUpdateExecute = func(spec string, pre, selfRelay bool, w io.Writer) int {
+// 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）；同一
+// 通道也接进监督者事务告警（票03 评审移交的生产接线）与静默门兜底告警
+// （票02：门未达成非交互硬切前一条）。
+var runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, force bool, w io.Writer) int {
 	dataDir, port := "", update.DefaultDaemonPort
 	var cfg *config.Config
 	if c, err := config.Load("", false); err == nil {
@@ -715,6 +722,13 @@ var runUpdateExecute = func(spec string, pre, selfRelay bool, w io.Writer) int {
 		Spec:       spec,
 		Prerelease: pre,
 		SelfRelay:  selfRelay,
+		WaitQuiet:  quietWaitFromFlag(waitQuiet),
+		Force:      force,
+		Alert: func(title, msg string) {
+			if cfg != nil {
+				notify.NotifyAlert(title, msg, cfg) // 旁路尽力而为（NotifyAlert 内已护）
+			}
+		},
 	}).Run()
 	if res.Relayed {
 		// 自中继交棒：副本进程已接手（detached 无控制台），结果走 notify；
@@ -741,6 +755,16 @@ var runUpdateExecute = func(spec string, pre, selfRelay bool, w io.Writer) int {
 		return 0
 	}
 	return 1
+}
+
+// quietWaitFromFlag --wait-quiet 秒数 → update.Config.WaitQuiet：0 = 不等
+// 映射为负值哨兵（update.Config 语义：负 = 不等待、0 = 缺省 60s——旗标缺省
+// 60 直接透传即缺省语义，零值位留给库用缺省）；其余秒→时长。
+func quietWaitFromFlag(seconds int) time.Duration {
+	if seconds == 0 {
+		return -1
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // ---- mcp（票04：agent 面 stdio MCP server） ----

@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"ferryman/internal/update"
 )
@@ -136,10 +137,13 @@ func TestCmdUpdate(t *testing.T) {
 
 	var gotSpec string
 	var gotPre, gotRelay bool
+	var gotWQ int
+	var gotForce bool
 	var calls int
-	runUpdateExecute = func(spec string, pre, selfRelay bool, _ io.Writer) int {
+	runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, force bool, _ io.Writer) int {
 		calls++
 		gotSpec, gotPre, gotRelay = spec, pre, selfRelay
+		gotWQ, gotForce = waitQuiet, force
 		return 0
 	}
 
@@ -150,6 +154,10 @@ func TestCmdUpdate(t *testing.T) {
 	}
 	if calls != 1 || gotSpec != "v0.2.0" || !gotPre {
 		t.Fatalf("执行路径参数透传: calls=%d spec=%q pre=%v", calls, gotSpec, gotPre)
+	}
+	// 静默门旗标缺省（票02）：预算 60s、不强切
+	if gotWQ != 60 || gotForce {
+		t.Fatalf("静默门旗标缺省透传: waitQuiet=%d force=%v, want 60/false", gotWQ, gotForce)
 	}
 
 	// --supervise 内部旗标：行为与无参一致（同走执行路径）
@@ -173,6 +181,60 @@ func TestCmdUpdate(t *testing.T) {
 	buf.Reset()
 	if code := cmdUpdate([]string{"--check", "v0.1.0", "extra"}, &buf); code != 2 {
 		t.Fatalf("多余位置参数退出码 = %d, want 2", code)
+	}
+}
+
+// ---- 静默门旗标(票02):--wait-quiet / --force 解析与透传 ----
+
+// TestCmdUpdateQuietGateFlags 缺省 60s 不强切;--wait-quiet=0(不等)/显式秒数/
+// --force 原样进执行路径;带值旗标空格形态(`--wait-quiet 30`)与位置参数混排
+// 不串位。
+func TestCmdUpdateQuietGateFlags(t *testing.T) {
+	orig := runUpdateExecute
+	defer func() { runUpdateExecute = orig }()
+
+	var gotSpec string
+	var gotWQ int
+	var gotForce bool
+	runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, force bool, _ io.Writer) int {
+		gotSpec, gotWQ, gotForce = spec, waitQuiet, force
+		return 0
+	}
+	var buf bytes.Buffer
+
+	if code := cmdUpdate(nil, &buf); code != 0 {
+		t.Fatalf("缺省退出码 = %d, want 0", code)
+	}
+	if gotWQ != 60 || gotForce || gotSpec != "" {
+		t.Fatalf("缺省透传: wq=%d force=%v spec=%q, want 60/false/\"\"", gotWQ, gotForce, gotSpec)
+	}
+
+	if code := cmdUpdate([]string{"--wait-quiet=0", "--force"}, &buf); code != 0 {
+		t.Fatalf("自包含旗标形态退出码 = %d", code)
+	}
+	if gotWQ != 0 || !gotForce {
+		t.Fatalf("--wait-quiet=0 --force 透传: wq=%d force=%v", gotWQ, gotForce)
+	}
+
+	if code := cmdUpdate([]string{"v0.2.0", "--wait-quiet", "30"}, &buf); code != 0 {
+		t.Fatalf("空格形态退出码 = %d", code)
+	}
+	if gotWQ != 30 || gotSpec != "v0.2.0" {
+		t.Fatalf("空格形态透传: wq=%d spec=%q, want 30/v0.2.0", gotWQ, gotSpec)
+	}
+}
+
+// TestQuietWaitFromFlag 旗标秒数 → update.Config.WaitQuiet 映射:0 = 不等
+// (负值哨兵);其余秒→时长(缺省 60 直接透传即缺省语义)。
+func TestQuietWaitFromFlag(t *testing.T) {
+	if got := quietWaitFromFlag(0); got >= 0 {
+		t.Fatalf("0 应映射为不等待哨兵(负值), got %v", got)
+	}
+	if got := quietWaitFromFlag(30); got != 30*time.Second {
+		t.Fatalf("30 → %v, want 30s", got)
+	}
+	if got := quietWaitFromFlag(60); got != 60*time.Second {
+		t.Fatalf("60 → %v, want 60s", got)
 	}
 }
 

@@ -1,12 +1,13 @@
 package update
 
 // 升级监督者状态机(票05,规格 §C 全序列):换装目标解析(seam E)→ 锁
-// (seam B)→ journal → staging(票03 下载+SHA256)→ 停旧(/shutdown 票04 +
-// 身份校验兜底 kill)→ swap(seam A 单次原子替换)→ 拉起+校验(seam C 看门
-// 抢跑复停重拉)→ 回滚 → 崩溃恢复。CLI `ferryman update` 与内部旗标
-// --supervise 收敛到同一 Run(规格 §C 统一监督者)。
+// (seam B)→ journal → staging(票03 下载+SHA256)→ 静默门(票02 W1:等流量
+// 空闲才动手)→ 停旧(/shutdown 票04 + 身份校验兜底 kill)→ swap(seam A 单次
+// 原子替换)→ 拉起+校验(seam C 看门抢跑复停重拉)→ 回滚 → 崩溃恢复。CLI
+// `ferryman update` 与内部旗标 --supervise 收敛到同一 Run(规格 §C 统一监督者)。
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,20 @@ const (
 	SupervisorLaunchEnv = "FERRYMAN_LAUNCHED_BY_SUPERVISOR"
 	// startCmdName 点火脚本名(installer.LauncherName 同名同位)。
 	startCmdName = "start-daemon.cmd"
+	// 静默门参数(W1/spec Implementation Decisions 2):判据 = 在途 0 且距最后
+	// 请求 ≥ defaultQuietRequired(last_request_ts==0 视为静默成立);判据不满足
+	// 默认轮询等待 defaultQuietWait,每 quietLogEvery 记一行进度日志。
+	defaultQuietRequired = 10 * time.Second
+	defaultQuietWait     = 60 * time.Second
+	quietLogEvery        = 10 * time.Second
+)
+
+// 静默门交互三选词表(askQuiet/Config.QuietAsk 的返回契约;"" = 非交互/
+// 无法判定/无效输入 → 调用方告警后硬切兜底)。
+const (
+	quietChoiceWait   = "wait"   // 继续等一个预算窗再判
+	quietChoiceSwitch = "switch" // 现在切换(硬切)
+	quietChoiceAbort  = "abort"  // 放弃本次升级
 )
 
 // Config 监督者装配面:全部路径/口/时限可注入——测试世界零生产面触碰。
@@ -62,7 +77,16 @@ type Config struct {
 	ProbeDelay   time.Duration               // 拉起验证探针首测延迟(自拉起计);0 = 2s
 	ProbeTimeout time.Duration               // 拉起验证探针截止(自拉起计);0 = 10s
 	Alert        func(title, message string) // 事务告警通道(cmd 侧装配 notify.NotifyAlert);nil = 只落 Logf
-	Logf         func(format string, args ...any)
+	// WaitQuiet 静默门等待预算(判据不满足时轮询等待的上限):0 = 缺省 60s;
+	// 负值 = 不等待(CLI --wait-quiet=0 的映射哨兵:判据不满足立即进兜底)。
+	WaitQuiet time.Duration
+	// Force 跳过静默门直接停旧(CLI --force 脚本态)。
+	Force bool
+	// QuietAsk 静默门交互三选问询注入缝:参数为情境提示与三选项文本,返回
+	// quietChoiceWait/quietChoiceSwitch/quietChoiceAbort 之一;返回 ""(或 nil
+	// 缝下缺省实现判定非交互)= 告警后硬切。缺省实现看 stdin 是否字符设备。
+	QuietAsk func(prompt string, options []string) string
+	Logf     func(format string, args ...any)
 }
 
 // Result 升级结论(seam F 结果通知与 CLI stdout 的单源)。
@@ -123,6 +147,9 @@ func NewSupervisor(cfg Config) *Supervisor {
 	}
 	if cfg.ProbeTimeout == 0 {
 		cfg.ProbeTimeout = defaultProbeTimeout
+	}
+	if cfg.WaitQuiet == 0 {
+		cfg.WaitQuiet = defaultQuietWait // 负值 = 不等待,保留原样
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = fileTeeLogf(cfg.DataDir)
@@ -233,14 +260,23 @@ func (s *Supervisor) Run() Result {
 		return res
 	}
 
-	// 5. 停旧(票04 /shutdown;端点不可达且守护在跑 → 身份校验兜底 kill)
+	// 5. 静默门(票02/W1):staging 完成后、停旧前——下载完新 exe 再等静默,
+	// 等待期不占下载时间;门通过(或兜底放行)后立即进停旧(postShutdown 紧随,
+	// 门与 shutdown 之间不插其他等待)。
+	if err := s.quietGate(); err != nil {
+		_ = clearJournal(s.cfg.DataDir)
+		res.Err = err
+		return res
+	}
+
+	// 6. 停旧(票04 /shutdown;端点不可达且守护在跑 → 身份校验兜底 kill)
 	if err := s.stopDaemon(j.TargetExe, "停旧"); err != nil {
 		_ = clearJournal(s.cfg.DataDir)
 		res.Err = fmt.Errorf("停旧失败: %w", err)
 		return res
 	}
 
-	// 6. swap(seam A:备份 → 单次原子替换;备份只留 2 份)
+	// 7. swap(seam A:备份 → 单次原子替换;备份只留 2 份)
 	j.Phase = PhaseSwap
 	if err := saveJournal(s.cfg.DataDir, j); err != nil {
 		res.Err = err
@@ -255,7 +291,7 @@ func (s *Supervisor) Run() Result {
 		return res
 	}
 
-	// 7. 拉起 + 校验(seam C:失败先查持有者,旧版抢跑 → 复停重拉再校验一轮)
+	// 8. 拉起 + 校验(seam C:失败先查持有者,旧版抢跑 → 复停重拉再校验一轮)
 	j.Phase = PhaseVerify
 	if err := saveJournal(s.cfg.DataDir, j); err != nil {
 		res.Err = err
@@ -269,7 +305,7 @@ func (s *Supervisor) Run() Result {
 		return res
 	}
 
-	// 8. 回滚
+	// 9. 回滚
 	return s.rollback(j, seen)
 }
 
@@ -292,7 +328,7 @@ func (s *Supervisor) selfRelayIfNeeded(targetExe string) (bool, error) {
 	if err := copyFile(self, copyPath); err != nil {
 		return false, fmt.Errorf("自中继副本落盘失败: %w", err)
 	}
-	if err := s.spawnRelay(copyPath, relayArgs(s.cfg.Spec, s.cfg.Prerelease)); err != nil {
+	if err := s.spawnRelay(copyPath, s.relayArgs()); err != nil {
 		_ = os.Remove(copyPath)
 		return false, fmt.Errorf("自中继副本拉起失败: %w", err)
 	}
@@ -306,14 +342,26 @@ func relayCopyPath(targetExe string) string {
 	return targetExe + ".supervisor-copy"
 }
 
-// relayArgs 副本接手参数:监督者旗标 + 自中继标记 + 原样的版本意图。
-func relayArgs(spec string, prerelease bool) []string {
+// relayArgs 副本接手参数:监督者旗标 + 自中继标记 + 原样的版本意图 + 静默门
+// 意图(--force 与非缺省 --wait-quiet 透传——副本重跑静默门时不丢用户意图;
+// 等待哨兵负值回落旗标 0=不等。缺省预算 60s 不落旗标,与未显式给同义)。
+func (s *Supervisor) relayArgs() []string {
 	args := []string{"update", "--supervise", "--self-relay"}
-	if spec != "" {
-		args = append(args, spec)
+	if s.cfg.Spec != "" {
+		args = append(args, s.cfg.Spec)
 	}
-	if prerelease {
+	if s.cfg.Prerelease {
 		args = append(args, "--prerelease")
+	}
+	if s.cfg.Force {
+		args = append(args, "--force")
+	}
+	if s.cfg.WaitQuiet != defaultQuietWait {
+		n := int(s.cfg.WaitQuiet / time.Second)
+		if n < 0 {
+			n = 0 // 负值哨兵(不等待)→ 旗标 0=不等
+		}
+		args = append(args, fmt.Sprintf("--wait-quiet=%d", n))
 	}
 	return args
 }
@@ -598,6 +646,262 @@ func (s *Supervisor) recoverPostSwap(j journal, targetExe string) (string, error
 		return "", nil
 	}
 	return "", fmt.Errorf("中断恢复回滚失败: %s(%v)", rb.RollbackErr, rb.Err)
+}
+
+// ---- 静默门(票02/W1,spec Implementation Decisions 2) ----
+
+// quietGate 停旧前的静默门:升级动手前等流量空闲(没有在途请求、10 秒没新
+// 请求)。门前置三分支——①已验证旧守护不存在(cfg.Port 端口探测空且
+// daemon.pid 无活进程)→ 跳过门直接进既有停旧/拉新流程;②守护在但 /stats
+// 不可达 → 直接进入非静默兜底路径(含交互问/告警/硬切,不干等无法观测的
+// 静默窗);③可达 → 严格执行判据(dockQuiet)。判据不满足:轮询等待
+// WaitQuiet(缺省 60s,每 10s 一行进度),到期交互终端在场则三选问询(继续等/
+// 现在切/放弃),非交互 notify 告警一条后按既有语义硬切(D10:拒连窗与截断
+// 如实记录进 update.log)。--force 跳过门直接停旧。
+//
+// 返回 nil = 放行(调用方立即停旧,门与 shutdown 之间无其他等待);非 nil =
+// 放弃升级(调用方清账中止)。判据满足即放行,不额外等待。
+func (s *Supervisor) quietGate() error {
+	if s.cfg.Force {
+		s.logf("静默门跳过(--force):直接停旧")
+		return nil
+	}
+	if s.daemonAbsent() {
+		s.logf("静默门跳过:旧守护不在场(端口空且 daemon.pid 无活进程),直接进停旧/拉新流程")
+		return nil
+	}
+	inflight, lastTS, ok := s.fetchDockStats()
+	if ok && dockQuiet(inflight, lastTS, time.Now()) {
+		s.logf("静默门放行:在途 0/距最后请求 %s,判据成立", lastReqAge(lastTS))
+		return nil
+	}
+	// 判据不满足(或 /stats 不可达):可达且预算为正 → 先轮询一个等待窗;
+	// 不可达(分支②)或预算 ≤0(不等)→ 不干等,直接进非静默兜底。
+	var waited time.Duration
+	lastInflight, lastSeenTS := inflight, lastTS
+	if ok && s.cfg.WaitQuiet > 0 {
+		quiet, inf, ts, el := s.waitQuietWindow()
+		waited += el
+		lastInflight, lastSeenTS = inf, ts
+		if quiet {
+			s.logf("静默门放行:在途 0/距最后请求 %s,判据成立(等了 %v)", lastReqAge(ts), el.Round(time.Second))
+			return nil
+		}
+	}
+	return s.quietFallback(lastInflight, lastSeenTS, waited, ok)
+}
+
+// waitQuietWindow 轮询等待一个静默窗(预算 cfg.WaitQuiet,≤0 视为 0=只查
+// 一次):判据满足即放行(quiet=true),到期仍不满足 quiet=false。返回窗内
+// 末次观测的渡口统计与实际等待时长。每 quietLogEvery 记一行进度日志。
+func (s *Supervisor) waitQuietWindow() (quiet bool, inflight int, lastTS int64, waited time.Duration) {
+	start := time.Now()
+	budget := s.cfg.WaitQuiet
+	if budget < 0 {
+		budget = 0
+	}
+	deadline := start.Add(budget)
+	lastLog := start
+	reported := false
+	for {
+		inf, ts, ok := s.fetchDockStats()
+		if ok {
+			inflight, lastTS = inf, ts
+			if dockQuiet(inf, ts, time.Now()) {
+				return true, inf, ts, time.Since(start)
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return false, inflight, lastTS, time.Since(start)
+		}
+		if !reported || time.Since(lastLog) >= quietLogEvery {
+			s.logf("静默门等待中(已等 %v/预算 %v):末次在途 %d/距最后请求 %s",
+				time.Since(start).Round(time.Second), budget, inflight, lastReqAge(lastTS))
+			lastLog = time.Now()
+			reported = true
+		}
+		time.Sleep(s.cfg.PollInterval)
+	}
+}
+
+// quietFallback 非静默兜底路径(W1/D10):交互终端在场 → 三选问询(继续等
+// 一个预算窗/现在切/放弃);非交互或无法判定 → notify 告警一条(「静默门未
+// 达成,硬切兜底」)后按既有语义直接走停旧。告警是尽力而为的旁路(alert 内
+// 已护,失败不阻塞事务);硬切路径在 update.log 记一行留证。statsOK=false
+// (门前置分支②,/stats 不可达)时本路径被直接进入、无等待窗。
+func (s *Supervisor) quietFallback(lastInflight int, lastTS int64, waited time.Duration, statsOK bool) error {
+	for {
+		switch s.askQuiet(waited) {
+		case quietChoiceWait:
+			quiet, inf, ts, el := s.waitQuietWindow()
+			waited += el
+			lastInflight, lastTS = inf, ts
+			if quiet {
+				s.logf("静默门放行:在途 0/距最后请求 %s,判据成立(等了 %v)", lastReqAge(ts), el.Round(time.Second))
+				return nil
+			}
+			continue // 仍不静默:再问一轮
+		case quietChoiceSwitch:
+			s.logf("静默门未达成——用户选择立即切换(硬切,已等 %v)", waited.Round(time.Second))
+			return nil
+		case quietChoiceAbort:
+			return fmt.Errorf("静默门未达成,用户选择放弃升级(已等 %v)", waited.Round(time.Second))
+		default: // 非交互/无法判定/无效输入 → 告警后硬切兜底
+			s.logf("%s", hardCutLine(lastInflight, lastTS, waited, statsOK))
+			s.alert("Ferryman 升级", "静默门未达成，硬切兜底（"+hardCutDetail(lastInflight, lastTS, statsOK)+"）")
+			return nil
+		}
+	}
+}
+
+// hardCutLine 硬切兜底留证行(票02:硬切路径在 update.log 记一行——等待
+// 时长与末次观测;statsOK=false 时注明 /stats 不可达)。
+func hardCutLine(lastInflight int, lastTS int64, waited time.Duration, statsOK bool) string {
+	return fmt.Sprintf("硬切兜底：门未达成（等待 %ds，%s）",
+		int(waited.Seconds()), hardCutDetail(lastInflight, lastTS, statsOK))
+}
+
+// hardCutDetail 硬切情境明细(留证行与告警共用)。
+func hardCutDetail(lastInflight int, lastTS int64, statsOK bool) string {
+	if !statsOK {
+		return "/stats 不可达"
+	}
+	return fmt.Sprintf("末次在途 %d/距最后请求 %s", lastInflight, lastReqAge(lastTS))
+}
+
+// lastReqAge 距最后请求的人话时长(last_request_ts==0 = 从未有请求)。
+func lastReqAge(lastTS int64) string {
+	if lastTS == 0 {
+		return "从未有请求"
+	}
+	return fmt.Sprintf("%ds", int(time.Since(time.Unix(lastTS, 0)).Seconds()))
+}
+
+// dockQuiet 静默判据(W1):在途 = 0 且距最后请求 ≥ defaultQuietRequired;
+// last_request_ts == 0(从未有请求)视为静默成立。
+func dockQuiet(inflight int, lastTS int64, now time.Time) bool {
+	if inflight != 0 {
+		return false
+	}
+	if lastTS == 0 {
+		return true
+	}
+	return now.Sub(time.Unix(lastTS, 0)) >= defaultQuietRequired
+}
+
+// daemonAbsent 门前置分支①的「已验证旧守护不存在」:cfg.Port 端口探测空
+// (拨不通)且 daemon.pid 无活进程(文件缺失/坏值/PID 已死)。
+func (s *Supervisor) daemonAbsent() bool {
+	if !s.portIdle() {
+		return false // 端口有人
+	}
+	if pid, err := s.readDaemonPID(); err == nil && s.procAlive(pid) {
+		return false // pid 活着
+	}
+	return true
+}
+
+// portIdle 守护口探测:拨不通(拒绝/无监听)= 空。
+func (s *Supervisor) portIdle() bool {
+	conn, err := net.DialTimeout("tcp", s.daemonAddr(), 500*time.Millisecond)
+	if err != nil {
+		return true
+	}
+	_ = conn.Close()
+	return false
+}
+
+// fetchDockStats GET /stats(Bearer)取渡口统计(票01 字段,dock_inflight/
+// last_request_ts);任何失败(网络错/非 200/解码败)= 不可达(false → 门前置
+// 分支②)。
+func (s *Supervisor) fetchDockStats() (inflight int, lastTS int64, ok bool) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"http://"+s.daemonAddr()+"/stats", nil)
+	if err != nil {
+		return 0, 0, false
+	}
+	req.Header.Set("Authorization", "Bearer "+s.daemonToken())
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 读一次:先排水后解码会扑空
+	if err != nil {
+		return 0, 0, false
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, false
+	}
+	var out struct {
+		DockInflight  int   `json:"dock_inflight"`
+		LastRequestTs int64 `json:"last_request_ts"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, 0, false
+	}
+	return out.DockInflight, out.LastRequestTs, true
+}
+
+// askQuiet 三选问询:cfg.QuietAsk 注入缝优先(测试桩保可测);nil 走缺省
+// 实现(stdin 字符设备判定,非交互返回 "" → 调用方告警硬切)。
+func (s *Supervisor) askQuiet(waited time.Duration) string {
+	prompt := fmt.Sprintf("静默门未达成(已等 %v):升级动手前流量未空闲,继续会打扰在途会话。",
+		waited.Round(time.Second))
+	options := []string{
+		fmt.Sprintf("  1) 继续等 %v 再判", s.quietWaitBudget()),
+		"  2) 现在切换(硬切,可能打断在途请求)",
+		"  3) 放弃本次升级",
+	}
+	if s.cfg.QuietAsk != nil {
+		return s.cfg.QuietAsk(prompt, options)
+	}
+	return defaultQuietAsk(prompt, options)
+}
+
+// quietWaitBudget 「继续等」选项展示用的预算(负值哨兵 = 不等,展示缺省)。
+func (s *Supervisor) quietWaitBudget() time.Duration {
+	if s.cfg.WaitQuiet > 0 {
+		return s.cfg.WaitQuiet
+	}
+	return defaultQuietWait
+}
+
+// stdinInteractive 判 stdin 是否交互终端(var 缝,测试注桩)。ModeCharDevice
+// 是启发式:/dev/null 与 Windows NUL 也是字符设备(计划任务/go test 的 stdin
+// 常是它们)——误判成终端也不悬死:defaultQuietAsk 的读行立即 EOF 返回 "",
+// 调用方照样走告警硬切。
+var stdinInteractive = func() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+// defaultQuietAsk 缺省问询:stdin 为交互终端才提示三选并读一行(trim);
+// 非交互/无法判定/读失败/无法识别的输入返回 ""(调用方告警硬切)。
+// 输入映射:1/等 → wait,2/切 → switch,3/放弃 → abort。
+func defaultQuietAsk(prompt string, options []string) string {
+	if !stdinInteractive() {
+		return "" // 非交互/无法判定
+	}
+	fmt.Println(prompt)
+	for _, o := range options {
+		fmt.Println(o)
+	}
+	fmt.Print("> ")
+	line, rerr := bufio.NewReader(os.Stdin).ReadString('\n')
+	input := strings.TrimSpace(line)
+	if rerr != nil && input == "" {
+		return ""
+	}
+	switch input {
+	case "1", "等", "wait":
+		return quietChoiceWait
+	case "2", "切", "现在切", "switch":
+		return quietChoiceSwitch
+	case "3", "放弃", "abort":
+		return quietChoiceAbort
+	}
+	return ""
 }
 
 // ---- 停旧与守护面探活 ----

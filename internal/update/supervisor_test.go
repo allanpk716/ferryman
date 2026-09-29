@@ -911,3 +911,389 @@ func TestFileTeeLogfAppends(t *testing.T) {
 		t.Fatalf("日志内容缺失: %q", s)
 	}
 }
+
+// ---- 票02:监督者静默门(门前置三分支 + 判据 + 等待/交互/旗标) ----
+
+// forceNonInteractive 钉死 stdinInteractive 缝为「非交互」:缺省问询路径
+// (告警硬切)的确定性验证——与真实 shell 的 stdin 形态无关(go test 的 stdin
+// 常是 NUL,字符设备,会被启发式误判成交互终端)。
+func forceNonInteractive(t *testing.T) {
+	t.Helper()
+	orig := stdinInteractive
+	stdinInteractive = func() bool { return false }
+	t.Cleanup(func() { stdinInteractive = orig })
+}
+
+// startStatsStub 在端口 port 上起可控 /stats 桩(quietGate 直测用:不拉真
+// 替身进程,在途/最后请求字段逐案注入)。
+func startStatsStub(t *testing.T, port int, handler http.HandlerFunc) {
+	t.Helper()
+	srv := &http.Server{Handler: handler}
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+}
+
+// statsHandler /stats 桩应答:status 非 200 模拟不可达;inflight/lastTS 逐案注入。
+func statsHandler(status int, inflight int, lastTS int64) http.HandlerFunc {
+	return func(rw http.ResponseWriter, _ *http.Request) {
+		if status != http.StatusOK {
+			http.Error(rw, "unavailable", status)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(map[string]any{
+			"version":         "v0.1.0",
+			"dock_inflight":   inflight,
+			"last_request_ts": lastTS,
+		})
+	}
+}
+
+// TestDockQuietCriterion 判据真值表:在途 0 且距最后请求 ≥10s;
+// last_request_ts==0(从未有请求)视为静默成立。
+func TestDockQuietCriterion(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	cases := []struct {
+		name     string
+		inflight int
+		lastTS   int64
+		want     bool
+	}{
+		{"零值=从未有请求→静默成立", 0, 0, true},
+		{"最后请求 11s 前且无在途→静默", 0, now.Unix() - 11, true},
+		{"恰好 10s 边界→静默", 0, now.Unix() - 10, true},
+		{"9s 前有请求→不静默", 0, now.Unix() - 9, false},
+		{"在途 1(纵使请求久远)→不静默", 1, now.Unix() - 600, false},
+		{"在途且从未完成→不静默", 2, 0, false},
+	}
+	for _, tc := range cases {
+		if got := dockQuiet(tc.inflight, tc.lastTS, now); got != tc.want {
+			t.Fatalf("%s: dockQuiet(%d,%d) = %v, want %v", tc.name, tc.inflight, tc.lastTS, got, tc.want)
+		}
+	}
+}
+
+// TestQuietWaitDefaultMatchesSpec 静默门等待预算缺省 60s(spec W1)。
+func TestQuietWaitDefaultMatchesSpec(t *testing.T) {
+	sup := NewSupervisor(Config{DataDir: t.TempDir(),
+		Logf: func(string, ...any) {}})
+	if sup.cfg.WaitQuiet != 60*time.Second {
+		t.Fatalf("WaitQuiet 缺省 = %v, want 60s", sup.cfg.WaitQuiet)
+	}
+}
+
+// TestQuietGatePassesImmediatelyOnQuiet 分支③判据满足即放行不额外等待:
+// 可达且静默(/stats 零值=从未有请求)→ nil + 放行日志,零告警。
+func TestQuietGatePassesImmediatelyOnQuiet(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 0, 0))
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("静默应放行: %v", err)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("判据满足不应等待: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "静默门放行") {
+		t.Fatalf("应有放行日志:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGatePassesAfterTrafficDrains 判据先不满足、等待窗内转为静默 →
+// 即刻放行,不等满预算。
+func TestQuietGatePassesAfterTrafficDrains(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 5 * time.Second
+	})
+	var inflight int32 = 2
+	oldTS := time.Now().Unix() - 30 // 最后请求在 30s 前,只差在途清零
+	startStatsStub(t, w.port, func(rw http.ResponseWriter, _ *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(map[string]any{
+			"version": "v0.1.0", "dock_inflight": atomic.LoadInt32(&inflight),
+			"last_request_ts": oldTS,
+		})
+	})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		atomic.StoreInt32(&inflight, 0)
+	}()
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("流量排空后应放行: %v", err)
+	}
+	if el := time.Since(start); el >= 4*time.Second {
+		t.Fatalf("判据转满足即放行,不应等满预算: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "静默门放行") {
+		t.Fatalf("应有放行日志:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateWaitsBudgetThenAlertsHardCut 判据不满足:等满预算后非交互
+// 缺省(测试 stdin 非终端)→ notify 告警一条并硬切放行;logf(update.log)有
+// 硬切兜底记录行(带在途观测)。
+func TestQuietGateWaitsBudgetThenAlertsHardCut(t *testing.T) {
+	forceNonInteractive(t)
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 400 * time.Millisecond
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 2, time.Now().Unix()-3))
+	var alerts []string
+	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("兜底应放行硬切(不中止): %v", err)
+	}
+	if el := time.Since(start); el < 350*time.Millisecond {
+		t.Fatalf("应等满预算再兜底: elapsed=%v", el)
+	}
+	logs := w.logs.String()
+	if !strings.Contains(logs, "硬切兜底：门未达成") {
+		t.Fatalf("应有硬切兜底记录行:\n%s", logs)
+	}
+	if !strings.Contains(logs, "末次在途 2") {
+		t.Fatalf("硬切行应带在途观测:\n%s", logs)
+	}
+	if len(alerts) != 1 || !strings.Contains(alerts[0], "静默门未达成，硬切兜底") {
+		t.Fatalf("应恰一条静默门告警: %v", alerts)
+	}
+}
+
+// TestQuietGateAlertPanicDoesNotBlock 告警通道故障(panic)不阻塞兜底放行,
+// 硬切行照记。
+func TestQuietGateAlertPanicDoesNotBlock(t *testing.T) {
+	forceNonInteractive(t)
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 200 * time.Millisecond
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 1, 0))
+	sup.cfg.Alert = func(string, string) { panic("通道坏") }
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("告警失败不得阻塞事务: %v", err)
+	}
+	if !strings.Contains(w.logs.String(), "硬切兜底") {
+		t.Fatalf("硬切行应照记:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateWaitQuietZeroSkipsWait --wait-quiet=0(CLI 映射为负值哨兵):
+// 判据不满足不等待,直接进兜底(非交互 → 告警硬切),硬切行记等待 0s。
+func TestQuietGateWaitQuietZeroSkipsWait(t *testing.T) {
+	forceNonInteractive(t)
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = -time.Second
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 3, time.Now().Unix()))
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("零预算应立即兜底放行: %v", err)
+	}
+	if el := time.Since(start); el > time.Second {
+		t.Fatalf("零预算不应等待: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "等待 0s") {
+		t.Fatalf("硬切行应记等待 0s:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateForceSkipsGate --force:跳过门直接放行(可达且繁忙的 /stats
+// 也不看),零等待零告警。
+func TestQuietGateForceSkipsGate(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 5 * time.Second
+		c.Force = true
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 5, time.Now().Unix()))
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("--force 应直接放行: %v", err)
+	}
+	if el := time.Since(start); el > time.Second {
+		t.Fatalf("--force 不应等待: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "--force") {
+		t.Fatalf("应有跳过日志:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateBranchAbsentDaemon 门前置分支①:端口空且 daemon.pid 无活进程
+// (文件缺失或死 PID)→ 跳过门直接进停旧/拉新流程,不看 /stats。
+func TestQuietGateBranchAbsentDaemon(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	// 无桩、无 pid 文件
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("无守护应跳过门: %v", err)
+	}
+	if !strings.Contains(w.logs.String(), "静默门跳过") {
+		t.Fatalf("应有跳过日志:\n%s", w.logs.String())
+	}
+	// 死 PID 同判:pid 文件在场但进程已退
+	if err := os.WriteFile(filepath.Join(w.dataDir, "daemon.pid"),
+		[]byte(fmt.Sprintf(`{"pid":%d,"port":%d}`, spawnDeadProcess(t), w.port)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logs2 := &syncBuf{}
+	cfg2 := w.cfg
+	cfg2.Logf = func(f string, a ...any) { fmt.Fprintf(logs2, f+"\n", a...) }
+	sup2 := NewSupervisor(cfg2)
+	if err := sup2.quietGate(); err != nil {
+		t.Fatalf("死 PID 应视作无守护跳过门: %v", err)
+	}
+	if !strings.Contains(logs2.String(), "静默门跳过") {
+		t.Fatalf("死 PID 应有跳过日志:\n%s", logs2.String())
+	}
+}
+
+// TestQuietGateBranchStatsUnreachable 门前置分支②:守护在(pid 活)但 /stats
+// 不可达(端口无监听)→ 不干等静默窗(预算 5s 不消耗),直接进非静默兜底
+// (非交互 → 告警硬切),硬切行注明 /stats 不可达。
+func TestQuietGateBranchStatsUnreachable(t *testing.T) {
+	forceNonInteractive(t)
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 5 * time.Second
+	})
+	// 守护「在」:daemon.pid 指向活进程(本测试进程);端口无监听 → /stats 不可达
+	if err := os.WriteFile(filepath.Join(w.dataDir, "daemon.pid"),
+		[]byte(fmt.Sprintf(`{"pid":%d,"port":%d}`, os.Getpid(), w.port)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var alerts []string
+	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("分支②应直接进兜底: %v", err)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("分支②不应干等静默窗: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "硬切兜底：门未达成（等待 0s，/stats 不可达）") {
+		t.Fatalf("硬切行应注明 /stats 不可达:\n%s", w.logs.String())
+	}
+	if len(alerts) != 1 || !strings.Contains(alerts[0], "静默门未达成，硬切兜底") {
+		t.Fatalf("应恰一条静默门告警: %v", alerts)
+	}
+}
+
+// TestQuietGateInteractiveAbort 交互问询缝:三选提示经注入缝可断言;选择
+// 放弃 → 门返回非 nil(调用方清账中止事务)。
+func TestQuietGateInteractiveAbort(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 200 * time.Millisecond
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 1, time.Now().Unix()))
+	var gotPrompt string
+	var gotOptions []string
+	sup.cfg.QuietAsk = func(prompt string, options []string) string {
+		gotPrompt, gotOptions = prompt, options
+		return quietChoiceAbort
+	}
+	err := sup.quietGate()
+	if err == nil || !strings.Contains(err.Error(), "放弃") {
+		t.Fatalf("放弃应中止升级: %v", err)
+	}
+	if !strings.Contains(gotPrompt, "静默门未达成") {
+		t.Fatalf("提示应说明门未达成: %q", gotPrompt)
+	}
+	if len(gotOptions) != 3 {
+		t.Fatalf("应三选: %v", gotOptions)
+	}
+}
+
+// TestQuietGateInteractiveWaitThenQuiet 继续等 → 下一窗内转静默 → 放行,
+// 问询恰好一次。
+func TestQuietGateInteractiveWaitThenQuiet(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 300 * time.Millisecond
+	})
+	var inflight int32 = 1
+	oldTS := time.Now().Unix() - 30
+	startStatsStub(t, w.port, func(rw http.ResponseWriter, _ *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(map[string]any{
+			"version": "v0.1.0", "dock_inflight": atomic.LoadInt32(&inflight),
+			"last_request_ts": oldTS,
+		})
+	})
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		atomic.StoreInt32(&inflight, 0)
+	}()
+	asks := 0
+	sup.cfg.QuietAsk = func(string, []string) string {
+		asks++
+		return quietChoiceWait
+	}
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("继续等后转静默应放行: %v", err)
+	}
+	if asks != 1 {
+		t.Fatalf("应恰好问一次(下一窗转静默): asks=%d", asks)
+	}
+	if !strings.Contains(w.logs.String(), "静默门放行") {
+		t.Fatalf("应有放行日志:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateInteractiveSwitchNow 现在切 → 放行硬切并留用户选择日志。
+func TestQuietGateInteractiveSwitchNow(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 200 * time.Millisecond
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 2, time.Now().Unix()))
+	sup.cfg.QuietAsk = func(string, []string) string { return quietChoiceSwitch }
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("现在切应放行硬切: %v", err)
+	}
+	if !strings.Contains(w.logs.String(), "用户选择立即切换") {
+		t.Fatalf("应有用户选择日志:\n%s", w.logs.String())
+	}
+}
+
+// TestDefaultQuietAskNonInteractive 缺省问询实现:stdin 判定缝为非交互
+// (go test/计划任务/脚本形态)→ 返回 ""(调用方走告警硬切)。
+func TestDefaultQuietAskNonInteractive(t *testing.T) {
+	forceNonInteractive(t)
+	if got := defaultQuietAsk("提示", []string{"1) 继续等", "2) 现在切换", "3) 放弃"}); got != "" {
+		t.Fatalf("非交互应返回空(告警硬切): %q", got)
+	}
+}
+
+// TestSelfRelayHandoverCarriesQuietIntent 静默门意图随副本透传:--force 与
+// 非缺省 --wait-quiet 转旗标(等待哨兵负值回落旗标 0=不等),副本重跑门时
+// 不丢用户意图。
+func TestSelfRelayHandoverCarriesQuietIntent(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.Force = true
+		c.WaitQuiet = -time.Second
+	})
+	var spawnArgs []string
+	sup.selfExe = func() (string, error) { return w.exePath, nil }
+	sup.spawnRelay = func(_ string, args []string) error { spawnArgs = args; return nil }
+	if res := sup.Run(); !res.Relayed {
+		t.Fatalf("应交棒: %+v", res)
+	}
+	want := []string{"update", "--supervise", "--self-relay", "--force", "--wait-quiet=0"}
+	if fmt.Sprint(spawnArgs) != fmt.Sprint(want) {
+		t.Fatalf("副本参数 = %v, want %v", spawnArgs, want)
+	}
+
+	// 显式非缺省预算:90s 原样透传
+	var args2 []string
+	w2, sup2 := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 90 * time.Second
+	})
+	sup2.selfExe = func() (string, error) { return w2.exePath, nil }
+	sup2.spawnRelay = func(_ string, a []string) error { args2 = a; return nil }
+	if res := sup2.Run(); !res.Relayed {
+		t.Fatalf("应交棒: %+v", res)
+	}
+	want2 := []string{"update", "--supervise", "--self-relay", "--wait-quiet=90"}
+	if fmt.Sprint(args2) != fmt.Sprint(want2) {
+		t.Fatalf("副本参数 = %v, want %v", args2, want2)
+	}
+}
