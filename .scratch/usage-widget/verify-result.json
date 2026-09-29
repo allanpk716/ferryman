@@ -117,12 +117,32 @@
  {
   "name": "e2. 齿轮点击 → invoke open_settings_window（浮层退役后走独立设置窗）",
   "ok": true,
-  "detail": "[\"get_profile\", \"save_profile\", \"set_appearance\", \"open_settings_window\"]"
+  "detail": "[\"get_profile\", \"fit_height\", \"save_profile\", \"set_appearance\", \"fit_height\", \"open_settings_window\"]"
  },
  {
   "name": "e3. profile-changed(show_countdown) → render 驱动倒计时行显隐（浮层退役后唯一链路）",
   "ok": true,
   "detail": "{\"off\": {\"n\": 2, \"hidden\": true}, \"on\": {\"n\": 2, \"shown\": true}}"
+ },
+ {
+  "name": "e4. 渲染后 fit_height 上报：完整档 ≈585（±3，同 d4 实测口径）/ 紧凑档 ≈303（±3）",
+  "ok": true,
+  "detail": "{\"full\": [585, 552, 585], \"compact\": [303]}"
+ },
+ {
+  "name": "e5. 同档同内容重复 render 不重复上报（计数不涨）",
+  "ok": true,
+  "detail": "4→4"
+ },
+ {
+  "name": "e6. 显隐一盘（藏 deepseek）→ 新上报值回落 ~50-70",
+  "ok": true,
+  "detail": "{\"compact\": [303, 303, 235]}"
+ },
+ {
+  "name": "e7. tray-collapsed 下 fitHeight 不上报（计数不涨）",
+  "ok": true,
+  "detail": "6→6"
  },
  {
   "name": "f1. 设置窗自测四项全 1（卡片结构）",

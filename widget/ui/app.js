@@ -248,9 +248,29 @@ function render() {
     const p = findUpstream(state.detailId);
     if (p) renderDetail(p); else closeDetail();
   }
+  fitHeight(); // 0.2.6：渲染落定后量内容高上报壳层，窗高随可见盘数自适应
 }
 const findUpstream = (id) => state.summary &&
   [...state.summary.upstreams, state.summary.handoff].find((x) => x.id === id);
+
+// ── 窗高自适应（0.2.6）：渲染后量内容高上报壳层，一处出口 ──
+// 量法用 scrollHeight 而非 getBoundingClientRect：.widget 有 max-height:100vh +
+// overflow:hidden，rect 会被视口钳制，scrollHeight 报完整内容需求。
+// 上次已上报值按「mode+值」记：同档同值不重复 invoke（30s 轮询每轮 render 一次，
+// 内容没变不打扰壳层）；换档后 mode 变了强制重发一次（换档时壳层先落该档缺省
+// 高，这里紧接着按实际内容收细）。
+let lastFit = { mode: null, h: 0 };
+function fitHeight() {
+  // 托盘收起（#widget display:none 量出 0）或尚无数据（防启动期收缩成光杆 grip）→ 不动
+  if (document.body.classList.contains('tray-collapsed') || !state.summary) return;
+  const h = Math.ceil(widget.scrollHeight);
+  if (lastFit.mode === state.profile.appearance && Math.abs(h - lastFit.h) < 1) return;
+  const t = window.__TAURI__;
+  if (!(t && t.core && t.core.invoke)) return; // 非壳语境静默跳过（同 gear 的 open_settings_window 惯例）
+  lastFit = { mode: state.profile.appearance, h };
+  t.core.invoke('fit_height', { mode: state.profile.appearance, contentH: h })
+    .catch((e) => console.error('fit_height 失败', e));
+}
 
 // ── 0.2.5 紧凑档迷你标签行：文字负责识别，品牌色小点只是辅助点缀 ──
 // 品牌色调研结论（2026-09-29）：智谱/GLM #4268FA、Kimi #1783FF、DeepSeek #4D6BFE

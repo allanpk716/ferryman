@@ -297,6 +297,58 @@ try:
         check('e3. profile-changed(show_countdown) → render 驱动倒计时行显隐（浮层退役后唯一链路）',
               cd1['n'] >= 2 and cd1['hidden'] and cd2['shown'],
               json.dumps({'off': cd1, 'on': cd2}, ensure_ascii=False))
+
+        # ── e4-e7 · 0.2.6 窗高随可见盘数自适应（伪壳捕获 fit_height，照本组既有注入） ──
+        fh = lambda: pg.evaluate(
+            "() => window.__CALLS__.invoke.filter(x => x[0]==='fit_height').map(x => x[1])")
+        calls = fh()
+        full_hs = [a['contentH'] for a in calls if a['mode'] == 'full']
+        compact_hs = [a['contentH'] for a in calls if a['mode'] == 'compact']
+        # e4 · 完整档实测 585（与 d4 高度不变量同口径：scrollH=585、面板内高 608、余量 23），
+        # 紧凑档实测 303（与 c4/c12 同口径）——±3 吸收字体渲染抖动
+        check('e4. 渲染后 fit_height 上报：完整档 ≈585（±3，同 d4 实测口径）/ 紧凑档 ≈303（±3）',
+              bool(full_hs) and abs(full_hs[0] - 585) <= 3
+              and bool(compact_hs) and abs(compact_hs[-1] - 303) <= 3,
+              json.dumps({'full': full_hs, 'compact': compact_hs}, ensure_ascii=False))
+
+        # e5 · 同档同内容重复 render 不重复上报（调用计数不涨）
+        n_before = len(fh())
+        pg.evaluate("""() => {
+          window.__LISTENERS__['profile-changed']({ payload: {
+            layout: 'vertical', appearance: 'full', show_countdown: true, objects: {} } });
+        }""")
+        pg.wait_for_timeout(100)
+        n_after = len(fh())
+        check('e5. 同档同内容重复 render 不重复上报（计数不涨）',
+              n_after == n_before, f'{n_before}→{n_after}')
+
+        # e6 · 显隐一盘：紧凑档藏掉 deepseek → 新上报值比前值小 ~50-70（DS 盘+标签行高）
+        pg.evaluate("""() => {
+          window.__LISTENERS__['profile-changed']({ payload: {
+            layout: 'vertical', appearance: 'compact', show_countdown: true, objects: {} } });
+          window.__LISTENERS__['profile-changed']({ payload: {
+            layout: 'vertical', appearance: 'compact', show_countdown: true,
+            objects: { deepseek: { visible: false } } } });
+        }""")
+        pg.wait_for_timeout(100)
+        hs = [a['contentH'] for a in fh() if a['mode'] == 'compact']
+        check('e6. 显隐一盘（藏 deepseek）→ 新上报值回落 ~50-70',
+              len(hs) >= 2 and 50 <= hs[-2] - hs[-1] <= 70,
+              json.dumps({'compact': hs}, ensure_ascii=False))
+
+        # e7 · tray-collapsed 下 fitHeight 不发（#widget display:none 量出 0，守卫拦截）
+        n_before = len(fh())
+        pg.evaluate("""() => {
+          document.body.classList.add('tray-collapsed');
+          window.__LISTENERS__['profile-changed']({ payload: {
+            layout: 'vertical', appearance: 'compact', show_countdown: true,
+            objects: { deepseek: { visible: false } } } });
+        }""")
+        pg.wait_for_timeout(100)
+        n_after = len(fh())
+        check('e7. tray-collapsed 下 fitHeight 不上报（计数不涨）',
+              n_after == n_before, f'{n_before}→{n_after}')
+        pg.evaluate("document.body.classList.remove('tray-collapsed')")
         pg.close()
 
         # ── f. 0.2.4 设置窗卡片式（settings.html；660×640=新设计尺寸） ──

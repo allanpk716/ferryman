@@ -50,10 +50,16 @@ const SNAP_ARM_DELAY: Duration = Duration::from_secs(2);
 /// 代码从不写尺寸、防不了系统；改为事件流静止后断言：物理尺寸偏离设计值超
 /// 过容忍即拉回，位置夹回工作区。
 /// 0.2.3 起设计尺寸按外观档取值（自愈机制唯一扩展点）：完整档=conf 初始值
-/// 132×620；紧凑档=迷你环列实测值（见 design_size 推导注释）。
+/// 132×620；紧凑档=迷你环列实测值（见下方推导注释）。
+/// 0.2.6 起高度口径改「缺省值」：出生/换档/前端未上报时用常量；前端每次渲染
+/// 后按可见盘数量内容高经 fit_height 上报，运行时高度收进 DesignHeights 状态
+/// （宽度恒为常量不自适应——内容恒窄于窗宽，做了只会抖）。
 const DESIGN_W_LOGICAL: f64 = 132.0;
+/// 完整档缺省高度（0.2.6 起实际高度由前端 fit_height 按可见盘数上报覆盖；
+/// 620=按演示满载 4 盘推导，保留作缺省依据）。
 const DESIGN_H_LOGICAL: f64 = 620.0;
-/// 紧凑档设计尺寸（逻辑 px）。推导（Playwright 实测，.scratch/usage-widget/
+/// 紧凑档缺省高度（逻辑 px；口径同完整档——0.2.6 起实际值由前端上报覆盖）。
+/// 缺省推导（Playwright 实测，.scratch/usage-widget/
 /// pw_measure.py，演示满载 4 盘+grip+0.2.5 迷你标签行，与 style.css 紧凑块互指——
 /// 改一边必须核另一边）：
 ///   内容实测 63×303（盘 48+padding×2=52/个，0.2.5 标签行 +12.5/盘，DeepSeek 盘
@@ -72,12 +78,28 @@ const GEOM_POLL: Duration = Duration::from_secs(5);
 /// set_appearance 命令更新（不落盘——落盘归前端 persistProfile）。
 struct Appearance(Mutex<String>);
 
-/// 设计尺寸按外观档取值（几何自愈的唯一扩展点：常量 → 按当前档取值）。
-fn design_size(mode: &str) -> (f64, f64) {
+/// 运行时设计高度（0.2.6）：(full, compact)。init=缺省常量；前端 fit_height
+/// 按可见盘数上报内容高后对应档位被覆盖。几何自愈断言 / set_appearance /
+/// fit_height 三处同读——塌缩被拉回到「自适应后的」高度而非死常量。
+struct DesignHeights(Mutex<(f64, f64)>);
+
+/// 设计尺寸纯函数（可测）：宽=档常量（不自适应），高=入参（缺省或前端上报值）。
+/// 非法档回落完整档（历史口径不变）。
+fn design_size_for(mode: &str, full_h: f64, compact_h: f64) -> (f64, f64) {
     match mode {
-        "compact" => (COMPACT_W_LOGICAL, COMPACT_H_LOGICAL),
-        _ => (DESIGN_W_LOGICAL, DESIGN_H_LOGICAL),
+        "compact" => (COMPACT_W_LOGICAL, compact_h),
+        _ => (DESIGN_W_LOGICAL, full_h),
     }
+}
+
+/// 设计尺寸按外观档取值（0.2.6 起高度读 DesignHeights 状态；取不到状态/锁
+/// 失败回落缺省常量，与 current_appearance 同风格）。
+fn design_size(app: &tauri::AppHandle, mode: &str) -> (f64, f64) {
+    let (full_h, compact_h) = app
+        .try_state::<DesignHeights>()
+        .and_then(|s| s.0.lock().ok().map(|g| *g))
+        .unwrap_or((DESIGN_H_LOGICAL, COMPACT_H_LOGICAL));
+    design_size_for(mode, full_h, compact_h)
 }
 
 /// 当前生效外观档（取不到状态/锁失败=full，与窗口出生尺寸一致）。
@@ -209,7 +231,7 @@ fn assert_geometry(app: &tauri::AppHandle) {
     let Some(w) = app.get_webview_window("widget") else { return };
     let Ok(cur) = w.outer_size() else { return };
     let sf = w.scale_factor().unwrap_or(1.0);
-    let (dw, dh) = design_size(&current_appearance(app)); // 0.2.3：按当前外观档断言
+    let (dw, dh) = design_size(app, &current_appearance(app)); // 按当前档断言（0.2.6：高=自适应后值）
     let (want_w, want_h) = (
         (dw * sf).round() as i32,
         (dh * sf).round() as i32,
@@ -383,8 +405,20 @@ fn set_appearance(app: tauri::AppHandle, mode: String) -> Result<(), String> {
         return Err("外观状态未就绪".into());
     };
     *st.0.lock().map_err(|_| "外观状态锁失败".to_string())? = mode.clone();
+    // 换档先落该档缺省高（0.2.6）：DesignHeights 该档复位缺省常量再 set_size——
+    // 前端随后的 fit_height 按实际内容收细（两次 set_size 可接受）。不复位则
+    // 自愈断言会拿上一轮的旧自适应值把刚落的缺省尺寸「拉回」打架。
+    if let Some(hs) = app.try_state::<DesignHeights>() {
+        if let Ok(mut g) = hs.0.lock() {
+            if mode == "compact" {
+                g.1 = COMPACT_H_LOGICAL;
+            } else {
+                g.0 = DESIGN_H_LOGICAL;
+            }
+        }
+    }
     let w = app.get_webview_window("widget").ok_or("widget 窗口不存在")?;
-    let (dw, dh) = design_size(&mode);
+    let (dw, dh) = design_size(&app, &mode);
     w.set_size(tauri::LogicalSize::new(dw, dh))
         .map_err(|e| format!("调整窗口尺寸失败: {e}"))?;
     // 换档后按新尺寸夹回工作区（评审补）：紧凑贴右停靠切回完整会右缘出屏
@@ -395,6 +429,55 @@ fn set_appearance(app: tauri::AppHandle, mode: String) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// fit_height 钳位与 no-op 判定（纯函数，可测）：内容高钳到 [60, 1500] 逻辑 px
+/// 并四舍五入取整；与该档现值差 <1 = no-op（None，不 set_size 不更状态），
+/// 否则返回新高度。下限 60 防异常小值把窗收成光杆 grip；上限 1500 防异常
+/// 大值把窗顶出屏。
+fn fit_height_decide(current: f64, content_h: f64) -> Option<f64> {
+    let h = content_h.clamp(60.0, 1500.0).round();
+    if (h - current).abs() < 1.0 {
+        None
+    } else {
+        Some(h)
+    }
+}
+
+/// 窗高自适应（0.2.6）：前端每次渲染后量内容高上报，钳位后更新 DesignHeights
+/// 该档位并 set_size。布局归前端，Rust 只收一个数（不在此按盘数复算布局，
+/// 避免两份布局公式）。**先更状态再 set_size**——set_size 触发的 Resized 事件
+/// 流进自愈断言时必须已能对上新值，否则会被「拉回旧值」打架。
+/// 位置不动（top-left 锚定）。已知边界：贴下缘停靠的窗缩短后会留下缝隙
+/// （snap 只在拖动时触发），属可接受化妆问题，不做底缘锚定。
+#[tauri::command]
+fn fit_height(app: tauri::AppHandle, mode: String, content_h: f64) -> Result<f64, String> {
+    // mode 归一：非法档 → 当前档（前端传错不报错，按现档收）
+    let mode = match mode.as_str() {
+        "full" | "compact" => mode,
+        _ => current_appearance(&app),
+    };
+    let Some(hs) = app.try_state::<DesignHeights>() else {
+        return Err("高度状态未就绪".into());
+    };
+    let new_h = {
+        let mut g = hs.0.lock().map_err(|_| "高度状态锁失败".to_string())?;
+        let cur = if mode == "compact" { g.1 } else { g.0 };
+        let Some(h) = fit_height_decide(cur, content_h) else {
+            return Ok(cur); // |Δ|<1：no-op，如实返回现值
+        };
+        if mode == "compact" {
+            g.1 = h;
+        } else {
+            g.0 = h;
+        }
+        h
+    };
+    let (dw, _) = design_size_for(&mode, 0.0, 0.0); // 宽=该档常量（入参高度不参与宽度）
+    let w = app.get_webview_window("widget").ok_or("widget 窗口不存在")?;
+    w.set_size(tauri::LogicalSize::new(dw, new_h))
+        .map_err(|e| format!("自适应窗高失败: {e}"))?;
+    Ok(new_h)
 }
 
 /// 启动读外观档：fs 读 + serde_json 解析 profile.json 的 appearance 字段，
@@ -533,17 +616,21 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(MoveThrottle(Mutex::new(None)))
         .manage(PendingUpdate(Mutex::new(None)))
-        // 自定义命令（票 04/05/09 + 0.2.3/0.2.4）：get_profile / save_profile /
+        // 0.2.6 窗高自适应：运行时高度状态，init=两档缺省常量
+        .manage(DesignHeights(Mutex::new((DESIGN_H_LOGICAL, COMPACT_H_LOGICAL))))
+        // 自定义命令（票 04/05/09 + 0.2.3/0.2.4/0.2.6）：get_profile / save_profile /
         // update_install / get_daemon_config（live 取数目标：url+token）/
         // set_appearance（外观档切换：双尺寸联动）/
-        // open_settings_window（0.2.4 浮层退役：齿轮 → 独立设置窗）
+        // open_settings_window（0.2.4 浮层退役：齿轮 → 独立设置窗）/
+        // fit_height（0.2.6 窗高随可见盘数自适应：前端上报内容高）
         .invoke_handler(tauri::generate_handler![
             get_profile,
             save_profile,
             set_appearance,
             update_install,
             get_daemon_config,
-            open_settings_window
+            open_settings_window,
+            fit_height
         ])
         .setup(|app| {
             let w = app.get_webview_window("widget").expect("conf 未配置 widget 窗口");
@@ -555,7 +642,7 @@ pub fn run() {
             let boot_appearance = read_appearance_at_boot(app.handle());
             app.manage(Appearance(Mutex::new(boot_appearance.clone())));
             if boot_appearance == "compact" {
-                let (dw, dh) = design_size("compact");
+                let (dw, dh) = design_size(app.handle(), "compact");
                 let _ = w.set_size(tauri::LogicalSize::new(dw, dh));
             }
 
@@ -781,15 +868,39 @@ mod tests {
         assert_eq!((x, y), (pos.x, pos.y));
     }
 
-    /// 外观档 → 设计尺寸（0.2.3）：完整=conf 初始 132×620；紧凑=实测常量
-    /// （推导见 COMPACT_* 注释）；非法档回落完整。
+    /// 设计尺寸纯函数（0.2.6）：宽=档常量不动；高=入参（缺省或前端上报值直通）；
+    /// 非法档回落完整档。
     #[test]
-    fn design_size_by_appearance() {
-        assert_eq!(design_size("full"), (132.0, 620.0));
+    fn design_size_for_by_appearance() {
         assert_eq!(
-            design_size("compact"),
-            (COMPACT_W_LOGICAL, COMPACT_H_LOGICAL)
+            design_size_for("full", 620.0, 322.0),
+            (DESIGN_W_LOGICAL, 620.0)
         );
-        assert_eq!(design_size("bogus"), (132.0, 620.0));
+        assert_eq!(
+            design_size_for("compact", 620.0, 322.0),
+            (COMPACT_W_LOGICAL, 322.0)
+        );
+        assert_eq!(
+            design_size_for("bogus", 620.0, 322.0),
+            (DESIGN_W_LOGICAL, 620.0)
+        );
+        // 运行时上报值直通（live 3 盘收细后的典型值）
+        assert_eq!(
+            design_size_for("compact", 620.0, 238.0),
+            (COMPACT_W_LOGICAL, 238.0)
+        );
+    }
+
+    /// fit_height 钳位与 no-op 判定（纯函数）：[60,1500] 钳位、四舍五入取整、
+    /// |Δ|<1 no-op。
+    #[test]
+    fn fit_height_decide_clamps_and_dedups() {
+        assert_eq!(fit_height_decide(322.0, 12.0), Some(60.0)); // 低于下限 → 60
+        assert_eq!(fit_height_decide(322.0, 9999.0), Some(1500.0)); // 高于上限 → 1500
+        assert_eq!(fit_height_decide(322.0, 303.4), Some(303.0)); // 小数四舍五入取整
+        assert_eq!(fit_height_decide(303.0, 303.4), None); // 取整后 |Δ|<1 → no-op
+        assert_eq!(fit_height_decide(303.0, 302.6), None); // 同上（向下抖动）
+        assert_eq!(fit_height_decide(303.0, 304.0), Some(304.0)); // Δ≥1 → 更新
+        assert_eq!(fit_height_decide(303.0, 234.0), Some(234.0)); // 盘变少 → 收细
     }
 }

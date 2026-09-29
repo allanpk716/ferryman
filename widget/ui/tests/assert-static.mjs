@@ -347,6 +347,20 @@ async function main() {
       COMP.includes('<text x="50" y="60" class="c-pct">23</text>') &&
       !COMP.includes('次 · 本月') && !MAIN.includes('mini-tag'), '');
 
+    // ⑭ 0.2.6 · 窗高随可见盘数自适应（缺省+前端上报；源码级断言，librs 见 ⑬）
+    check('fit.lib.rs 注册 fit_height 命令 + DesignHeights 状态在场',
+      /generate_handler!\[[\s\S]*\bfit_height\b[\s\S]*\]/.test(librs) &&
+      librs.includes('struct DesignHeights(Mutex<(f64, f64)>)'), '');
+    check('fit.lib.rs design_size_for / fit_height_decide 纯函数在场',
+      librs.includes('fn design_size_for(') && librs.includes('fn fit_height_decide('), '');
+    check('fit.lib.rs 常量注释口径已改「缺省」（0.2.6 起实际高度由前端上报覆盖）',
+      librs.includes('缺省高度') && librs.includes('fit_height'), '');
+    check('fit.app.js fitHeight 出口 + scrollHeight 量法（max-height 钳 rect 不钳 scrollHeight）',
+      appjs.includes('function fitHeight()') && appjs.includes('widget.scrollHeight') &&
+      appjs.includes('fitHeight();'), '');
+    check('fit.app.js 守卫在场（tray-collapsed 量出 0 / 无 summary 防启动期收缩）',
+      appjs.includes("classList.contains('tray-collapsed') || !state.summary"), '');
+
     // m2 · 收尾票 03 · 自适应轮询（评审 M2）：退避常量/代际防护/poke 暴露/恢复事件接线。
     // 断言正则与所开代码形态逐字匹配（F9 教训：箭头包装调用不得用裸函数名字面量匹配，
     // 轮询在场必须命中 `setTimeout(() => loop` 形，严禁裸 /setTimeout\(loop/ 永假断言）。
