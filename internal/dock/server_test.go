@@ -339,3 +339,126 @@ func TestStartServeAndCloseLifecycle(t *testing.T) {
 	}
 	t.Fatal("Close 后渡口端口仍在监听")
 }
+
+// ---- 票01 W1：/stats 渡口统计（dock_inflight / last_request_ts）验收钉子 ----
+//
+// 口径：只统计 15722 代理面上真实 CC 流量（记账路径进出＝在途注册表同事件）；
+// 心跳自产重放（x-ferryman-replay 标记头）与管理口 15700 流量一律不计入。
+// 断言经 Snapshots().ProxyStats() 取数——与 daemon /stats 完全同路径
+// （serveConfig: d.DockSnap = ds.Snapshots() 只读转交），不另开测试后门。
+
+// waitForInflight 轮询等统计在途数到位。注册发生在 handler 进 record 分支时，
+// 与客户端发出请求存在竞速——固定 sleep 换带死线轮询，防慢机 flake。
+func waitForInflight(t *testing.T, srv *Server, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		n, _ := srv.Snapshots().ProxyStats()
+		if n == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("统计在途数未到位: want %d, got %d", want, n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestProxyStatsInflightAndLastTS 在途数与实际并发一致、完成后回落；
+// last_request_ts 记最后一个请求的完成时刻（秒级）；启动零值与"未完成不记时"
+// 同钉（零请求视为静默成立的判定归消费方，这里只钉零值如实暴露）。
+func TestProxyStatsInflightAndLastTS(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	// 唯一关闭点：任何断言路径 Fatalf 也放行在途流——否则 t.Cleanup 的
+	// httptest Close 会等按住中的连接，测试进程悬挂（比失败更糟）。
+	kick := func() { once.Do(func() { close(release) }) }
+	defer kick()
+	backend := sseBackend(t, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n", release,
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	srv, acc, front := newRecordingFront(t, backend.URL)
+	testStart := time.Now().Unix()
+
+	if n, ts := srv.Snapshots().ProxyStats(); n != 0 || ts != 0 {
+		t.Fatalf("刚启动应 0/0（零请求如实暴露）: got %d/%d", n, ts)
+	}
+
+	d1 := doStreamIn(t, front+"/v1/messages")
+	waitForInflight(t, srv, 1)
+	d2 := doStreamIn(t, front+"/v1/messages")
+	waitForInflight(t, srv, 2) // dock_inflight 与实际并发数一致
+	if _, ts := srv.Snapshots().ProxyStats(); ts != 0 {
+		t.Fatalf("无请求完成前 last_request_ts 应为 0: got %d", ts)
+	}
+
+	kick()
+	for _, ch := range []<-chan clientResult{d1, d2} {
+		select {
+		case r := <-ch:
+			if r.err != nil {
+				t.Fatalf("客户端收尾失败: %v", r.err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("3s 内请求未收尾")
+		}
+	}
+	waitDockRows(t, acc, 2)    // 落行在出册前——行到即完成收尾在即
+	waitForInflight(t, srv, 0) // 完成后回落
+
+	n, ts := srv.Snapshots().ProxyStats()
+	if n != 0 {
+		t.Fatalf("完成后在途应回落 0: got %d", n)
+	}
+	if ts < testStart || ts > time.Now().Unix() {
+		t.Fatalf("last_request_ts = %d, want 完成时刻（秒级，[%d, %d]）", ts, testStart, time.Now().Unix())
+	}
+}
+
+// TestProxyStatsReplayNotCounted 心跳自产重放（x-ferryman-replay 标记头）与真实
+// 流量走同一 handler、同一在途注册表（排水语义不变），但统计不计入：在途不涨、
+// 完成不记时——升级静默门只看真实 CC 流量，本程序自产心跳不该把门按住。
+func TestProxyStatsReplayNotCounted(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	kick := func() { once.Do(func() { close(release) }) } // 唯一关闭点（同上：Fatalf 路径不悬挂）
+	defer kick()
+	backend := sseBackend(t, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n", release,
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	srv, acc, front := newRecordingFront(t, backend.URL)
+
+	done := make(chan clientResult, 1)
+	go func() {
+		req := ccRequest(t, front+"/v1/messages", streamBody("hb"))
+		req.Header.Set(HeaderFerrymanReplay, "1") // HttpBeatSender 同款自产标记
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- clientResult{err: err}
+			return
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		done <- clientResult{status: resp.StatusCode, body: b}
+	}()
+
+	// 在途按住中：注册表里有它（排水照管），统计必须没有——在途数保持 0 且
+	// 不记完成时刻。这是比"完成后补看"更强的口径断言。
+	waitForInflight(t, srv, 0)
+	if _, ts := srv.Snapshots().ProxyStats(); ts != 0 {
+		t.Fatalf("在途重放不得记完成时刻: got %d", ts)
+	}
+
+	kick() // 放行：重放照记 dock 科目行（既有语义不动）
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("重放请求失败: %v", r.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("3s 内重放未收尾")
+	}
+	waitDockRows(t, acc, 1)
+	waitForInflight(t, srv, 0)
+	if n, ts := srv.Snapshots().ProxyStats(); n != 0 || ts != 0 {
+		t.Fatalf("重放不计入统计: got %d/%d, want 0/0", n, ts)
+	}
+}

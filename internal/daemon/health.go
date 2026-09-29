@@ -71,6 +71,10 @@ func (d *Daemon) Health() map[string]any {
 	if ver == "" {
 		ver = "dev"
 	}
+	// 票01 W1：渡口代理面统计（升级静默门数据面）——只覆盖 15722 真实 CC 流量
+	// （心跳自产重放与管理口流量不在内，口径见 dock.Server）；DockSnap nil＝
+	// 未启用 0/0。"零请求视为静默成立"由消费方（票02）判定，此处如实暴露。
+	dockInflight, dockLastTS := d.dockProxyStats()
 	return map[string]any{
 		"version":                     ver,
 		"gate_calls_total":            total,
@@ -82,5 +86,7 @@ func (d *Daemon) Health() map[string]any {
 		"health_alert":                alert,
 		"health_msg":                  msg,
 		"qwatch":                      qw,
+		"dock_inflight":               dockInflight,
+		"last_request_ts":             dockLastTS,
 	}
 }

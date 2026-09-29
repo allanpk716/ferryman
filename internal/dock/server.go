@@ -85,6 +85,41 @@ type reqMeta struct {
 // ctxKeyMeta context 私有键。
 type ctxKeyMeta struct{}
 
+// proxyStats 代理面流量统计（票01 W1 静默门数据面）：渡口上真实 CC 流量的
+// 在途数与最后完成时刻。回写点＝记账路径 handler 的进出（与在途注册表同事件，
+// 但独立记账——注册表还收心跳自产重放，统计口径排除它）；读侧经
+// SnapshotStore.ProxyStats() 只读转发给 daemon /stats。"零请求视为静默成立"
+// 的判定归消费方（升级门，票02），此处如实暴露零值。
+type proxyStats struct {
+	mu       sync.Mutex
+	inflight int   // 非 replay 的在途记账请求数（回填窗 ⊇ 注册表窗，瞬时读数不欠账）
+	lastTS   int64 // 最后一个代理面请求完成的 Unix 秒；守护启动以来无请求恒 0
+}
+
+// enter 在途 +1（请求进入记账路径时；replay 已在调用点排除）。
+func (p *proxyStats) enter() {
+	p.mu.Lock()
+	p.inflight++
+	p.mu.Unlock()
+}
+
+// done 完成一单：在途 -1 并记完成时刻。秒级截断是有意的——门判据是
+// "距最后请求 ≥10 秒"，秒级精度足够，亚秒信息对消费方无意义。
+func (p *proxyStats) done() {
+	now := time.Now().Unix()
+	p.mu.Lock()
+	p.inflight--
+	p.lastTS = now
+	p.mu.Unlock()
+}
+
+// snapshot 只读抄表（一把锁一次抄齐，两字段同帧）。
+func (p *proxyStats) snapshot() (inflight int, lastTS int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.inflight, p.lastTS
+}
+
 // Server 渡口服务：本机透传/改写中转（CC → 渡口 → 上游）＋内存快照捕获。
 // Handler 形（ServeHTTP）可独立挂 httptest；Start/Close 是真实监听生命周期。
 type Server struct {
@@ -110,6 +145,10 @@ type Server struct {
 	drainCh   chan struct{}
 	idleCh    chan struct{}
 	inflights map[*inflight]struct{}
+
+	// 票01 W1：代理面统计回写侧（读侧在 store.stats，NewWithOptions 里两处
+	// 指到同一份——daemon 经 DockSnap 取数与回写同源，无二次抄表漂移）。
+	stats *proxyStats
 }
 
 // New 构造纯透传渡口（票01 形状：签名与行为保持不变，daemon 既有调用点
@@ -139,7 +178,11 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 		drainCh:   make(chan struct{}),
 		idleCh:    idle,
 		inflights: make(map[*inflight]struct{}),
+		stats:     &proxyStats{},
 	}
+	// 票01 W1：统计读侧挂到快照库（server 回写、store 只读转发）——daemon 手里
+	// 只有 DockSnap，这是统计出渡口的唯一既有通道，不新增装配面。
+	s.store.stats = s.stats
 	if o.Upstream != nil {
 		s.drift = NewDriftTracker(o.Alert)
 		// 票01（D13/D15）：改写隐含开启——无开关，守卫单源裁决（本地中转
@@ -289,8 +332,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 的请求由 expireDrain 取消（ErrorHandler 回 504），响应已确立的流
 		// 走 drainBody 注入。defers 在 recordRow 之后才跑（LIFO），行落账时
 		// 仍在册，宽限等待据此涵盖注入交付。
+		// 票01 W1：统计回填＝记账路径的非 replay 流量（心跳自产重放经同一
+		// 注册表用于排水，但不计入统计——升级静默门只看真实 CC 流量，本程序
+		// 自产心跳不该把门按住）。enter 先于注册、done 后于出册（defer LIFO：
+		// untrackInflight 先跑），统计窗恒 ⊇ 注册表窗，瞬时读数不欠账。
 		rctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
+		if !replay {
+			s.stats.enter()
+			defer s.stats.done()
+		}
 		s.trackInflight(meta, cancel)
 		defer s.untrackInflight(meta)
 		r = r.WithContext(context.WithValue(rctx, ctxKeyMeta{}, meta))

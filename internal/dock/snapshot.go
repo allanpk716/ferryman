@@ -63,6 +63,7 @@ type SnapshotStore struct {
 	sessions map[string]*sessionRec
 	clock    int64 // LRU 单调时钟（与真实时间无关，只比先后）
 	skipped  int   // session_id 提取失败/缺失的跳过计数（只记数不告警）
+	stats    *proxyStats // 票01 W1：代理面统计读侧（server 回写、此处只读转发；nil＝未接线报 0/0）
 }
 
 // NewSnapshotStore 构造空快照库。
@@ -154,6 +155,18 @@ func (s *SnapshotStore) Skipped() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.skipped
+}
+
+// ProxyStats 代理面流量统计只读抄表（票01 W1 静默门数据面）：在途数与最后
+// 完成时刻（Unix 秒）。统计只覆盖 15722 代理面上真实 CC 流量——心跳自产
+// 重放与管理口 15700 流量一律不在内（回写侧见 server.go proxyStats）。
+// stats 为 nil（直构快照库/统计未接线）＝0,0，与"渡口未启用如实报零"同语义，
+// 调用方（daemon /stats）不报错。
+func (s *SnapshotStore) ProxyStats() (inflight int, lastTS int64) {
+	if s.stats == nil {
+		return 0, 0
+	}
+	return s.stats.snapshot()
 }
 
 // tick 刷新 LRU 时钟（须持锁）。与真实时间脱钩：只要求全序一致。
