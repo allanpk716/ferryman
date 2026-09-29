@@ -100,10 +100,15 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// ——正常开机/钩子拉起时 update.lock 不存在，零行为变化，只在升级事务
 	// 持锁期间生效。自身映像取不到留空 → samePath 恒 false → 判定恒不持有
 	// → 照常启动（让路面绝不阻塞启动）。
-	selfExe, _ := serveSelfExe()
-	if holderPID, held := lockYieldProbe(dataDir, selfExe, nil, nil); held {
-		fmt.Printf("[ferryman] 升级事务进行中（持有者 PID %d）——本实例静默让路\n", holderPID)
-		return 0
+	// 监督者自拉起豁免(票04 集成缺陷修):带 SupervisorLaunchEnv 标记启动的
+	// 是升级正主,不得给持锁的监督者让路——否则监督者拉的新守护一律静默
+	// 退出,升级必败。蜂群/看门/Run 键不带标记,照常让路。
+	if os.Getenv(update.SupervisorLaunchEnv) == "" {
+		selfExe, _ := serveSelfExe()
+		if holderPID, held := lockYieldProbe(dataDir, selfExe, nil, nil); held {
+			fmt.Printf("[ferryman] 升级事务进行中（持有者 PID %d）——本实例静默让路\n", holderPID)
+			return 0
+		}
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil { // mkdir(parents=True, exist_ok=True)
 		fmt.Println(err)

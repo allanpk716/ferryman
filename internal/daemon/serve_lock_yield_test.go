@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"ferryman/internal/update"
 )
 
 // swapYieldSeams 换掉让路两缝(探针/自身映像),返回还原函数。var 形缝对齐
@@ -140,6 +142,38 @@ func TestServeStartsWhenLockNotHeld(t *testing.T) {
 	case code := <-codeCh:
 		if code != 0 {
 			t.Fatalf("优雅停应 return 0, got %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveConfig 未在 ctx 取消后返回")
+	}
+}
+
+// TestServeSupervisorLaunchExemptYield 监督者自拉起豁免(票04 集成缺陷修):
+// 判定面说"锁被持有",但守护带着监督者注入的环境标记启动 → 不让路,
+// 照常起(pid 落盘)。豁免失效则本测试在让路早退处等不到 pid 超时。
+func TestServeSupervisorLaunchExemptYield(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	port := freePort(t)
+	cfg := serveTestCfg(t, port, dataDir)
+
+	swapYieldSeams(t,
+		func(string, string, func(int) bool, func(int) (string, error)) (int, bool) {
+			return 4242, true
+		},
+		func() (string, error) { return `C:\install\ferryman.exe`, nil })
+	t.Setenv(update.SupervisorLaunchEnv, "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- serveConfig(cfg, ctx, "dev") }()
+
+	waitPidFile(t, filepath.Join(dataDir, "daemon.pid"), 10*time.Second)
+	cancel()
+	select {
+	case code := <-codeCh:
+		if code != 0 {
+			t.Fatalf("豁免路径优雅停应 return 0, got %d", code)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serveConfig 未在 ctx 取消后返回")

@@ -111,6 +111,9 @@ func launchCmdImpl(cmdPath string) error {
 // daemon」的唯一出处,本函数只换通道、不另立启动知识。
 func launchTxCmdImpl(cmdPath string) error {
 	c := exec.Command("cmd.exe", "/c", cmdPath)
+	// 监督者自拉起标记(见 SupervisorLaunchEnv):cmd.exe 把它传给守护,守护侧
+	// 让路判定见此即豁免——监督者自己拉的守护不能给自己让路。
+	c.Env = append(os.Environ(), SupervisorLaunchEnv+"=1")
 	c.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,

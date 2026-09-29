@@ -36,6 +36,11 @@ const (
 	// 计)截止。
 	defaultProbeDelay   = 2 * time.Second
 	defaultProbeTimeout = 10 * time.Second
+	// SupervisorLaunchEnv 监督者自拉起标记(票04 集成缺陷修):监督者事务拉起
+	// (launchTxCmdImpl)给子进程注入本环境变量,daemon 侧让路判定见此标记即
+	// 豁免——否则监督者全程持锁,它自己拉起的新守护会按票04让路退出,升级
+	// 必败回滚(泳道04 评审发现;W4 彩排台真两版演练本会炸出)。
+	SupervisorLaunchEnv = "FERRYMAN_LAUNCHED_BY_SUPERVISOR"
 	// startCmdName 点火脚本名(installer.LauncherName 同名同位)。
 	startCmdName = "start-daemon.cmd"
 )
@@ -45,17 +50,17 @@ type Config struct {
 	DataDir      string // ~/ferryman:锁/journal/token/pid;空 = 回落 ~/ferryman
 	Port         int    // 守护口;0 = 15700
 	Endpoints    Endpoints
-	Current      string        // 当前版本(main.version)
-	Spec         string        // 显式目标版本(可空;含降级)
-	Prerelease   bool          // 纳入预发布
-	SelfRelay    bool          // 本进程已是自中继副本,不再自中继(内部旗标)
-	StartCmd     string        // 点火脚本;空 = <DataDir>/start-daemon.cmd
-	HTTP         *http.Client  // 守护面客户端;空 = 3s 超时内建
-	PortWait     time.Duration // 停旧等端口释放+进程退场上限;0 = 240s（覆盖 v0.2.4+ 排水窗）
-	PollTimeout  time.Duration // 拉起校验轮询上限;0 = 90s
-	PollInterval time.Duration // 轮询间隔;0 = 1s
-	ProbeDelay   time.Duration // 拉起验证探针首测延迟(自拉起计);0 = 2s
-	ProbeTimeout time.Duration // 拉起验证探针截止(自拉起计);0 = 10s
+	Current      string                      // 当前版本(main.version)
+	Spec         string                      // 显式目标版本(可空;含降级)
+	Prerelease   bool                        // 纳入预发布
+	SelfRelay    bool                        // 本进程已是自中继副本,不再自中继(内部旗标)
+	StartCmd     string                      // 点火脚本;空 = <DataDir>/start-daemon.cmd
+	HTTP         *http.Client                // 守护面客户端;空 = 3s 超时内建
+	PortWait     time.Duration               // 停旧等端口释放+进程退场上限;0 = 240s（覆盖 v0.2.4+ 排水窗）
+	PollTimeout  time.Duration               // 拉起校验轮询上限;0 = 90s
+	PollInterval time.Duration               // 轮询间隔;0 = 1s
+	ProbeDelay   time.Duration               // 拉起验证探针首测延迟(自拉起计);0 = 2s
+	ProbeTimeout time.Duration               // 拉起验证探针截止(自拉起计);0 = 10s
 	Alert        func(title, message string) // 事务告警通道(cmd 侧装配 notify.NotifyAlert);nil = 只落 Logf
 	Logf         func(format string, args ...any)
 }
@@ -63,7 +68,7 @@ type Config struct {
 // Result 升级结论(seam F 结果通知与 CLI stdout 的单源)。
 type Result struct {
 	Success     bool
-	Relayed     bool  // 已转交自中继副本接手,本进程只负责退出(v0.1.0 首发实测补)
+	Relayed     bool // 已转交自中继副本接手,本进程只负责退出(v0.1.0 首发实测补)
 	From, To    string
 	RolledBack  bool   // 失败但已回滚恢复旧版服务
 	RollbackErr string // 回滚也失败(服务可能中断,需人工介入)
@@ -671,6 +676,7 @@ func (s *Supervisor) waitProcessExit(pid int, budget time.Duration) bool {
 	}
 	return true
 }
+
 // postShutdown POST /shutdown(票04 端点);非 200/网络错都算未应。
 func (s *Supervisor) postShutdown() error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
