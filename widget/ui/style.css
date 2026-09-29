@@ -12,18 +12,40 @@ body{
   width:100vw; height:100vh; overflow:hidden;
   color:var(--txt);
   font:14px/1.5 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
-  background:var(--wbg);
+  background:transparent; /* 圆角+贴边融入（2026-09-29 视觉票）：窗口透明化（conf transparent:true），底色移到 .widget 面板 */
   user-select:none;
 }
+/* 设置窗（settings.html）是非透明独立窗口，底色不随悬浮窗透明化 */
+body.settings-page{background:var(--wbg)}
 
-/* ── 悬浮窗本体：铺满窗口，竖排（默认）/横排 ── */
+/* ── 悬浮窗本体：铺满窗口，竖排（默认）/横排。视觉面板在 ::before 上画（圆角+
+   贴边融入，2026-09-29 视觉票）——.widget 本身必须保持铺满窗口：jsDrag/自测
+   等既有逻辑以它的 rect 为参照，面板内缩挪位会把它们打破。
+   ::before 四边让 6px 透明边距给投影容身——窗口尺寸不动，box-shadow 画出窗外
+   会被裁，只能向窗内借位；6px 经实测装得下内容（演示满载高 593≤608−16、
+   圆控件宽 100≤108）。贴边停靠（docked-*，由 Rust 磁吸 emit "widget-docked"
+   驱动）：该侧边距归零顶到屏缘、圆角转直角、该侧投影被窗缘裁掉即消失——
+   看起来像从屏幕边缘长出来。 ── */
 .widget{
   position:fixed; left:0; top:0; right:0;
   display:flex; flex-direction:column; align-items:center; gap:6px;
   padding:10px 6px 6px;
   max-height:100vh; overflow:hidden;
 }
+.widget::before{
+  content:''; position:fixed; left:6px; top:6px; right:6px; bottom:6px;
+  /* fixed 相对视口（壳内视口=窗口），不随 .widget 内容高度走；
+     z-index:-1 垫在内容底下当面板——body 透明，不会藏到页面底色后面 */
+  z-index:-1;
+  background:var(--wbg); border-radius:12px;
+  box-shadow:0 3px 12px rgba(0,0,0,.5);
+}
 .widget.horizontal{flex-direction:row; align-items:flex-start; flex-wrap:nowrap; bottom:auto}
+/* 停靠侧：面板边距归零（投影随窗缘裁掉）+ 该侧两角转直角，其余三角保持圆 */
+.widget.docked-left::before{left:0; border-top-left-radius:0; border-bottom-left-radius:0}
+.widget.docked-right::before{right:0; border-top-right-radius:0; border-bottom-right-radius:0}
+.widget.docked-top::before{top:0; border-top-left-radius:0; border-top-right-radius:0}
+.widget.docked-bottom::before{bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0}
 .grip{
   align-self:center; color:var(--txt-faint); cursor:grab; font-size:13px;
   letter-spacing:2px; padding:0 6px 4px;
@@ -84,10 +106,11 @@ body.dev .dev-badge{display:block}
 }
 .tooltip .t-sw{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:0}
 
-/* ── 详情卡：窗口内覆盖式弹出（原 mock 定位在窗外会被裁） ── */
+/* ── 详情卡：窗口内覆盖式弹出（原 mock 定位在窗外会被裁）。
+   圆角面板后四边各让 8px（面板 6px 透明边距 + 2px 内距），不压透明窗缘 ── */
 .detail{
-  position:fixed; z-index:65; left:4px; top:4px; right:4px;
-  max-height:calc(100% - 8px); overflow-y:auto;
+  position:fixed; z-index:65; left:8px; top:8px; right:8px;
+  max-height:calc(100% - 16px); overflow-y:auto;
   background:rgba(14,16,22,.97); border:1px solid var(--wborder);
   border-radius:10px; padding:10px 8px; box-shadow:0 10px 40px rgba(0,0,0,.55);
 }

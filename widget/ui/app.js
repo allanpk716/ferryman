@@ -437,6 +437,21 @@ applyProfile();
   }
 })();
 
+// ── 贴边融入（壳内）：磁吸吸附落定/启动初始态时 Rust emit "widget-docked"
+// （载荷 {left,right,top,bottom} 四边布尔，角落可多边同贴），这里给根容器加/删
+// docked-* class——贴边侧圆角转直角、投影消失（具体形态由 CSS 控制）。
+// 演示/headless 语境无事件源，恒悬浮态（全圆+投影）。──
+(function wireDockedSides() {
+  const t = window.__TAURI__;
+  if (!t || !t.event || !t.event.listen) return;
+  t.event.listen('widget-docked', (e) => {
+    const p = (e && e.payload) || {};
+    for (const side of ['left', 'right', 'top', 'bottom']) {
+      widget.classList.toggle(`docked-${side}`, !!p[side]);
+    }
+  });
+})();
+
 // ── 票 05 · 升级通知条（壳内）：托盘「检查更新」→ Rust emit 结果，这里如实显示。
 // 永不自动下载：有新版只出「下载安装」按钮，用户点了才 invoke update_install；
 // 失败（含 pubkey 仍是占位串）原样转述原因。演示/headless 无事件源，通知条不出现。 ──

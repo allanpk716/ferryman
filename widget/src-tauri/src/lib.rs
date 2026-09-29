@@ -56,6 +56,9 @@ const SIZE_TOLERANCE_PX: i32 = 2;
 /// 自愈兜底轮询间隔：极端场景事件全漏时，塌缩到发现的时限仍有界（≤此值）。
 const GEOM_POLL: Duration = Duration::from_secs(5);
 
+/// 启动初始停靠判定容忍（物理 px）：位置恢复带 DPI 换算取整抖动，≤2px 即视为贴边。
+const DOCK_START_TOLERANCE_PX: i32 = 2;
+
 /// 贴边求值（worker 线程调）：窗口左上角落在哪块屏就贴哪块屏的工作区
 /// （工作区=扣任务栏，任务栏在哪侧都不吸到屏外）；四边独立判定，角落
 /// 两边同吸。已在目标位（x,y 未变）不 set——避免 set→Moved→再评估的
@@ -68,6 +71,53 @@ fn monitor_containing(mons: &[tauri::Monitor], pos: PhysicalPosition<i32>) -> Op
         let s = m.size();
         pos.x >= p.x && pos.x < p.x + s.width as i32 && pos.y >= p.y && pos.y < p.y + s.height as i32
     })
+}
+
+/// 贴边融入（2026-09-29 视觉票）：emit "widget-docked" 的载荷——四边独立布尔
+/// （角落可两边同贴），全 false=悬浮态（前端回全圆+投影）。
+#[derive(serde::Serialize, Clone, Copy, Default)]
+struct DockedSides {
+    left: bool,
+    right: bool,
+    top: bool,
+    bottom: bool,
+}
+
+/// 停靠侧判定（纯函数）：窗口四边与所在屏工作区四边的距离 ≤ tol（物理 px）即
+/// 视为贴该边。吸附落定时 tol=0（吸附后位置与边精确重合）；启动初始态 tol=2
+/// （只认已贴齐——位置恢复带 DPI 换算取整抖动，不把「差几像素」误报成贴边）。
+fn docked_sides(
+    pos: PhysicalPosition<i32>,
+    win: (i32, i32),
+    wa_pos: (i32, i32),
+    wa_size: (i32, i32),
+    tol: i32,
+) -> DockedSides {
+    DockedSides {
+        left: (pos.x - wa_pos.0).abs() <= tol,
+        right: (wa_pos.0 + wa_size.0 - (pos.x + win.0)).abs() <= tol,
+        top: (pos.y - wa_pos.1).abs() <= tol,
+        bottom: (wa_pos.1 + wa_size.1 - (pos.y + win.1)).abs() <= tol,
+    }
+}
+
+/// 按窗口当前位置求停靠侧并 emit "widget-docked"（前端据以给根容器加/删
+/// docked-* class）。取不到窗口/显示器静默放弃——纯视觉态，丢一次不碍事
+/// （下次吸附落定会重发）。
+fn emit_docked_state(app: &tauri::AppHandle, tol: i32) {
+    let Some(w) = app.get_webview_window("widget") else { return };
+    let (Ok(pos), Ok(ws)) = (w.outer_position(), w.outer_size()) else { return };
+    let Ok(mons) = app.available_monitors() else { return };
+    let Some(mon) = monitor_containing(&mons, pos) else { return };
+    let wa = mon.work_area();
+    let sides = docked_sides(
+        pos,
+        (ws.width as i32, ws.height as i32),
+        (wa.position.x, wa.position.y),
+        (wa.size.width as i32, wa.size.height as i32),
+        tol,
+    );
+    let _ = app.emit("widget-docked", sides);
 }
 
 fn snap_if_near(app: &tauri::AppHandle, pos: PhysicalPosition<i32>) {
@@ -101,11 +151,22 @@ fn snap_if_near(app: &tauri::AppHandle, pos: PhysicalPosition<i32>) {
         y = wy + wh - ch;
         snapped = true;
     }
-    if !snapped || (x == pos.x && y == pos.y) {
+    if !snapped {
+        // 四边都出阈值=未停靠：也要通知前端摘掉 docked-*（拖离边缘后回全圆+
+        // 投影），否则前端不会自己知道。吸附/落盘逻辑不变，这里只新增 emit。
+        let _ = app.emit("widget-docked", DockedSides::default());
         return;
+    }
+    if x == pos.x && y == pos.y {
+        return; // 已在目标位不 set（防自激循环）；停靠态未变，不重发
     }
     let _ = w.set_position(PhysicalPosition::new(x, y));
     save_state(app, x, y);
+    // 吸上即贴边：按吸附后位置（与所贴边精确重合，tol=0）求停靠侧通知前端
+    let _ = app.emit(
+        "widget-docked",
+        docked_sides(PhysicalPosition::new(x, y), (cw, ch), (wx, wy), (ww, wh), 0),
+    );
 }
 
 /// 几何自愈断言（worker 线程调）：物理尺寸偏离设计值（按当前 DPI 换算）超
@@ -435,6 +496,19 @@ pub fn run() {
                         let _ = w.set_position(PhysicalPosition::new(x, y));
                     }
                 }
+            }
+
+            // 贴边融入初始态（2026-09-29 视觉票）：恢复/默认位置落定后应有一次
+            // widget-docked——否则开机就贴边的窗口要等首次拖动才有直角。但 setup
+            // 里直接 emit 必丢（页面 JS 此时尚未注册监听器），故起一个一次性线程
+            // 等过磁吸启动静默窗（页面必已加载、位置已落定）再按当前位置 emit；
+            // 发完即退，不常驻。
+            {
+                let app = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(SNAP_ARM_DELAY);
+                    emit_docked_state(&app, DOCK_START_TOLERANCE_PX);
+                });
             }
 
             // 托盘：常驻图标 + 菜单（检查更新=票 05 真身：手动触发，结果经通知条如实显示）
