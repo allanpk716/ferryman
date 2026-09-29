@@ -26,7 +26,6 @@ console.error = (...a) => { consoleErrors.push(a.map(String).join(' ')); origErr
 const widget = document.getElementById('widget');
 const tip = document.getElementById('tooltip');
 const detail = document.getElementById('detail');
-const settings = document.getElementById('settings');
 const grip = document.querySelector('#widget .grip');
 const restoreBtn = document.getElementById('restoreBtn');
 
@@ -168,6 +167,19 @@ function discHTML(p) {
       budgetRing(p, 'month_budget', mt && mt.value));
     center = `<text x="50" y="47" class="c-label">${label}</text>
               <text x="50" y="60" class="c-sub">${p.plan || 'Coding Plan'}</text>`;
+    if (state.profile.appearance === 'compact') {
+      // 0.2.4 紧凑档圆心大数字：本盘实际画出的环（喂给 ringSVG 的三槽位非空者）
+      // 里 remaining_pct 最紧的一条；数字色=该环 ringColor（随该对象阈值黄/红告警
+      // 联动，inline fill 不走 CSS 变体）。一条环都没有 → 回落 label 单行大字。
+      const rings = [metricOf(p, 'window_5h'), mid, budgetRing(p, 'month_budget', mt && mt.value)]
+        .filter(Boolean);
+      const tight = rings.length
+        ? rings.reduce((a, b) => (b.remaining_pct < a.remaining_pct ? b : a))
+        : null;
+      center = tight
+        ? `<text x="50" y="60" class="c-pct" fill="${ringColor(p, tight.key, tight.remaining_pct)}">${Math.round(tight.remaining_pct)}%</text>`
+        : `<text x="50" y="57" class="c-label">${label}</text>`;
+    }
     cap = cdlineHTML(p) + `<div class="cap">${mt ? mt.text : ''}${estBadge(mt)}</div>`;
     if (metricOf(p, 'week') && tq) { // V2+：工具环无槽位，文字行兜底
       cap += `<div class="cap">${labelOf('tools_quota')} 剩 ${Math.round(tq.remaining_pct)}%${tq.abs ? ` · ${tq.abs}` : ''}</div>`;
@@ -181,6 +193,11 @@ function discHTML(p) {
     center = `<text x="50" y="38" class="c-money-sym">CNY</text>
               <text x="50" y="56" class="c-money">${money}</text>
               <text x="50" y="68" class="c-sub">${!bal || bal.available !== false ? '可用' : '不可用'}</text>`;
+    if (state.profile.appearance === 'compact') {
+      // 0.2.4 紧凑档圆心大数字：只放余额单行（与完整档同源 bal.text 去 ¥，
+      // 无 bal → '—'）；CNY/可用 两行小字在紧凑档不渲染。
+      center = `<text x="50" y="59" class="c-money">${money}</text>`;
+    }
     cap = sm ? `<div class="cap">${sm.text}${estBadge(sm)}</div>` : ''; // 溢出修第一层·内容取舍：cap 只显月花费（今/周在 tooltip 与详情卡）
   } else { // handoff（0.2.3 交接盘：圆心=本月次数，cap=月/周两行）
     const hm = metricOf(p, 'handoffs_month'), hw = metricOf(p, 'handoffs_week');
@@ -280,13 +297,20 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('.disc') && !e.target.closest('#detail')) closeDetail();
 });
 
-// ── 设置浮层（布局/倒计时开关/图例帮助；完整设置窗=票 04） ──
-document.getElementById('btnSettings').addEventListener('click', () => settings.classList.remove('hidden'));
-document.querySelectorAll('[data-close]').forEach((b) =>
-  b.addEventListener('click', () => document.getElementById(b.dataset.close).classList.add('hidden')));
-settings.addEventListener('click', (e) => { if (e.target === settings) settings.classList.add('hidden'); });
+// ── 设置入口（0.2.4 窗内浮层退役：浮层随窗口缩水成一小条不可用，设置统一走
+// 独立设置窗）——齿轮壳内 invoke 开独立设置窗；非壳（浏览器演示）语境无窗可开，
+// 控制台如实提示、无操作（不得报错）。 ──
+document.getElementById('btnSettings').addEventListener('click', () => {
+  const t = window.__TAURI__;
+  if (t && t.core && t.core.invoke) {
+    t.core.invoke('open_settings_window').catch((e) => console.error('open_settings_window 失败', e));
+  } else {
+    console.info('演示语境（无 Tauri 壳）：设置窗在壳内经托盘菜单「设置…」或齿轮打开');
+  }
+});
 
-/** 横竖切换（票 04 起 profile.layout 是唯一事实源；窗体几何随动属票 09）。 */
+/** 横竖切换（票 04 起 profile.layout 是唯一事实源；窗体几何随动属票 09）。
+ *  0.2.4 浮层退役后页内已无 layout radio，同步行=安全空集（空 forEach）。 */
 function setLayout(mode) {
   widget.classList.remove('vertical', 'horizontal');
   widget.classList.add(mode);
@@ -301,28 +325,10 @@ function persistProfile() {
       .catch((e) => console.error('save_profile 失败', e));
   }
 }
-document.querySelectorAll('input[name=layout]').forEach((r) =>
-  r.addEventListener('change', () => {
-    setLayout(r.value);
-    state.profile.layout = r.value;
-    persistProfile();
-  }));
-
-// 外观档（0.2.3）：浮层 radio 是保底通道（click 必达）；grip 双击=快捷通道；
-// 设置窗（票 04）=第三处。三处统一收敛到 profile → persistProfile → applyProfile。
-document.querySelectorAll('input[name=appearance]').forEach((r) =>
-  r.addEventListener('change', () => {
-    state.profile.appearance = r.value;
-    persistProfile();
-    applyProfile();
-  }));
-
-// 倒计时行显隐（widget 本地显示配置，daemon 不感知；票 04 起持久化进 profile）
-document.getElementById('optCdline').addEventListener('change', (e) => {
-  state.profile.show_countdown = e.target.checked;
-  document.querySelectorAll('.cdline').forEach((el) => el.classList.toggle('hidden', !e.target.checked));
-  persistProfile();
-});
+// 0.2.4 浮层退役：布局/外观/倒计时的页内 radio、checkbox 接线一并删除——
+// 这三项此后只由设置窗改 profile → profile-changed 广播 → applyProfile→render
+// 驱动（倒计时行显隐=render 内 cdlineHTML 吃 show_countdown，链路在本文件自测
+// 与 pw_verify 均有断言背书）。
 
 // ── 收起/恢复（壳内=托盘菜单与关窗，票 02；浏览器/测试语境=dblclick 手柄的 UI 演示） ──
 // 外观快捷切换（0.2.3）：统一走完整流向（toggle→persistProfile→applyProfile→
@@ -386,12 +392,10 @@ function runSelftest() {
   const res = [];
   const set = (k, v) => res.push([k, v]);
   try {
-    // 1 横竖切换
-    const h = document.querySelector('input[name=layout][value=horizontal]');
-    h.checked = true; h.dispatchEvent(new Event('change', { bubbles: true }));
+    // 1 横竖切换（0.2.4 浮层退役：页内 radio 已无，直接调 setLayout 断言 class）
+    setLayout('horizontal');
     const wasH = widget.classList.contains('horizontal');
-    const v = document.querySelector('input[name=layout][value=vertical]');
-    v.checked = true; v.dispatchEvent(new Event('change', { bubbles: true }));
+    setLayout('vertical');
     set('layout', wasH && widget.classList.contains('vertical'));
 
     // 2 收起/恢复
@@ -445,6 +449,7 @@ let appliedAppearance = 'full';
 function applyAppearance() {
   const mode = state.profile.appearance === 'compact' ? 'compact' : 'full';
   document.body.classList.toggle('compact', mode === 'compact');
+  // 0.2.4 浮层退役：页内已无 appearance radio，此行=安全空集（空 forEach）
   document.querySelectorAll('input[name=appearance]').forEach((r) => { r.checked = r.value === mode; });
   if (mode === appliedAppearance) return;
   appliedAppearance = mode;
@@ -456,8 +461,7 @@ function applyAppearance() {
 function applyProfile() {
   setLayout(state.profile.layout);
   applyAppearance();
-  document.getElementById('optCdline').checked = state.profile.show_countdown;
-  render();
+  render(); // 倒计时行显隐由 cdlineHTML 吃 show_countdown（0.2.4 起页内无 optCdline）
 }
 state.profile = initialProfile();
 applyProfile();

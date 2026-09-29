@@ -136,21 +136,16 @@ body.dev .dev-badge{display:block}
 .b.fetch{color:#7ECB9B; border:1px solid rgba(126,203,155,.45)}
 .b.est{color:var(--cmonth); border:1px dashed rgba(155,126,222,.55)}
 
-/* ── 设置浮层（图例帮助并入于此；完整设置窗=票 04） ── */
-.overlay{
-  position:fixed; inset:0; z-index:70; background:rgba(5,7,10,.62);
-  display:flex; align-items:flex-start; justify-content:center; padding:8px 4px;
-}
+/* ── 设置窗面板（0.2.4 浮层退役：.overlay 规则已删，.sheet 只剩 settings.html 在用） ── */
 .sheet{
   background:#171b26; border:1px solid var(--wborder); border-radius:12px;
   width:100%; max-height:calc(100% - 4px); overflow-y:auto; padding:10px 8px;
 }
 .sheet h2{font-size:13px; margin-bottom:4px}
-.sheet .note{font-size:10.5px; color:var(--txt-dim); margin-bottom:10px}
-.sheet .close{float:right; background:none; border:none; color:var(--txt-dim); font-size:16px; cursor:pointer}
-.radioline{font-size:12px; margin:4px 0}
+.sheet .note{font-size:10.5px; color:var(--txt-dim); margin-bottom:6px}
+.radioline{font-size:12px; margin:3px 0}
 input[type=checkbox]{accent-color:#5B9BD5}
-h4.sec{font-size:12px; margin:10px 0 4px; color:#9CC4E8}
+h4.sec{font-size:12px; margin:7px 0 3px; color:#9CC4E8}
 .help{font-size:11px; color:var(--txt-dim); display:flex; flex-direction:column; gap:4px}
 .help .sw{display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; vertical-align:-1px}
 .help i{font-style:normal; color:var(--cmonth); font-size:10px; border:1px dashed rgba(155,126,222,.55); border-radius:3px; padding:0 2px; margin-left:2px}
@@ -179,6 +174,9 @@ body.compact .c-label{font-size:20px}
 body.compact .c-sub{font-size:13px}
 body.compact .c-money-sym{font-size:12px}
 body.compact .c-money{font-size:26px}
+/* 0.2.4 紧凑档圆心大数字：套餐盘=最紧环剩余% 单行大字（告警色=inline fill 随该环阈值联动，
+   不走 CSS 变体；完整档无此元素） */
+body.compact .c-pct{font-size:28px; font-weight:700; text-anchor:middle}
 body.compact .conn-warn{font-size:9px; padding:0 2px 2px; white-space:normal}
 /* 交接盘虚线圈在 48px 缩放下（2px×0.48≈1px）近乎不可见，圆心数字像悬空文字——
    紧凑档专属加粗提亮（真机视觉验收 2026-09-29 发现） */
@@ -187,32 +185,44 @@ body.compact .update-warn{font-size:9px; gap:2px 4px; padding:2px 4px; line-heig
 body.compact #btnUpdateInstall{font-size:9px; padding:0 4px}
 body.compact .widget.horizontal .grip{padding:2px 0}
 
-/* ── 票 04 · 设置窗（独立窗口 settings.html；按需创建、关闭即销毁） ── */
-body.settings-page{overflow:auto; padding:10px 12px}
-body.settings-page .sheet{max-height:none; width:100%; padding:12px 10px}
+/* ── 票 04 · 设置窗（独立窗口 settings.html；按需创建、关闭即销毁）。
+   0.2.4 卡片式重排：基准 ~13px、控件 12.5px；服务商每对象一张卡（.obj-card） ── */
+body.settings-page{overflow:auto; padding:8px 12px; font-size:13px}
+body.settings-page .sheet{max-height:none; width:100%; padding:10px}
 .note.warn{
   display:block; font-size:11px; color:var(--alert-y);
   border:1px solid rgba(232,195,61,.4); background:rgba(232,195,61,.1);
   border-radius:8px; padding:5px 8px; margin-bottom:8px;
 }
-.set{width:100%; border-collapse:collapse; font-size:11.5px; margin:6px 0}
-.set th,.set td{border:1px solid rgba(255,255,255,.08); padding:4px 6px; text-align:left; vertical-align:middle}
-.set th{background:rgba(255,255,255,.04); font-weight:600; font-size:11px}
-.set .hint{font-size:10px; color:var(--txt-faint)}
-.set input[type=number]{
+.obj-card{
+  border:1px solid var(--wborder); border-radius:10px; background:rgba(255,255,255,.03);
+  padding:6px 10px; margin:5px 0; /* 0.2.4 一屏目标：间距从 8/8 收到 5/6（660×640 实测 703→≤640） */
+}
+.obj-head{display:flex; align-items:center; gap:8px; font-weight:600}
+.obj-head .obj-name{flex:1}
+.obj-head .obj-order{flex:none; display:flex; gap:4px}
+.obj-row{display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; font-size:12.5px}
+.obj-row .k{color:var(--txt-dim); width:52px; flex:none}
+.obj-row .c-field{display:inline-flex; align-items:center; gap:3px; margin-right:6px}
+.settings-page .hint{font-size:11px; color:var(--txt-faint)}
+.settings-page input[type=number]{
   width:56px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.14);
   color:var(--txt); border-radius:4px; padding:1px 4px; font:inherit;
 }
-.set .f-mb{width:84px}
-.set .f-dsb-amt{width:64px}
-.set input[type=color]{
+.settings-page .f-mb{width:84px}
+.settings-page .f-dsb-amt{width:64px}
+.settings-page input[type=color]{
   width:24px; height:18px; padding:0; border:none; background:none;
   cursor:pointer; vertical-align:-4px; margin-right:2px;
 }
-.set button{
+.obj-card button{
   background:none; border:1px solid rgba(255,255,255,.16); color:var(--txt-dim);
-  font-size:11px; line-height:1; border-radius:4px; padding:2px 5px; cursor:pointer;
+  font-size:12px; line-height:1; border-radius:4px; padding:2px 6px; cursor:pointer;
 }
-.set button:hover{color:var(--txt); background:rgba(255,255,255,.08)}
+.obj-card button:hover{color:var(--txt); background:rgba(255,255,255,.08)}
+/* 图例与帮助：默认收起，点开展开 */
+details.sec-help{margin-top:10px}
+details.sec-help summary{cursor:pointer; font-size:12px; font-weight:600; color:#9CC4E8}
+details.sec-help .help{margin-top:6px}
 .radioline .hint{font-size:10.5px; color:var(--txt-faint)}
 .statusline{margin-top:8px; font-size:11px; color:var(--txt-dim); min-height:16px}

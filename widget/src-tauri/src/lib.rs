@@ -471,10 +471,11 @@ async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 // ── 票 09 · daemon 端点发现：读 ~/ferryman/daemon.token（daemon EnsureToken
-// 落盘）；地址钦定 http://127.0.0.1:7311/widget/summary（票 09 票面原文；
-// [server].port 缺省即 7311，读 config.toml 属越界解析，不做）。token 每次
-// 现读：daemon 重启换 token 后下次轮询自动生效。失败返回 Err，前端如实灰化
-// （不假造可达）。悬浮窗进程内永不出现服务商凭据（只有 daemon 的本机 token）。 ──
+// 落盘）；地址 http://127.0.0.1:15700/widget/summary（2026-09-29 守护口从 7311
+// 迁至 15700——生产 config.toml [server].port 已改；票 09 钦定不读 config.toml
+// 的越界解析维持不变，硬编码随之更新）。token 每次现读：daemon 重启换 token 后
+// 下次轮询自动生效。失败返回 Err，前端如实灰化（不假造可达）。悬浮窗进程内永不
+// 出现服务商凭据（只有 daemon 的本机 token）。 ──
 #[tauri::command]
 fn get_daemon_config() -> Result<serde_json::Value, String> {
     let home =
@@ -485,35 +486,31 @@ fn get_daemon_config() -> Result<serde_json::Value, String> {
     if token.is_empty() {
         return Err("daemon.token 为空".into());
     }
-    Ok(serde_json::json!({ "url": "http://127.0.0.1:7311/widget/summary", "token": token }))
+    Ok(serde_json::json!({ "url": "http://127.0.0.1:15700/widget/summary", "token": token }))
 }
 
-/// 设置窗：按需创建、关闭即销毁（防双 WebView 常驻内存）；已开则只聚焦不重复建。
+/// 设置窗（0.2.4 真机事故改道）：窗口由 conf 在启动时创建（visible:false 常驻
+/// 隐藏），这里只负责显示。原「运行时按需创建、关闭即销毁」（票 04）在真机
+/// 2026-09-29 实证坏掉：运行时建的 WebView2 是僵尸——WRY_WEBVIEW 宿主在、
+/// 浏览器侧 Chrome_WidgetWin_0 恒 0×0 不可见=窗口能显但内容永白（用户肉眼
+/// 确认）；主线程/创建即显/WM_SIZE 轻推均救不回，而 conf 声明的 widget 主窗
+/// 从未出过此问题。代价=一个常驻隐藏 WebView（票 04 的防常驻内存设计就此
+/// 让位——可用性优先），换来关闭=隐藏（不再销毁）后重开永远可靠。
 fn open_settings(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
-        return;
     }
-    let built = tauri::WebviewWindowBuilder::new(
-        app,
-        "settings",
-        tauri::WebviewUrl::App("settings.html".into()),
-    )
-    .title("显示配置")
-    .inner_size(560.0, 520.0)
-    .min_inner_size(460.0, 380.0)
-    .center()
-    .resizable(true)
-    .visible(false) // 零闪窗：建好再显
-    .build();
-    match built {
-        Ok(w) => {
-            let _ = w.show();
-            let _ = w.set_focus();
-        }
-        Err(e) => eprintln!("设置窗创建失败: {e}"), // 建窗失败不崩主程序，托盘仍可用
-    }
+}
+
+/// 齿轮按钮 → 设置窗（0.2.4 窗内浮层退役：浮层随窗口缩水不可用，设置统一走
+/// 独立设置窗；前端 gear 点击 invoke 本命令，与托盘「设置…」同一路径）。
+/// invoke 实测跑在主线程（ThreadId(1)），show 派发即主线程内联——与托盘
+/// 「显示悬浮窗」显主窗同机制（该路径用户日常在用，可靠）。
+#[tauri::command]
+fn open_settings_window(app: tauri::AppHandle) {
+    open_settings(&app);
 }
 
 pub fn run() {
@@ -534,15 +531,17 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(MoveThrottle(Mutex::new(None)))
         .manage(PendingUpdate(Mutex::new(None)))
-        // 自定义命令（票 04/05/09 + 0.2.3）：get_profile / save_profile /
+        // 自定义命令（票 04/05/09 + 0.2.3/0.2.4）：get_profile / save_profile /
         // update_install / get_daemon_config（live 取数目标：url+token）/
-        // set_appearance（外观档切换：双尺寸联动）
+        // set_appearance（外观档切换：双尺寸联动）/
+        // open_settings_window（0.2.4 浮层退役：齿轮 → 独立设置窗）
         .invoke_handler(tauri::generate_handler![
             get_profile,
             save_profile,
             set_appearance,
             update_install,
-            get_daemon_config
+            get_daemon_config,
+            open_settings_window
         ])
         .setup(|app| {
             let w = app.get_webview_window("widget").expect("conf 未配置 widget 窗口");
@@ -658,7 +657,7 @@ pub fn run() {
                             let _ = w.hide();
                         }
                     }
-                    "settings" => open_settings(app), // 票 04：按需创建、关闭即销毁
+                    "settings" => open_settings(app), // 显示常驻设置窗（0.2.4：conf 创建+隐藏，打开=显示）
                     // 外观快捷切换（0.2.3）：前端走完整流向（toggle→persistProfile→
                     // applyProfile→invoke set_appearance），这里只转发意图。
                     "toggle_appearance" => {
@@ -687,15 +686,16 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             // 悬浮窗：关窗=收起到托盘，退出只走托盘菜单；
-            // 设置窗（票 04）：不拦默认关闭流程 → 窗口与 WebView 一并销毁（关闭即销毁验收）
+            // 设置窗：0.2.4 起常驻（conf 创建），关闭=隐藏不销毁（重开永远可靠，
+            // 原「关闭即销毁」随运行时建窗一起退役——运行时建 WebView2 真机白屏事故）
             WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
                 if window.label() != "settings" {
-                    api.prevent_close();
                     if let Ok(pos) = window.outer_position() {
                         save_state(window.app_handle(), pos.x, pos.y);
                     }
-                    let _ = window.hide();
                 }
+                let _ = window.hide();
             }
             // 拖动中节流保存位置（≥500ms 一次）；只针对悬浮窗（设置窗位置不记）。
             // 磁吸喂流不走节流：防抖要全量 Moved 事件流（250ms 静止=松手）。

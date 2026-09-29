@@ -40,6 +40,21 @@
   "detail": "23|次 · 本月"
  },
  {
+  "name": "c6. 紧凑圆心大数字：GLM=8% 红 / Kimi=17% 黄（最紧环+告警色联动）",
+  "ok": true,
+  "detail": "{\"glm\": [{\"cls\": \"c-pct\", \"txt\": \"8%\", \"fill\": \"#E85D5D\"}], \"kimi\": [{\"cls\": \"c-pct\", \"txt\": \"17%\", \"fill\": \"#E8C33D\"}]}"
+ },
+ {
+  "name": "c7. 紧凑圆心大数字：DS=余额单行（无 CNY/可用 小字行）",
+  "ok": true,
+  "detail": "[{\"cls\": \"c-money\", \"txt\": \"87.50\", \"fill\": null}]"
+ },
+ {
+  "name": "c8. 紧凑圆心无第二行（glm/kimi/deepseek 各只一个 text，无 c-sub/c-label）",
+  "ok": true,
+  "detail": "{\"glm\": [{\"cls\": \"c-pct\", \"txt\": \"8%\", \"fill\": \"#E85D5D\"}], \"kimi\": [{\"cls\": \"c-pct\", \"txt\": \"17%\", \"fill\": \"#E8C33D\"}], \"deepseek\": [{\"cls\": \"c-money\", \"txt\": \"87.50\", \"fill\": null}]}"
+ },
+ {
   "name": "d1. DS 盘 cap 单行月花费",
   "ok": true,
   "detail": "[{\"text\": \"月 ¥58.60估\", \"w\": 67.15625, \"clipped\": false}]"
@@ -75,8 +90,38 @@
   "detail": "{\"set_appearance\": [{\"mode\": \"compact\"}], \"pc_appearance\": [\"compact\"]}"
  },
  {
-  "name": "e2. 浮层外观 radio → set_appearance(full) + 摘 compact class",
+  "name": "e2. 齿轮点击 → invoke open_settings_window（浮层退役后走独立设置窗）",
   "ok": true,
-  "detail": "{\"sa\": [{\"mode\": \"compact\"}, {\"mode\": \"full\"}], \"compact\": false, \"checked\": \"full\"}"
+  "detail": "[\"get_profile\", \"save_profile\", \"set_appearance\", \"open_settings_window\"]"
+ },
+ {
+  "name": "e3. profile-changed(show_countdown) → render 驱动倒计时行显隐（浮层退役后唯一链路）",
+  "ok": true,
+  "detail": "{\"off\": {\"n\": 2, \"hidden\": true}, \"on\": {\"n\": 2, \"shown\": true}}"
+ },
+ {
+  "name": "f1. 设置窗自测四项全 1（卡片结构）",
+  "ok": true,
+  "detail": "4/4 全 1"
+ },
+ {
+  "name": "f2. 4 卡齐全且控件齐（套餐=3 色+2 阈值+月预算；DS=1 色+2 阈值+预算开关/金额；交接=仅显隐排序）",
+  "ok": true,
+  "detail": "{\"n\": 4, \"glm\": {\"visible\": true, \"colors\": 3, \"ths\": 2, \"mb\": true, \"dsbOn\": false, \"dsbAmt\": false, \"up\": true, \"down\": true}, \"kimi\": {\"visible\": true, \"colors\": 3, \"ths\": 2, \"mb\": true, \"dsbOn\": false, \"dsbAmt\": false, \"up\": true, \"down\": true}, \"deepseek\": {\"visible\": true, \"colors\": 1, \"ths\": 2, \"mb\": false, \"dsbOn\": true, \"dsbAmt\": true, \"up\": true, \"down\": true}, \"handoff\": {\"visible\": true, \"colors\": 0, \"ths\": 0, \"mb\": false, \"dsbOn\": false, \"dsbAmt\": false, \"up\": true, \"down\": true}}"
+ },
+ {
+  "name": "f3. 图例与帮助默认收起（details[open] 为假、内容在）",
+  "ok": true,
+  "detail": "{\"open\": false, \"txt\": true}"
+ },
+ {
+  "name": "f4. 帮助点开后内容可见",
+  "ok": true,
+  "detail": "{\"open\": true, \"visible\": true}"
+ },
+ {
+  "name": "f5. collect 往返（阈值改动经 collect→profile→重渲染读回 33；排序交换生效）",
+  "ok": true,
+  "detail": "{\"glmY\": \"33\", \"firstCard\": \"kimi\", \"status\": \"演示语境（无 Tauri 壳）：改动仅本页生效、不落盘\"}"
  }
 ]

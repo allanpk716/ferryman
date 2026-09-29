@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 票 03 · ui/ 静态产物断言（headless Edge --dump-dom，与 mock 验收同机制）。
+ * 票 03 · ui/ 静态产物断言（headless Chromium 系 --dump-dom，Edge 优先逐级回退，与 mock 验收同机制）。
  *
  * 跑法：node widget/ui/tests/assert-static.mjs     （Node ≥22，零依赖，全程离线）
  * 退出码：0=全绿；1=有红。
@@ -26,16 +26,33 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const UI_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// ── Edge 定位（票面钦定 x86 路径，逐级回退） ──
-const EDGE_CANDIDATES = [
+// ── headless 浏览器定位（票面钦定 x86 Edge 路径，逐级回退） ──
+// 2026-09-29 事故：本机 Edge（153/154 共存，疑似升级半截状态）headless 对一切
+// URL（含 about:blank）status=0 但零输出——existsSync 探测不够，候选要「真能
+// dump 出 HTML」才算数，故启动时逐个试 dump about:blank，首个出活的当选。
+const BROWSER_CANDIDATES = [
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
   'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
 ];
-const EDGE = EDGE_CANDIDATES.find((p) => existsSync(p));
+/** 试 dump about:blank，出 HTML 才认（防空输出的半截安装）。 */
+function probeBrowser(bin) {
+  const profile = mkdtempSync(join(tmpdir(), 'widget-probe-'));
+  try {
+    const r = spawnSync(bin, ['--headless', '--disable-gpu', '--no-first-run',
+      '--no-default-browser-check', `--user-data-dir=${profile}`, '--dump-dom', 'about:blank'],
+      { encoding: 'utf8', timeout: 30000 });
+    return /<html/i.test(r.stdout || '');
+  } catch { return false; } finally {
+    try { rmSync(profile, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+  }
+}
+const EDGE = BROWSER_CANDIDATES.find((p) => existsSync(p) && probeBrowser(p));
 if (!EDGE) {
-  console.error(`找不到 msedge.exe（试过：${EDGE_CANDIDATES.join(' ; ')}）`);
+  console.error(`找不到可用 headless 浏览器（试过：${BROWSER_CANDIDATES.join(' ; ')}）`);
   process.exit(1);
 }
+console.log(`headless 浏览器：${EDGE}`);
 
 // ── file:// 基址（页面绝对路径转 file URL，查询串接在后面；票 04 起支持 settings.html） ──
 const pageUrl = (page) => pathToFileURL(join(UI_DIR, page)).href;
@@ -122,7 +139,8 @@ async function main() {
     check('cap.月文字行 + 交接计数两行（契约 text；0.2.3 DS 只显月花费、交接盘月/周分行）',
       ['月 3.2M tok', '月 5.1M tok', '月 ¥58.60', '月 23 次', '周 5 次'].every((s) => MAIN.includes(s)) &&
       !MAIN.includes('今 ¥3.10'), '');
-    check('cap.估算紫虚线角标 <i>估</i> ≥6', (MAIN.match(/<i>估<\/i>/g) || []).length >= 6,
+    check('cap.估算紫虚线角标 <i>估</i> =5（0.2.4 浮层退役：图例帮助里那条 <i>估</i> 随 overlay 迁入 settings.html 帮助区，MAIN 只剩 5 条 cap 角标）',
+      (MAIN.match(/<i>估<\/i>/g) || []).length === 5,
       `实际 ${((MAIN.match(/<i>估<\/i>/g) || []).length)}`);
     check('disc.handoff 虚线外框', MAIN.includes('class="houtline"'), '');
 
@@ -160,23 +178,29 @@ async function main() {
     check('gray.dev+gray 注入：有数据但灰化', /(^|\s)conn-down(\s|$)/.test(bodyClass(GRAY)) &&
       GRAY.includes('data-id="glm"') && GRAY.includes('id="connWarn"'), bodyClass(GRAY));
 
-    // ⑧ 票 04 · 设置窗静态形态（settings.html headless dump；目录×默认配置渲染出表格）
+    // ⑧ 票 04 · 设置窗静态形态（settings.html headless dump；目录×默认配置渲染出卡片）
+    // 0.2.4 卡片式重排：表格→每对象一张卡（.obj-card[data-id]），区块「外观与布局」/
+    // 「图例与帮助」（<details> 默认收起），旧 6 列表头退役。
     const SETTINGS = stripScripts(dumpDom('?selftest=1', 'settings.html'));
-    const sTable = (SETTINGS.match(/<tbody[^>]*>[\s\S]*?<\/tbody>/) || [''])[0];
-    check('set.表格行=4', (sTable.match(/<tr\b/g) || []).length === 4,
-      `实际 ${(sTable.match(/<tr\b/g) || []).length}`);
-    check('set.四对象齐', ['GLM', 'Kimi', 'DeepSeek', '交接'].every((s) => sTable.includes(s)),
-      sTable.slice(0, 200));
+    const sCards = (SETTINGS.match(/<div id="objCards">[\s\S]*?(?=<details)/) || [''])[0];
+    check('set.卡片=4', (sCards.match(/<div class="obj-card" data-id=/g) || []).length === 4,
+      `实际 ${(sCards.match(/<div class="obj-card" data-id=/g) || []).length}`);
+    check('set.四对象齐', ['GLM', 'Kimi', 'DeepSeek', '交接'].every((s) => sCards.includes(s)),
+      sCards.slice(0, 200));
     check('set.默认竖排选中', /name="layout" value="vertical"[^>]*checked/.test(SETTINGS), '');
     check('set.默认倒计时选中', /id="optCdline"[^>]*checked/.test(SETTINGS), '');
-    check('set.默认阈值 20/10 ×3 行', (sTable.match(/value="20"/g) || []).length >= 3 &&
-      (sTable.match(/value="10"/g) || []).length >= 3, '');
-    check('set.DS 预算默认关', /class="f-dsb-on"(?![^>]*checked)/.test(sTable), '');
-    check('set.handoff 行无环/无阈值', (() => {
-      const m = sTable.match(/<tr data-id="handoff">[\s\S]*?<\/tr>/);
-      return !!m && m[0].includes('无环') && m[0].includes('—') && !m[0].includes('f-color');
+    check('set.默认阈值 20/10 ×3 卡', (sCards.match(/value="20"/g) || []).length >= 3 &&
+      (sCards.match(/value="10"/g) || []).length >= 3, '');
+    check('set.DS 预算默认关', /class="f-dsb-on"(?![^>]*checked)/.test(sCards), '');
+    check('set.handoff 卡无环/无阈值（仅显隐与顺序）', (() => {
+      const m = sCards.slice(sCards.indexOf('data-id="handoff"')); // handoff 默认序为末卡
+      return !!m && m.includes('无环，仅显隐与顺序') && !m.includes('f-color') && !m.includes('f-th');
     })(), '');
     check('set.月预算“不设=文字计数”说明在页', SETTINGS.includes('不设=文字计数'), '');
+    check('set.区块字样（外观与布局/图例与帮助）+ details 默认收起',
+      SETTINGS.includes('外观与布局') && SETTINGS.includes('图例与帮助') &&
+      SETTINGS.includes('<details') && !SETTINGS.includes('<details open'), '');
+    check('set.无旧表头残留', !SETTINGS.includes('>环色</th>') && !SETTINGS.includes('<table'), '');
     check('set.重置提示元素存在', SETTINGS.includes('id="resetNotice"'), '');
     const sst = (SETTINGS.match(/<div id="selftest-results"[^>]*>/) || [''])[0];
     const sAttr = (k) => new RegExp(`${k}="1"`).test(sst);
@@ -276,6 +300,7 @@ async function main() {
     const html = src('index.html'), css = src('style.css'), appjs = src('app.js'), datajs = src('data.js');
     check('split.index 引模块且无内联数据', html.includes('<script type="module" src="app.js">') &&
       !['generated_at', 'remaining_pct', '3.2M', '87.50'].some((s) => html.includes(s)), '');
+    check('index.浮层退役（0.2.4：不含 id="settings" 的窗内设置浮层）', !html.includes('id="settings"'), '');
     check('split.app.js 无演示数据字面量', !['generated_at', '3.2M', '87.50', '12:03'].some((s) => appjs.includes(s)), '');
     check('split.演示契约只活在 data.js', datajs.includes('generated_at') && datajs.includes('remaining_pct: 62'), '');
     check('split.契约演示副本无 provenance 键', !/['"]provenance['"]\s*:/.test(datajs), '');
@@ -292,6 +317,10 @@ async function main() {
     check('css.dev 角标规则存在', css.includes('body.dev .dev-badge'), '');
     check('css.灰化规则存在', css.includes('body.conn-down'), '');
     const shtml = src('settings.html'), sjs = src('settings.js'), pjs = src('profile.js');
+    check('set.src 区块字样（外观与布局/图例与帮助）+ <details>（0.2.4 卡片式）',
+      shtml.includes('外观与布局') && shtml.includes('图例与帮助') && shtml.includes('<details'), '');
+    check('set.src 无旧表头残留（0.2.4：无 >环色</th> 六列结构与 <table>）',
+      !shtml.includes('>环色</th>') && !shtml.includes('<table'), '');
     check('split.settings 页引模块且无内联数据', shtml.includes('<script type="module" src="settings.js">') &&
       !['generated_at', 'remaining_pct', '3.2M', '87.50'].some((s) => shtml.includes(s)), '');
     check('split.settings.js 无演示数据字面量', !['generated_at', '3.2M', '87.50', '12:03'].some((s) => sjs.includes(s)), '');

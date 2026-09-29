@@ -1,9 +1,15 @@
-# 0.2.3 · Playwright 全套验证（简报 §4 a–f）+ 截图
+# 0.2.4 · Playwright 全套验证（简报 §4 a–f）+ 截图
 # 用法：python pw_verify.py  （本地 http.server 伺服 widget/ui，chromium headless）
 # 结果打印 PASS/FAIL 逐条；截图与 JSON 存本目录。
 import json, subprocess, sys, time, socket
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+
+# 控制台可能非 UTF-8（GBK 下打印 ¥ 会 UnicodeEncodeError 中断全套断言）——统一按 UTF-8 输出
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 
 ROOT = Path(__file__).resolve().parent
 UI = ROOT.parent.parent / 'widget' / 'ui'
@@ -86,6 +92,28 @@ try:
               f"scrollH={c['scrollH']} clientH={c['clientH']}")
         check('c5. 交接盘圆心有次数', '23' in c['handoffCenter'] and '次 · 本月' in c['handoffCenter'],
               c['handoffCenter'])
+        # 0.2.4 紧凑档圆心大数字：每盘圆心单行——套餐盘=最紧环剩余%（色随该环阈值
+        # 告警联动），DS=余额，交接盘不动。期望按 data.js 演示值算出。
+        cc = pg.evaluate("""() => {
+          const out = {};
+          for (const id of ['glm', 'kimi', 'deepseek', 'handoff']) {
+            const d = document.querySelector(`.disc[data-id=${id}]`);
+            out[id] = [...d.querySelectorAll('svg text')]
+              .map(t => ({ cls: t.getAttribute('class'), txt: t.textContent, fill: t.getAttribute('fill') }));
+          }
+          return out;
+        }""")
+        check('c6. 紧凑圆心大数字：GLM=8% 红 / Kimi=17% 黄（最紧环+告警色联动）',
+              cc['glm'] == [{'cls': 'c-pct', 'txt': '8%', 'fill': '#E85D5D'}]
+              and cc['kimi'] == [{'cls': 'c-pct', 'txt': '17%', 'fill': '#E8C33D'}],
+              json.dumps({'glm': cc['glm'], 'kimi': cc['kimi']}, ensure_ascii=False))
+        check('c7. 紧凑圆心大数字：DS=余额单行（无 CNY/可用 小字行）',
+              cc['deepseek'] == [{'cls': 'c-money', 'txt': '87.50', 'fill': None}],
+              json.dumps(cc['deepseek'], ensure_ascii=False))
+        check('c8. 紧凑圆心无第二行（glm/kimi/deepseek 各只一个 text，无 c-sub/c-label）',
+              all(len(cc[i]) == 1 and not any(t['cls'] in ('c-sub', 'c-label') for t in cc[i])
+                  for i in ('glm', 'kimi', 'deepseek')),
+              json.dumps({i: cc[i] for i in ('glm', 'kimi', 'deepseek')}, ensure_ascii=False))
         pg.screenshot(path=str(ROOT / 'shot-compact-float.png'))
         pg.evaluate("document.getElementById('widget').classList.add('docked-right')")
         pg.screenshot(path=str(ROOT / 'shot-compact-docked-right.png'))
@@ -169,7 +197,7 @@ try:
               return Promise.resolve(null);
             } },
             event: {
-              listen: () => Promise.resolve(() => {}),
+              listen: (name, cb) => { (window.__LISTENERS__ ||= {})[name] = cb; return Promise.resolve(() => {}); },
               emit: (name, payload) => { window.__CALLS__.emit.push([name, payload]); return Promise.resolve(); },
             },
           };
@@ -188,18 +216,106 @@ try:
         check('e1. 双击 grip → set_appearance(compact) + profile-changed + compact class',
               sa and sa[-1].get('mode') == 'compact' and pc and pc[-1].get('appearance') == 'compact'
               and e1['compact'], json.dumps({'set_appearance': sa, 'pc_appearance': [x.get('appearance') for x in pc]}))
-        # 浮层外观 radio 同链（切回完整；紧凑态 gear 按规格隐藏 → dispatch_event 直发）
+        # e2 · 0.2.4 浮层退役：齿轮 → invoke open_settings_window（独立设置窗）。
+        # 紧凑态 gear 按规格隐藏（body.compact .gear{display:none}）→ dispatch_event 直发
         pg.locator('#btnSettings').dispatch_event('click')
-        pg.locator('input[name=appearance][value=full]').click()
         pg.wait_for_timeout(200)
         e2 = pg.evaluate("""() => ({
-          sa: window.__CALLS__.invoke.filter(x => x[0] === 'set_appearance').map(x => x[1]),
-          compact: document.body.classList.contains('compact'),
-          checked: document.querySelector('input[name=appearance]:checked').value,
+          calls: window.__CALLS__.invoke.map(x => x[0]),
+          errs: document.getElementById('selftest-results') ? null : null,
         })""")
-        check('e2. 浮层外观 radio → set_appearance(full) + 摘 compact class',
-              e2['sa'] and e2['sa'][-1].get('mode') == 'full' and not e2['compact']
-              and e2['checked'] == 'full', json.dumps(e2, ensure_ascii=False))
+        check('e2. 齿轮点击 → invoke open_settings_window（浮层退役后走独立设置窗）',
+              'open_settings_window' in e2['calls'], json.dumps(e2['calls'], ensure_ascii=False))
+        # e3 · 倒计时行显隐链路（0.2.4 浮层退役后唯一驱动）：设置窗改 profile →
+        # profile-changed 广播 → applyProfile → render（cdlineHTML 吃 show_countdown）
+        pg.evaluate("""() => {
+          window.__LISTENERS__['profile-changed']({ payload: {
+            layout: 'vertical', appearance: 'full', show_countdown: false, objects: {} } });
+        }""")
+        pg.wait_for_timeout(100)
+        cd1 = pg.evaluate("""() => {
+          const ls = [...document.querySelectorAll('.cdline')];
+          return { n: ls.length, hidden: ls.every(el => el.classList.contains('hidden')) };
+        }""")
+        pg.evaluate("""() => {
+          window.__LISTENERS__['profile-changed']({ payload: {
+            layout: 'vertical', appearance: 'full', show_countdown: true, objects: {} } });
+        }""")
+        pg.wait_for_timeout(100)
+        cd2 = pg.evaluate("""() => {
+          const ls = [...document.querySelectorAll('.cdline')];
+          return { n: ls.length, shown: ls.every(el => !el.classList.contains('hidden')) };
+        }""")
+        check('e3. profile-changed(show_countdown) → render 驱动倒计时行显隐（浮层退役后唯一链路）',
+              cd1['n'] >= 2 and cd1['hidden'] and cd2['shown'],
+              json.dumps({'off': cd1, 'on': cd2}, ensure_ascii=False))
+        pg.close()
+
+        # ── f. 0.2.4 设置窗卡片式（settings.html；660×640=新设计尺寸） ──
+        surl = lambda q: f'http://127.0.0.1:{PORT}/settings.html?{q}'
+        pg = b.new_page(viewport={'width': 660, 'height': 640})
+        pg.goto(surl('selftest=1'))
+        pg.wait_for_selector('#selftest-results[data-done="1"]', state='attached')
+        sst = pg.evaluate("() => ({...document.getElementById('selftest-results').dataset})")
+        sbad = [k for k in ['rows', 'defaults', 'console', 'done'] if sst.get(k) != '1']
+        check('f1. 设置窗自测四项全 1（卡片结构）', not sbad, f'data-*={sst}' if sbad else '4/4 全 1')
+        cards = pg.evaluate("""() => {
+          const card = (id) => {
+            const el = document.querySelector(`.obj-card[data-id=${id}]`);
+            return el ? {
+              visible: !!el.querySelector('.f-visible'),
+              colors: el.querySelectorAll('.f-color').length,
+              ths: el.querySelectorAll('.f-th').length,
+              mb: !!el.querySelector('.f-mb'),
+              dsbOn: !!el.querySelector('.f-dsb-on'), dsbAmt: !!el.querySelector('.f-dsb-amt'),
+              up: !!el.querySelector('.f-up'), down: !!el.querySelector('.f-down'),
+            } : null;
+          };
+          return {
+            n: document.querySelectorAll('.obj-card[data-id]').length,
+            glm: card('glm'), kimi: card('kimi'), deepseek: card('deepseek'), handoff: card('handoff'),
+          };
+        }""")
+        check('f2. 4 卡齐全且控件齐（套餐=3 色+2 阈值+月预算；DS=1 色+2 阈值+预算开关/金额；交接=仅显隐排序）',
+              cards['n'] == 4
+              and all(cards[i] and cards[i]['visible'] and cards[i]['up'] and cards[i]['down']
+                      for i in ('glm', 'kimi', 'deepseek', 'handoff'))
+              and all(cards[i]['colors'] == 3 and cards[i]['ths'] == 2 and cards[i]['mb']
+                      for i in ('glm', 'kimi'))
+              and cards['deepseek']['colors'] == 1 and cards['deepseek']['ths'] == 2
+              and cards['deepseek']['dsbOn'] and cards['deepseek']['dsbAmt']
+              and cards['handoff']['colors'] == 0 and cards['handoff']['ths'] == 0
+              and not cards['handoff']['mb'] and not cards['handoff']['dsbOn'],
+              json.dumps(cards, ensure_ascii=False))
+        hlp = pg.evaluate("""() => {
+          const d = document.querySelector('details.sec-help');
+          return { open: d.open, txt: d.textContent.includes('剩余制') };
+        }""")
+        check('f3. 图例与帮助默认收起（details[open] 为假、内容在）',
+              hlp['open'] is False and hlp['txt'], json.dumps(hlp, ensure_ascii=False))
+        pg.screenshot(path=str(ROOT / 'shot-settings-cards.png'), full_page=True)
+        pg.locator('details.sec-help summary').click()
+        hlp2 = pg.evaluate("""() => {
+          const d = document.querySelector('details.sec-help');
+          const h = d.querySelector('.help').getBoundingClientRect();
+          return { open: d.open, visible: h.height > 0 };
+        }""")
+        check('f4. 帮助点开后内容可见', hlp2['open'] and hlp2['visible'], json.dumps(hlp2))
+        pg.screenshot(path=str(ROOT / 'shot-settings-help-open.png'), full_page=True)
+        pg.locator('details.sec-help summary').click()  # 收起还原，防干扰后续截图语义
+        # collect 往返：改 glm 黄阈值 20→33 → 点 kimi ↑ 触发重渲染 → glm 卡读回 33
+        pg.evaluate("""() => {
+          const i = document.querySelector('.obj-card[data-id=glm] [data-th=yellow]');
+          i.value = '33'; i.dispatchEvent(new Event('change', { bubbles: true }));
+        }""")
+        pg.locator('.obj-card[data-id=kimi] .f-up').click()
+        rt = pg.evaluate("""() => ({
+          glmY: document.querySelector('.obj-card[data-id=glm] [data-th=yellow]').value,
+          firstCard: document.querySelector('.obj-card[data-id]').dataset.id,
+          status: document.getElementById('status').textContent,
+        })""")
+        check('f5. collect 往返（阈值改动经 collect→profile→重渲染读回 33；排序交换生效）',
+              rt['glmY'] == '33' and rt['firstCard'] == 'kimi', json.dumps(rt, ensure_ascii=False))
         pg.close()
 
         b.close()

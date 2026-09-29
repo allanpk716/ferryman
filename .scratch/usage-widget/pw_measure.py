@@ -4,6 +4,12 @@ import json, subprocess, sys, time, socket
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
+# 控制台可能非 UTF-8（GBK 下部分字符会炸）——统一按 UTF-8 输出
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 ROOT = Path(__file__).resolve().parent
 UI = ROOT.parent.parent / 'widget' / 'ui'
 
@@ -64,12 +70,13 @@ try:
             print(f"    {k['cls']!r}: {k['w']:.1f}×{k['h']:.1f}")
         pg.close()
 
-        # ── 紧凑横排 ──
+        # ── 紧凑横排（0.2.4 浮层退役：页内 layout radio 已无，直接切 class 等效 setLayout） ──
         pg = b.new_page(viewport={'width': 1366, 'height': 400})
         pg.goto(f'http://127.0.0.1:{PORT}/index.html?profile=compact&static=1&dev=1')
         pg.wait_for_selector('.disc[data-id=handoff]')
         pg.evaluate("""() => {
-          document.querySelector('input[name=layout][value=horizontal]').click();
+          const w = document.getElementById('widget');
+          w.classList.remove('vertical'); w.classList.add('horizontal');
         }""")
         m = pg.evaluate(MEASURE_JS)
         out['compact_h'] = m
