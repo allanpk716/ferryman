@@ -82,7 +82,7 @@ const PROVENANCE_BY_ID = {
 const provenanceOf = (u, m) => PROVENANCE_BY_ID[u.id]?.[m.key] ?? PROVENANCE_BASE[`${u.kind}:${m.key}`] ?? '';
 
 /** 详情卡长名（展示别名；缺省回落契约 label）。 */
-const DETAIL_NAME_OF = { glm: '智谱 GLM', kimi: 'Kimi Coding', deepseek: 'DeepSeek 按量', handoff: '摆渡行（handoff 供应商）' };
+const DETAIL_NAME_OF = { glm: '智谱 GLM', kimi: 'Kimi Coding', deepseek: 'DeepSeek 按量', handoff: '摆渡行 · 交接计数与花费' };
 const PLAN_LINE = { coding_plan: (p) => `订阅套餐 · ${p.plan || 'Coding Plan'}`, paygo: () => '充值按量计费', handoff: () => 'OpenAI 协议 · 摆渡执行器专用' };
 
 // ── 倒计时/时刻（演示态基准=契约生成时刻，接真数据后=真实时钟；见 data.now） ──
@@ -173,8 +173,7 @@ function discHTML(p) {
       cap += `<div class="cap">${labelOf('tools_quota')} 剩 ${Math.round(tq.remaining_pct)}%${tq.abs ? ` · ${tq.abs}` : ''}</div>`;
     }
   } else if (p.kind === 'paygo') {
-    const bal = metricOf(p, 'balance_cny'), st = metricOf(p, 'spend_today_cny'),
-          sw = metricOf(p, 'spend_week_cny'), sm = metricOf(p, 'spend_month_cny');
+    const bal = metricOf(p, 'balance_cny'), sm = metricOf(p, 'spend_month_cny');
     // DS 预算环（票 04）：开关+金额在设置窗；已用=spend_month_cny 原始值，剩余制绿环
     const dsr = budgetRing(p, 'ds_budget', sm && sm.value);
     svgInner = `${trackCircle(43)}${dsr ? ringCircle(p, dsr, 43) : ''}`;
@@ -182,14 +181,18 @@ function discHTML(p) {
     center = `<text x="50" y="38" class="c-money-sym">CNY</text>
               <text x="50" y="56" class="c-money">${money}</text>
               <text x="50" y="68" class="c-sub">${!bal || bal.available !== false ? '可用' : '不可用'}</text>`;
-    cap = `<div class="cap">${[sm, st, sw].filter(Boolean).map((m) => `${m.text}${estBadge(m)}`).join(' · ')}</div>`;
-  } else { // handoff
-    const sm = metricOf(p, 'spend_month_cny'), sw = metricOf(p, 'spend_week_cny');
+    cap = sm ? `<div class="cap">${sm.text}${estBadge(sm)}</div>` : ''; // 溢出修第一层·内容取舍：cap 只显月花费（今/周在 tooltip 与详情卡）
+  } else { // handoff（0.2.3 交接盘：圆心=本月次数，cap=月/周两行）
     const hm = metricOf(p, 'handoffs_month'), hw = metricOf(p, 'handoffs_week');
-    svgInner = `<circle class="houtline" cx="50" cy="50" r="43"></circle>`;
-    center = `<text x="50" y="47" class="c-label">${label}</text>
-              <text x="50" y="60" class="c-sub">handoff</text>`;
-    cap = `<div class="cap">${[sm, hm, sw, hw].filter(Boolean).map((m) => `${m.text}${estBadge(m)}`).join(' · ')}</div>`;
+    svgInner = `<circle class="houtline" cx="50" cy="50" r="43"></circle>`; // 虚线空圈保留当装饰
+    if (hm && typeof hm.value === 'number' && isFinite(hm.value)) {
+      center = `<text x="50" y="51" class="c-money">${hm.value}</text>
+                <text x="50" y="65" class="c-sub">次 · 本月</text>`;
+    } else { // handoffs_month 缺席（旧契约/异常）：回落 label 居中，不造数
+      center = `<text x="50" y="47" class="c-label">${label}</text>
+                <text x="50" y="60" class="c-sub">handoff</text>`;
+    }
+    cap = [hm, hw].filter(Boolean).map((m) => `<div class="cap">${m.text}${estBadge(m)}</div>`).join(''); // 溢出修第二层·结构化分行
   }
   return `<div class="disc${p.kind === 'handoff' ? ' handoff' : ''}" data-id="${p.id}" tabindex="0">
             <svg viewBox="0 0 100 100">${svgInner}${center}</svg>${cap}</div>`;
@@ -218,7 +221,10 @@ widget.addEventListener('mouseover', (e) => {
   const rows = p.metrics.filter((m) => m.remaining_pct != null).map((m) =>
     `<div><span class="t-sw" style="background:${ringColor(p, m.key, m.remaining_pct)}"></span>${labelOf(m.key)} 剩 ${m.remaining_pct}%${m.resets_at ? ` · 重置 ${countdownText(m.resets_at)}` : ''}</div>`
   ).join('');
-  tip.innerHTML = rows || "<div style='color:var(--txt-dim)'>无环指标 · 单击看详情</div>";
+  // 交接盘首行一句人话（0.2.3），之后照旧列环指标或「无环指标 · 单击看详情」
+  const intro = p.kind === 'handoff'
+    ? '<div style="color:var(--txt-dim)">闲置会话自动交接：读档→提炼→写交接文档；此处计次数与花费</div>' : '';
+  tip.innerHTML = intro + (rows || "<div style='color:var(--txt-dim)'>无环指标 · 单击看详情</div>");
   tip.classList.remove('hidden');
 });
 widget.addEventListener('mousemove', (e) => {
@@ -302,6 +308,15 @@ document.querySelectorAll('input[name=layout]').forEach((r) =>
     persistProfile();
   }));
 
+// 外观档（0.2.3）：浮层 radio 是保底通道（click 必达）；grip 双击=快捷通道；
+// 设置窗（票 04）=第三处。三处统一收敛到 profile → persistProfile → applyProfile。
+document.querySelectorAll('input[name=appearance]').forEach((r) =>
+  r.addEventListener('change', () => {
+    state.profile.appearance = r.value;
+    persistProfile();
+    applyProfile();
+  }));
+
 // 倒计时行显隐（widget 本地显示配置，daemon 不感知；票 04 起持久化进 profile）
 document.getElementById('optCdline').addEventListener('change', (e) => {
   state.profile.show_countdown = e.target.checked;
@@ -310,8 +325,22 @@ document.getElementById('optCdline').addEventListener('change', (e) => {
 });
 
 // ── 收起/恢复（壳内=托盘菜单与关窗，票 02；浏览器/测试语境=dblclick 手柄的 UI 演示） ──
+// 外观快捷切换（0.2.3）：统一走完整流向（toggle→persistProfile→applyProfile→
+// invoke set_appearance）。壳内 grip 双击会被原生拖动区吞掉（2026-09-29 真机
+// SendInput 实证），托盘菜单「切换…外观」emit "toggle-appearance" 才是可达路径，
+// 这里一并监听；grip 双击接线保留（Tauri 若改行为即生效，浏览器语境仍走收起演示）。
+function toggleAppearance() {
+  state.profile.appearance = state.profile.appearance === 'compact' ? 'full' : 'compact';
+  persistProfile(); // 落盘+广播；自广播回自身监听时 applyProfile 幂等（档位没变不重复 invoke）
+  applyProfile();
+}
+(function wireToggleAppearance() {
+  const t = window.__TAURI__;
+  if (!t || !t.event || !t.event.listen) return;
+  t.event.listen('toggle-appearance', () => toggleAppearance());
+})();
 grip.addEventListener('dblclick', () => {
-  if (inShell()) return; // 壳内真收起走原生托盘，不留只剩恢复钮的空窗口
+  if (inShell()) { toggleAppearance(); return; } // 壳内真收起走原生托盘
   document.body.classList.add('tray-collapsed');
   closeDetail(); tip.classList.add('hidden');
 });
@@ -409,8 +438,24 @@ function initialProfile() {
   const pv = new URLSearchParams(location.search).get('profile');
   return profile.normalizeProfile((pv && profile.PRESETS[pv]) || null).profile;
 }
+// 外观档（0.2.3）：窗口出生=conf 132×620 完整档。比对已生效档位，变了才
+// invoke set_appearance——自广播回自身监听时幂等（不重复 invoke）。compact
+// class 挂 body（演示/headless 无壳也能模拟），.widget/.disc 样式从它派生。
+let appliedAppearance = 'full';
+function applyAppearance() {
+  const mode = state.profile.appearance === 'compact' ? 'compact' : 'full';
+  document.body.classList.toggle('compact', mode === 'compact');
+  document.querySelectorAll('input[name=appearance]').forEach((r) => { r.checked = r.value === mode; });
+  if (mode === appliedAppearance) return;
+  appliedAppearance = mode;
+  const t = window.__TAURI__;
+  if (t && t.core && t.core.invoke) {
+    t.core.invoke('set_appearance', { mode }).catch((e) => console.error('set_appearance 失败', e));
+  }
+}
 function applyProfile() {
   setLayout(state.profile.layout);
+  applyAppearance();
   document.getElementById('optCdline').checked = state.profile.show_countdown;
   render();
 }

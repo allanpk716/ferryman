@@ -1,10 +1,12 @@
 # Collapse-simulation test for widget geometry self-heal (ADR-0016).
 # Finds the running FerrymanWidget window, force-resizes it to 60x275 physical px
 # via SetWindowPos (same external force as the RDP DPI collapse), then polls until
-# the watchdog restores the design size (132x620 logical = 198x930 physical @150%).
-# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File collapse-widget-test.ps1 [-Rounds 3]
+# the watchdog restores the design size for the CURRENT appearance mode
+# (0.2.3: full=132x620 logical / compact=80x272 logical; physical = logical x
+# scale factor, so accept the expected pair at sf=1.0 and sf=1.5).
+# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File collapse-widget-test.ps1 [-Rounds 3] [-ExpectW 132] [-ExpectH 620]
 
-param([int]$Rounds = 3)
+param([int]$Rounds = 3, [int]$ExpectW = 132, [int]$ExpectH = 620)
 $ErrorActionPreference = 'Stop'
 
 Add-Type @"
@@ -49,8 +51,8 @@ for ($i = 1; $i -le $Rounds; $i++) {
   for ($s = 0; $s -lt 14; $s++) {
     Start-Sleep -Milliseconds 500
     $r = Get-Rect $h
-    if (([math]::Abs($r.W - 198) -le 3 -and [math]::Abs($r.H - 930) -le 3) -or
-        ([math]::Abs($r.W - 132) -le 3 -and [math]::Abs($r.H - 620) -le 3)) { $healed = $r; break }
+    if (([math]::Abs($r.W - $ExpectW) -le 3 -and [math]::Abs($r.H - $ExpectH) -le 3) -or
+        ([math]::Abs($r.W - $ExpectW * 1.5) -le 3 -and [math]::Abs($r.H - $ExpectH * 1.5) -le 3)) { $healed = $r; break }
   }
   if ($healed) {
     $ms = [int]((Get-Date) - $t0).TotalMilliseconds

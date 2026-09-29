@@ -13,8 +13,8 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_updater::UpdaterExt;
 
-/// 持久化的窗口几何（票 02 只记位置；尺寸不可缩放无需记——自愈只断言设计
-/// 值 132×620 逻辑 px，同样无需记忆）。
+/// 持久化的窗口几何（票 02 只记位置；尺寸不可缩放无需记——自愈按外观档
+/// 断言设计值（design_size），同样无需记忆）。
 #[derive(serde::Serialize, serde::Deserialize)]
 struct WindowState {
     x: i32,
@@ -44,17 +44,46 @@ const SNAP_SETTLE_MS: u64 = 250;
 const SNAP_NEAR_LOGICAL: f64 = 16.0;
 const SNAP_ARM_DELAY: Duration = Duration::from_secs(2);
 
-/// 几何自愈（2026-09-29 RDP 塌缩事故，ADR-0016）：设计尺寸=tauri.conf.json
-/// 的 132×620 逻辑 px——窗口不可缩放，「内容完整最小尺寸」即唯一尺寸。
-/// RDP 断开瞬间会话 DPI 150%→100%，Windows 把窗口物理尺寸 ×2/3 而重连不
-/// 还原（实测 930×(2/3)³=275），widget 代码从不写尺寸、防不了系统；改为
-/// 事件流静止后断言：物理尺寸偏离设计值超过容忍即拉回，位置夹回工作区。
+/// 几何自愈（2026-09-29 RDP 塌缩事故，ADR-0016）：设计尺寸=「内容完整最小
+/// 尺寸」——窗口不可缩放，尺寸即唯一事实。RDP 断开瞬间会话 DPI 150%→100%，
+/// Windows 把窗口物理尺寸 ×2/3 而重连不还原（实测 930×(2/3)³=275），widget
+/// 代码从不写尺寸、防不了系统；改为事件流静止后断言：物理尺寸偏离设计值超
+/// 过容忍即拉回，位置夹回工作区。
+/// 0.2.3 起设计尺寸按外观档取值（自愈机制唯一扩展点）：完整档=conf 初始值
+/// 132×620；紧凑档=迷你环列实测值（见 design_size 推导注释）。
 const DESIGN_W_LOGICAL: f64 = 132.0;
 const DESIGN_H_LOGICAL: f64 = 620.0;
+/// 紧凑档设计尺寸（逻辑 px）。推导（Playwright 实测，.scratch/usage-widget/
+/// pw_measure.py，演示满载 4 盘+grip，与 style.css 紧凑块互指——改一边必须
+/// 核另一边）：
+///   内容实测 60×253（盘 48+padding×2=52/个，grip≈17，gap 4×4，上下 padding 12）。
+///   定值 = 内容 + 面板四边透明内缩 12（::before inset 6px）+ ≥6px 余量：
+///   宽 60+12+6=78 → 取 80；高 253+12+6=271 → 取 272（量级符合票面 ~260）。
+const COMPACT_W_LOGICAL: f64 = 80.0;
+const COMPACT_H_LOGICAL: f64 = 272.0;
 /// 物理尺寸比较容忍（px）：吸收 DPI 换算取整抖动。
 const SIZE_TOLERANCE_PX: i32 = 2;
 /// 自愈兜底轮询间隔：极端场景事件全漏时，塌缩到发现的时限仍有界（≤此值）。
 const GEOM_POLL: Duration = Duration::from_secs(5);
+
+/// 当前外观档（0.2.3）：full|compact。setup 启动序读 profile.json 初始化；
+/// set_appearance 命令更新（不落盘——落盘归前端 persistProfile）。
+struct Appearance(Mutex<String>);
+
+/// 设计尺寸按外观档取值（几何自愈的唯一扩展点：常量 → 按当前档取值）。
+fn design_size(mode: &str) -> (f64, f64) {
+    match mode {
+        "compact" => (COMPACT_W_LOGICAL, COMPACT_H_LOGICAL),
+        _ => (DESIGN_W_LOGICAL, DESIGN_H_LOGICAL),
+    }
+}
+
+/// 当前生效外观档（取不到状态/锁失败=full，与窗口出生尺寸一致）。
+fn current_appearance(app: &tauri::AppHandle) -> String {
+    app.try_state::<Appearance>()
+        .and_then(|s| s.0.lock().ok().map(|m| m.clone()))
+        .unwrap_or_else(|| "full".to_string())
+}
 
 /// 启动初始停靠判定容忍（物理 px）：位置恢复带 DPI 换算取整抖动，≤2px 即视为贴边。
 const DOCK_START_TOLERANCE_PX: i32 = 2;
@@ -178,16 +207,17 @@ fn assert_geometry(app: &tauri::AppHandle) {
     let Some(w) = app.get_webview_window("widget") else { return };
     let Ok(cur) = w.outer_size() else { return };
     let sf = w.scale_factor().unwrap_or(1.0);
+    let (dw, dh) = design_size(&current_appearance(app)); // 0.2.3：按当前外观档断言
     let (want_w, want_h) = (
-        (DESIGN_W_LOGICAL * sf).round() as i32,
-        (DESIGN_H_LOGICAL * sf).round() as i32,
+        (dw * sf).round() as i32,
+        (dh * sf).round() as i32,
     );
     if (cur.width as i32 - want_w).abs() <= SIZE_TOLERANCE_PX
         && (cur.height as i32 - want_h).abs() <= SIZE_TOLERANCE_PX
     {
         return; // 尺寸无恙：断言零成本通过，不碰窗口
     }
-    let _ = w.set_size(tauri::LogicalSize::new(DESIGN_W_LOGICAL, DESIGN_H_LOGICAL));
+    let _ = w.set_size(tauri::LogicalSize::new(dw, dh));
     if let Ok(pos) = w.outer_position() {
         if let Ok(mons) = app.available_monitors() {
             if let Some(mon) = monitor_containing(&mons, pos) {
@@ -219,6 +249,29 @@ fn clamp_into_work_area(
     let max_x = wa_pos.0 + (wa_size.0 - win_size.0).max(0);
     let max_y = wa_pos.1 + (wa_size.1 - win_size.1).max(0);
     (pos.x.min(max_x).max(wa_pos.0), pos.y.min(max_y).max(wa_pos.1))
+}
+
+/// 把窗口当前位置按「当前实际尺寸」夹回所在屏工作区（动了返回 true）。
+/// 0.2.3 双尺寸档两处调用：set_appearance 换档后（尺寸变了，旧位置可能把
+/// 右/下缘压出屏外——最常见：紧凑贴右停靠切回完整，右缘出屏 52px）与启动
+/// 位置恢复后（恢复位按保存时的档位尺寸存，跨档恢复同样可能出屏）。夹回
+/// 保住停靠边（贴右仍贴右，只是不再出屏）。
+fn clamp_window_into_work_area(app: &tauri::AppHandle, w: &tauri::WebviewWindow) -> bool {
+    let (Ok(pos), Ok(ws)) = (w.outer_position(), w.outer_size()) else { return false };
+    let Ok(mons) = app.available_monitors() else { return false };
+    let Some(mon) = monitor_containing(&mons, pos) else { return false };
+    let wa = mon.work_area();
+    let (x, y) = clamp_into_work_area(
+        pos,
+        (wa.position.x, wa.position.y),
+        (wa.size.width as i32, wa.size.height as i32),
+        (ws.width as i32, ws.height as i32),
+    );
+    if x == pos.x && y == pos.y {
+        return false;
+    }
+    let _ = w.set_position(PhysicalPosition::new(x, y));
+    true
 }
 
 /// 几何 worker：常驻线程。事件流静止 SNAP_SETTLE_MS 即视为松手，此刻做两
@@ -314,6 +367,44 @@ fn save_profile(app: tauri::AppHandle, profile: serde_json::Value) -> Result<(),
     let text =
         serde_json::to_string_pretty(&profile).map_err(|e| format!("序列化显示配置失败: {e}"))?;
     fs::write(&p, text).map_err(|e| format!("写入显示配置失败: {e}"))
+}
+
+/// 切换外观档（0.2.3）：校验合法值 → 更新 managed state → 按档 set_size。
+/// 不落盘——落盘归前端 persistProfile（同一 profile-changed 流向）。
+/// 磁吸/贴边/夹回全按 outer_size 现算，天然兼容双尺寸，无需在此联动。
+#[tauri::command]
+fn set_appearance(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    if mode != "full" && mode != "compact" {
+        return Err(format!("非法外观档: {mode}"));
+    }
+    let Some(st) = app.try_state::<Appearance>() else {
+        return Err("外观状态未就绪".into());
+    };
+    *st.0.lock().map_err(|_| "外观状态锁失败".to_string())? = mode.clone();
+    let w = app.get_webview_window("widget").ok_or("widget 窗口不存在")?;
+    let (dw, dh) = design_size(&mode);
+    w.set_size(tauri::LogicalSize::new(dw, dh))
+        .map_err(|e| format!("调整窗口尺寸失败: {e}"))?;
+    // 换档后按新尺寸夹回工作区（评审补）：紧凑贴右停靠切回完整会右缘出屏
+    // 52px——夹回保住停靠边（贴右仍贴右）。位置被动了才落盘。
+    if clamp_window_into_work_area(&app, &w) {
+        if let Ok(pos) = w.outer_position() {
+            save_state(&app, pos.x, pos.y);
+        }
+    }
+    Ok(())
+}
+
+/// 启动读外观档：fs 读 + serde_json 解析 profile.json 的 appearance 字段，
+/// 任何失败（缺文件/损坏/非法值）=full——配置文件问题永不崩程序。
+fn read_appearance_at_boot(app: &tauri::AppHandle) -> String {
+    let Some(p) = profile_path(app) else { return "full".into() };
+    let Ok(text) = fs::read_to_string(&p) else { return "full".into() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return "full".into() };
+    match v.get("appearance").and_then(|a| a.as_str()) {
+        Some("compact") => "compact".into(),
+        _ => "full".into(),
+    }
 }
 
 // ── 票 05 · 独立升级线：托盘菜单手动检查更新（唯一触发点，无后台轮询、不自动下载） ──
@@ -443,16 +534,29 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(MoveThrottle(Mutex::new(None)))
         .manage(PendingUpdate(Mutex::new(None)))
-        // 自定义命令（票 04/05/09）：get_profile / save_profile / update_install /
-        // get_daemon_config（live 取数目标：url+token）
+        // 自定义命令（票 04/05/09 + 0.2.3）：get_profile / save_profile /
+        // update_install / get_daemon_config（live 取数目标：url+token）/
+        // set_appearance（外观档切换：双尺寸联动）
         .invoke_handler(tauri::generate_handler![
             get_profile,
             save_profile,
+            set_appearance,
             update_install,
             get_daemon_config
         ])
         .setup(|app| {
             let w = app.get_webview_window("widget").expect("conf 未配置 widget 窗口");
+
+            // 外观档（0.2.3）：读 profile.json 的 appearance（任何失败=full）→
+            // 初始化 managed state → 紧凑档在 show 之前 set_size（零闪窗：用户
+            // 只见最终尺寸）。必须在位置恢复之前——首启默认位的居中计算吃
+            // set_size 之后的实际 outer_size。
+            let boot_appearance = read_appearance_at_boot(app.handle());
+            app.manage(Appearance(Mutex::new(boot_appearance.clone())));
+            if boot_appearance == "compact" {
+                let (dw, dh) = design_size("compact");
+                let _ = w.set_size(tauri::LogicalSize::new(dw, dh));
+            }
 
             // 磁吸贴边（2026-09-28 用户需求）：通道先建、worker 先起（带 2s 启动
             // 静默），下面位置恢复的 set_position 触发的 Moved 落在静默窗内，天然
@@ -498,6 +602,15 @@ pub fn run() {
                 }
             }
 
+            // 跨档恢复出屏防护（0.2.3 评审补）：恢复位是按「保存时的档位尺寸」
+            // 存的——紧凑档存的贴右位在完整档下右缘出屏 52px。上方已按启动档
+            // set_size，这里按当前实际尺寸夹回；屏内原位恒等不动。动了才落盘。
+            if clamp_window_into_work_area(app.handle(), &w) {
+                if let Ok(pos) = w.outer_position() {
+                    save_state(app.handle(), pos.x, pos.y);
+                }
+            }
+
             // 贴边融入初始态（2026-09-29 视觉票）：恢复/默认位置落定后应有一次
             // widget-docked——否则开机就贴边的窗口要等首次拖动才有直角。但 setup
             // 里直接 emit 必丢（页面 JS 此时尚未注册监听器），故起一个一次性线程
@@ -514,10 +627,18 @@ pub fn run() {
             // 托盘：常驻图标 + 菜单（检查更新=票 05 真身：手动触发，结果经通知条如实显示）
             let show = MenuItem::with_id(app, "show", "显示悬浮窗", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "收起到托盘", true, None::<&str>)?;
+            // 外观快捷切换（0.2.3）：grip 双击在壳内被原生拖动区吞掉（2026-09-29
+            // 真机 SendInput 实证），托盘一键切换是快捷路径；标签按当前档取反义。
+            let toggle_label = if current_appearance(app.handle()) == "compact" {
+                "切换完整外观"
+            } else {
+                "切换紧凑外观"
+            };
+            let toggle = MenuItem::with_id(app, "toggle_appearance", toggle_label, true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
             let update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &hide, &settings, &update, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &hide, &toggle, &settings, &update, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().expect("无内置图标").clone())
                 .tooltip("Ferryman 用量悬浮窗")
@@ -538,6 +659,11 @@ pub fn run() {
                         }
                     }
                     "settings" => open_settings(app), // 票 04：按需创建、关闭即销毁
+                    // 外观快捷切换（0.2.3）：前端走完整流向（toggle→persistProfile→
+                    // applyProfile→invoke set_appearance），这里只转发意图。
+                    "toggle_appearance" => {
+                        let _ = app.emit("toggle-appearance", ());
+                    }
                     "quit" => app.exit(0),
                     "update" => check_for_updates(app.clone()), // 票 05：手动检查，异步
                     _ => {}
@@ -651,5 +777,17 @@ mod tests {
         let pos = PhysicalPosition::new(4000, 700);
         let (x, y) = clamp_into_work_area(pos, (3840, 0), (1080, 1920), (198, 930));
         assert_eq!((x, y), (pos.x, pos.y));
+    }
+
+    /// 外观档 → 设计尺寸（0.2.3）：完整=conf 初始 132×620；紧凑=实测常量
+    /// （推导见 COMPACT_* 注释）；非法档回落完整。
+    #[test]
+    fn design_size_by_appearance() {
+        assert_eq!(design_size("full"), (132.0, 620.0));
+        assert_eq!(
+            design_size("compact"),
+            (COMPACT_W_LOGICAL, COMPACT_H_LOGICAL)
+        );
+        assert_eq!(design_size("bogus"), (132.0, 620.0));
     }
 }

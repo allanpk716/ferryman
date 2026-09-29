@@ -136,6 +136,7 @@ function collect() {
   }
   return {
     layout: (document.querySelector('input[name=layout]:checked') || { value: 'vertical' }).value,
+    appearance: (document.querySelector('input[name=appearance]:checked') || { value: 'full' }).value,
     show_countdown: optCdline.checked,
     objects,
   };
@@ -169,6 +170,7 @@ function moveRow(id, dir) {
 
 function syncHeader() {
   document.querySelectorAll('input[name=layout]').forEach((r) => { r.checked = r.value === currentProfile.layout; });
+  document.querySelectorAll('input[name=appearance]').forEach((r) => { r.checked = r.value === currentProfile.appearance; });
   optCdline.checked = currentProfile.show_countdown;
 }
 
@@ -194,6 +196,8 @@ tbody.addEventListener('click', (e) => {
   else if (e.target.classList.contains('f-down')) moveRow(tr.dataset.id, +1);
 });
 document.querySelectorAll('input[name=layout]').forEach((r) =>
+  r.addEventListener('change', persist));
+document.querySelectorAll('input[name=appearance]').forEach((r) =>
   r.addEventListener('change', persist));
 optCdline.addEventListener('change', persist);
 

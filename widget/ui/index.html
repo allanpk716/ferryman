@@ -10,7 +10,7 @@
 
 <!-- 悬浮窗本体：disc 由 app.js 依契约 JSON 渲染（数据层=data.js，零散落硬编码） -->
 <div class="widget vertical" id="widget">
-  <div class="grip" data-tauri-drag-region title="拖动移动（位置记忆）｜双击收起到托盘">⠿</div>
+  <div class="grip" data-tauri-drag-region title="拖动移动（位置记忆）｜外观切换：托盘菜单「切换…外观」">⠿</div>
   <button class="gear" id="btnSettings" title="显示配置与帮助">⚙</button>
   <div class="conn-warn" id="connWarn">⚠ daemon 不可达</div>
   <!-- 票 05 · 升级通知条：托盘「检查更新」后 Rust emit 结果，这里如实显示（无新版/有新版/失败原因）；
@@ -24,7 +24,7 @@
 <div class="tooltip hidden" id="tooltip"></div>
 <div class="detail hidden" id="detail"></div>
 
-<!-- 设置浮层：布局/倒计时开关 + 图例帮助（mockbar 图例并入于此；完整设置窗=票 04） -->
+<!-- 设置浮层：布局/外观档/倒计时开关 + 图例帮助（mockbar 图例并入于此；完整设置窗=票 04） -->
 <div class="overlay hidden" id="settings">
   <div class="sheet">
     <button class="close" data-close="settings">✕</button>
@@ -33,6 +33,10 @@
     <div class="radioline">布局：
       <label><input type="radio" name="layout" value="vertical" checked> 竖排贴右缘</label>
       <label><input type="radio" name="layout" value="horizontal"> 横排</label>
+    </div>
+    <div class="radioline">外观：
+      <label><input type="radio" name="appearance" value="full" checked> 完整</label>
+      <label><input type="radio" name="appearance" value="compact"> 紧凑（迷你环列）</label>
     </div>
     <div class="radioline"><label><input type="checkbox" id="optCdline" checked> 显示重置倒计时行</label></div>
     <h4 class="sec">图例与帮助</h4>

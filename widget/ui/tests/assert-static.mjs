@@ -116,11 +116,12 @@ async function main() {
     // ② 结构：四 disc、圆心标识、文字行全部来自契约 JSON
     const discIds = ['glm', 'kimi', 'deepseek', 'handoff'];
     check('disc.四个 data-id 齐', discIds.every((id) => MAIN.includes(`data-id="${id}"`)), '');
-    check('disc.圆心标识 GLM/Kimi/摆渡（DS 圆心为金额）',
-      ['>GLM<', '>Kimi<', '>摆渡<'].every((s) => MAIN.includes(s)), '');
+    check('disc.圆心标识 GLM/Kimi + 交接月次数（DS 圆心为金额；0.2.3 交接盘圆心=次数）',
+      ['>GLM<', '>Kimi<', '>23<', '>次 · 本月<'].every((s) => MAIN.includes(s)), '');
     check('disc.DS 圆心金额 87.50（吃契约 text）', MAIN.includes('>87.50<'), '');
-    check('cap.月/今/周文字行（契约 text）',
-      ['月 3.2M tok', '月 5.1M tok', '今 ¥3.10', '周 ¥22.40', '月 ¥12.80', '周 ¥4.20'].every((s) => MAIN.includes(s)), '');
+    check('cap.月文字行 + 交接计数两行（契约 text；0.2.3 DS 只显月花费、交接盘月/周分行）',
+      ['月 3.2M tok', '月 5.1M tok', '月 ¥58.60', '月 23 次', '周 5 次'].every((s) => MAIN.includes(s)) &&
+      !MAIN.includes('今 ¥3.10'), '');
     check('cap.估算紫虚线角标 <i>估</i> ≥6', (MAIN.match(/<i>估<\/i>/g) || []).length >= 6,
       `实际 ${((MAIN.match(/<i>估<\/i>/g) || []).length)}`);
     check('disc.handoff 虚线外框', MAIN.includes('class="houtline"'), '');
@@ -164,7 +165,7 @@ async function main() {
     const sTable = (SETTINGS.match(/<tbody[^>]*>[\s\S]*?<\/tbody>/) || [''])[0];
     check('set.表格行=4', (sTable.match(/<tr\b/g) || []).length === 4,
       `实际 ${(sTable.match(/<tr\b/g) || []).length}`);
-    check('set.四对象齐', ['GLM', 'Kimi', 'DeepSeek', '摆渡'].every((s) => sTable.includes(s)),
+    check('set.四对象齐', ['GLM', 'Kimi', 'DeepSeek', '交接'].every((s) => sTable.includes(s)),
       sTable.slice(0, 200));
     check('set.默认竖排选中', /name="layout" value="vertical"[^>]*checked/.test(SETTINGS), '');
     check('set.默认倒计时选中', /id="optCdline"[^>]*checked/.test(SETTINGS), '');

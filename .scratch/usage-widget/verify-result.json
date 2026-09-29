@@ -1,0 +1,82 @@
+[
+ {
+  "name": "a. 完整版七项自测",
+  "ok": true,
+  "detail": "7/7 全 1"
+ },
+ {
+  "name": "b1. 悬浮态四角 12px 圆+投影",
+  "ok": true,
+  "detail": "{\"br\": \"12px\", \"shadow\": \"rgba(0, 0, 0, 0.5) 0px 3px 12px 0px\", \"right\": \"6px\"}"
+ },
+ {
+  "name": "b2. docked-right 右两角直角+右缘贴窗",
+  "ok": true,
+  "detail": "{\"tr\": \"0px\", \"br_\": \"0px\", \"tl\": \"12px\", \"right\": \"0px\"}"
+ },
+ {
+  "name": "c1. 紧凑档 class 生效 + 4 盘",
+  "ok": true,
+  "detail": "discs=4"
+ },
+ {
+  "name": "c2. 盘缩至 48px",
+  "ok": true,
+  "detail": "svgW=48"
+ },
+ {
+  "name": "c3. cap/cdline 全隐",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "name": "c4. 内容不溢出（scrollH ≤ clientH）",
+  "ok": true,
+  "detail": "scrollH=253 clientH=253"
+ },
+ {
+  "name": "c5. 交接盘圆心有次数",
+  "ok": true,
+  "detail": "23|次 · 本月"
+ },
+ {
+  "name": "d1. DS 盘 cap 单行月花费",
+  "ok": true,
+  "detail": "[{\"text\": \"月 ¥58.60估\", \"w\": 67.15625, \"clipped\": false}]"
+ },
+ {
+  "name": "d2. DS 单行不超宽不裁切",
+  "ok": true,
+  "detail": "w=67.2 contentW=120"
+ },
+ {
+  "name": "d3. 交接盘月/周两行完整无裁切",
+  "ok": true,
+  "detail": "[{\"text\": \"月 23 次估\", \"clipped\": false}, {\"text\": \"周 5 次估\", \"clipped\": false}]"
+ },
+ {
+  "name": "d4. 完整版高度不变量（余量≥6px）",
+  "ok": true,
+  "detail": "内容=585 面板内高=608 余量=23"
+ },
+ {
+  "name": "d5. 超长文本 → 省略号兜底（truncate 且限宽）",
+  "ok": true,
+  "detail": "{\"te\": \"ellipsis\", \"ws\": \"nowrap\", \"truncated\": true, \"w\": 116}"
+ },
+ {
+  "name": "d6. ?superset=1 回归不炸",
+  "ok": true,
+  "detail": "discs=4 errs=[]"
+ },
+ {
+  "name": "e1. 双击 grip → set_appearance(compact) + profile-changed + compact class",
+  "ok": true,
+  "detail": "{\"set_appearance\": [{\"mode\": \"compact\"}], \"pc_appearance\": [\"compact\"]}"
+ },
+ {
+  "name": "e2. 浮层外观 radio → set_appearance(full) + 摘 compact class",
+  "ok": true,
+  "detail": "{\"sa\": [{\"mode\": \"compact\"}, {\"mode\": \"full\"}], \"compact\": false, \"checked\": \"full\"}"
+ }
+]

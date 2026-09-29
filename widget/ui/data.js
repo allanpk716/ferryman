@@ -78,10 +78,12 @@ export const DEMO_SUMMARY = {
     },
   ],
   handoff: {
-    id: 'handoff', label: '摆渡', kind: 'handoff',
+    id: 'handoff', label: '交接', kind: 'handoff',
+    // 镜像真机形态（query_widget.go）：只发 handoffs_month/week 两条计数——
+    // 交接执行器 provider 无价格表，spend_* 不可算不造数
     metrics: [
-      { key: 'spend_month_cny', text: '月 ¥12.80', source: 'estimated', as_of: '12:03' },
-      { key: 'spend_week_cny', text: '周 ¥4.20', source: 'estimated', as_of: '12:03' },
+      { key: 'handoffs_month', text: '月 23 次', value: 23, source: 'estimated', as_of: '12:03' },
+      { key: 'handoffs_week', text: '周 5 次', value: 5, source: 'estimated', as_of: '12:03' },
     ],
   },
 };
