@@ -335,7 +335,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 票01 W1：统计回填＝记账路径的非 replay 流量（心跳自产重放经同一
 		// 注册表用于排水，但不计入统计——升级静默门只看真实 CC 流量，本程序
 		// 自产心跳不该把门按住）。enter 先于注册、done 后于出册（defer LIFO：
-		// untrackInflight 先跑），统计窗恒 ⊇ 注册表窗，瞬时读数不欠账。
+		// untrackInflight 先跑），每个计入请求的统计窗 ⊇ 其注册表窗(重放刻意只入注册表不统计——dock_inflight=0 不蕴含注册表空)，瞬时读数不欠账。
 		rctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 		if !replay {
@@ -632,7 +632,7 @@ func (a *sseUsageAcc) flushEvent() {
 	if len(a.data) == 0 {
 		return
 	}
-	a.sawEvent = true // 事件边界到达即"见过事件"（非 JSON data 也算，热修 4）
+	a.sawEvent = true                     // 事件边界到达即"见过事件"（非 JSON data 也算，热修 4）
 	payload := strings.Join(a.data, "\n") // SSE 多行 data 并接（规范行为）
 	a.data = a.data[:0]
 	var ev dockSSEEvent
@@ -663,10 +663,10 @@ func (a *sseUsageAcc) finish() usageSnapshot {
 	}
 	a.flushEvent()
 	return usageSnapshot{
-		input:          a.input,
-		cacheRead:      a.cacheRead,
-		cacheCreation:  a.cacheCreation,
-		output:         a.output,
-		truncated:      a.sawEvent && !a.sawStop,
+		input:         a.input,
+		cacheRead:     a.cacheRead,
+		cacheCreation: a.cacheCreation,
+		output:        a.output,
+		truncated:     a.sawEvent && !a.sawStop,
 	}
 }
