@@ -13,7 +13,8 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_updater::UpdaterExt;
 
-/// 持久化的窗口几何（票 02 只记位置；尺寸不可缩放无需记）。
+/// 持久化的窗口几何（票 02 只记位置；尺寸不可缩放无需记——自愈只断言设计
+/// 值 132×620 逻辑 px，同样无需记忆）。
 #[derive(serde::Serialize, serde::Deserialize)]
 struct WindowState {
     x: i32,
@@ -23,10 +24,19 @@ struct WindowState {
 /// Moved 事件节流：拖动中每 500ms 至多写一次盘。
 struct MoveThrottle(Mutex<Option<Instant>>);
 
-/// 磁吸贴边（2026-09-28 用户需求）的事件通道句柄：Moved 每发必喂（防抖要
-/// 全量事件流，不走 500ms 节流）；worker 线程持有接收端。Sender 包 Mutex
-/// 进 manage（Sender 是 Send 非 Sync）。
-struct SnapFeed(Mutex<mpsc::Sender<PhysicalPosition<i32>>>);
+/// 几何事件通道句柄：Moved/Resized/ScaleFactorChanged 每发必喂（磁吸防抖
+/// 要全量 Moved 事件流，不走 500ms 节流；自愈断言同样要全量几何事件流）；
+/// worker 线程持有接收端。Sender 包 Mutex 进 manage（Sender 是 Send 非 Sync）。
+struct GeomFeed(Mutex<mpsc::Sender<GeomEvent>>);
+
+/// 喂给几何 worker 的事件：移动（磁吸原料）与尺寸/缩放触碰（自愈原料）。
+/// RDP 断开重连时两类事件都会来且种类不保证（2026-09-29 实测塌缩时 Moved
+/// 必发、Resized 未必发），worker 按「事件流静止即全面断言」处理，不押注
+/// 单一事件种类。
+enum GeomEvent {
+    Moved(PhysicalPosition<i32>),
+    SizeTouched,
+}
 
 /// 磁吸参数：松手判定静止时长 / 吸附距离（16 逻辑 px，×scale 换物理）/
 /// 启动静默窗（位置恢复的 Moved 不得吸走用户存的边距）。
@@ -34,20 +44,37 @@ const SNAP_SETTLE_MS: u64 = 250;
 const SNAP_NEAR_LOGICAL: f64 = 16.0;
 const SNAP_ARM_DELAY: Duration = Duration::from_secs(2);
 
+/// 几何自愈（2026-09-29 RDP 塌缩事故，ADR-0016）：设计尺寸=tauri.conf.json
+/// 的 132×620 逻辑 px——窗口不可缩放，「内容完整最小尺寸」即唯一尺寸。
+/// RDP 断开瞬间会话 DPI 150%→100%，Windows 把窗口物理尺寸 ×2/3 而重连不
+/// 还原（实测 930×(2/3)³=275），widget 代码从不写尺寸、防不了系统；改为
+/// 事件流静止后断言：物理尺寸偏离设计值超过容忍即拉回，位置夹回工作区。
+const DESIGN_W_LOGICAL: f64 = 132.0;
+const DESIGN_H_LOGICAL: f64 = 620.0;
+/// 物理尺寸比较容忍（px）：吸收 DPI 换算取整抖动。
+const SIZE_TOLERANCE_PX: i32 = 2;
+/// 自愈兜底轮询间隔：极端场景事件全漏时，塌缩到发现的时限仍有界（≤此值）。
+const GEOM_POLL: Duration = Duration::from_secs(5);
+
 /// 贴边求值（worker 线程调）：窗口左上角落在哪块屏就贴哪块屏的工作区
 /// （工作区=扣任务栏，任务栏在哪侧都不吸到屏外）；四边独立判定，角落
 /// 两边同吸。已在目标位（x,y 未变）不 set——避免 set→Moved→再评估的
 /// 自激循环。贴齐位立即落盘（不等 500ms 节流）。
+/// 左上角落点定屏：窗口左上角落在哪块显示器内就算哪块的（磁吸、自愈夹回
+/// 与位置恢复三处同口径）。
+fn monitor_containing(mons: &[tauri::Monitor], pos: PhysicalPosition<i32>) -> Option<&tauri::Monitor> {
+    mons.iter().find(|m| {
+        let p = m.position();
+        let s = m.size();
+        pos.x >= p.x && pos.x < p.x + s.width as i32 && pos.y >= p.y && pos.y < p.y + s.height as i32
+    })
+}
+
 fn snap_if_near(app: &tauri::AppHandle, pos: PhysicalPosition<i32>) {
     let Some(w) = app.get_webview_window("widget") else { return };
     let Ok(ws) = w.outer_size() else { return };
     let Ok(mons) = app.available_monitors() else { return };
-    let Some(mon) = mons.into_iter().find(|m| {
-        // 含屏判定与位置恢复同口径：左上角落点
-        let p = m.position();
-        let s = m.size();
-        pos.x >= p.x && pos.x < p.x + s.width as i32 && pos.y >= p.y && pos.y < p.y + s.height as i32
-    }) else {
+    let Some(mon) = monitor_containing(&mons, pos) else {
         return;
     };
     let wa = mon.work_area();
@@ -81,24 +108,93 @@ fn snap_if_near(app: &tauri::AppHandle, pos: PhysicalPosition<i32>) {
     save_state(app, x, y);
 }
 
-/// 磁吸 worker：常驻线程，事件流静止 SNAP_SETTLE_MS 即视为松手，此刻贴边。
+/// 几何自愈断言（worker 线程调）：物理尺寸偏离设计值（按当前 DPI 换算）超
+/// 容忍即 set_size 拉回，并把位置夹回所在屏工作区——60px 窄条恢复成 132
+/// 逻辑宽后右/下缘可能压出屏外（2026-09-29 实测：x=4830 + 198 宽 > 竖屏
+/// 右缘 4920）。位置被夹动才落盘（未动不写，与磁吸同习）。对任何原因的
+/// 塌缩都收敛，不限 RDP DPI 路径。
+fn assert_geometry(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("widget") else { return };
+    let Ok(cur) = w.outer_size() else { return };
+    let sf = w.scale_factor().unwrap_or(1.0);
+    let (want_w, want_h) = (
+        (DESIGN_W_LOGICAL * sf).round() as i32,
+        (DESIGN_H_LOGICAL * sf).round() as i32,
+    );
+    if (cur.width as i32 - want_w).abs() <= SIZE_TOLERANCE_PX
+        && (cur.height as i32 - want_h).abs() <= SIZE_TOLERANCE_PX
+    {
+        return; // 尺寸无恙：断言零成本通过，不碰窗口
+    }
+    let _ = w.set_size(tauri::LogicalSize::new(DESIGN_W_LOGICAL, DESIGN_H_LOGICAL));
+    if let Ok(pos) = w.outer_position() {
+        if let Ok(mons) = app.available_monitors() {
+            if let Some(mon) = monitor_containing(&mons, pos) {
+                let wa = mon.work_area();
+                let (x, y) = clamp_into_work_area(
+                    pos,
+                    (wa.position.x, wa.position.y),
+                    (wa.size.width as i32, wa.size.height as i32),
+                    (want_w, want_h), // 夹回用恢复后的尺寸，不用塌缩值
+                );
+                if x != pos.x || y != pos.y {
+                    let _ = w.set_position(PhysicalPosition::new(x, y));
+                    save_state(app, x, y);
+                }
+            }
+        }
+    }
+}
+
+/// 把窗口左上角 (x,y) 夹进工作区（纯函数，可测）：右/下溢出优先收回，工作
+/// 区装不下窗口时左/上对齐。手写 min/max 而非 i32::clamp——后者在 min>max
+/// （工作区小于窗口）会 panic。
+fn clamp_into_work_area(
+    pos: PhysicalPosition<i32>,
+    wa_pos: (i32, i32),
+    wa_size: (i32, i32),
+    win_size: (i32, i32),
+) -> (i32, i32) {
+    let max_x = wa_pos.0 + (wa_size.0 - win_size.0).max(0);
+    let max_y = wa_pos.1 + (wa_size.1 - win_size.1).max(0);
+    (pos.x.min(max_x).max(wa_pos.0), pos.y.min(max_y).max(wa_pos.1))
+}
+
+/// 几何 worker：常驻线程。事件流静止 SNAP_SETTLE_MS 即视为松手，此刻做两
+/// 件事：先几何自愈断言（不区分事件种类），再对静止前最后的 Moved 贴边。
 /// 松手判定用「吸干-超时」软防抖：拖动进行中每个新事件都重置 250ms 计时，
-/// 不需要在 Moved 里区分拖动/程序性移动。启动 SNAP_ARM_DELAY 内不贴（恢复
-/// 位/默认位自身的 Moved 不得触发吸附——用户存了 12px 边距，开机不该被吸走）。
-fn spawn_snap_worker(app: tauri::AppHandle, rx: mpsc::Receiver<PhysicalPosition<i32>>) {
+/// 不需要在 Moved 里区分拖动/程序性移动。启动 SNAP_ARM_DELAY 内不动作
+/// （恢复位/默认位自身的 Moved 不得触发吸附——用户存了 12px 边距，开机不
+/// 该被吸走；自愈也不在启动窗内抢跑，此窗内的塌缩由轮询兜底）。
+/// 平级 GEOM_POLL 轮询断言：RDP 转换期间事件种类/时序无保证，全漏时发现
+/// 时限仍有界。
+fn spawn_geom_worker(app: tauri::AppHandle, rx: mpsc::Receiver<GeomEvent>) {
     std::thread::spawn(move || {
         let arm_at = Instant::now() + SNAP_ARM_DELAY;
-        while let Ok(mut last) = rx.recv() {
-            loop {
-                match rx.recv_timeout(Duration::from_millis(SNAP_SETTLE_MS)) {
-                    Ok(p) => last = p,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if Instant::now() >= arm_at {
-                            snap_if_near(&app, last);
+        loop {
+            let mut last_pos: Option<PhysicalPosition<i32>> = None;
+            match rx.recv_timeout(GEOM_POLL) {
+                Ok(ev) => {
+                    let mut ev = Some(ev);
+                    loop {
+                        match ev.take() {
+                            Some(GeomEvent::Moved(p)) => last_pos = Some(p),
+                            Some(GeomEvent::SizeTouched) | None => {}
                         }
-                        break;
+                        match rx.recv_timeout(Duration::from_millis(SNAP_SETTLE_MS)) {
+                            Ok(e) => ev = Some(e),
+                            Err(mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                        }
                     }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+            if Instant::now() >= arm_at {
+                assert_geometry(&app);
+                if let Some(p) = last_pos {
+                    snap_if_near(&app, p);
                 }
             }
         }
@@ -300,9 +396,9 @@ pub fn run() {
             // 磁吸贴边（2026-09-28 用户需求）：通道先建、worker 先起（带 2s 启动
             // 静默），下面位置恢复的 set_position 触发的 Moved 落在静默窗内，天然
             // 不吸附——用户存的边距不被开机吸走。
-            let (snap_tx, snap_rx) = mpsc::channel::<PhysicalPosition<i32>>();
-            app.manage(SnapFeed(Mutex::new(snap_tx)));
-            spawn_snap_worker(app.handle().clone(), snap_rx);
+            let (geom_tx, geom_rx) = mpsc::channel::<GeomEvent>();
+            app.manage(GeomFeed(Mutex::new(geom_tx)));
+            spawn_geom_worker(app.handle().clone(), geom_rx);
 
             // 位置记忆：恢复上次位置；无记录（首启）= 贴主屏右缘竖排默认位
             // （spec UI 定稿：默认竖排贴右缘）。恢复位必须落在某块显示器内——
@@ -314,14 +410,9 @@ pub fn run() {
                     if let Ok(st) = serde_json::from_str::<WindowState>(&json) {
                         let _ = w.set_position(PhysicalPosition::new(st.x, st.y));
                         if let Ok(mons) = app.available_monitors() {
-                            restored = mons.iter().any(|m| {
-                                let s = m.size();
-                                let mp = m.position();
-                                st.x >= mp.x
-                                    && st.x < mp.x + s.width as i32
-                                    && st.y >= mp.y
-                                    && st.y < mp.y + s.height as i32
-                            });
+                            restored =
+                                monitor_containing(&mons, PhysicalPosition::new(st.x, st.y))
+                                    .is_some();
                         }
                     }
                 }
@@ -412,9 +503,9 @@ pub fn run() {
                 if window.label() != "widget" {
                     return;
                 }
-                if let Some(feed) = window.try_state::<SnapFeed>() {
+                if let Some(feed) = window.try_state::<GeomFeed>() {
                     if let Ok(tx) = feed.0.lock() {
-                        let _ = tx.send(*pos); // 接收端亡=worker 已退，丢事件无碍
+                        let _ = tx.send(GeomEvent::Moved(*pos)); // 接收端亡=worker 已退，丢事件无碍
                     }
                 }
                 let throttle = window.state::<MoveThrottle>();
@@ -433,8 +524,58 @@ pub fn run() {
                     save_state(window.app_handle(), pos.x, pos.y);
                 }
             }
+            // 几何自愈原料：尺寸/DPI 被触碰（RDP 显示切换等）也喂 worker。断言
+            // 不区分事件种类，这里只是多一路触发；设置窗可缩放，不参与。
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                if window.label() == "widget" {
+                    if let Some(feed) = window.try_state::<GeomFeed>() {
+                        if let Ok(tx) = feed.0.lock() {
+                            let _ = tx.send(GeomEvent::SizeTouched);
+                        }
+                    }
+                }
+            }
             _ => {}
         })
         .run(tauri::generate_context!())
         .expect("ferryman-widget 启动失败");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 塌缩恢复后的右缘压屏：4830 + 198 宽越过竖屏工作区右缘 → 收回到缘内
+    /// （2026-09-29 真机实测坐标）。
+    #[test]
+    fn clamp_right_overflow_pulls_back_to_edge() {
+        let (x, y) = clamp_into_work_area(
+            PhysicalPosition::new(4830, 592),
+            (3840, 0),
+            (1080, 1920),
+            (198, 930),
+        );
+        assert_eq!((x, y), (3840 + 1080 - 198, 592));
+    }
+
+    /// 工作区装不下窗口：左/上对齐而不是 panic（i32::clamp 的 min>max 陷阱）。
+    #[test]
+    fn clamp_work_area_smaller_than_window_aligns_top_left() {
+        let (x, y) = clamp_into_work_area(
+            PhysicalPosition::new(500, 500),
+            (0, 0),
+            (100, 200),
+            (198, 930),
+        );
+        assert_eq!((x, y), (0, 0));
+    }
+
+    /// 屏内原位：不动（x=1000 在工作区左边界外会被夹回，那是另一条用例的
+    /// 职责——本例取屏内点 4000,700）。
+    #[test]
+    fn clamp_onscreen_untouched() {
+        let pos = PhysicalPosition::new(4000, 700);
+        let (x, y) = clamp_into_work_area(pos, (3840, 0), (1080, 1920), (198, 930));
+        assert_eq!((x, y), (pos.x, pos.y));
+    }
 }
