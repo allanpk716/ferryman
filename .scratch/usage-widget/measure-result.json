@@ -65,30 +65,30 @@
   "compact": false
  },
  "compact": {
-  "scrollH": 253,
+  "scrollH": 303,
   "scrollW": 400,
-  "clientH": 253,
+  "clientH": 303,
   "clientW": 400,
   "discs": [
    {
     "id": "glm",
     "w": 52,
-    "h": 52
+    "h": 64.5
    },
    {
     "id": "kimi",
     "w": 52,
-    "h": 52
+    "h": 64.5
    },
    {
     "id": "deepseek",
-    "w": 52,
-    "h": 52
+    "w": 62.921875,
+    "h": 64.5
    },
    {
     "id": "handoff",
     "w": 52,
-    "h": 52
+    "h": 64.5
    }
   ],
   "grip": {
@@ -104,51 +104,51 @@
    {
     "cls": "disc",
     "w": 52,
-    "h": 52
+    "h": 64.5
    },
    {
     "cls": "disc",
     "w": 52,
-    "h": 52
+    "h": 64.5
    },
    {
     "cls": "disc",
-    "w": 52,
-    "h": 52
+    "w": 62.921875,
+    "h": 64.5
    },
    {
     "cls": "disc handoff",
     "w": 52,
-    "h": 52
+    "h": 64.5
    }
   ],
   "compact": true
  },
  "compact_h": {
-  "scrollH": 64,
+  "scrollH": 77,
   "scrollW": 1366,
-  "clientH": 64,
+  "clientH": 77,
   "clientW": 1366,
   "discs": [
    {
     "id": "glm",
     "w": 52,
-    "h": 52
+    "h": 64.5
    },
    {
     "id": "kimi",
     "w": 52,
-    "h": 52
+    "h": 64.5
    },
    {
     "id": "deepseek",
-    "w": 52,
-    "h": 52
+    "w": 62.921875,
+    "h": 64.5
    },
    {
     "id": "handoff",
     "w": 52,
-    "h": 52
+    "h": 64.5
    }
   ],
   "grip": {
@@ -164,22 +164,22 @@
    {
     "cls": "disc",
     "w": 52,
-    "h": 52
+    "h": 64.5
    },
    {
     "cls": "disc",
     "w": 52,
-    "h": 52
+    "h": 64.5
    },
    {
     "cls": "disc",
-    "w": 52,
-    "h": 52
+    "w": 62.921875,
+    "h": 64.5
    },
    {
     "cls": "disc handoff",
     "w": 52,
-    "h": 52
+    "h": 64.5
    }
   ],
   "compact": true

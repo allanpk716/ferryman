@@ -54,13 +54,15 @@ const SNAP_ARM_DELAY: Duration = Duration::from_secs(2);
 const DESIGN_W_LOGICAL: f64 = 132.0;
 const DESIGN_H_LOGICAL: f64 = 620.0;
 /// 紧凑档设计尺寸（逻辑 px）。推导（Playwright 实测，.scratch/usage-widget/
-/// pw_measure.py，演示满载 4 盘+grip，与 style.css 紧凑块互指——改一边必须
-/// 核另一边）：
-///   内容实测 60×253（盘 48+padding×2=52/个，grip≈17，gap 4×4，上下 padding 12）。
+/// pw_measure.py，演示满载 4 盘+grip+0.2.5 迷你标签行，与 style.css 紧凑块互指——
+/// 改一边必须核另一边）：
+///   内容实测 63×303（盘 48+padding×2=52/个，0.2.5 标签行 +12.5/盘，DeepSeek 盘
+///   被标签行撑到 62.9 宽——窗口 80 内面板净宽 68 仍装得下（余 5.1px），宽不动；
+///   grip≈17，gap 4×4，上下 padding 12）。
 ///   定值 = 内容 + 面板四边透明内缩 12（::before inset 6px）+ ≥6px 余量：
-///   宽 60+12+6=78 → 取 80；高 253+12+6=271 → 取 272（量级符合票面 ~260）。
+///   宽 63+12=75 ≤ 80 → 取 80 不动；高 303+12+6=321 → 取 322。
 const COMPACT_W_LOGICAL: f64 = 80.0;
-const COMPACT_H_LOGICAL: f64 = 272.0;
+const COMPACT_H_LOGICAL: f64 = 322.0;
 /// 物理尺寸比较容忍（px）：吸收 DPI 换算取整抖动。
 const SIZE_TOLERANCE_PX: i32 = 2;
 /// 自愈兜底轮询间隔：极端场景事件全漏时，塌缩到发现的时限仍有界（≤此值）。

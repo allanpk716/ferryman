@@ -162,8 +162,8 @@ body.tray-collapsed #restoreBtn{display:block}
 .hidden{display:none!important}
 
 /* ── 0.2.3 紧凑外观档（body.compact；窗口尺寸由 Rust design_size("compact")
-   =80×272 联动，实测推导见 lib.rs COMPACT_* 注释——CSS 与 Rust 常量互指，
-   改一边必须核另一边） ── */
+   =80×322 联动，实测推导见 lib.rs COMPACT_* 注释——CSS 与 Rust 常量互指，
+   改一边必须核另一边；0.2.5 迷你标签行使内容高 253→303，272→322） ── */
 body.compact .widget{gap:4px; padding:8px 4px 4px}
 body.compact .grip{font-size:10px; letter-spacing:1px; padding:0 4px 2px}
 body.compact .gear{display:none} /* 托盘菜单「设置…」可达 */
@@ -177,6 +177,16 @@ body.compact .c-money{font-size:26px}
 /* 0.2.4 紧凑档圆心大数字：套餐盘=最紧环剩余% 单行大字（告警色=inline fill 随该环阈值联动，
    不走 CSS 变体；完整档无此元素） */
 body.compact .c-pct{font-size:28px; font-weight:700; text-anchor:middle}
+/* 0.2.5 交接盘紧凑档大数字=中性白：交接计数无阈值告警语义，不随指标变色
+   （套餐盘 c-pct 的 inline fill 告警色不受此规则影响） */
+body.compact .disc.handoff .c-pct{fill:var(--txt)}
+/* 0.2.5 迷你标签行：紧凑档每盘下方名字+品牌色小点（文字识别为主、色点辅助——
+   GLM/Kimi/DeepSeek 三家品牌色全蓝系分不开）。渲染由 app.js 按档位门控，
+   完整档不产此元素，故此处用普通类名即可。 */
+.mini-tag{display:flex;align-items:center;justify-content:center;gap:4px;
+  margin-top:1px;font-size:10px;line-height:1.15;color:var(--txt-dim);
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mini-tag .dot{width:7px;height:7px;border-radius:50%;flex:none}
 body.compact .conn-warn{font-size:9px; padding:0 2px 2px; white-space:normal}
 /* 交接盘虚线圈在 48px 缩放下（2px×0.48≈1px）近乎不可见，圆心数字像悬空文字——
    紧凑档专属加粗提亮（真机视觉验收 2026-09-29 发现） */

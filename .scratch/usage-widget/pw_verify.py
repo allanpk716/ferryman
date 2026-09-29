@@ -67,8 +67,8 @@ try:
         pg.screenshot(path=str(ROOT / 'shot-full-docked-right.png'))
         pg.close()
 
-        # ── c. 紧凑版（?profile=compact；80×272 视口=Rust 设计尺寸） ──
-        pg = b.new_page(viewport={'width': 80, 'height': 272})
+        # ── c. 紧凑版（?profile=compact；80×322 视口=Rust 设计尺寸，0.2.5 标签行后重推导） ──
+        pg = b.new_page(viewport={'width': 80, 'height': 322})
         pg.goto(url('profile=compact&static=1&dev=1'))
         pg.wait_for_selector('.disc[data-id=handoff]')
         c = pg.evaluate("""() => {
@@ -90,10 +90,12 @@ try:
         check('c3. cap/cdline 全隐', c['capShown'] is False)
         check('c4. 内容不溢出（scrollH ≤ clientH）', c['scrollOK'],
               f"scrollH={c['scrollH']} clientH={c['clientH']}")
-        check('c5. 交接盘圆心有次数', '23' in c['handoffCenter'] and '次 · 本月' in c['handoffCenter'],
+        check('c5. 紧凑交接盘圆心=单个大数字 23（0.2.5：删「次 · 本月」行——48px 盘里 ≈6px 物理不可读）',
+              '23' in c['handoffCenter'] and '次 · 本月' not in c['handoffCenter'],
               c['handoffCenter'])
         # 0.2.4 紧凑档圆心大数字：每盘圆心单行——套餐盘=最紧环剩余%（色随该环阈值
-        # 告警联动），DS=余额，交接盘不动。期望按 data.js 演示值算出。
+        # 告警联动），DS=余额；0.2.5 起交接盘同语言=本月次数单行大数字。
+        # 期望按 data.js 演示值算出。
         cc = pg.evaluate("""() => {
           const out = {};
           for (const id of ['glm', 'kimi', 'deepseek', 'handoff']) {
@@ -114,6 +116,36 @@ try:
               all(len(cc[i]) == 1 and not any(t['cls'] in ('c-sub', 'c-label') for t in cc[i])
                   for i in ('glm', 'kimi', 'deepseek')),
               json.dumps({i: cc[i] for i in ('glm', 'kimi', 'deepseek')}, ensure_ascii=False))
+        # 0.2.5 交接盘紧凑档大数字：恰一个 c-pct=demo 月次数，无 c-sub（中性白=CSS，
+        # 无 inline fill）
+        check('c9. 紧凑交接盘恰一个 .c-pct=23、无 c-sub/c-label',
+              cc['handoff'] == [{'cls': 'c-pct', 'txt': '23', 'fill': None}],
+              json.dumps(cc['handoff'], ensure_ascii=False))
+        # 0.2.5 迷你标签行（仅紧凑档渲染）：每盘名字+品牌色小点
+        mt = pg.evaluate("""() => {
+          const out = {};
+          for (const id of ['glm', 'kimi', 'deepseek', 'handoff']) {
+            const d = document.querySelector(`.disc[data-id=${id}]`);
+            const tag = d.querySelector('.mini-tag');
+            out[id] = tag ? {
+              text: tag.textContent,
+              dot: getComputedStyle(tag.querySelector('.dot')).backgroundColor,
+            } : null;
+          }
+          return out;
+        }""")
+        check('c10. 紧凑档 4 盘 mini-tag 文本=GLM/Kimi/DeepSeek/交接',
+              all(mt[i] and mt[i]['text'] == t
+                  for i, t in [('glm', 'GLM'), ('kimi', 'Kimi'), ('deepseek', 'DeepSeek'), ('handoff', '交接')]),
+              json.dumps({k: v and v['text'] for k, v in mt.items()}, ensure_ascii=False))
+        check('c11. mini-tag 品牌色点（kimi #1783FF / glm #4268FA / deepseek #4D6BFE / handoff 紫）',
+              mt['kimi']['dot'] == 'rgb(23, 131, 255)'
+              and mt['glm']['dot'] == 'rgb(66, 104, 250)'
+              and mt['deepseek']['dot'] == 'rgb(77, 107, 254)'
+              and mt['handoff']['dot'] == 'rgb(155, 126, 222)',
+              json.dumps({k: v and v['dot'] for k, v in mt.items()}, ensure_ascii=False))
+        check('c12. 紧凑档内容实测 ≤ 新设计内高（322−12=310）',
+              c['scrollH'] <= 310, f"scrollH={c['scrollH']}")
         pg.screenshot(path=str(ROOT / 'shot-compact-float.png'))
         pg.evaluate("document.getElementById('widget').classList.add('docked-right')")
         pg.screenshot(path=str(ROOT / 'shot-compact-docked-right.png'))
@@ -183,6 +215,22 @@ try:
         pg.wait_for_selector('.disc[data-id=handoff]')
         n = pg.evaluate("document.querySelectorAll('.disc').length")
         check('d6. ?superset=1 回归不炸', n == 4 and not errs, f'discs={n} errs={errs}')
+        pg.close()
+
+        # ── d7. 完整档零变化（0.2.5）：不渲染 mini-tag；交接盘圆心仍是两行（c-money+c-sub） ──
+        pg = b.new_page(viewport={'width': 132, 'height': 620})
+        pg.goto(url('static=1&dev=1'))
+        pg.wait_for_selector('.disc[data-id=handoff]')
+        f7 = pg.evaluate("""() => {
+          const ho = document.querySelector('.disc[data-id=handoff]');
+          return {
+            miniTags: document.querySelectorAll('.mini-tag').length,
+            hoCenter: [...ho.querySelectorAll('svg text')].map(t => t.getAttribute('class')),
+          };
+        }""")
+        check('d7. 完整档零变化：无 mini-tag，交接盘圆心仍两行（c-money+c-sub）',
+              f7['miniTags'] == 0 and f7['hoCenter'] == ['c-money', 'c-sub'],
+              json.dumps(f7, ensure_ascii=False))
         pg.close()
 
         # ── e. 伪造壳：双击 grip / 浮层 radio → set_appearance + profile-changed ──

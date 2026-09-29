@@ -152,10 +152,16 @@ function ringSVG(p, m1, m2, m3) { // m1=外环(5h) m2=中环(周) m3=内环(月�
 }
 function discHTML(p) {
   const label = p.label || p.id;
+  const compact = state.profile.appearance === 'compact';
   let svgInner = '', center = '', cap = '';
   if (p.error) { // 该上游整体查询失败：不画环不造数
     svgInner = '';
     center = `<text x="50" y="47" class="c-label">⚠</text><text x="50" y="60" class="c-sub">${label}</text>`;
+    if (compact) {
+      // 0.2.5 紧凑档顺带修：圆心只留一个大 ⚠（告警黄，inline 字面量 hex 与 c-pct
+      // 既有 inline fill 用法一致）；原第二行 label 由 mini-tag 标签行承载。完整档不动。
+      center = `<text x="50" y="60" class="c-pct" fill="#E8C33D">⚠</text>`;
+    }
     cap = `<div class="cap">查询失败 · ${p.error.category}</div>`;
   } else if (p.kind === 'coding_plan') {
     const mt = metricOf(p, 'month_tokens');
@@ -209,10 +215,26 @@ function discHTML(p) {
       center = `<text x="50" y="47" class="c-label">${label}</text>
                 <text x="50" y="60" class="c-sub">handoff</text>`;
     }
+    if (compact) {
+      // 0.2.5 紧凑档大数字（与 coding_plan/paygo 紧凑写法同构）：完整档两行
+      // 「次数 / 次 · 本月」缩进 48px 盘后小字行 ≈6px 物理不可读——紧凑档只留单行
+      // 大数字（中性白=CSS fill:var(--txt)，计数无告警语义不带 fill 属性），
+      // 含义靠 mini-tag 标签行+悬停提示。hm 缺席 → 占位「—」（名字由标签行承载，
+      // 不再重复 label）。完整档两行布局逐字节不动。
+      center = hm && typeof hm.value === 'number' && isFinite(hm.value)
+        ? `<text x="50" y="60" class="c-pct">${hm.value}</text>`
+        : `<text x="50" y="60" class="c-pct">—</text>`;
+    }
     cap = [hm, hw].filter(Boolean).map((m) => `<div class="cap">${m.text}${estBadge(m)}</div>`).join(''); // 溢出修第二层·结构化分行
   }
+  // 0.2.5 迷你标签行（仅紧凑档渲染）：盘下名字+品牌色点，文字负责识别、色点辅助。
+  // 单一出口追加，不进各分支；完整档零变化（圆心 c-label 已承载名字）。cap 在紧凑档
+  // 本就 display:none，标签行用新 class mini-tag（不复用 .cap）。
+  const miniTag = compact
+    ? `<div class="mini-tag"><i class="dot" style="background:${brandDot(p)}"></i>${tagText(p)}</div>`
+    : '';
   return `<div class="disc${p.kind === 'handoff' ? ' handoff' : ''}" data-id="${p.id}" tabindex="0">
-            <svg viewBox="0 0 100 100">${svgInner}${center}</svg>${cap}</div>`;
+            <svg viewBox="0 0 100 100">${svgInner}${center}</svg>${miniTag}${cap}</div>`;
 }
 
 /** 全量重渲染（30s 轮询/profile 变更后调用；显隐与顺序随 profile，票 04）。 */
@@ -229,6 +251,21 @@ function render() {
 }
 const findUpstream = (id) => state.summary &&
   [...state.summary.upstreams, state.summary.handoff].find((x) => x.id === id);
+
+// ── 0.2.5 紧凑档迷你标签行：文字负责识别，品牌色小点只是辅助点缀 ──
+// 品牌色调研结论（2026-09-29）：智谱/GLM #4268FA、Kimi #1783FF、DeepSeek #4D6BFE
+// ——三家全蓝系，色相分不开，所以色点只能当辅助、不能当唯一识别。live 的上游 id
+// 可能是中文（如「智谱」），id 与 label 两种键都认；拉丁字母统一转小写比较。
+const BRAND_DOT = { kimi: '#1783FF', glm: '#4268FA', '智谱': '#4268FA', deepseek: '#4D6BFE' };
+function brandDot(p) {
+  if (p.id === 'handoff') return 'var(--cmonth)'; // 紫 #9B7EDE=widget 自家强调色，非品牌色
+  return BRAND_DOT[String(p.id || '').toLowerCase()]
+      || BRAND_DOT[String(p.label || '').toLowerCase()]
+      || '#8A93A6'; // 未命中=灰
+}
+/** 标签行文本：交接盘以 CONTEXT.md 正名「交接」为准——live 的 daemon label 目前
+ *  还是「摆渡」，等 daemon label 换装后两边自然一致；其余盘吃契约 label。 */
+const tagText = (p) => (p.id === 'handoff' ? '交接' : p.label || p.id);
 
 // ── tooltip（hover 各环数字） ──
 function labelOf(k) { return { window_5h: '5h', week: '周', month_budget: '月预算', ds_budget: '预算', tools_quota: '工具' }[k] || k; }

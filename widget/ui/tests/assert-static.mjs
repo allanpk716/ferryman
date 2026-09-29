@@ -326,6 +326,27 @@ async function main() {
     check('split.settings.js 无演示数据字面量', !['generated_at', '3.2M', '87.50', '12:03'].some((s) => sjs.includes(s)), '');
     check('split.profile.js 无演示数据字面量', !['generated_at', '3.2M', '87.50', '12:03'].some((s) => pjs.includes(s)), '');
 
+    // ⑬ 0.2.5 · 紧凑档迷你标签行 + 交接盘大数字（源码级 + 紧凑 dump 级）
+    const COMP = stripScripts(dumpDom('?static=1&dev=1&profile=compact'));
+    check('tag.app.js mini-tag 出口 + 三品牌色 hex + handoff 正名「交接」',
+      appjs.includes('mini-tag') && appjs.includes('#1783FF') && appjs.includes('#4268FA') &&
+      appjs.includes('#4D6BFE') && appjs.includes("p.id === 'handoff' ? '交接'"), '');
+    check('tag.style.css .mini-tag 与 .disc.handoff .c-pct 规则在场',
+      css.includes('.mini-tag{') && css.includes('.disc.handoff .c-pct'), '');
+    check('tag.settings 帮助句在场（名字+品牌色小点 / 圆心大数字口径）',
+      shtml.includes('每盘下方显示名字+品牌色小点') && shtml.includes('交接本月次数'), '');
+    const librs = (() => { try { return readFileSync(join(UI_DIR, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8'); } catch { return ''; } })();
+    check('tag.lib.rs COMPACT_H=322 与推导注释同新值（内容实测 63×303）',
+      librs.includes('COMPACT_H_LOGICAL: f64 = 322.0') && librs.includes('内容实测 63×303'), '');
+    check('tag.紧凑 dump：4 条 mini-tag（GLM/Kimi/DeepSeek/交接 + 品牌色点）',
+      (COMP.match(/class="mini-tag"/g) || []).length === 4 &&
+      ['background:#4268FA"></i>GLM', 'background:#1783FF"></i>Kimi',
+       'background:#4D6BFE"></i>DeepSeek', 'background:var(--cmonth)"></i>交接']
+        .every((s) => COMP.includes(s)), '');
+    check('tag.紧凑交接盘圆心=单行 c-pct 23（无「次 · 本月」）；完整档 MAIN 无 mini-tag',
+      COMP.includes('<text x="50" y="60" class="c-pct">23</text>') &&
+      !COMP.includes('次 · 本月') && !MAIN.includes('mini-tag'), '');
+
     // m2 · 收尾票 03 · 自适应轮询（评审 M2）：退避常量/代际防护/poke 暴露/恢复事件接线。
     // 断言正则与所开代码形态逐字匹配（F9 教训：箭头包装调用不得用裸函数名字面量匹配，
     // 轮询在场必须命中 `setTimeout(() => loop` 形，严禁裸 /setTimeout\(loop/ 永假断言）。
@@ -347,7 +368,7 @@ async function main() {
     const badUrl = Object.entries(runtime).filter(([, t]) => /https?:\/\//.test(t)).map(([f]) => f);
     check('offline.运行时源零 URL 字面量', badUrl.length === 0, badUrl.join(','));
     check('offline.全部 dump 无外链资源',
-      [MAIN, REL, GRAY, SETTINGS, PROF, HID, SUP].every((d) => !/(src|href)\s*=\s*["']https?:\/\//i.test(d)), '');
+      [MAIN, REL, GRAY, SETTINGS, PROF, HID, SUP, COMP].every((d) => !/(src|href)\s*=\s*["']https?:\/\//i.test(d)), '');
     check('drag.壳内手柄带 data-tauri-drag-region', html.includes('data-tauri-drag-region'), '');
   } finally {
     // 无常驻资源（file:// 直读，不起服务）
