@@ -112,9 +112,11 @@ func smokeObserveWarn(base *config.Config, tmp string) (res string) {
 	}
 	defer sb.close()
 	proj := filepath.Join(sb.dir, "proj")
-	f := writeSmokeSession(sb.dir, "smoke-obs-1", proj)
-	// 台账登记：闲置远超 block 阈值（stale 相对阈值伸缩，任何合法配置都入窗）
+	// 闲置模拟先行算好：转录末条时间戳与台账 lastWrite 同值（真实长闲置形状：
+	// 内容钟=台账钟=同一久远时刻；v0.4.2 起闸门闲置锚点读转录内容钟，夹具只拨
+	// 台账不拨转录会让 idle≈0——2026-09-30 CI 实证）。
 	stale := clock.Now() - (sb.cfg.Thresholds.BlockS*2 + 60)
+	f := writeSmokeSession(sb.dir, "smoke-obs-1", proj, stale)
 	sb.led.TouchFull("cc", "smoke-obs-1", f, stale, 123, proj, "冒烟观察会话", 2000, 0)
 
 	gateBody := map[string]any{"agent": "cc", "session_id": "smoke-obs-1",
@@ -154,8 +156,8 @@ func smokeEnforceChains(base *config.Config, tmp, fakeBaseURL string) (res2, res
 
 	proj := filepath.Join(sb.dir, "proj")
 	sid := "smoke-ferry-1"
-	f := writeSmokeSession(sb.dir, sid, proj)
 	stale := clock.Now() - (sb.cfg.Thresholds.BlockS*2 + 60)
+	f := writeSmokeSession(sb.dir, sid, proj, stale)
 	sb.led.TouchFull("cc", sid, f, stale, 123, proj, "冒烟摆渡会话", 2000, 0)
 
 	// ---- ② 摆渡链路：入队（serve 同款闭包）→ 真 FerrySession 打假 provider ----
@@ -362,11 +364,14 @@ func (s *sandbox) get(path string) (map[string]any, error) {
 	return getJSON(s.port, s.token, path)
 }
 
-// writeSmokeSession 假 CC 会话样本（user+assistant usage+ai-title 三行；
-// 时间戳=now → 提取器 covers_until 落在新鲜窗内）。写在 dir 根（沙箱守望不装配，
-// 无需 projects 子目录层级）。
-func writeSmokeSession(dir, sid, cwd string) string {
-	now := time.Now().UTC().Format("2006-01-02T15:04:05.000000Z")
+// writeSmokeSession 假 CC 会话样本（user+assistant usage+ai-title 三行）。
+// ts=末条带时间戳记录的落笔时刻（epoch 秒）：v0.4.2 起闸门闲置锚点=内容时钟
+// （读转录末条时间戳），闲置模拟必须写进转录本身，光拨台账 lastWrite 不够
+// （2026-09-30 CI 实证：夹具时间戳=now 时内容钟 idle≈0，警告/block 链路全空）。
+// ai-title 行无时间戳居末——兼测"最后一条带时间戳记录"语义（与真实 CC 转录的
+// 无时间戳尾行同形）。写在 dir 根（沙箱守望不装配，无需 projects 子目录层级）。
+func writeSmokeSession(dir, sid, cwd string, ts float64) string {
+	now := time.Unix(0, int64(ts*1e9)).UTC().Format("2006-01-02T15:04:05.000000Z")
 	lines := []string{
 		`{"type": "user", "timestamp": "` + now + `", "cwd": ` + pyQuote(cwd) +
 			`, "sessionId": "` + sid + `", "message": {"role": "user", "content": "修一下登录页"}}`,
