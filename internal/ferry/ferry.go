@@ -43,6 +43,13 @@ const (
 	defaultWindow = 131072 // Provider.Window 缺省（Python dataclass 默认）
 )
 
+// 票02：供应商协议档位。Protocol 零值 "" 与 ProtocolOpenAI 同义（消费侧按
+// 非 anthropic 即 openai 处理——手工构造 Provider 的零值向后兼容）。
+const (
+	ProtocolOpenAI    = "openai"    // OpenAI 兼容 /chat/completions（既有 Chat 行为）
+	ProtocolAnthropic = "anthropic" // Anthropic /v1/messages（运行时消费在票03 执行器）
+)
+
 // SystemPrompt ferry.py:31-58 逐字平移（Python 行尾 \ 续行已按其语义拼回单行；
 // 防注入声明 + 六节结构 + 要求，一字不改——ferry_providers_test.go 钉常量对照）。
 const SystemPrompt = `你是开发会话的交接总结器（摆渡人）。输入是一段开发会话记录的提取材料，你要产出一份"交接 MD"，让一个全新会话不读原始记录就能接着干。
@@ -79,6 +86,12 @@ type Provider struct {
 	Model   string
 	APIKey  string
 	Window  int
+	// 票02：协议档位与透传字典（数据结构层，运行时消费在票03 执行器——本票
+	// 不改 Chat 行为）。Protocol 缺省/空 = openai（LoadProviders 已把缺省填为
+	// "openai"，零值手工构造仍按 openai 语义）；ExtraBody nil/空 = 无透传，
+	// 逐键并入请求体（键冲突时以透传为准的裁决归票03）。
+	Protocol  string
+	ExtraBody map[string]any
 }
 
 // providerBlock [providers.<name>] 单节（ferry.py load_config 的 blk.get 形）。
@@ -87,6 +100,11 @@ type providerBlock struct {
 	Model   string `toml:"model"`
 	APIKey  string `toml:"api_key"`
 	Window  int    `toml:"window"`
+	// 票02：protocol 缺省 openai；extra_body 透传字典（TOML 内联表/子表均可）。
+	// 非法 protocol 值不在解析层拦（dock upstream dialect 同款口径：解析不替
+	// 校验做决定，消费侧按非 anthropic 即 openai 兜底）。
+	Protocol  string         `toml:"protocol"`
+	ExtraBody map[string]any `toml:"extra_body"`
 }
 
 // ferryToml config.toml 顶层只取 providers 节（同一文件还服务 [server]/
@@ -125,10 +143,33 @@ func LoadProviders(path string) (map[string]Provider, error) {
 		if w == 0 { // Python int(blk.get("window", 131072))——键缺失取默认
 			w = defaultWindow
 		}
+		proto := blk.Protocol
+		if proto == "" { // 票02：protocol 键缺失/空 → 缺省 openai
+			proto = ProtocolOpenAI
+		}
 		out[key] = Provider{Name: key, BaseURL: blk.BaseURL, Model: blk.Model,
-			APIKey: blk.APIKey, Window: w}
+			APIKey: blk.APIKey, Window: w, Protocol: proto, ExtraBody: blk.ExtraBody}
 	}
 	return out, nil
+}
+
+// ResolveChain 按顺位名字表解析摆渡链（票02 数据结构层；票03 执行器消费，
+// 本票不接线运行时）。names 空/nil = 未配置 → (nil, nil)（与 LoadProviders
+// 无配置同形的降级骨架语义不变）；名字不在供应商表 → error 上抛（坏 TOML
+// 同款：装配处捕获降级骨架 + 警告，不由本函数吞）。链序 = names 序，不去重。
+func ResolveChain(names []string, providers map[string]Provider) ([]Provider, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	chain := make([]Provider, 0, len(names))
+	for _, n := range names {
+		p, ok := providers[n]
+		if !ok {
+			return nil, fmt.Errorf("ferry: chain 引用未定义的 provider %q", n)
+		}
+		chain = append(chain, p)
+	}
+	return chain, nil
 }
 
 // Chat 一次 OpenAI 兼容 chat 调用，返回 (reply, usage)（ferry.py chat 1:1）。
