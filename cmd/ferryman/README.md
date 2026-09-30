@@ -32,6 +32,7 @@ ferryman.exe install-cc [--events SessionStart,SubagentStart,SubagentStop]
 ferryman.exe install-ccswitch
 ferryman.exe install-codex [--events ...]
 ferryman.exe account report --json
+ferryman.exe provider <list|switch|add|remove|import-ccswitch|apply>    # 供应商命令族：列表(密钥脱敏+codex 可用性)、热切换(不重启,unsupported 默认拒/--cc-only 放行)、增删本机表、从 cc-switch.db 导入、接管三份配置(--restore 还原回 interim)
 
 # 面板族（viewer 原样，只起面板不起守护）：
 ferryman.exe --demo --no-tray --no-browser             # 演示合成账本

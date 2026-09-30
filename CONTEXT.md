@@ -186,7 +186,7 @@ _Avoid_: 裸断连（无解释掐流，CC 只见 "Connection lost mid-response"�
 
 **渡口上游（dock upstream）**：
 渡口转发目的地的供应商条目，Anthropic Messages 协议，自带密钥与 model 映射；`[dock].active` 单选。全体条目只收真供应商端点，本地中转地址只作回退通道（守卫强制透传，缺钥豁免）。
-_Avoid_: 供应商（不带 lane 限定的口语）、CC Switch 供应商（那是改写 CC 配置的别家概念）
+_Avoid_: CC Switch 供应商（那是改写 CC 配置的别家概念）
 
 **摆渡供应商（ferry provider）**：
 摆渡执行器调来写模型叙事的供应商条目，OpenAI Chat Completions 协议；`[ferry].provider` 单选，与换上游互不联动。
@@ -198,6 +198,32 @@ _Avoid_: 切换（cutover 一词已专指语言栈往返，见 ADR-0010）、故
 
 **评测实验（E1）**：
 以真实历史会话为评测集、对比候选模型交接质量的独立实验；其结果决定摆渡路由的默认顺序。
+
+### 服务商接管（2026-09-30 定案；目标＝卸载 cc-switch）
+
+**供应商（provider）**：
+一家模型 API 服务（智谱 GLM、Kimi、DeepSeek 等），有自己的端点地址、密钥与协议方言；接管后 CC 与 codex 共用渡口上游表里的同一批条目，切供应商只翻渡口的上游表、不写任何编辑器配置（零写盘）。
+_Avoid_: 上游（单说含糊——摆渡供应商也是上游）、厂商（口语）
+
+**方言（dialect，anthropic | openai_responses）**：
+供应商线协议的两分取值：anthropic＝Anthropic messages 协议（CC 的母语）；openai_responses＝OpenAI responses 协议（codex 的母语）。渡口按活跃供应商的方言决定 codex 流量翻译还是透传。
+_Avoid_: 协议（太泛——方言特指这套两分取值）、线格式
+
+**翻译车道（translation lane）**：
+渡口里为 codex 开的方言转换通路：请求向把 responses 方言逐字段翻成 Anthropic messages，响应向把上游 SSE 事件流翻回 responses 事件流；活跃供应商方言为 anthropic（codex 可用性＝需翻译）时 codex 流量走它，与 CC 既有车道互不干扰。
+_Avoid_: 协议转换器（那是"独立翻译进程"的旧想象——定案翻译并入渡口，不再有独立进程）
+
+**原生透传（native passthrough）**：
+活跃供应商方言为 openai_responses（codex 可用性＝原生）时 codex 车道的工作方式：不翻译，只注入真实密钥并按模型位改写模型名，请求与响应原样直达。
+_Avoid_: 直连（说的是渡口与供应商之间的连接形态，不是车道的工作方式）
+
+**接管（apply）**：
+Ferryman 一次性接手两家 CLI 配置的动作（`ferryman provider apply`）：把 CC 与 codex 的配置（含 orca 家共三份）外科式改写为指向渡口，写前逐份落时间戳备份；`--restore` 按备份还原，回到过渡期拓扑（interim：CC 直连渡口、codex 走 cc-switch）。接管后切供应商零写盘。
+_Avoid_: 迁移（泛——接管特指这一次性的配置写死）、安装
+
+**codex 可用性（原生 / 需翻译 / 不支持）**：
+供应商表每条目的三分支标注，回答"这家能不能当 codex 的上游"：原生＝openai_responses 方言，codex 流量透传不译；需翻译＝anthropic 方言，codex 流量走翻译车道；不支持＝不可切为 codex 上游（switch 默认拒绝，显式 `--cc-only` 才放行并明示"codex 暂断供，仅 CC 走该供应商"）。
+_Avoid_: 兼容性（含糊——三分支各有明确语义与消费规则）
 
 ### 费用账本
 
