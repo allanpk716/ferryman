@@ -462,3 +462,79 @@ func TestProxyStatsReplayNotCounted(t *testing.T) {
 		t.Fatalf("重放不计入统计: got %d/%d, want 0/0", n, ts)
 	}
 }
+
+// TestSessionHeaderFallbackWireAttribution 票01 头回落端到端（真 ServeHTTP 缝）：
+//   - 仅头归因（claude-cli 2.1.273 真实形状：体 metadata 只有 user_id）——
+//     快照与 dock 科目行都按头归因，Skipped 不涨；
+//   - 头体冲突——以体为准（快照与记账行都归到体 ID）；
+//   - 头格式坏＝缺失——跳过计数、不伪造、不入库。
+//
+// 快照捕获与记账归因两个消费点走同一 ExtractSessionID（一处实现），本测试
+// 经同一请求同缝验证两处。
+func TestSessionHeaderFallbackWireAttribution(t *testing.T) {
+	var up upstreamEcho
+	backend := httptest.NewServer(http.HandlerFunc(up.handler))
+	defer backend.Close()
+	srv, acc, front := newRecordingFront(t, backend.URL)
+
+	// 阶段一：仅头归因
+	body := []byte(`{"model":"claude-opus-5","max_tokens":16,"stream":true,` +
+		`"metadata":{"user_id":"u"},"messages":[]}`)
+	req := ccRequest(t, front+"/v1/messages", body)
+	req.Header.Set(HeaderClaudeCodeSessionID, uuidFixture)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("阶段一请求失败: %v", err)
+	}
+	resp.Body.Close()
+	main, ok := srv.Snapshots().Main(uuidFixture)
+	if !ok {
+		t.Fatal("仅头归因失败：快照未按头入库")
+	}
+	if !bytes.Equal(main.Body, body) {
+		t.Fatal("快照体与请求体不等")
+	}
+	rows := waitDockRows(t, acc, 1)
+	if rows[0]["session_id"] != uuidFixture {
+		t.Fatalf("阶段一记账行 session_id = %v, want %v（头回落归因）",
+			rows[0]["session_id"], uuidFixture)
+	}
+	if got := srv.Snapshots().Skipped(); got != 0 {
+		t.Fatalf("头回落成功不得记跳过, Skipped() = %d", got)
+	}
+
+	// 阶段二：头体冲突——以体为准
+	body2 := streamBody("body-wins-sid")
+	req2 := ccRequest(t, front+"/v1/messages", body2)
+	req2.Header.Set(HeaderClaudeCodeSessionID, "123e4567-e89b-12d3-a456-426614174001")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("阶段二请求失败: %v", err)
+	}
+	resp2.Body.Close()
+	if _, ok := srv.Snapshots().Main("body-wins-sid"); !ok {
+		t.Fatal("冲突未以体为准：快照未归到体 ID")
+	}
+	rows = waitDockRows(t, acc, 2)
+	if rows[1]["session_id"] != "body-wins-sid" {
+		t.Fatalf("阶段二记账行 session_id = %v, want body-wins-sid（以体为准）",
+			rows[1]["session_id"])
+	}
+
+	// 阶段三：头格式坏＝缺失——跳过计数、不伪造
+	before := srv.Snapshots().Skipped()
+	body3 := []byte(`{"model":"m","max_tokens":16,"stream":true,"messages":[]}`)
+	req3 := ccRequest(t, front+"/v1/messages", body3)
+	req3.Header.Set(HeaderClaudeCodeSessionID, "not-a-uuid")
+	resp3, err := http.DefaultClient.Do(req3)
+	if err != nil {
+		t.Fatalf("阶段三请求失败: %v", err)
+	}
+	resp3.Body.Close()
+	if got := srv.Snapshots().Skipped(); got != before+1 {
+		t.Fatalf("坏头应记跳过, Skipped() = %d, want %d", got, before+1)
+	}
+	if _, ok := srv.Snapshots().Main("not-a-uuid"); ok {
+		t.Fatal("坏头值不得入库（绝不伪造会话 ID）")
+	}
+}

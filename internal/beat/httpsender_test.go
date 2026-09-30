@@ -191,16 +191,18 @@ func TestSendNormalPathRewriteHeadersUsage(t *testing.T) {
 		t.Fatalf("重放体除 max_tokens 外逐字段不变被违反:\n got=%v\nwant=%v", got, want)
 	}
 
-	// 头：快照头集（五件内容头）＋auth 占位令牌字面量＋identity，零新增应用头。
+	// 头：快照头集（五件内容头）＋auth 占位令牌字面量＋identity＋会话归因头
+	//（票01：值=目标会话 ID，渡口记账行据此按会话归集），零新增应用头。
 	wantHdr := map[string]string{
-		"Content-Type":      "application/json",
-		"Anthropic-Version": "2023-06-01",
-		"Anthropic-Beta":    "claude-code-20250219,context-1m-2025-08-07",
-		"User-Agent":        "claude-cli/2.0.0 (external, cli)",
-		"Accept":            "text/event-stream",
-		"Accept-Encoding":   "identity", // 固定覆盖快照的 gzip 值
-		"Authorization":     "Bearer PROXY_MANAGED",
-		"X-Api-Key":         "PROXY_MANAGED",
+		"Content-Type":             "application/json",
+		"Anthropic-Version":        "2023-06-01",
+		"Anthropic-Beta":           "claude-code-20250219,context-1m-2025-08-07",
+		"User-Agent":               "claude-cli/2.0.0 (external, cli)",
+		"Accept":                   "text/event-stream",
+		"Accept-Encoding":          "identity", // 固定覆盖快照的 gzip 值
+		"Authorization":            "Bearer PROXY_MANAGED",
+		"X-Api-Key":                "PROXY_MANAGED",
+		"X-Claude-Code-Session-Id": "sess-1", // 票01：值=计划会话 ID
 	}
 	// Content-Length＝Go client 随 body 自生的传输框架头（Host 同理不入 map），
 	// 真实 CC 流量也携带——不算应用层新增头，白名单豁免。
