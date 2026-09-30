@@ -94,6 +94,10 @@ function dumpDom(qs, page = 'index.html') {
  * iframe 先给高 700 量 .widget scrollHeight，再把视口收到该高（headless 里复刻壳层
  * fitHeight 语义「窗高=内容高」，app.js 的 fitHeight 无壳静默跳过）：此后
  * innerHeight−6−末盘底 才是真「内容到面板底边距」。零依赖、离线、无窗口。
+ * 夜链票 04（2026-09-30）同通道扩展：悬浮态首/末盘左右对称（left+right≈80）、
+ * 手动挂 docked-left 后内容重心补偿（2×内容中心≈74）、hover 触发 tooltip 后
+ * tip.right≤80（收口不裁切）——app.js 监听的是 mouseover/mousemove（非 mouseenter），
+ * 故 wrapper 里 dispatchEvent 同名事件复刻 hover。
  */
 function dumpGeo(qs) {
   const profile = mkdtempSync(join(tmpdir(), 'widget-geo-'));
@@ -127,8 +131,22 @@ function dumpGeo(qs) {
       '    var lb=discs[discs.length-1].getBoundingClientRect().bottom;',
       '    var grip=d.querySelector(".grip");',
       '    var gt=grip?grip.getBoundingClientRect().top:-999;',
+      // 夜链票 04：对称/重心/tooltip 同通道量测（r0/rN 必须在挂 docked-left 前量，
+      // 才是悬浮态；tooltip 用 app.js 真实监听的事件名 mouseover/mousemove 复刻 hover）
+      '    var r0=discs[0].getBoundingClientRect(),rN=discs[discs.length-1].getBoundingClientRect();',
+      '    var tip=d.getElementById("tooltip");',
+      '    var mev=function(t){return new w.MouseEvent(t,{clientX:40,clientY:60,bubbles:true,cancelable:true,view:w});};',
+      '    discs[0].dispatchEvent(mev("mouseover"));',
+      '    discs[0].dispatchEvent(mev("mousemove"));',
+      '    var tr=tip.getBoundingClientRect();',
+      '    wg.classList.add("docked-left");',
+      '    var rd=discs[0].getBoundingClientRect();',
+      '    var dck=rd.left+rd.right;', // 内容中心×2；docked-left 面板可视区 0..74 中心 37→目标 74
+      '    wg.classList.remove("docked-left");',
       '    write({done:1,pt:cs.paddingTop,pb:cs.paddingBottom,h:innerH.toFixed(2),',
-      '      lb:lb.toFixed(2),bg:(innerH-6-lb).toFixed(2),gg:(gt-6).toFixed(2)});',
+      '      lb:lb.toFixed(2),bg:(innerH-6-lb).toFixed(2),gg:(gt-6).toFixed(2),',
+      '      sym1:(r0.left+r0.right).toFixed(3),sym2:(rN.left+rN.right).toFixed(3),',
+      '      dck:dck.toFixed(3),tipR:tr.right.toFixed(3),tipH:tip.classList.contains("hidden")?1:0});',
       '  }catch(e){write({err:String(e)});}}',
       '})();',
       '<\/script></body></html>',
@@ -473,6 +491,21 @@ async function main() {
     check('geo.grip 顶距 grip.top−6 ≥ 3（顺手修 2→4）',
       parseFloat(geoKV.gg) >= 3, `实际 ${geoKV.gg}`);
     console.log(`geo.观测：窗高(scrollHeight 收敛)=${geoKV.h} 末盘底=${geoKV.lb} 底距=${geoKV.bg} grip顶距=${geoKV.gg}（padding pt=${geoKV.pt} pb=${geoKV.pb}）`);
+
+    // ⑯ 夜链票 04 · 内容收口对称＋贴边重心补偿＋tooltip 收口（几何通道扩展，见 dumpGeo）
+    // 面板净宽 68=80−左右 inset 6；.disc 限宽 60 → 悬浮态左右缝各 10 逻辑 px 整数对称。
+    check('geo4.悬浮对称：首盘 left+right≈80（±0.6）',
+      Math.abs(parseFloat(geoKV.sym1) - 80) <= 0.6, `实际 sym1=${geoKV.sym1}`);
+    check('geo4.悬浮对称：末盘 left+right≈80（±0.6）',
+      Math.abs(parseFloat(geoKV.sym2) - 80) <= 0.6, `实际 sym2=${geoKV.sym2}`);
+    // docked-left：面板可视区 0..74（左 inset 归零），内容中心×2 目标 74（±0.6）
+    check('geo4.docked-left 重心补偿：内容中心×2≈74（±0.6）',
+      Math.abs(parseFloat(geoKV.dck) - 74) <= 0.6, `实际 dck=${geoKV.dck}`);
+    // tooltip：hover 后可见且右缘不伸出 80 宽窗（app.js clamp 以 innerWidth−4 为限）
+    check('geo4.tooltip 收口：hover 后 tip.right≤80',
+      geoKV.tipH === '0' && parseFloat(geoKV.tipR) <= 80,
+      `tipR=${geoKV.tipR} hidden=${geoKV.tipH}`);
+    console.log(`geo4.观测：首盘 left+right=${geoKV.sym1} 末盘=${geoKV.sym2} docked-left 中心×2=${geoKV.dck} tooltip right=${geoKV.tipR}（hidden=${geoKV.tipH}）`);
 
     // ⑦ 离线铁律：无外部引用（运行时源零 URL 字面量；dump 无外链资源；票 04 起含设置窗三件）
     const runtime = { 'index.html': html, 'style.css': css, 'app.js': appjs, 'data.js': datajs,

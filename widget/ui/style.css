@@ -165,6 +165,17 @@ body.tray-collapsed #restoreBtn{display:block}
    =80×322 联动，实测推导见 lib.rs COMPACT_* 注释——CSS 与 Rust 常量互指，
    改一边必须核另一边；0.2.5 迷你标签行使内容高 253→303，272→322；0.2.7 票 02：padding 8/4/4→10/4/14，底距=14−6=8、顶距=10−6=4，内容/窗高 +12） ── */
 body.compact .widget{gap:4px; padding:10px 4px 14px}
+/* 夜链票 04（2026-09-30）· 内容收口对称＋贴边重心补偿＋tooltip 收口：
+   窗宽 80、面板净宽 68（::before 左右 inset 6）。.disc 限宽 60 → 悬浮态左右缝各
+   10 逻辑 px（=15 物理 px 整数对称，150% DPI 下不再 1px 客观不对称；超宽 mini-tag
+   走 .mini-tag 既有 ellipsis 兜底，属预期）。docked-left/right 面板可视区偏侧
+   （0..74 / 6..80），padding 左右 ±3 补偿使内容中心对齐面板可视区中心（37 / 43）；
+   特异性 (0,3,1) 高于上行 (0,2,1)，只覆写左右、上下 padding 不触。tooltip 限宽 64
+   （font/padding 同步缩小）不再伸出 80 宽窗口被裁。 */
+body.compact .disc{max-width:60px}
+body.compact .widget.docked-left{padding-left:1px;padding-right:7px}
+body.compact .widget.docked-right{padding-left:7px;padding-right:1px}
+body.compact .tooltip{max-width:64px;font-size:10px;padding:5px 6px}
 body.compact .grip{font-size:10px; letter-spacing:1px; padding:0 4px 2px}
 body.compact .gear{display:none} /* 托盘菜单「设置…」可达 */
 body.compact .disc svg{width:48px; height:48px}
