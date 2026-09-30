@@ -131,6 +131,10 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman upstream use <名> [--config 路径]   # 切换 active 并自动重启守护
                                              #   （在途请求中断；守护未起来时如实
                                              #   报告，不自动回滚/重试）
+  ferryman provider list|switch|add|remove|import-ccswitch|apply
+                                             # 供应商操作面（票06）：热切换走守护
+                                             #   管理口不重启；ferryman provider
+                                             #   不带子命令看用法
   ferryman tuning status [--config 路径] [--json]  # 调参面板：建议摘要与状态+
                                                 #   当前公式输入校准（只读）
   ferryman tuning sweep [--config 路径] [--projects glob]… [--exclude glob]…
@@ -198,6 +202,8 @@ func run(args []string) int {
 		return cmdCutover(args[1:])
 	case "upstream":
 		return cmdUpstream(args[1:], os.Stdout)
+	case "provider":
+		return cmdProvider(args[1:], os.Stdout)
 	case "tuning":
 		return cmdTuning(args[1:], os.Stdout, os.Stderr)
 	case "mcp":
