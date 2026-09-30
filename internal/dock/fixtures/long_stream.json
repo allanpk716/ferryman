@@ -1,0 +1,1670 @@
+{
+  "name": "long_stream",
+  "description": "长流形：单文本块 200 个增量分片连续输出（对照表 §2.2 文本块事件序）；两端到端断言全程跑完无截断——增量数逐一到位、全文拼接一致、终态 response.completed 收尾（无 stream_truncated/failed/incomplete）。",
+  "codex_request": {
+    "model": "deepseek-v4",
+    "instructions": "你是代码助手，输出长文。",
+    "max_output_tokens": 4096,
+    "stream": true,
+    "store": false,
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "输出一段长文。"
+          }
+        ]
+      }
+    ]
+  },
+  "anthropic_upstream": {
+    "status": 200,
+    "content_type": "text/event-stream",
+    "sse": [
+      {
+        "event": "message_start",
+        "data": "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_fx_long\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":500,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":0,\"output_tokens\":1}}}"
+      },
+      {
+        "event": "content_block_start",
+        "data": "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-001：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-002：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-003：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-004：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-005：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-006：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-007：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-008：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-009：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-010：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-011：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-012：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-013：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-014：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-015：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-016：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-017：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-018：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-019：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-020：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-021：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-022：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-023：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-024：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-025：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-026：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-027：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-028：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-029：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-030：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-031：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-032：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-033：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-034：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-035：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-036：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-037：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-038：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-039：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-040：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-041：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-042：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-043：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-044：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-045：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-046：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-047：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-048：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-049：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-050：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-051：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-052：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-053：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-054：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-055：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-056：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-057：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-058：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-059：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-060：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-061：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-062：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-063：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-064：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-065：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-066：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-067：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-068：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-069：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-070：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-071：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-072：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-073：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-074：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-075：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-076：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-077：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-078：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-079：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-080：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-081：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-082：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-083：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-084：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-085：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-086：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-087：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-088：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-089：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-090：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-091：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-092：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-093：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-094：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-095：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-096：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-097：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-098：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-099：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-100：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-101：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-102：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-103：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-104：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-105：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-106：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-107：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-108：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-109：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-110：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-111：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-112：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-113：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-114：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-115：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-116：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-117：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-118：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-119：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-120：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-121：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-122：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-123：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-124：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-125：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-126：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-127：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-128：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-129：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-130：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-131：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-132：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-133：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-134：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-135：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-136：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-137：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-138：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-139：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-140：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-141：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-142：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-143：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-144：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-145：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-146：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-147：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-148：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-149：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-150：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-151：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-152：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-153：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-154：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-155：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-156：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-157：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-158：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-159：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-160：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-161：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-162：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-163：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-164：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-165：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-166：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-167：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-168：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-169：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-170：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-171：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-172：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-173：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-174：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-175：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-176：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-177：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-178：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-179：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-180：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-181：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-182：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-183：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-184：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-185：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-186：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-187：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-188：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-189：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-190：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-191：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-192：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-193：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-194：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-195：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-196：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-197：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-198：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-199：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_delta",
+        "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"分片-200：持续输出，验证全程不截断。\"}}"
+      },
+      {
+        "event": "content_block_stop",
+        "data": "{\"type\":\"content_block_stop\",\"index\":0}"
+      },
+      {
+        "event": "message_delta",
+        "data": "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":300}}"
+      },
+      {
+        "event": "message_stop",
+        "data": "{\"type\":\"message_stop\"}"
+      }
+    ]
+  },
+  "responses_upstream": {
+    "status": 200,
+    "content_type": "text/event-stream",
+    "sse": [
+      {
+        "event": "response.created",
+        "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_fx_long\",\"object\":\"response\",\"created_at\":0,\"status\":\"in_progress\",\"model\":\"deepseek-v4\",\"output\":[]}}"
+      },
+      {
+        "event": "response.output_item.added",
+        "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_0\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-001：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-002：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-003：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-004：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-005：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-006：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-007：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-008：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-009：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-010：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-011：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-012：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-013：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-014：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-015：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-016：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-017：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-018：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-019：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-020：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-021：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-022：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-023：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-024：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-025：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-026：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-027：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-028：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-029：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-030：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-031：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-032：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-033：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-034：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-035：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-036：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-037：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-038：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-039：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-040：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-041：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-042：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-043：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-044：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-045：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-046：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-047：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-048：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-049：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-050：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-051：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-052：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-053：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-054：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-055：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-056：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-057：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-058：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-059：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-060：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-061：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-062：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-063：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-064：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-065：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-066：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-067：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-068：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-069：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-070：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-071：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-072：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-073：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-074：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-075：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-076：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-077：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-078：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-079：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-080：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-081：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-082：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-083：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-084：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-085：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-086：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-087：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-088：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-089：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-090：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-091：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-092：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-093：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-094：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-095：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-096：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-097：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-098：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-099：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-100：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-101：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-102：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-103：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-104：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-105：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-106：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-107：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-108：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-109：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-110：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-111：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-112：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-113：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-114：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-115：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-116：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-117：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-118：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-119：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-120：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-121：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-122：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-123：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-124：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-125：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-126：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-127：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-128：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-129：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-130：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-131：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-132：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-133：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-134：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-135：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-136：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-137：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-138：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-139：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-140：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-141：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-142：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-143：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-144：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-145：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-146：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-147：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-148：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-149：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-150：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-151：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-152：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-153：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-154：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-155：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-156：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-157：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-158：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-159：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-160：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-161：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-162：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-163：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-164：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-165：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-166：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-167：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-168：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-169：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-170：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-171：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-172：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-173：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-174：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-175：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-176：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-177：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-178：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-179：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-180：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-181：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-182：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-183：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-184：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-185：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-186：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-187：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-188：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-189：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-190：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-191：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-192：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-193：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-194：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-195：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-196：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-197：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-198：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-199：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.delta",
+        "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"分片-200：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.output_text.done",
+        "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"text\":\"分片-001：持续输出，验证全程不截断。分片-002：持续输出，验证全程不截断。分片-003：持续输出，验证全程不截断。分片-004：持续输出，验证全程不截断。分片-005：持续输出，验证全程不截断。分片-006：持续输出，验证全程不截断。分片-007：持续输出，验证全程不截断。分片-008：持续输出，验证全程不截断。分片-009：持续输出，验证全程不截断。分片-010：持续输出，验证全程不截断。分片-011：持续输出，验证全程不截断。分片-012：持续输出，验证全程不截断。分片-013：持续输出，验证全程不截断。分片-014：持续输出，验证全程不截断。分片-015：持续输出，验证全程不截断。分片-016：持续输出，验证全程不截断。分片-017：持续输出，验证全程不截断。分片-018：持续输出，验证全程不截断。分片-019：持续输出，验证全程不截断。分片-020：持续输出，验证全程不截断。分片-021：持续输出，验证全程不截断。分片-022：持续输出，验证全程不截断。分片-023：持续输出，验证全程不截断。分片-024：持续输出，验证全程不截断。分片-025：持续输出，验证全程不截断。分片-026：持续输出，验证全程不截断。分片-027：持续输出，验证全程不截断。分片-028：持续输出，验证全程不截断。分片-029：持续输出，验证全程不截断。分片-030：持续输出，验证全程不截断。分片-031：持续输出，验证全程不截断。分片-032：持续输出，验证全程不截断。分片-033：持续输出，验证全程不截断。分片-034：持续输出，验证全程不截断。分片-035：持续输出，验证全程不截断。分片-036：持续输出，验证全程不截断。分片-037：持续输出，验证全程不截断。分片-038：持续输出，验证全程不截断。分片-039：持续输出，验证全程不截断。分片-040：持续输出，验证全程不截断。分片-041：持续输出，验证全程不截断。分片-042：持续输出，验证全程不截断。分片-043：持续输出，验证全程不截断。分片-044：持续输出，验证全程不截断。分片-045：持续输出，验证全程不截断。分片-046：持续输出，验证全程不截断。分片-047：持续输出，验证全程不截断。分片-048：持续输出，验证全程不截断。分片-049：持续输出，验证全程不截断。分片-050：持续输出，验证全程不截断。分片-051：持续输出，验证全程不截断。分片-052：持续输出，验证全程不截断。分片-053：持续输出，验证全程不截断。分片-054：持续输出，验证全程不截断。分片-055：持续输出，验证全程不截断。分片-056：持续输出，验证全程不截断。分片-057：持续输出，验证全程不截断。分片-058：持续输出，验证全程不截断。分片-059：持续输出，验证全程不截断。分片-060：持续输出，验证全程不截断。分片-061：持续输出，验证全程不截断。分片-062：持续输出，验证全程不截断。分片-063：持续输出，验证全程不截断。分片-064：持续输出，验证全程不截断。分片-065：持续输出，验证全程不截断。分片-066：持续输出，验证全程不截断。分片-067：持续输出，验证全程不截断。分片-068：持续输出，验证全程不截断。分片-069：持续输出，验证全程不截断。分片-070：持续输出，验证全程不截断。分片-071：持续输出，验证全程不截断。分片-072：持续输出，验证全程不截断。分片-073：持续输出，验证全程不截断。分片-074：持续输出，验证全程不截断。分片-075：持续输出，验证全程不截断。分片-076：持续输出，验证全程不截断。分片-077：持续输出，验证全程不截断。分片-078：持续输出，验证全程不截断。分片-079：持续输出，验证全程不截断。分片-080：持续输出，验证全程不截断。分片-081：持续输出，验证全程不截断。分片-082：持续输出，验证全程不截断。分片-083：持续输出，验证全程不截断。分片-084：持续输出，验证全程不截断。分片-085：持续输出，验证全程不截断。分片-086：持续输出，验证全程不截断。分片-087：持续输出，验证全程不截断。分片-088：持续输出，验证全程不截断。分片-089：持续输出，验证全程不截断。分片-090：持续输出，验证全程不截断。分片-091：持续输出，验证全程不截断。分片-092：持续输出，验证全程不截断。分片-093：持续输出，验证全程不截断。分片-094：持续输出，验证全程不截断。分片-095：持续输出，验证全程不截断。分片-096：持续输出，验证全程不截断。分片-097：持续输出，验证全程不截断。分片-098：持续输出，验证全程不截断。分片-099：持续输出，验证全程不截断。分片-100：持续输出，验证全程不截断。分片-101：持续输出，验证全程不截断。分片-102：持续输出，验证全程不截断。分片-103：持续输出，验证全程不截断。分片-104：持续输出，验证全程不截断。分片-105：持续输出，验证全程不截断。分片-106：持续输出，验证全程不截断。分片-107：持续输出，验证全程不截断。分片-108：持续输出，验证全程不截断。分片-109：持续输出，验证全程不截断。分片-110：持续输出，验证全程不截断。分片-111：持续输出，验证全程不截断。分片-112：持续输出，验证全程不截断。分片-113：持续输出，验证全程不截断。分片-114：持续输出，验证全程不截断。分片-115：持续输出，验证全程不截断。分片-116：持续输出，验证全程不截断。分片-117：持续输出，验证全程不截断。分片-118：持续输出，验证全程不截断。分片-119：持续输出，验证全程不截断。分片-120：持续输出，验证全程不截断。分片-121：持续输出，验证全程不截断。分片-122：持续输出，验证全程不截断。分片-123：持续输出，验证全程不截断。分片-124：持续输出，验证全程不截断。分片-125：持续输出，验证全程不截断。分片-126：持续输出，验证全程不截断。分片-127：持续输出，验证全程不截断。分片-128：持续输出，验证全程不截断。分片-129：持续输出，验证全程不截断。分片-130：持续输出，验证全程不截断。分片-131：持续输出，验证全程不截断。分片-132：持续输出，验证全程不截断。分片-133：持续输出，验证全程不截断。分片-134：持续输出，验证全程不截断。分片-135：持续输出，验证全程不截断。分片-136：持续输出，验证全程不截断。分片-137：持续输出，验证全程不截断。分片-138：持续输出，验证全程不截断。分片-139：持续输出，验证全程不截断。分片-140：持续输出，验证全程不截断。分片-141：持续输出，验证全程不截断。分片-142：持续输出，验证全程不截断。分片-143：持续输出，验证全程不截断。分片-144：持续输出，验证全程不截断。分片-145：持续输出，验证全程不截断。分片-146：持续输出，验证全程不截断。分片-147：持续输出，验证全程不截断。分片-148：持续输出，验证全程不截断。分片-149：持续输出，验证全程不截断。分片-150：持续输出，验证全程不截断。分片-151：持续输出，验证全程不截断。分片-152：持续输出，验证全程不截断。分片-153：持续输出，验证全程不截断。分片-154：持续输出，验证全程不截断。分片-155：持续输出，验证全程不截断。分片-156：持续输出，验证全程不截断。分片-157：持续输出，验证全程不截断。分片-158：持续输出，验证全程不截断。分片-159：持续输出，验证全程不截断。分片-160：持续输出，验证全程不截断。分片-161：持续输出，验证全程不截断。分片-162：持续输出，验证全程不截断。分片-163：持续输出，验证全程不截断。分片-164：持续输出，验证全程不截断。分片-165：持续输出，验证全程不截断。分片-166：持续输出，验证全程不截断。分片-167：持续输出，验证全程不截断。分片-168：持续输出，验证全程不截断。分片-169：持续输出，验证全程不截断。分片-170：持续输出，验证全程不截断。分片-171：持续输出，验证全程不截断。分片-172：持续输出，验证全程不截断。分片-173：持续输出，验证全程不截断。分片-174：持续输出，验证全程不截断。分片-175：持续输出，验证全程不截断。分片-176：持续输出，验证全程不截断。分片-177：持续输出，验证全程不截断。分片-178：持续输出，验证全程不截断。分片-179：持续输出，验证全程不截断。分片-180：持续输出，验证全程不截断。分片-181：持续输出，验证全程不截断。分片-182：持续输出，验证全程不截断。分片-183：持续输出，验证全程不截断。分片-184：持续输出，验证全程不截断。分片-185：持续输出，验证全程不截断。分片-186：持续输出，验证全程不截断。分片-187：持续输出，验证全程不截断。分片-188：持续输出，验证全程不截断。分片-189：持续输出，验证全程不截断。分片-190：持续输出，验证全程不截断。分片-191：持续输出，验证全程不截断。分片-192：持续输出，验证全程不截断。分片-193：持续输出，验证全程不截断。分片-194：持续输出，验证全程不截断。分片-195：持续输出，验证全程不截断。分片-196：持续输出，验证全程不截断。分片-197：持续输出，验证全程不截断。分片-198：持续输出，验证全程不截断。分片-199：持续输出，验证全程不截断。分片-200：持续输出，验证全程不截断。\"}"
+      },
+      {
+        "event": "response.completed",
+        "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fx_long\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"model\":\"deepseek-v4\",\"output\":[],\"usage\":{\"input_tokens\":600,\"input_tokens_details\":{\"cached_tokens\":100,\"cache_write_tokens\":0},\"output_tokens\":300,\"total_tokens\":900}}}"
+      }
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "error_injection",
+  "description": "错误注入形：翻译分支＝上游 2xx SSE 流中途注入 error 事件（对照表 §2.2 error 行——response.failed 携 message/type 逐字保留 + 已完成部分 output）；原生透传分支＝上游 HTTP 429 + JSON 错误体逐字节中继（§2.4 非 2xx 原状态码透传，原生分支不翻译）。",
+  "codex_request": {
+    "model": "deepseek-v4",
+    "instructions": "你是代码助手。",
+    "max_output_tokens": 256,
+    "stream": true,
+    "store": false,
+    "input": [
+      { "role": "user", "content": [{ "type": "input_text", "text": "继续。" }] }
+    ]
+  },
+  "anthropic_upstream": {
+    "status": 200,
+    "content_type": "text/event-stream",
+    "sse": [
+      { "event": "message_start", "data": "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_fx_err\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":60,\"output_tokens\":1}}}" },
+      { "event": "content_block_start", "data": "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}" },
+      { "event": "content_block_delta", "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"部分输出\"}}" },
+      { "event": "content_block_stop", "data": "{\"type\":\"content_block_stop\",\"index\":0}" },
+      { "event": "error", "data": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"上游过载（夹具注入）\"}}" }
+    ]
+  },
+  "responses_upstream": {
+    "status": 429,
+    "content_type": "application/json",
+    "body": "{\"error\":{\"message\":\"限流（夹具注入）\",\"type\":\"rate_limit_error\",\"code\":\"rate_limit\",\"param\":null}}"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "normal_reply",
+  "description": "正常回复形：纯文本流式回复（无工具、无思考）。codex_request 内故意携带 responses 专有顶层字段（store/include/service_tier/metadata/prompt_cache_key），供翻译分支白名单构造断言（对照表 §1.1/§1.7——这些字段不进上游体）；原生透传分支则逐字节达上游（§6-D2 透传不丢弃）。",
+  "codex_request": {
+    "model": "deepseek-v4",
+    "instructions": "你是代码助手，回答保持一句话。",
+    "max_output_tokens": 512,
+    "stream": true,
+    "store": false,
+    "include": ["reasoning.encrypted_content"],
+    "service_tier": "auto",
+    "metadata": { "codex_session": "fixture-normal" },
+    "prompt_cache_key": "fixture-normal-cache-key",
+    "input": [
+      { "role": "user", "content": [{ "type": "input_text", "text": "用一句话解释什么是 SSE 流。" }] }
+    ]
+  },
+  "anthropic_upstream": {
+    "status": 200,
+    "content_type": "text/event-stream",
+    "sse": [
+      { "event": "message_start", "data": "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_fx_norm\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":40,\"cache_creation_input_tokens\":10,\"output_tokens\":1}}}" },
+      { "event": "content_block_start", "data": "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}" },
+      { "event": "content_block_delta", "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"SSE 是服务器\"}}" },
+      { "event": "content_block_delta", "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"向客户端单向持续推流的 HTTP 协议。\"}}" },
+      { "event": "content_block_stop", "data": "{\"type\":\"content_block_stop\",\"index\":0}" },
+      { "event": "message_delta", "data": "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":25}}" },
+      { "event": "message_stop", "data": "{\"type\":\"message_stop\"}" }
+    ]
+  },
+  "responses_upstream": {
+    "status": 200,
+    "content_type": "text/event-stream",
+    "sse": [
+      { "event": "response.created", "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_fx_norm\",\"object\":\"response\",\"created_at\":0,\"status\":\"in_progress\",\"model\":\"deepseek-v4\",\"output\":[]}}" },
+      { "event": "response.output_item.added", "data": "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_0\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}" },
+      { "event": "response.output_text.delta", "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"原生透传分支不翻译，\"}" },
+      { "event": "response.output_text.delta", "data": "{\"type\":\"response.output_text.delta\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"delta\":\"逐字节中继本帧。\"}" },
+      { "event": "response.output_text.done", "data": "{\"type\":\"response.output_text.done\",\"item_id\":\"msg_0\",\"output_index\":0,\"content_index\":0,\"text\":\"原生透传分支不翻译，逐字节中继本帧。\"}" },
+      { "event": "response.completed", "data": "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fx_norm\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"model\":\"deepseek-v4\",\"output\":[],\"usage\":{\"input_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":50,\"cache_write_tokens\":25},\"output_tokens\":12,\"total_tokens\":162}}}" }
+    ]
+  }
+}
