@@ -42,7 +42,7 @@ func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPr
 	cands := d.Store.RestoreCandidates(agent, cwd)
 	for _, c := range cands {
 		if c.SessionID == p.SessionID {
-			return d.injectHandoff(agent, sessionID, c, pending)
+			return d.injectHandoff(agent, cwd, sessionID, c, pending)
 		}
 	}
 	// 锚会话没有交接（生成失败/未完成）：只带原话 + 明说 + 其他线程列清单选读。
@@ -87,7 +87,9 @@ func (d *Daemon) restoreNewest(agent, cwd, sessionID string) map[string]any {
 	if len(cands) == 0 {
 		return map[string]any{"context": nil}
 	}
-	if len(cands) > 1 { // 多候选：只列清单不默认注入
+	if len(cands) > 1 { // 多候选：必问不猜（2026-09-30 用户案：同目录多会话，
+		// "按需读取其一"等于让模型自己挑线，挑错还闷头续）——清单照列，指令改为
+		// 先问用户点名、点名前不许开干；开场第一句已点名（标题对得上）直接取。
 		lines := make([]string, 0, 5)
 		top := cands
 		if len(top) > 5 { // 2026-09-23 修复：候选 2~4 个时 cands[:5] 越界 panic（serve.err.log 三次实炸）
@@ -101,18 +103,22 @@ func (d *Daemon) restoreNewest(agent, cwd, sessionID string) map[string]any {
 			lines = append(lines, fmt.Sprintf("- %s → %s（%s）", title, c.Path, c.CreatedAt))
 		}
 		listing := strings.Join(lines, "\n")
-		ctx := fmt.Sprintf("[Ferryman] 本项目有 %d 份可用交接，请按需读取其一：\n%s",
+		ctx := fmt.Sprintf("[Ferryman] 本项目有 %d 份可用交接——这个目录跑过多个会话"+
+			"（多条工作线）。请把下面的清单转告用户、问清要继续哪条线；用户点名"+
+			"之前不要自行挑选、不要开始干活。用户开场第一句已点名某条线（标题对"+
+			"得上）就直接取那条：\n%s\n（点名后读取对应交接文档，接着那条线继续。）",
 			len(cands), listing)
 		return map[string]any{"context": ctx}
 	}
 	newest := cands[0]
 	pending := d.Store.PopPendingPrompt(newest.SessionID, sessionID) // consume_for
-	return d.injectHandoff(agent, sessionID, newest, pending)
+	return d.injectHandoff(agent, cwd, sessionID, newest, pending)
 }
 
 // injectHandoff 注入单份交接（锚定/最新两路共用）：INJECT 层提取 + 头部免责 +
-// 待续原话 + 完整文档行 + 记账 + mark_injected + 6000 码点截断。
-func (d *Daemon) injectHandoff(agent, sessionID string, h store.Entry, pending string) map[string]any {
+// 待续原话 + 完整文档行 + 其他工作线尾注（自检换轨） + 记账 + mark_injected +
+// 6000 码点截断。
+func (d *Daemon) injectHandoff(agent, cwd, sessionID string, h store.Entry, pending string) map[string]any {
 	md := d.Store.ReadHandoff(h)
 	var inject string
 	if strings.Contains(md, ferry.InjectOpen) && strings.Contains(md, ferry.InjectClose) {
@@ -134,6 +140,26 @@ func (d *Daemon) injectHandoff(agent, sessionID string, h store.Entry, pending s
 		fmt.Fprintf(&b, "\n\n用户被拦时的原话（待续 prompt）：%s", pending)
 	}
 	fmt.Fprintf(&b, "\n\n完整交接文档: %s（需要更多细节时读取）", h.Path)
+	// 尾注（2026-09-30 用户案"选错线还闷头续"）：同目录其他工作线一览，至多 3
+	// 条。注对线时是静默保险丝；注错线时模型据此自检换轨（与用户对一句或读对
+	// 得上的那份交接），不再闷头错到底。
+	rest := make([]store.Entry, 0, 3)
+	for _, c := range d.Store.RestoreCandidates(agent, cwd) {
+		if c.HandoffID != h.HandoffID && len(rest) < 3 {
+			rest = append(rest, c)
+		}
+	}
+	if len(rest) > 0 {
+		b.WriteString("\n\n自检：这个目录还有别的工作线；若上面的交接与你接下来要做的事对不上，" +
+			"先与用户对一句、或读对得上的那条交接换轨：\n")
+		for _, c := range rest {
+			title := c.Title
+			if title == "" {
+				title = runeCap8(c.SessionID)
+			}
+			fmt.Fprintf(&b, "- %s → %s\n", title, c.Path)
+		}
+	}
 	ctx := b.String()
 	// lineage 按源会话转录路径（R9）：inject 记账的谱系以交接源会话解析；
 	// 无台账线索退化为请求会话自身。台账锁内抄字段（共享引用纪律）。

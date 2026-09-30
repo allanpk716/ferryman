@@ -46,8 +46,12 @@ func TestRestoreMultiCandidateListsTopFiveOnly(t *testing.T) {
 	}
 	r := e.d.Restore("cc", "C:/proj", "newsid")
 	ctx, _ := r["context"].(string)
-	if !strings.HasPrefix(ctx, "[Ferryman] 本项目有 7 份可用交接，请按需读取其一：\n") {
+	if !strings.HasPrefix(ctx, "[Ferryman] 本项目有 7 份可用交接——这个目录跑过多个会话") {
 		t.Fatalf("清单头不符: %q", ctx)
+	}
+	// 必问不猜（2026-09-30 用户案）：点名前不许开干；开场已点名则直接取。
+	if !strings.Contains(ctx, "问清要继续哪条线") || !strings.Contains(ctx, "不要自行挑选") {
+		t.Fatalf("缺必问不猜指令: %q", ctx)
 	}
 	if got := strings.Count(ctx, "\n- "); got != 5 {
 		t.Fatalf("清单条数 = %d, want 5（只列前 5）", got)
@@ -234,6 +238,11 @@ func TestRestoreAnchoredPinsBlockedSessionOverNewerSibling(t *testing.T) {
 	}
 	if !strings.Contains(ctx, "被拦原话Q1") {
 		t.Fatalf("应带被拦原话: %q", ctx)
+	}
+	// 尾注（自检换轨）：注入的是被拦线程那份，别的线程应列在尾注里——注错线时
+	// 模型据此自己换轨，不闷头错到底。
+	if !strings.Contains(ctx, "自检：这个目录还有别的工作线") || !strings.Contains(ctx, "- 别的线程 → ") {
+		t.Fatalf("锚定注入应附其他工作线尾注: %q", ctx)
 	}
 	// 锚已消费：再开新会话回落旧行为（两候选 → 列清单，不默认注入）
 	r2 := e.d.Restore("cc", "C:/proj", "fresh2")
