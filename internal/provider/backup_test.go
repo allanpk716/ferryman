@@ -133,3 +133,115 @@ func withStampSeq(t *testing.T, seq ...string) func() {
 	}
 	return func() { stampNow = orig }
 }
+
+// installBackupAt 写一份 install 链族备份（下划线戳形：<base>.bak-ferryman-
+// YYYYMMDD_HHMMSS，installer.InstallCC/InstallCodex 同款命名）。
+func installBackupAt(t *testing.T, cfgPath, stamp, content string) {
+	t.Helper()
+	writeFixture(t, cfgPath+backupMarker+stamp, content)
+}
+
+// 场景 A（票05 R1）：同日 install 族下划线备份（墙上时间更晚）与 provider 族
+// 连字符组共存 → Restore 必选 provider 组。跨族字典序不可比：同日 '_'(0x5F)
+// 大于 '-'(0x2D)，更早写的 install 备份也会排到 provider 组之后冒充"最新"。
+func TestRestoreIgnoresInstallFamilyStamps(t *testing.T) {
+	defer withStampSeq(t, "20260930-120000")()
+	fp := interimFixture(t)
+	orig := snapshot(t, fp.cc, fp.codexCfg, fp.orcaCfg)
+	if _, err := Apply(targetsOf(fp)); err != nil { // provider 组：20260930-120000
+		t.Fatal(err)
+	}
+	// install 链随后跑过（InstallCC 形）：CC 目录多出下划线戳备份，墙上时间更晚
+	installBackupAt(t, fp.cc, "20260930_120005", `{"install":"here"}`)
+
+	rep, err := Restore(targetsOf(fp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Targets) != 3 {
+		t.Fatalf("应选中 provider 组并逐三份还原: %+v", rep.Targets)
+	}
+	for _, r := range rep.Targets {
+		if r.Action != ActionRestored {
+			t.Fatalf("provider 组成员齐全应全部 restored（而非被 install 组击穿成 skipped）: %+v", r)
+		}
+	}
+	if strings.Contains(mustReadStr(t, fp.cc), `"install":"here"`) {
+		t.Fatal("restore 选中了 install 族备份——选组只应认本族连字符戳")
+	}
+	for p, b := range orig {
+		if got := mustReadStr(t, p); got != string(b) {
+			t.Fatalf("%s 还原后与接管前不一致", p)
+		}
+	}
+}
+
+// 场景 B：install 族是"最新"文件（同日下划线戳文件名必然大于连字符戳）但
+// provider 组在位 → 同 A，Restore 必选 provider 组、逐三份还原。
+func TestRestorePicksProviderOverLexicallyLargerInstallFile(t *testing.T) {
+	defer withStampSeq(t, "20260930-120000")()
+	fp := interimFixture(t)
+	orig := snapshot(t, fp.cc, fp.codexCfg, fp.orcaCfg)
+	if _, err := Apply(targetsOf(fp)); err != nil {
+		t.Fatal(err)
+	}
+	// install 戳取当日最大形（23:59:59），文件名字典序必然压过 provider 组
+	installBackupAt(t, fp.codexCfg, "20260930_235959", "install-side codex content")
+
+	rep, err := Restore(targetsOf(fp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rep.Targets {
+		if r.Action != ActionRestored {
+			t.Fatalf("provider 组在位应逐三份 restored（install 文件不参与选组）: %+v", rep.Targets)
+		}
+	}
+	if strings.Contains(mustReadStr(t, fp.codexCfg), "install-side codex content") {
+		t.Fatal("restore 选中了 install 族备份（该组在 codex 目录缺 CC/orca 成员，本应整体出局）")
+	}
+	for p, b := range orig {
+		if got := mustReadStr(t, p); got != string(b) {
+			t.Fatalf("%s 还原后与接管前不一致", p)
+		}
+	}
+}
+
+// 场景 C（全新机器边角）：install 备份内容是 InstallCC 刚建的空 {} ——
+// Restore 绝不能把 {} 当"接管前形态"还原回去。
+func TestRestoreNeverPicksEmptyInstallBackup(t *testing.T) {
+	defer withStampSeq(t, "20260930-120000")()
+	fp := interimFixture(t)
+	orig := snapshot(t, fp.cc, fp.codexCfg, fp.orcaCfg)
+	if _, err := Apply(targetsOf(fp)); err != nil {
+		t.Fatal(err)
+	}
+	installBackupAt(t, fp.cc, "20260930_120010", "{}")
+
+	rep, err := Restore(targetsOf(fp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Targets) != 3 {
+		t.Fatalf("应选中 provider 组并逐三份还原: %+v", rep.Targets)
+	}
+	if got := mustReadStr(t, fp.cc); got == "{}" {
+		t.Fatal("restore 把空 {} install 备份当接管前形态还原了")
+	}
+	for p, b := range orig {
+		if got := mustReadStr(t, p); got != string(b) {
+			t.Fatalf("%s 还原后与接管前不一致", p)
+		}
+	}
+}
+
+// 场景 D：只有 install 族备份、无 provider 组 → Restore 如实报"无备份"
+// （不拿 install 组充数、不还原）。
+func TestRestoreWithOnlyInstallFamilyErrors(t *testing.T) {
+	fp := interimFixture(t)
+	installBackupAt(t, fp.cc, "20260930_120005", `{"install":"only"}`)
+	installBackupAt(t, fp.codexCfg, "20260930_120005", "install-side codex")
+	if _, err := Restore(targetsOf(fp)); err == nil {
+		t.Fatal("只有 install 族备份应报无备份（不还原）")
+	}
+}
