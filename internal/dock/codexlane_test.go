@@ -465,6 +465,71 @@ func TestResponsesLaneAccounting(t *testing.T) {
 	}
 }
 
+// JSON-hold 兜底路径记账（§2.5 表行 1）：流式请求 + 上游回整体 JSON（SSE CT
+// 或缺 CT）→ 客户端事件正确 且 账本四列等于 usage 值。缺陷回归：finish 的
+// jsonHeld 分支曾调无状态翻译器，usage 落进一次性状态机，账本四列记 0/0/0/0。
+func TestResponsesLaneJSONHoldAccounting(t *testing.T) {
+	wholeJSON := `{"id":"msg_h","type":"message","role":"assistant","model":"glm-5.3",` +
+		`"content":[{"type":"text","text":"held"}],"stop_reason":"end_turn",` +
+		`"usage":{"input_tokens":100,"cache_read_input_tokens":30,` +
+		`"cache_creation_input_tokens":20,"output_tokens":50}}`
+	for name, ct := range map[string]string{"sse-ct": "text/event-stream", "no-ct": ""} {
+		t.Run(name, func(t *testing.T) {
+			up := newAnthropicFakeUpstream(t, func(w http.ResponseWriter, body map[string]any) {
+				if ct != "" {
+					w.Header().Set("Content-Type", ct)
+				}
+				_, _ = w.Write([]byte(wholeJSON))
+			})
+			acc, err := accounts.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := codexLaneEntry(up.srv.URL, "k", map[string]string{"default": "glm-5.3", "codex": "glm-5.3"})
+			srv, err := NewWithOptions("127.0.0.1:15722", up.srv.URL, Options{Upstream: entry, Accounts: acc})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f2 := httptest.NewServer(srv)
+			defer f2.Close()
+
+			req, _ := http.NewRequest("POST", f2.URL+"/responses",
+				strings.NewReader(`{"model":"gpt-x","max_output_tokens":10,"stream":true,`+
+					`"input":[{"role":"user","content":"hi"}]}`))
+			req.Header.Set("Session_id", "codex-sess-jsonhold")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			s := string(b)
+
+			// 客户端事件正确（合成生命周期完整）。
+			for _, want := range []string{
+				"event: response.created",
+				"event: response.output_text.delta",
+				`"delta":"held"`,
+				"event: response.completed",
+				`"status":"completed"`,
+			} {
+				if !strings.Contains(s, want) {
+					t.Fatalf("缺 %q:\n%s", want, s)
+				}
+			}
+
+			// 账本四列非零且等于 usage 值（缺陷回归：曾记 0/0/0/0）。
+			rows := waitDockRows(t, acc, 1)
+			row := rows[0]
+			if row["input_tokens"] != float64(100) || row["cache_read_tokens"] != float64(30) ||
+				row["cache_creation_tokens"] != float64(20) || row["output_tokens"] != float64(50) {
+				t.Fatalf("四列 = %v %v %v %v, want 100/30/20/50", row["input_tokens"],
+					row["cache_read_tokens"], row["cache_creation_tokens"], row["output_tokens"])
+			}
+		})
+	}
+}
+
 // ---- 上游错误形态 ----
 
 func TestResponsesLaneUpstreamError(t *testing.T) {

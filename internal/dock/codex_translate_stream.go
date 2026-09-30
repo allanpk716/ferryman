@@ -688,7 +688,10 @@ func (s *streamTranslator) finish() []byte {
 			// invalid_response，不 panic——网关无视 stream:true 回数组/标量）。
 			if v, ok := decodeJSONValue([]byte(s.buf)); ok {
 				if body, isObj := asMap(v); isObj {
-					return responsesSSEFromAnthropicMessage(body, s.tc)
+					// 带状态变体：usage 回写本状态机（记账侧从 s.usage 取四列，
+					// 无状态版会落进一次性翻译器 → 漏账）。
+					out, _ := responsesSSEFromAnthropicMessageWithState(body, s.tc, s)
+					return out
 				}
 				if ev := s.failedEvent("upstream returned a non-object Anthropic message body",
 					"invalid_response"); ev != nil {
