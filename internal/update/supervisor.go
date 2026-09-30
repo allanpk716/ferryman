@@ -104,13 +104,14 @@ type Result struct {
 // launchTx 附带拉起验证探针;测试可换桩);selfExe/spawnRelay 为自中继
 // seam(同上)。
 type Supervisor struct {
-	cfg        Config
-	procAlive  func(pid int) bool
-	procImage  func(pid int) (string, error)
-	killPID    func(pid int) error
-	launch     func(cmdPath string) error
-	selfExe    func() (string, error)
-	spawnRelay func(exe string, args []string) error
+	cfg         Config
+	procAlive   func(pid int) bool
+	procImage   func(pid int) (string, error)
+	killPID     func(pid int) error
+	launch      func(cmdPath string) error
+	selfExe     func() (string, error)
+	spawnRelay  func(exe string, args []string) error
+	selfDelete  func(path string) error
 }
 
 // txLauncher 事务拉起缺省注点(平台面注入):Windows 侧由 proc_windows.go 的
@@ -166,6 +167,7 @@ func NewSupervisor(cfg Config) *Supervisor {
 		launch:     launchFn,
 		selfExe:    os.Executable,
 		spawnRelay: spawnRelayImpl,
+		selfDelete: selfDeleteImpl,
 	}
 }
 
@@ -195,6 +197,10 @@ func fileTeeLogf(dataDir string) func(format string, a ...any) {
 
 // Run 监督者主序列。返回 Result;过程日志走 Logf。
 func (s *Supervisor) Run() Result {
+	// 自中继副本收尾自删（2026-09-30 副本残留案）：defer 挂在一切退出路径上，
+	// 副本退场前拉起延迟自删（见 relaySelfDelete 注）。非副本（SelfRelay=false）
+	// 内部空转。
+	defer s.relaySelfDelete()
 	// 0. 换装目标解析(seam E)
 	targetExe, err := s.resolveTargetExe()
 	if err != nil {
@@ -340,6 +346,24 @@ func (s *Supervisor) selfRelayIfNeeded(targetExe string) (bool, error) {
 // 无法删除自身运行镜像,留待下次 update/doctor 驱动的清扫收走)。
 func relayCopyPath(targetExe string) string {
 	return targetExe + ".supervisor-copy"
+}
+
+// relaySelfDelete 自中继副本的收尾自删（2026-09-30 副本残留案）：副本跑完
+// Run 即退场，但 Windows 不许删除运行中的映像——收尾的 cleanSwapResidues 对
+// 自己 os.Remove 必败（Access denied，静默忽略），文件滞留到下次 update 才被
+// 扫走，期间 doctor 的 update_residues 一直红（v0.4.2/v0.4.3 两次换装两次
+// 手动删的实证）。故在退场前拉起隐藏的延迟删除（平台面 selfDelete seam，
+// Windows=cmd ping≈3s 等退场后 del）。失败静默——兜底链不动：下次 update
+// 的 cleanSwapResidues 照旧扫走。
+func (s *Supervisor) relaySelfDelete() {
+	if !s.cfg.SelfRelay || s.selfDelete == nil {
+		return
+	}
+	self, err := s.selfExe()
+	if err != nil {
+		return
+	}
+	_ = s.selfDelete(self)
 }
 
 // relayArgs 副本接手参数:监督者旗标 + 自中继标记 + 原样的版本意图 + 静默门

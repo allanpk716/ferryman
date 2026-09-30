@@ -72,6 +72,9 @@ func newGateEnv(t *testing.T) *gateEnv {
 	e.store = st
 	e.led = ledger.New()
 	cfg := config.Default()
+	// 测试卫生（2026-09-30 生产污染案）：DataDir 必须钉在沙箱——裸 Default 的
+	// 空值会解析到 ~/ferryman，gateWarn 的警告行写进生产 gate.log。
+	cfg.Server.DataDir = filepath.Join(e.tmp, "data")
 	cfg.GateCC = "enforce"
 	// Python ThresholdCfg(summarize_s, block_s, min_ctx_tokens)——cache_warn_s
 	// 携带 dataclass 默认 720，Go 显式同值。
@@ -145,6 +148,8 @@ func newWenv(t *testing.T) *wenvT {
 	w.store = st
 	w.led = ledger.New()
 	cfg := config.Default()
+	// 测试卫生（2026-09-30 生产污染案）：同 newGateEnv——DataDir 钉沙箱。
+	cfg.Server.DataDir = filepath.Join(w.tmp, "data")
 	cfg.GateCC = "enforce"
 	cfg.Thresholds = config.ThresholdCfg{
 		SummarizeS: testSummarizeS, BlockS: testBlockS, MinCtxTokens: testMinCtx,

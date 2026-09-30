@@ -137,3 +137,19 @@ func spawnRelayImpl(exe string, args []string) error {
 	}
 	return c.Start()
 }
+
+// selfDeleteImpl Windows 延迟自删（2026-09-30 副本残留案）：拉起隐藏 cmd，
+// ping ≈3s 等本进程退场后 del 自身映像（Windows 不许删运行中映像，收尾的
+// cleanSwapResidues 对自身 os.Remove 必败）。ping 而非 timeout /t：timeout
+// 在无控制台/重定向 stdin 时报 "Input redirection is not supported"，
+// headless 必踩。CREATE_NO_WINDOW 而非 DETACHED_PROCESS：cmd.exe 被脱离
+// 控制台启动会自建可见控制台（launchTxCmdImpl 注同坑，零闪窗铁律）。
+func selfDeleteImpl(path string) error {
+	c := exec.Command("cmd.exe", "/c",
+		"ping -n 4 127.0.0.1 >nul & del /f /q \""+path+"\"")
+	c.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,
+	}
+	return c.Start()
+}

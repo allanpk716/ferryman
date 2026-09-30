@@ -783,6 +783,39 @@ func TestSelfRelayHandoverCarriesIntent(t *testing.T) {
 	}
 }
 
+// TestRelaySelfDelete 副本收尾自删 seam（2026-09-30 副本残留案）：SelfRelay
+// 副本以自身映像路径发起延迟删除；非副本不删；selfDelete 缺位不炸；selfExe
+// 失败静默跳过（残留交 cleanSwapResidues 下次扫走）。
+func TestRelaySelfDelete(t *testing.T) {
+	_, sup := newUpdateWorld(t, nil, nil)
+	var delPath string
+	sup.cfg.SelfRelay = true
+	sup.selfExe = func() (string, error) { return `C:\x\ferryman.exe.supervisor-copy`, nil }
+	sup.selfDelete = func(p string) error { delPath = p; return nil }
+	sup.relaySelfDelete()
+	if delPath != `C:\x\ferryman.exe.supervisor-copy` {
+		t.Fatalf("应以自身映像路径发起延迟删除, got %q", delPath)
+	}
+
+	delPath = ""
+	sup.cfg.SelfRelay = false // 非副本（原监督者）不删
+	sup.relaySelfDelete()
+	if delPath != "" {
+		t.Fatal("非副本不得发起自删")
+	}
+
+	sup.cfg.SelfRelay = true
+	sup.selfDelete = nil // seam 缺位（裸构造）不炸
+	sup.relaySelfDelete()
+
+	sup.selfExe = func() (string, error) { return "", fmt.Errorf("无映像") }
+	sup.selfDelete = func(p string) error { delPath = p; return nil }
+	sup.relaySelfDelete()
+	if delPath != "" {
+		t.Fatal("selfExe 失败应静默跳过")
+	}
+}
+
 // TestSelfRelaySkippedWhenDifferentTarget 自身 != 换装目标 → 不交棒,全流程
 // 照常(成功升级)。
 func TestSelfRelaySkippedWhenDifferentTarget(t *testing.T) {

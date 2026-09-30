@@ -36,7 +36,7 @@ Python 3.12+（uv）守护进程，绑定 127.0.0.1:7311：
 - **`/gate` 契约**：`POST {agent, session_id, transcript_path, cwd, prompt}` → `{decision: allow|block, reason, handoff_path, additional_context?}`。**钩子统一故障规则：连接拒绝/超时（内层 1.5s）/任何非 200（含 401）→ 本地立即放行（exit 0），绝不因钩子侧故障阻断**；异常计数进健康告警。
 - **/gate 鉴权**：daemon 启动生成随机 token → `~/ferryman/daemon.token`（0600），钩子携带 `Authorization: Bearer`。
 - **健康监控**：/stats（gate 调用计数/按 Agent/最近调用/子代理计数）；告警条件 = **滑动 1h 窗口内：有 transcript 新写入而 gate 调用数 = 0**，且**已过启动宽限期（10min——重启后计数器归零 + 自主会话无人发 prompt 的持续写入不再误报，2026-09-16 夜间实测修复）** → Toast"钩子疑似失效"。已知局限（待细化）：信号用"任意写入"（含工具结果）而非"用户消息"，长时自主会话（无 prompt 持续写文件）在宽限期后仍可能误报——细化方案待与 T32 的会话分类（主会话 vs 子代理）协同。`ferryman doctor`：钩子在位（settings.json + CC Switch 模板）、端口/token、Codex 信任状态、gateway 传输安全。
-- **启动回填**：lookback=0（只登记不总结）；总结只对启动后活动的会话生效。
+- **启动回填**：lookback=0（只登记不总结）；总结只对启动后活动的会话生效。**重启观察窗（2026-09-30 重启无交接保护案，v0.4.4）**：watcher 对 mtime 近 24h（=FreshWindowS 交接新鲜窗）的存量会话补置 `observed_active`——重启前的活动是真实活动，daemon 死过不改变这一点；否则重启时已闲置的会话永不被观察、摆渡永不入队，用户回来没有交接（分支6跑步机）。窗外古老文件维持不观察（防每次重启全量摆渡风暴）；mtime 口径=stat 零额外读盘，开窗会话的幻影写顶新 mtime 恰好该观察。**摆渡去重（同案）**：`_maybe_enqueue` 入队前查 `ValidHandoff`（与 gate 分支5 同函数同口径）——库中已有覆盖当前内容的有效交接即跳过重摆并补记处置章（重启后 handed_off_at/handled_content_ts 归零，无此检查每次重启重摆一遍）。
 - **摆渡队列**：并发 1、深度 10、可配日预算；溢出 = 延迟（不丢弃）；挂起 >30min 或**任务墙钟总时限（默认 8min，含 L2 全部块与重试）到点** → 强制降级骨架-only；预算耗尽 → 新任务直接骨架-only，gate reason 注明"仅骨架"。骨架-only 交接对 gate 是有效交接。
 - **配置校验（拒启）**：按 Agent 分组校验 `summarize_threshold < block_threshold` 且 `block_threshold − summarize_threshold ≥ 2min`（独立硬约束，不依赖 SLA 定义）。
 - **摆渡 SLA**：L0 ≤ 2min；L1 模型调用 90s（E1 实测：490K 材料 78s 已贴上限——材料 >400K 建议直接走 L2，或将 L1 超时上调至 120s）；L2 每块 120s（实测 27-55s/块）；墙钟总时限 8min（实测 L2 总 217-252s，余量 3×）。超时即降级骨架（保证不变量不因模型慢/挂而破）。
