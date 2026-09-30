@@ -80,22 +80,27 @@ type UpstreamResolver interface {
 
 // upstreamView 单请求生效的上游视图（票02，F4 边界语义的载体）：目标/改写
 // 配置/真钥三件一套，ServeHTTP 入口解析一次——在途请求与本 view 同生命周期
-// （切上游不影响已进入的请求），新请求即刻拿新视图。
+// （切上游不影响已进入的请求），新请求即刻拿新视图。票03 增设 up/upName：
+// 条目原貌（dialect/codex 可用性/模型位/codex 主模型键）与活跃条目标签——
+// responses 车道从同一 view 取目标与钥（车道分支与 model 改写据此裁决）。
 type upstreamView struct {
 	target    *url.URL
 	rewriteOn bool
 	rwCfg     RewriteConfig
 	apiKey    string
+	up        *config.DockUpstream // nil＝纯透传旧形态（票01 无条目）
+	upName    string               // 活跃条目标签（""＝旧单值/未知）
 }
 
 // newUpstreamView 由上游条目派生视图：URL 解析＋守卫改写准入（与构造期
-// resolveRewrite 同一判据单源；本地中转地址/缺 default＝透传）。
-func newUpstreamView(up *config.DockUpstream) (*upstreamView, string, error) {
+// resolveRewrite 同一判据单源；本地中转地址/缺 default＝透传）。条目原貌
+// 与标签随行（票03 车道用）。
+func newUpstreamView(name string, up *config.DockUpstream) (*upstreamView, string, error) {
 	target, err := url.Parse(up.BaseURL)
 	if err != nil || target.Scheme == "" || target.Host == "" {
 		return nil, "", fmt.Errorf("dock: 上游地址无效: %q", up.BaseURL)
 	}
-	v := &upstreamView{target: target}
+	v := &upstreamView{target: target, up: up, upName: name}
 	rw, ok, reason := resolveRewrite(true, up.BaseURL, up.ModelMap, up.TextOnly)
 	if ok {
 		v.rewriteOn, v.rwCfg, v.apiKey = true, rw, up.APIKey
@@ -196,6 +201,12 @@ type Server struct {
 	// 票01 W1：代理面统计回写侧（读侧在 store.stats，NewWithOptions 里两处
 	// 指到同一份——daemon 经 DockSnap 取数与回写同源，无二次抄表漂移）。
 	stats *proxyStats
+
+	// 票03（responses 翻译车道）：独立出站客户端（与 proxy 的 transport 同
+	// 参数——首包 50min 上限、不设整体超时保长流；车道自带响应处理不经
+	// ReverseProxy）与车道事件日志（一次一值去重，测试断言面）。
+	laneClient  *http.Client
+	codexEvents *codexLaneEvent
 }
 
 // New 构造纯透传渡口（票01 形状：签名与行为保持不变，daemon 既有调用点
@@ -248,9 +259,25 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 	}
 	// 票02：构造期视图固化（固定模式的逐请求零开销快照；resolver 模式的
 	// 悬空/解析失败回落位）。既有字段（rewriteOn/rwCfg/apiKey/target）保留
-	// 原义——构造期日志与既有测试面不动。
-	s.fixedView = &upstreamView{target: s.target, rewriteOn: s.rewriteOn, rwCfg: s.rwCfg, apiKey: s.apiKey}
+	// 原义——构造期日志与既有测试面不动。票03：条目原貌随行（responses 车
+	// 道分流用；纯 New 无条目＝nil＝车道退整体代理）。
+	s.fixedView = &upstreamView{
+		target: s.target, rewriteOn: s.rewriteOn, rwCfg: s.rwCfg, apiKey: s.apiKey,
+		up: o.Upstream,
+	}
 	s.resolver = o.Resolver
+	// 票03：responses 车道装配——出站客户端（与 proxy 同参数口径）+ 事件
+	// 日志。纯 New（全零 Options）也建（车道入口可达即用，构造廉价）。
+	s.codexEvents = newCodexLaneEvent()
+	s.laneClient = &http.Client{Transport: &http.Transport{
+		Proxy:                 nil, // 显式不走环境代理：上游是直连目标
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: TransportTimeoutS,
+		// 不设整体 Timeout/正文超时：长 SSE 流按需无限流（同 proxy 口径）
+	}}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// 票02（F4）：出站目标取本请求入口解析的视图（resolver 模式经
@@ -325,7 +352,7 @@ func (s *Server) resolveView() *upstreamView {
 	if up == nil {
 		return s.fixedView
 	}
-	v, reason, err := newUpstreamView(up)
+	v, reason, err := newUpstreamView(name, up)
 	if err != nil {
 		logger.Printf("[dock] %v（活跃条目无效，回落构造期上游）", err)
 		return s.fixedView
@@ -378,6 +405,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	view := s.resolveView()
 	if s.resolver != nil {
 		r = r.WithContext(context.WithValue(r.Context(), ctxKeyUpstream{}, view))
+	}
+	// 票03（供应商接管，spec 决策 2）：responses 车道路径分流——/responses
+	// 及对照表 §4.1 全部变体（POST）进新车道；既有 /v1/messages 分支以下
+	// 零变化。车道内部自读体/自记账（不接快照/摆渡），出错自答（错误形状
+	// 见 codexlane.go）。
+	if r.Method == http.MethodPost {
+		if canonical, ok := canonicalResponsesPath(r.URL.Path); ok {
+			s.serveResponsesLane(w, r, view, canonical)
+			return
+		}
 	}
 	// 票03：自产重放（追加重放带 x-ferryman-replay 标记头）不入快照、不喂
 	// 漂移——追加体会顶替主快照（见 replayguard.go）；dock 科目照记（record
