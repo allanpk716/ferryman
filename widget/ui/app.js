@@ -182,9 +182,19 @@ function discHTML(p) {
       const tight = rings.length
         ? rings.reduce((a, b) => (b.remaining_pct < a.remaining_pct ? b : a))
         : null;
-      center = tight
-        ? `<text x="50" y="60" class="c-pct" fill="${ringColor(p, tight.key, tight.remaining_pct)}">${Math.round(tight.remaining_pct)}%</text>`
-        : `<text x="50" y="57" class="c-label">${label}</text>`;
+      // 夜链票 01（2026-09-30）：% 缩为上标（tspan dy=-4 属性写法——WebView2 对 CSS
+      // dy 支持不稳）；满格特判省略 %（D8 晨报否决清单；round 语义下 99.5~99.9 也走
+      // 特判，属预期）。字号初值 28/12/24 按「数字宽 0.5em」模型推导，实测本机
+      // system-ui=微软雅黑（数字进给 0.617em、getBBox=度量盒语义）超 38.5 横向硬界，
+      // R1 校准为 22/9/19（数值与推导在 style.css；三 preset {72,78,100} 实测留证在
+      // assert-static pct1 组）。报错盘/交接盘同用 c-pct 但无 % 字面量，不受累；
+      // 完整档圆心走 c-label/c-sub，零触碰。
+      const n = tight ? Math.round(tight.remaining_pct) : null;
+      center = !tight
+        ? `<text x="50" y="57" class="c-label">${label}</text>`
+        : n === 100
+          ? `<text x="50" y="60" class="c-pct c-pct-full" fill="${ringColor(p, tight.key, tight.remaining_pct)}">100</text>`
+          : `<text x="50" y="60" class="c-pct" fill="${ringColor(p, tight.key, tight.remaining_pct)}">${n}<tspan class="c-pct-pct" dy="-4">%</tspan></text>`;
     }
     cap = cdlineHTML(p) + `<div class="cap">${mt ? mt.text : ''}${estBadge(mt)}</div>`;
     if (metricOf(p, 'week') && tq) { // V2+：工具环无槽位，文字行兜底

@@ -166,6 +166,123 @@ function dumpGeo(qs) {
   }
 }
 
+/**
+ * 夜链票 01（2026-09-30）· %上标/满格特判通道：dump-dom 只出顶层文档，而 preset=100
+ * 渲染产物与 .c-pct getBBox 需要活 DOM——wrapper 装两个 index.html?profile=compact
+ * iframe，父页向各 iframe 注入同源 ES 模块脚本（import 同一 data.js 模块实例），把
+ * DEMO_SUMMARY 的 coding_plan 环值改成 {glm:72,kimi:78} / {glm:100,kimi:100}。
+ * app.js 的轮询链在虚拟时间 t=30s 下一跳拿到被改对象重渲染——dev 路径 onUpdate 传的
+ * 就是 DEMO_SUMMARY 本体引用（无 superset 不克隆），故真实 discHTML/round/===100
+ * 分支全走真代码路径，伪造的只有数据形状（无 SVG 术后拼装）。父页轮询等各 iframe
+ * 圆心文本到位后量 getBBox（SVG 用户单位，viewBox 0..100）并回写结果。
+ * 虚拟时间预算 45s：30s 轮询 tick 必须在预算内（dumpDom 的 1.5s 预算刻意避开它，
+ * 本通道反其道用之）；60s ticker 在预算外不触发，输出确定。
+ */
+function dumpGeoPct(qs) {
+  const profile = mkdtempSync(join(tmpdir(), 'widget-pct-'));
+  try {
+    const wrapper = [
+      '<!DOCTYPE html><html><head><meta charset="utf-8">',
+      '<style>html,body{margin:0;padding:0}</style></head><body>',
+      '<iframe id="f0" frameborder="0" style="border:0;display:block"></iframe>',
+      '<iframe id="f1" frameborder="0" style="border:0;display:block"></iframe>',
+      '<pre id="pct-results">pending</pre>',
+      '<script>',
+      '(function(){',
+      '  var CFG=[{glm:72,kimi:78},{glm:100,kimi:100}];',
+      '  var res=CFG.map(function(){return null;}),tries=0;',
+      '  function write(){',
+      '    var el=document.getElementById("pct-results");',
+      '    var p=[];res.forEach(function(r,i){p.push("s"+i+"="+(r==null?"null":encodeURIComponent(JSON.stringify(r))));});',
+      '    el.textContent=p.join(" ");el.id="pct-results-done";',
+      '  }',
+      '  CFG.forEach(function(cfg,i){',
+      '    var f=document.getElementById("f"+i);',
+      '    f.src=__INDEX_URL__;',
+      '    f.addEventListener("load",function(){',
+      '      var dd=f.contentDocument,s=dd.createElement("script");',
+      '      s.type="module";',
+      '      s.textContent="import(new URL(\\"data.js\\",location.href).href).then(function(d){' +
+      'var m={glm:"+cfg.glm+",kimi:"+cfg.kimi+"};window.__MUT__=1;' +
+      'Object.keys(m).forEach(function(id){var u=d.DEMO_SUMMARY.upstreams.find(function(x){return x.id===id});' +
+      'if(u)u.metrics.forEach(function(x){if(x.remaining_pct!=null)x.remaining_pct=m[id]})})})";',
+      '      dd.body.appendChild(s);',
+      '    });',
+      '  });',
+      '  function snap(i){',
+      '    var f=document.getElementById("f"+i),w=f.contentWindow,dd=w&&w.document;',
+      '    if(!dd)return null;',
+      '    var t=dd.querySelector(\'.disc[data-id="glm"] .c-pct\');',
+      '    if(!t)return null;',
+      '    var want=CFG[i].glm===100?"100":CFG[i].glm+"%";',
+      '    if(t.textContent!==want)return null;',
+      '    var o={want:want,tspan:dd.querySelectorAll("tspan").length,',
+      '      pctpct:dd.querySelectorAll(".c-pct-pct").length,full:dd.querySelectorAll(".c-pct-full").length,b:[]};',
+      // 墨迹盒（canvas TextMetrics actualBoundingBox*）：纵向票面数值的推导口径
+      // （帽高/降部）；getBBox 在 Chromium 里是字体度量盒（进给宽×升部+降部），
+      // 横向票面字面断言按 R1 裁定在此语义上断。两者一并采集以供对照实证。
+      '    var cv=dd.createElement("canvas"),ctx=cv.getContext("2d");',
+      '    function meas(px,wt,fam,text){',
+      '      ctx.font=wt+" "+px+"px "+fam;',
+      '      var m=ctx.measureText(text);',
+      '      return {adv:m.width,l:m.actualBoundingBoxLeft,r:m.actualBoundingBoxRight,',
+      '        a:m.actualBoundingBoxAscent,d:m.actualBoundingBoxDescent,',
+      '        fa:m.fontBoundingBoxAscent,fd:m.fontBoundingBoxDescent};',
+      '    }',
+      '    dd.querySelectorAll(".disc .c-pct").forEach(function(el){',
+      '      var b=el.getBBox(),cs=w.getComputedStyle(el);',
+      '      var digits=el.childNodes[0].textContent,tsp=el.querySelector("tspan");',
+      '      var parts=[{m:meas(parseFloat(cs.fontSize),cs.fontWeight,cs.fontFamily,digits),base:60}];',
+      '      if(tsp){var cs2=w.getComputedStyle(tsp);',
+      '        parts.push({m:meas(parseFloat(cs2.fontSize),cs.fontWeight,cs.fontFamily,tsp.textContent),base:56});}',
+      '      var advTotal=0;parts.forEach(function(p){advTotal+=p.m.adv;});',
+      '      var start=50-advTotal/2,acc=0,left=1e9,right=-1e9,top=1e9,bot=-1e9;',
+      '      parts.forEach(function(p){',
+      '        left=Math.min(left,start+acc-p.m.l);right=Math.max(right,start+acc+p.m.r);',
+      '        top=Math.min(top,p.base-p.m.a);bot=Math.max(bot,p.base+p.m.d);acc+=p.m.adv;',
+      '      });',
+      '      o.b.push({id:el.closest(".disc").getAttribute("data-id"),txt:el.textContent,',
+      '        cls:el.getAttribute("class"),',
+      '        dy:tsp?tsp.getAttribute("dy"):"",',
+      '        x:+b.x.toFixed(3),y:+b.y.toFixed(3),w:+b.width.toFixed(3),h:+b.height.toFixed(3),',
+      '        adv:+advTotal.toFixed(3),fa:+parts[0].m.fa.toFixed(3),fd:+parts[0].m.fd.toFixed(3),',
+      '        ink:{l:+left.toFixed(3),r:+right.toFixed(3),t:+top.toFixed(3),d:+bot.toFixed(3)}});',
+      '    });',
+      '    var fe=dd.querySelector(".c-pct-full");',
+      '    o.fullOuter=fe?encodeURIComponent(fe.outerHTML):"";',
+      '    return o;',
+      '  }',
+      '  function measure(){',
+      '    CFG.forEach(function(cfg,i){if(!res[i])res[i]=snap(i);});',
+      '    if(res.every(Boolean)){write();return;}',
+      '    if(++tries<=2100){setTimeout(measure,20);return;}',
+      '    CFG.forEach(function(cfg,i){',
+      '      if(res[i])return;',
+      '      var w=document.getElementById("f"+i).contentWindow,dd=w&&w.document;',
+      '      var t=dd?dd.querySelector(\'.disc[data-id="glm"] .c-pct\'):null;',
+      '      res[i]={err:"timeout",mut:w&&w.__MUT__?1:0,txt:t?t.textContent:"(none)"};',
+      '    });',
+      '    write();',
+      '  }',
+      '  setTimeout(measure,300);',
+      '})();',
+      '<\/script></body></html>',
+    ].join('\n');
+    const wrapperPath = join(profile, 'wrapper-pct.html');
+    writeFileSync(wrapperPath, wrapper.replace('__INDEX_URL__', JSON.stringify(pageUrl('index.html') + qs)));
+    const args = [
+      '--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+      `--user-data-dir=${join(profile, 'edge')}`, '--allow-file-access-from-files',
+      '--window-size=200,800', '--virtual-time-budget=45000',
+      '--dump-dom', pathToFileURL(wrapperPath).href,
+    ];
+    const r = spawnSync(EDGE, args, { encoding: 'utf8', timeout: 90000, maxBuffer: 64 * 1024 * 1024 });
+    return r.stdout || '';
+  } finally {
+    try { rmSync(profile, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+  }
+}
+
 // ── DOM 解析小工具（属性序无关） ──
 const attr = (tag, name) => {
   const m = tag.match(new RegExp(`${name}="([^"]*)"`));
@@ -506,6 +623,73 @@ async function main() {
       geoKV.tipH === '0' && parseFloat(geoKV.tipR) <= 80,
       `tipR=${geoKV.tipR} hidden=${geoKV.tipH}`);
     console.log(`geo4.观测：首盘 left+right=${geoKV.sym1} 末盘=${geoKV.sym2} docked-left 中心×2=${geoKV.dck} tooltip right=${geoKV.tipR}（hidden=${geoKV.tipH}）`);
+
+    // ⑰ 夜链票 01 · 圆心 % 上标＋100% 满格特判（问题 1）。
+    // 紧凑 dump 复用 ⑬ 的 COMP（GLM 最紧环 8%、Kimi 17%，均非满格→tspan 形态）；
+    // preset=100 的渲染产物与 getBBox 几何走 dumpGeoPct 通道（真实代码路径，见函数注）。
+    check('pct1.紧凑 dump：GLM 8 / Kimi 17 圆心 % 为上标 tspan（dy=-4 属性写法），恰 2 条',
+      COMP.includes('>8<tspan class="c-pct-pct" dy="-4">%</tspan></text>') &&
+      COMP.includes('>17<tspan class="c-pct-pct" dy="-4">%</tspan></text>') &&
+      (COMP.match(/class="c-pct-pct"/g) || []).length === 2, '');
+    check('pct1.app.js：tspan 上标模板＋c-pct-full 满格特判在场',
+      appjs.includes('<tspan class="c-pct-pct" dy="-4">%</tspan>') &&
+      appjs.includes('class="c-pct c-pct-full"'), '');
+    check('pct1.style.css：校准字号三规则在场且位于 body.compact .c-pct 基础规则之后（F4-2 同特异性后写覆盖）',
+      css.includes('body.compact .c-pct:has(> .c-pct-pct){font-size:22px}') &&
+      css.includes('body.compact .c-pct-pct{font-size:9px}') &&
+      css.includes('body.compact .c-pct-full{font-size:19px}') &&
+      css.indexOf('body.compact .c-pct-pct{') > css.indexOf('body.compact .c-pct{') &&
+      css.indexOf('body.compact .c-pct-full{') > css.indexOf('body.compact .c-pct{'), '');
+    const PCTRAW = dumpGeoPct('?static=1&dev=1&profile=compact');
+    const pRaw = (PCTRAW.match(/id="pct-results-done">([^<]*)</) || [])[1] || '';
+    const pKV = Object.fromEntries(pRaw.split(' ').filter(Boolean).map((s) => s.split('=')));
+    const pState = (i) => {
+      if (!pKV['s' + i] || pKV['s' + i] === 'null') return null;
+      try { return JSON.parse(decodeURIComponent(pKV['s' + i])); } catch { return null; }
+    };
+    const S1 = pState(0), S2 = pState(1); // s0={glm:72,kimi:78}；s1={glm:100,kimi:100}
+    const codingRows = (s) => (s && s.b ? s.b.filter((r) => r.id === 'glm' || r.id === 'kimi') : []);
+    // R1 裁定（协调者 2026-10-01）：字号是满足验收的手段，横向边界与 % 视觉比 [35%,45%]
+    // 才是约束。横向=票面字面断言，getBBox 度量盒语义（实测口径：数字进给 0.617em、
+    // getBBox 高=升部+降部）；字号按实测校准（22/9/19，见 style.css 注释），校准目标
+    // ≤37.5（38.5 留 ≥1 余量）随字面断言一并固化。纵向票面数值在墨迹语义上保持。
+    const vOk = (r) => r.ink.t >= 31.75 - 0.005 && r.ink.d <= 68.25 + 0.005;
+    const hOk = (r) => r.x >= 30.75 - 0.005 && r.x + r.w <= 69.25 + 0.005 && r.w <= 37.5;
+    check('pct1.headless %通道出活（wrapper 双 iframe 经 30s 轮询重渲染到位）',
+      !!S1 && !!S2, pRaw.slice(0, 160) || 'dump 无 pct-results-done——通道未出活');
+    check('pct1.preset 72/78 产物：c-pct-pct tspan 恰 2 条、dy=-4、无 c-pct-full（真实 discHTML 产物；handoff 盘不受累）',
+      !!S1 && S1.tspan === 2 && S1.pctpct === 2 && S1.full === 0 &&
+      codingRows(S1).every((r) => r.cls === 'c-pct' && r.dy === '-4' && (r.txt === '72%' || r.txt === '78%')) &&
+      (S1.b.find((r) => r.id === 'handoff') || {}).txt === '23',
+      JSON.stringify(S1));
+    check('pct1.几何·纵向（墨迹语义，票面数值）：ink.top ≥ 31.75 且 ink.bottom ≤ 68.25（内环洞上下各让 2）',
+      codingRows(S1).length === 2 && codingRows(S2).length === 2 &&
+      codingRows(S1).concat(codingRows(S2)).every(vOk),
+      JSON.stringify({ s1: S1 && S1.b, s2: S2 && S2.b }));
+    check('pct1.几何·横向（票面字面，getBBox 度量盒语义）：bbox.x ≥ 30.75 且 bbox.x+width ≤ 69.25 且宽 ≤37.5（38.5 留 ≥1 余量）——三 preset {72,78,100} 全过（字号经实测校准 22/9/19）',
+      codingRows(S1).length === 2 && codingRows(S2).length === 2 &&
+      codingRows(S1).concat(codingRows(S2)).every(hOk),
+      JSON.stringify({
+        s1: S1 && codingRows(S1).map((r) => ({ txt: r.txt, x: r.x, w: r.w })),
+        s2: S2 && codingRows(S2).map((r) => ({ txt: r.txt, x: r.x, w: r.w })),
+      }));
+    check('pct1.getBBox 语义实证：高=字体升部+降部（±1.6，canvas hinting 取整）且约为墨迹高 1.4 倍、宽≈进给总宽（±2）——Chromium SVG getBBox 是度量盒而非墨迹（留证；9 号 % 的墨迹可越出进给盒 ≤1，故宽度侧不作包含断言）',
+      codingRows(S1).concat(codingRows(S2)).every((r) =>
+        Math.abs(r.h - (r.fa + r.fd)) <= 1.6 && Math.abs(r.w - r.adv) <= 2 &&
+        (r.ink.d - r.ink.t) < r.h * 0.75),
+      JSON.stringify(S1 ? codingRows(S1) : null));
+    check('pct1.preset=100 产物：c-pct-full×2 且全文档零 tspan，外层标记为无 tspan 的票面形状',
+      !!S2 && S2.tspan === 0 && S2.pctpct === 0 && S2.full === 2 &&
+      codingRows(S2).every((r) => r.cls === 'c-pct c-pct-full' && r.txt === '100') &&
+      decodeURIComponent(S2.fullOuter).startsWith('<text x="50" y="60" class="c-pct c-pct-full"') &&
+      decodeURIComponent(S2.fullOuter).includes('>100</text>') &&
+      !decodeURIComponent(S2.fullOuter).includes('<tspan'),
+      JSON.stringify(S2));
+    check('pct1.preset=100 几何·纵向：c-pct-full 墨迹盒同票面纵向钳位（24 号"100"帽高 0.786×24≈18.9 SVG，top=41 达标）',
+      codingRows(S2).length === 2 && codingRows(S2).every(vOk),
+      JSON.stringify(S2 ? S2.b : null));
+    console.log(`pct1.观测：72/78 =${JSON.stringify(S1 ? codingRows(S1) : null)}`);
+    console.log(`pct1.观测：100   =${JSON.stringify(S2 ? codingRows(S2) : null)}`);
 
     // ⑦ 离线铁律：无外部引用（运行时源零 URL 字面量；dump 无外链资源；票 04 起含设置窗三件）
     const runtime = { 'index.html': html, 'style.css': css, 'app.js': appjs, 'data.js': datajs,

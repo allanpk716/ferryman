@@ -205,6 +205,21 @@ body.compact .disc.handoff svg .houtline{stroke-width:3.5; stroke:rgba(255,255,2
 body.compact .update-warn{font-size:9px; gap:2px 4px; padding:2px 4px; line-height:1.35}
 body.compact #btnUpdateInstall{font-size:9px; padding:0 4px}
 body.compact .widget.horizontal .grip{padding:2px 0}
+/* 夜链票 01（2026-09-30）· 圆心 % 上标＋满格特判（R1 实测校准）。推导模型修正为实测口径：
+   本机 system-ui 解析为微软雅黑，数字进给 0.617em（非旧模型的 0.5em），Chromium 对 SVG
+   text 的 getBBox 是字体度量盒（进给宽×升部+降部）而非墨迹。票面初值 28/24/12 按 0.5em
+   模型推导，实测度量盒宽 ≈47.0/≈46.3 超 38.5 横向硬界——按 R1 校准：
+   · 两位数母字号 28→22，仅限带 % 的套餐盘圆心（:has(> .c-pct-pct)）——交接盘计数、报错
+     ⚠ 复用 .c-pct 不在票内，保持 28 不受累；
+   · % 12→9（9/22≈41%，在 [35%,45%] 视觉比带内）；
+   · 100 特判 24→19。
+   校准后 preset {72,78,100} getBBox 宽 ≈36.7/36.6 ≤37.5（38.5 留 ≥1 余量），三 preset
+   全过票面横向字面断言（x≥30.75 且 x+width≤69.25）；纵向墨迹盒同步达标。断言留证
+   assert-static pct1 组。规则位于 body.compact .c-pct 基础规则之后——同特异性后写覆盖
+   （F4-2）。 */
+body.compact .c-pct:has(> .c-pct-pct){font-size:22px}
+body.compact .c-pct-pct{font-size:9px}
+body.compact .c-pct-full{font-size:19px}
 
 /* ── 票 04 · 设置窗（独立窗口 settings.html；按需创建、关闭即销毁）。
    0.2.4 卡片式重排：基准 ~13px、控件 12.5px；服务商每对象一张卡（.obj-card） ── */
