@@ -131,6 +131,20 @@ function dumpGeo(qs) {
       '    var lb=discs[discs.length-1].getBoundingClientRect().bottom;',
       '    var grip=d.querySelector(".grip");',
       '    var gt=grip?grip.getBoundingClientRect().top:-999;',
+      // 夜链票 03：grip ::after 胶囊条几何（getComputedStyle(el,"::after")）+ 把手盒高
+      //（17→10 高度预算）+ drag-region 属性在紧凑产物元素上在场 + hover 提亮规则
+      //（活 CSSOM；headless dump 通道无真实输入，合成事件实测不触发 CSS :hover——
+      // 机制实验 before=after=rgba(0, 0, 0, 0)、matches(":hover")=false，故 hover 态
+      // 按样式表里 :hover::after 规则的解析值断言）。颜色串去空格后再回传：geo 通道
+      // 结果按空格切 KV，rgba(232, 234, 240, .3) 的内含空格会切碎键值对。
+      '    var ga=grip?w.getComputedStyle(grip,"::after"):null;',
+      '    var grh=grip?grip.getBoundingClientRect().height:-999;',
+      '    var hovbg="";',
+      '    try{var sheets=d.styleSheets;',
+      '      for(var si=0;si<sheets.length&&!hovbg;si++){var rl=sheets[si].cssRules;',
+      '        for(var ri=0;ri<rl.length;ri++){var r2=rl[ri];',
+      '          if(r2.selectorText&&r2.selectorText.indexOf("grip:hover::after")>=0){hovbg=r2.style.backgroundColor||r2.style.background;break;}}}}catch(e){hovbg="ERR:"+e;}',
+      '    var nospace=function(s){return String(s).replace(/\\s+/g,"");};',
       // 夜链票 04：对称/重心/tooltip 同通道量测（r0/rN 必须在挂 docked-left 前量，
       // 才是悬浮态；tooltip 用 app.js 真实监听的事件名 mouseover/mousemove 复刻 hover）
       '    var r0=discs[0].getBoundingClientRect(),rN=discs[discs.length-1].getBoundingClientRect();',
@@ -146,7 +160,10 @@ function dumpGeo(qs) {
       '    write({done:1,pt:cs.paddingTop,pb:cs.paddingBottom,h:innerH.toFixed(2),',
       '      lb:lb.toFixed(2),bg:(innerH-6-lb).toFixed(2),gg:(gt-6).toFixed(2),',
       '      sym1:(r0.left+r0.right).toFixed(3),sym2:(rN.left+rN.right).toFixed(3),',
-      '      dck:dck.toFixed(3),tipR:tr.right.toFixed(3),tipH:tip.classList.contains("hidden")?1:0});',
+      '      dck:dck.toFixed(3),tipR:tr.right.toFixed(3),tipH:tip.classList.contains("hidden")?1:0,',
+      '      gaw:(ga?nospace(ga.width):"nogrip"),gah:(ga?nospace(ga.height):"nogrip"),',
+      '      gabg:(ga?nospace(ga.backgroundColor):"nogrip"),grh:grh.toFixed(2),',
+      '      gattr:grip&&grip.hasAttribute("data-tauri-drag-region")?1:0,hovbg:nospace(hovbg)});',
       '  }catch(e){write({err:String(e)});}}',
       '})();',
       '<\/script></body></html>',
@@ -607,7 +624,7 @@ async function main() {
       parseFloat(geoKV.bg) >= 8, `实际 ${geoKV.bg}`);
     check('geo.grip 顶距 grip.top−6 ≥ 3（顺手修 2→4）',
       parseFloat(geoKV.gg) >= 3, `实际 ${geoKV.gg}`);
-    console.log(`geo.观测：窗高(scrollHeight 收敛)=${geoKV.h} 末盘底=${geoKV.lb} 底距=${geoKV.bg} grip顶距=${geoKV.gg}（padding pt=${geoKV.pt} pb=${geoKV.pb}）`);
+    console.log(`geo.观测：窗高(scrollHeight 收敛)=${geoKV.h} 末盘底=${geoKV.lb} 底距=${geoKV.bg} grip顶距=${geoKV.gg} grip盒高=${geoKV.grh}（padding pt=${geoKV.pt} pb=${geoKV.pb}）`);
 
     // ⑯ 夜链票 04 · 内容收口对称＋贴边重心补偿＋tooltip 收口（几何通道扩展，见 dumpGeo）
     // 面板净宽 68=80−左右 inset 6；.disc 限宽 60 → 悬浮态左右缝各 10 逻辑 px 整数对称。
@@ -690,6 +707,28 @@ async function main() {
       JSON.stringify(S2 ? S2.b : null));
     console.log(`pct1.观测：72/78 =${JSON.stringify(S1 ? codingRows(S1) : null)}`);
     console.log(`pct1.观测：100   =${JSON.stringify(S2 ? codingRows(S2) : null)}`);
+
+    // ⑱ 夜链票 03 · 胶囊条把手（问题 3）：紧凑 grip 从隐形 ⠿ 字符（10px×0.35≈看不见）
+    // 改 22×3 胶囊条，hover 提亮 0.30→0.60 作唯一「可拖」提示；把手盒高 17→10（窗高链
+    // −7，经 fitHeight 上报自动收敛，Rust 零改动）。DOM 与 data-tauri-drag-region 原样，
+    // 不新增任何 click/dblclick 监听（0.2.3 原生拖动区吞双击红线）——app.js 自测向 grip
+    // 派发 dblclick/mousedown 的既有断言（ix.收起/恢复、ix.拖动手柄位移）必须仍绿。
+    check('grip3.style.css 胶囊三规则在场（藏字符/::after 画条/hover 提亮，spec 值逐字）＋横排紧凑守卫（竖条变体 out of scope，维持字符形态不让新几何泄进横排）',
+      css.includes("body.compact .grip{font-size:0; letter-spacing:0; width:100%; height:10px; padding:0; display:flex; align-items:center; justify-content:center}") &&
+      css.includes("body.compact .grip::after{content:''; width:22px; height:3px; border-radius:1.5px; background:rgba(232,234,240,.30)}") &&
+      css.includes('body.compact .grip:hover::after{background:rgba(232,234,240,.60)}') &&
+      css.includes('body.compact .widget.horizontal .grip{font-size:10px; letter-spacing:1px; padding:2px 0; width:auto; height:auto; display:block}') &&
+      css.includes('body.compact .widget.horizontal .grip::after{display:none}'), '');
+    check('grip3.::after 计算尺寸 22×3（改前无 ::after 规则=width auto 必红）',
+      geoKV.gaw === '22px' && geoKV.gah === '3px', `实际 w=${geoKV.gaw} h=${geoKV.gah}`);
+    check('grip3.基态胶囊背景 alpha 0.30（rgba(232,234,240,0.3)，computed）',
+      geoKV.gabg === 'rgba(232,234,240,0.3)', `实际 ${geoKV.gabg}`);
+    check('grip3.hover 提亮 0.30→0.60（活 CSSOM：body.compact .grip:hover::after 规则解析出 rgba(232,234,240,0.6)；headless dump 通道无真实输入、合成事件不触发 CSS :hover（机制实验实证），故 hover 态按样式表断言；基态 computed 0.3 见上条，两者同指针即 0.30→0.60）',
+      geoKV.hovbg === 'rgba(232,234,240,0.6)', `实际 ${geoKV.hovbg}`);
+    check('grip3.把手盒高 10（高度预算 17→10；border-box 含 padding 0）',
+      parseFloat(geoKV.grh) === 10, `实际 ${geoKV.grh}`);
+    check('grip3.紧凑 dump 产物：grip 元素仍带 data-tauri-drag-region 属性（DOM/原生拖动区原样）',
+      geoKV.gattr === '1', `实际 gattr=${geoKV.gattr}`);
 
     // ⑦ 离线铁律：无外部引用（运行时源零 URL 字面量；dump 无外链资源；票 04 起含设置窗三件）
     const runtime = { 'index.html': html, 'style.css': css, 'app.js': appjs, 'data.js': datajs,

@@ -176,7 +176,15 @@ body.compact .disc{max-width:60px}
 body.compact .widget.docked-left{padding-left:1px;padding-right:7px}
 body.compact .widget.docked-right{padding-left:7px;padding-right:1px}
 body.compact .tooltip{max-width:64px;font-size:10px;padding:5px 6px}
-body.compact .grip{font-size:10px; letter-spacing:1px; padding:0 4px 2px}
+/* 夜链票 03（2026-10-01）· 胶囊条把手（问题 3）：⠿ 10px×0.35 透明度≈隐形 →
+   font-size:0 藏字符（DOM 与 data-tauri-drag-region 原样；不新增任何 click/dblclick
+   监听——0.2.3 原生拖动区吞双击红线），::after 画 22×3 胶囊条，hover 提亮
+   0.30→0.60 作唯一「可拖」提示。width:100% 撑满面板净宽（80−左右 padding 4×2=72）
+   把手热区变大更好按；height 10 取代旧 grip 行高 17（窗高链 −7，经 fitHeight
+   上报自动收敛，Rust 零改动）。 */
+body.compact .grip{font-size:0; letter-spacing:0; width:100%; height:10px; padding:0; display:flex; align-items:center; justify-content:center}
+body.compact .grip::after{content:''; width:22px; height:3px; border-radius:1.5px; background:rgba(232,234,240,.30)}
+body.compact .grip:hover::after{background:rgba(232,234,240,.60)}
 body.compact .gear{display:none} /* 托盘菜单「设置…」可达 */
 body.compact .disc svg{width:48px; height:48px}
 body.compact .cap, body.compact .cdline{display:none} /* 文字行/倒计时行全隐 */
@@ -204,7 +212,11 @@ body.compact .conn-warn{font-size:9px; padding:0 2px 2px; white-space:normal}
 body.compact .disc.handoff svg .houtline{stroke-width:3.5; stroke:rgba(255,255,255,.4)}
 body.compact .update-warn{font-size:9px; gap:2px 4px; padding:2px 4px; line-height:1.35}
 body.compact #btnUpdateInstall{font-size:9px; padding:0 4px}
-body.compact .widget.horizontal .grip{padding:2px 0}
+/* 横排紧凑档守卫：竖条变体属 spec out of scope——上行胶囊新几何（width:100%/
+   display:flex/height:10px）只限竖排，这里还原字符形态，不让新几何泄进横排挤压盘列；
+   ::after 条一并关。选择器特异性 (0,3,1) 高于胶囊三条 (0,2,1) 且在后，覆写成立。 */
+body.compact .widget.horizontal .grip{font-size:10px; letter-spacing:1px; padding:2px 0; width:auto; height:auto; display:block}
+body.compact .widget.horizontal .grip::after{display:none}
 /* 夜链票 01（2026-09-30）· 圆心 % 上标＋满格特判（R1 实测校准）。推导模型修正为实测口径：
    本机 system-ui 解析为微软雅黑，数字进给 0.617em（非旧模型的 0.5em），Chromium 对 SVG
    text 的 getBBox 是字体度量盒（进给宽×升部+降部）而非墨迹。票面初值 28/24/12 按 0.5em
