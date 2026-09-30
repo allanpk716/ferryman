@@ -125,6 +125,20 @@ func TestValidateDockUpstreams(t *testing.T) {
 			&DockCfg{Active: "nope", Upstreams: map[string]DockUpstream{
 				"x": {BaseURL: "https://a.b", ModelMap: map[string]string{"default": "m"}}}},
 			"nope"},
+		// 票02：dialect/codex 枚举校验（合法形态零告警通过）
+		{"dialect 非法＝拒",
+			&DockCfg{Active: "x", Upstreams: map[string]DockUpstream{
+				"x": {BaseURL: "https://a.b", Dialect: "grpc", ModelMap: map[string]string{"default": "m"}}}},
+			"dialect"},
+		{"codex 否决位非法值＝拒",
+			&DockCfg{Active: "x", Upstreams: map[string]DockUpstream{
+				"x": {BaseURL: "https://a.b", Codex: "maybe", ModelMap: map[string]string{"default": "m"}}}},
+			"codex"},
+		{"openai_responses＋显式否决＝合法",
+			&DockCfg{Active: "x", Upstreams: map[string]DockUpstream{
+				"x": {BaseURL: "https://a.b", Dialect: DialectOpenAIResponses,
+					Codex: CodexUnsupported, ModelMap: map[string]string{"default": "m", "codex": "c1"}}}},
+			""},
 	}
 	for _, tc := range table {
 		cfg := Default()
@@ -193,6 +207,168 @@ func TestActiveUpstream(t *testing.T) {
 	}
 	if name, up := both.ActiveUpstream(); name != "b" || up.BaseURL != "https://b.example" || up.APIKey != "kb" {
 		t.Fatalf("并存须以新表为准: %q/%+v", name, up)
+	}
+}
+
+// ---- 票02（供应商接管）：dialect / codex 可用性 / codex 模型位 ----
+
+// TestLoadDockUpstreamDialectCodex 新字段解析：dialect（缺省归一 anthropic）、
+// codex 否决位、model_map 的 codex 主模型键（既有档位键之外的扩位键）。
+func TestLoadDockUpstreamDialectCodex(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "dialect.toml")
+	src := `
+[dock]
+listen = "127.0.0.1:15922"
+active = "glm"
+
+[dock.upstreams.glm]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+api_key = "sk-z"
+dialect = "anthropic"
+
+[dock.upstreams.glm.model_map]
+default = "glm-5.3"
+opus = "glm-5.3"
+codex = "glm-5.3"
+
+[dock.upstreams.kimi]
+base_url = "https://api.kimi.com/coding/"
+api_key = "sk-k"
+dialect = "openai_responses"
+
+[dock.upstreams.kimi.model_map]
+default = "kimi-for-coding"
+codex = "kimi-for-coding"
+
+[dock.upstreams.vetoed]
+base_url = "https://veto.example/api"
+codex = "unsupported"
+
+[dock.upstreams.vetoed.model_map]
+default = "m"
+`
+	if err := os.WriteFile(f, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ups := cfg.Dock.Upstreams
+
+	glm := ups["glm"]
+	if glm.Dialect != DialectAnthropic || glm.Codex != "" {
+		t.Fatalf("glm dialect/codex = %q/%q, want anthropic/\"\"", glm.Dialect, glm.Codex)
+	}
+	if glm.CodexModel() != "glm-5.3" {
+		t.Fatalf("glm codex 模型位 = %q, want glm-5.3", glm.CodexModel())
+	}
+	// 既有档位键语义不变（default/opus 原样解析）
+	if glm.ModelMap["default"] != "glm-5.3" || glm.ModelMap["opus"] != "glm-5.3" {
+		t.Fatalf("glm 既有档位键被破坏: %v", glm.ModelMap)
+	}
+
+	km := ups["kimi"]
+	if km.Dialect != DialectOpenAIResponses || km.Codex != "" {
+		t.Fatalf("kimi dialect/codex = %q/%q, want openai_responses/\"\"", km.Dialect, km.Codex)
+	}
+	if km.CodexModel() != "kimi-for-coding" {
+		t.Fatalf("kimi codex 模型位 = %q", km.CodexModel())
+	}
+
+	// 缺 dialect 的条目：归一 anthropic（缺省=既有行为）；codex 否决位显式在位
+	vt := ups["vetoed"]
+	if vt.Dialect != DialectAnthropic || vt.Codex != "unsupported" {
+		t.Fatalf("vetoed dialect/codex = %q/%q, want anthropic/unsupported", vt.Dialect, vt.Codex)
+	}
+	if got := vt.CodexAvailability(); got != CodexUnsupported {
+		t.Fatalf("vetoed 可用性 = %q, want unsupported", got)
+	}
+}
+
+// TestLoadDockUpstreamBadDialectCodex 非法枚举值拒启（Load 内含 Validate，
+// 错误文案须点名坏键）。
+func TestLoadDockUpstreamBadDialectCodex(t *testing.T) {
+	cases := []struct {
+		name    string
+		src     string
+		wantErr string
+	}{
+		{"dialect 非法",
+			"[dock]\nactive = \"x\"\n[dock.upstreams.x]\nbase_url = \"https://a.b\"\ndialect = \"grpc\"\nmodel_map = { default = \"m\" }\n",
+			"dialect"},
+		{"codex 非法",
+			"[dock]\nactive = \"x\"\n[dock.upstreams.x]\nbase_url = \"https://a.b\"\ncodex = \"maybe\"\nmodel_map = { default = \"m\" }\n",
+			"codex"},
+	}
+	for _, tc := range cases {
+		f := filepath.Join(t.TempDir(), "bad.toml")
+		if err := os.WriteFile(f, []byte(tc.src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(f, false)
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("%s: err = %v, want 含 %q", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
+// TestCodexAvailabilityDerivation 可用性推导矩阵：dialect 推导＋显式否决覆盖。
+func TestCodexAvailabilityDerivation(t *testing.T) {
+	table := []struct {
+		name string
+		up   DockUpstream
+		want string
+	}{
+		{"零值（旧形态结构体）＝缺省 anthropic→需翻译", DockUpstream{}, CodexTranslation},
+		{"显式 anthropic→需翻译", DockUpstream{Dialect: DialectAnthropic}, CodexTranslation},
+		{"openai_responses→原生透传", DockUpstream{Dialect: DialectOpenAIResponses}, CodexNative},
+		{"显式否决盖过原生推导", DockUpstream{Dialect: DialectOpenAIResponses, Codex: CodexUnsupported}, CodexUnsupported},
+		{"显式否决盖过翻译推导", DockUpstream{Dialect: DialectAnthropic, Codex: CodexUnsupported}, CodexUnsupported},
+	}
+	for _, tc := range table {
+		if got := tc.up.CodexAvailability(); got != tc.want {
+			t.Errorf("%s: 可用性 = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// codex 模型位：缺键为空（不凭空造默认）
+	var zero DockUpstream
+	if got := zero.CodexModel(); got != "" {
+		t.Fatalf("缺 codex 键的条目 CodexModel = %q, want 空", got)
+	}
+}
+
+// TestDockUpstreamNewFieldsLegacyZeroChange 旧配置（无新字段）行为零变化锁死：
+// 表条目与旧单值兜底包装的 dialect 缺省一律 anthropic、codex 一律空——新字段
+// 缺省＝旧行为零变化（票 02 解析纪律）。
+func TestDockUpstreamNewFieldsLegacyZeroChange(t *testing.T) {
+	src := `
+[dock]
+active = "z"
+
+[dock.upstreams.z]
+base_url = "https://z.example/api"
+
+[dock.upstreams.z.model_map]
+default = "m"
+`
+	f := writeCfg(t, src)
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	up := cfg.Dock.Upstreams["z"]
+	if up.Dialect != DialectAnthropic || up.Codex != "" {
+		t.Fatalf("旧形态表条目 dialect/codex = %q/%q, want anthropic/\"\"", up.Dialect, up.Codex)
+	}
+	if got := up.CodexAvailability(); got != CodexTranslation {
+		t.Fatalf("旧形态条目可用性 = %q, want translation（既有语义：anthropic 需翻译）", got)
+	}
+	// 旧单值兜底包装（无表形态）同款缺省
+	legacy := &DockCfg{UpstreamBaseURL: "http://127.0.0.1:15721"}
+	_, lup := legacy.ActiveUpstream()
+	if lup == nil || lup.Dialect != DialectAnthropic || lup.Codex != "" {
+		t.Fatalf("旧单值包装 dialect/codex = %q/%q, want anthropic/\"\"", lup.Dialect, lup.Codex)
 	}
 }
 

@@ -178,10 +178,22 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	signal.Notify(srcCh, os.Interrupt)
 	defer signal.Stop(srcCh)
 	go watchInterruptOnce(ctx, srcCh, marker.mark)
+	// 票02（供应商接管，F4）：活跃上游内存态持有者——渡口逐请求读它（热切换
+	// seam），/provider_switch 管理端点对它换绑＋落盘（provider_switch.go）。
+	// 渡口未启用（[dock] 缺失）＝nil，端点不装。落盘路径与守护 Load 同源解析
+	// （显式参数 > FERRYMAN_CONFIG > ~/ferryman/config.toml 单源）。
+	var dockState *dockUpstreamState
+	if cfg.Dock != nil {
+		dockState = newDockUpstreamState(cfg.Dock, config.ResolveConfigPath(""))
+	}
+	var providerSwitchHook ProviderSwitchFunc
+	if dockState != nil {
+		providerSwitchHook = dockState.switchTo
+	}
 	ln, srv, err := ListenAndServeWithShutdown(d, cfg.Server.Port, token, func() {
 		marker.mark("shutdown端点")
 		cancel()
-	})
+	}, providerSwitchHook)
 	if err != nil {
 		// 唯一化（钩子自举的并发兜底）：绑定失败 = 端口已有监听者
 		if AlreadyRunning(cfg.Server.Port, token) {
@@ -237,6 +249,9 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 			newDock := func() (*dock.Server, error) {
 				return dock.NewWithOptions(cfg.Dock.Listen, up.BaseURL, dock.Options{
 					Upstream: up,
+					// 票02（F4）：逐请求活跃上游 seam——热切换即时生效（在途请求
+					// 持既有上游跑完）；dockState 恒非 nil（本分支 cfg.Dock 非 nil）。
+					Resolver: dockState,
 					Accounts: acc,
 					Alert:    dock.AlertViaNotify(cfg),
 				})

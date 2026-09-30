@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ferryman/internal/accounts"
@@ -57,11 +58,49 @@ type Options struct {
 	// 开启（D13/D15：无开关）——非本地上游即改写＋真钥替换；上游为本地中转
 	// 地址由守卫强制退透传（防双重改写）。nil＝纯透传不观察（票01 旧形状）。
 	Upstream *config.DockUpstream
+	// Resolver 逐请求活跃上游解析 seam（票02 供应商接管，F4）：非 nil 时渡口
+	// 对每个新请求向它要当前活跃条目——热切换即时生效；在途请求/SSE 流持有
+	// 进入时的视图（上游连接/真钥/改写配置）自然跑完。nil＝构造期固化（票01
+	// 既有行为零变化，Upstream/target 即全部）。实现须并发安全（daemon 生产
+	// 装配为原子换绑持有者，internal/daemon/provider_switch.go）。
+	Resolver UpstreamResolver
 	// Accounts dock 科目账本；nil＝不记账（旧测试零改动）。
 	Accounts *accounts.Accounts
 	// Alert 形态漂移推送函数（daemon 侧给 AlertViaNotify(cfg) 的闭包）；
 	// nil＝只记日志不推送。
 	Alert func(title, message string)
+}
+
+// UpstreamResolver 逐请求活跃上游解析 seam（票02，F4："渡口对每个新请求读
+// 内存态活跃供应商"）。config.DockCfg 自带同名方法即天然实现；daemon 生产
+// 装配传入原子换绑持有者，测试可注桩。
+type UpstreamResolver interface {
+	ActiveUpstream() (string, *config.DockUpstream)
+}
+
+// upstreamView 单请求生效的上游视图（票02，F4 边界语义的载体）：目标/改写
+// 配置/真钥三件一套，ServeHTTP 入口解析一次——在途请求与本 view 同生命周期
+// （切上游不影响已进入的请求），新请求即刻拿新视图。
+type upstreamView struct {
+	target    *url.URL
+	rewriteOn bool
+	rwCfg     RewriteConfig
+	apiKey    string
+}
+
+// newUpstreamView 由上游条目派生视图：URL 解析＋守卫改写准入（与构造期
+// resolveRewrite 同一判据单源；本地中转地址/缺 default＝透传）。
+func newUpstreamView(up *config.DockUpstream) (*upstreamView, string, error) {
+	target, err := url.Parse(up.BaseURL)
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		return nil, "", fmt.Errorf("dock: 上游地址无效: %q", up.BaseURL)
+	}
+	v := &upstreamView{target: target}
+	rw, ok, reason := resolveRewrite(true, up.BaseURL, up.ModelMap, up.TextOnly)
+	if ok {
+		v.rewriteOn, v.rwCfg, v.apiKey = true, rw, up.APIKey
+	}
+	return v, reason, nil
 }
 
 // reqMeta 单请求记账元数据。指针经 context 从 handler 带到出站 transport
@@ -137,6 +176,14 @@ type Server struct {
 
 	srv *http.Server
 
+	// 票02（供应商接管，F4）：逐请求活跃上游 seam。resolver nil＝固定模式
+	// （fixedView＝构造期视图，票01 行为零变化）；非 nil＝每请求解析（见
+	// resolveView）。lastUpstream 是活跃条目标签的换绑日志锁存（同条目逐请求
+	// 解析不重复记行；指针比较见 noteUpstream）。
+	resolver     UpstreamResolver
+	fixedView    *upstreamView
+	lastUpstream atomic.Pointer[string]
+
 	// 票02 优雅排水（热修 1）：在途记账请求注册表＋排水广播。drainCh 关闭
 	// 即全体收尾（闸门转 504、drainBody 转注入）；drained 为幂等位。字段
 	// 一律经 mu 访问（expireDrain 从 Shutdown 调用方 goroutine 侧进来）。
@@ -183,8 +230,10 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 	// 票01 W1：统计读侧挂到快照库（server 回写、store 只读转发）——daemon 手里
 	// 只有 DockSnap，这是统计出渡口的唯一既有通道，不新增装配面。
 	s.store.stats = s.stats
-	if o.Upstream != nil {
+	if o.Upstream != nil || o.Resolver != nil {
 		s.drift = NewDriftTracker(o.Alert)
+	}
+	if o.Upstream != nil {
 		// 票01（D13/D15）：改写隐含开启——无开关，守卫单源裁决（本地中转
 		// 地址退透传；非本地缺 default 退透传——配置层已拒，构造期兜底）。
 		rw, ok, reason := resolveRewrite(true, upstreamBaseURL, o.Upstream.ModelMap, o.Upstream.TextOnly)
@@ -197,15 +246,24 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 	if o.Accounts != nil {
 		s.acc = o.Accounts
 	}
+	// 票02：构造期视图固化（固定模式的逐请求零开销快照；resolver 模式的
+	// 悬空/解析失败回落位）。既有字段（rewriteOn/rwCfg/apiKey/target）保留
+	// 原义——构造期日志与既有测试面不动。
+	s.fixedView = &upstreamView{target: s.target, rewriteOn: s.rewriteOn, rwCfg: s.rwCfg, apiKey: s.apiKey}
+	s.resolver = o.Resolver
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			// 票02（F4）：出站目标取本请求入口解析的视图（resolver 模式经
+			// context 带来；固定模式/防御路径回落构造期视图）——在途请求持有
+			// 既有上游连接跑完，切上游只影响新请求。
+			v := s.viewOf(pr.In.Context())
 			// SetURL 保留入站路径与 query（join 语义）；Host 显式指上游——
 			// 客户端 Host 不外泄、后端看到的就是它自己（F7 断言同款）
-			pr.SetURL(target)
-			pr.Out.Host = target.Host
-			if s.rewriteOn {
+			pr.SetURL(v.target)
+			pr.Out.Host = v.target.Host
+			if v.rewriteOn {
 				// 改写模式出站头卫生（透传模式零处理——票01 保真语义不动）
-				sanitizeOutboundHeaders(pr.Out.Header, s.apiKey)
+				sanitizeOutboundHeaders(pr.Out.Header, v.apiKey)
 				// 删 Accept-Encoding 让 Transport 自加 gzip 并透明解压：
 				// 客户端原值照抄会把 gzip 字节喂进 usage 扫描器；删掉后
 				// Transport 自加并自行解压，扫描只见明文（透传模式不删——
@@ -249,6 +307,63 @@ func isCountTokens(method, path string) bool {
 	return method == http.MethodPost && strings.HasSuffix(path, "/v1/messages/count_tokens")
 }
 
+// ctxKeyUpstream 每请求上游视图的 context 私有键（ServeHTTP 入口解析→
+// Rewrite 闭包取用；在途请求持有同一视图跑完＝F4 边界）。
+type ctxKeyUpstream struct{}
+
+// resolveView 每请求一次的活跃上游视图解析（票02，F4 seam 唯一入口）：
+//   - 固定模式（resolver nil）：直返构造期视图，零额外开销，票01 行为不变；
+//   - resolver 模式：逐请求向 resolver 要当前活跃条目并派生整套视图（目标/
+//     改写配置/真钥一次换齐，绝不半换）。条目悬空（nil）或地址无效＝回落
+//     构造期视图（与 ActiveUpstream 防御路径同纪律），守卫拒绝的条目如实
+//     降透传并经 noteUpstream 记一次原因。
+func (s *Server) resolveView() *upstreamView {
+	if s.resolver == nil {
+		return s.fixedView
+	}
+	name, up := s.resolver.ActiveUpstream()
+	if up == nil {
+		return s.fixedView
+	}
+	v, reason, err := newUpstreamView(up)
+	if err != nil {
+		logger.Printf("[dock] %v（活跃条目无效，回落构造期上游）", err)
+		return s.fixedView
+	}
+	s.noteUpstream(name, up, v, reason)
+	return v
+}
+
+// viewOf Rewrite 闭包取视图：context 带（resolver 模式每请求在
+// ServeHTTP 入口塞入）用带的；否则构造期视图（固定模式/防御路径）。
+func (s *Server) viewOf(ctx context.Context) *upstreamView {
+	if v, ok := ctx.Value(ctxKeyUpstream{}).(*upstreamView); ok && v != nil {
+		return v
+	}
+	return s.fixedView
+}
+
+// noteUpstream 活跃条目标签变化时记一行（热切换可见性）：同条目逐请求解析
+// 不重复记；守卫拒绝（透传）时附原因。标签比较经原子锁存，并发竞争最多
+// 多记一行，无害。
+func (s *Server) noteUpstream(name string, up *config.DockUpstream, v *upstreamView, guardReason string) {
+	label := name
+	if label == "" {
+		label = "旧单值" // 无表兜底包装（与 serve 装配横幅同词）
+	}
+	if old := s.lastUpstream.Swap(&label); old != nil && *old == label {
+		return
+	}
+	mode := "改写"
+	if !v.rewriteOn {
+		mode = "透传"
+		if guardReason != "" {
+			mode += "：" + guardReason
+		}
+	}
+	logger.Printf("活跃上游: %s → %s（%s）", label, up.BaseURL, mode)
+}
+
 // ServeHTTP 渡口入口（票06 双模式）：
 //   - 纯透传（rewriteOn=false 且不记账）：与票01 逐字同路径——仅 /v1/messages
 //     POST 读体捕获快照，其余流式直通；
@@ -256,6 +371,14 @@ func isCountTokens(method, path string) bool {
 //     状态码，代理返回后落一行 dock 科目（任何记账失败不影响转发）；
 //   - 改写模式：体改写发生在进代理前；快照存改写前原始体。
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 票02（供应商接管，F4）：每请求入口解析一次活跃上游视图——resolver 模式
+	// 下新请求即刻新上游；本请求后续全程（改写判定/出站目标/真钥）用同一视
+	// 图，在途请求/SSE 流据此持有既有上游连接自然跑完。固定模式与构造期固化
+	// 同值，行为零变化。
+	view := s.resolveView()
+	if s.resolver != nil {
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyUpstream{}, view))
+	}
 	// 票03：自产重放（追加重放带 x-ferryman-replay 标记头）不入快照、不喂
 	// 漂移——追加体会顶替主快照（见 replayguard.go）；dock 科目照记（record
 	// 以 messagesPost 计，重放也有传输流水）。
@@ -265,7 +388,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	capture := messagesPost && !replay
 	record := s.acc != nil && (messagesPost || countTok)
 
-	needBody := capture || record || (s.rewriteOn && countTok)
+	needBody := capture || record || (view.rewriteOn && countTok)
 	var body []byte
 	if needBody {
 		b, err := io.ReadAll(r.Body)
@@ -286,14 +409,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.drift.Observe(r.Header.Get("Anthropic-Beta"), body)
 	}
 
-	// 改写独立于记账：不接账本时改写照常生效（rewriteOn 才有此分支）。
+	// 改写独立于记账：不接账本时改写照常生效（view.rewriteOn 才有此分支）。
 	// count_tokens 仅同映射 model（不做图片降级，其余键不动）。
 	// rewritten/rewriteDone 为请求局部值（并发请求不共享任何状态）。
 	var rewritten Rewritten
 	rewriteDone := false
-	if s.rewriteOn && (capture || countTok) {
+	if view.rewriteOn && (capture || countTok) {
 		if capture {
-			rw, err := Rewrite(body, s.rwCfg)
+			rw, err := Rewrite(body, view.rwCfg)
 			if err != nil {
 				// 非法体：原体透传交上游校验应答（不替上游造 400）
 				logger.Printf("改写失败（原体透传）: %v", err)
@@ -301,7 +424,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				applyRewritten(r, body, rw.Body)
 				rewritten, rewriteDone = rw, true
 			}
-		} else if nb, mi, mo, ok := mapCountTokensModel(body, s.rwCfg); ok {
+		} else if nb, mi, mo, ok := mapCountTokensModel(body, view.rwCfg); ok {
 			applyRewritten(r, body, nb)
 			rewritten, rewriteDone = Rewritten{Body: nb, ModelIn: mi, ModelOut: mo}, true
 		}
@@ -311,7 +434,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if record {
 		meta = &reqMeta{start: time.Now()}
 		meta.session = ExtractSessionID(body)
-		if s.rewriteOn {
+		if view.rewriteOn {
 			meta.mode = modeRewrite
 			if rewriteDone {
 				meta.modelIn, meta.modelOut = rewritten.ModelIn, rewritten.ModelOut

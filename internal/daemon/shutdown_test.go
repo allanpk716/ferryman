@@ -107,7 +107,7 @@ func newShutdownFixture(t *testing.T, port int, token string) *shutdownFixture {
 		cancel()
 		f.fired <- struct{}{}
 	}
-	ln, srv, err := ListenAndServeWithShutdown(&stopDaemon{}, port, token, hook)
+	ln, srv, err := ListenAndServeWithShutdown(&stopDaemon{}, port, token, hook, nil)
 	if err != nil {
 		t.Fatalf("ListenAndServeWithShutdown: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestShutdownRejectsNonLoopback(t *testing.T) {
 	// handler 级：伪造 RemoteAddr——真 listener 只绑 127.0.0.1，攻面在装配层；
 	// 端点仍按来源逐请求复核（纵深），测试据此覆盖拒收半边。
 	var called int
-	h := makeHandler(&stopDaemon{}, "tok-shut", func() { called++ })
+	h := makeHandler(&stopDaemon{}, "tok-shut", func() { called++ }, nil)
 
 	// 非 loopback（TEST-NET-3）+ 正确 token → 403，钩子不动
 	//（target 用 request-target 原文——RequestURI 精确匹配与线上同形）

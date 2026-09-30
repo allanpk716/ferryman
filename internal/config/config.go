@@ -528,8 +528,16 @@ func parseDockUpstreamsTable(raw any) (map[string]DockUpstream, error) {
 		}
 		e := DockUpstream{
 			BaseURL:    pyStr(get(et, "base_url", "")),
-			APIKey:     pyStr(get(et, "api_key", "")),                 // 空＝未激活预置，解析不受影响
-			BalanceURL: pyStr(get(et, "balance_url", "")),             // 空＝不配不显示（D11）
+			APIKey:     pyStr(get(et, "api_key", "")),     // 空＝未激活预置，解析不受影响
+			BalanceURL: pyStr(get(et, "balance_url", "")), // 空＝不配不显示（D11）
+			Codex:      pyStr(get(et, "codex", "")),       // 票02：否决位；空＝按 dialect 推导
+		}
+		// 票02（供应商接管）：dialect 解析层归一——缺省/空一律 anthropic（＝既有
+		// 行为零变化），非法值不在解析层拦（枚举校验归 Validate，与 tuning.mode
+		// 同分工）。
+		e.Dialect = pyStr(get(et, "dialect", DialectAnthropic))
+		if e.Dialect == "" {
+			e.Dialect = DialectAnthropic
 		}
 		if rawMM, ok := et["model_map"]; ok {
 			mm, ok := rawMM.(map[string]any)

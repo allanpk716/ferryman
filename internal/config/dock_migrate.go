@@ -37,14 +37,17 @@ var dockPresetUpstreams = []struct {
 		BaseURL:    "https://open.bigmodel.cn/api/anthropic",
 		ModelMap:   map[string]string{"default": "glm-5.3", "opus": "glm-5.3", "sonnet": "glm-5.3", "haiku": "glm-5.3-flash"},
 		BalanceURL: "https://open.bigmodel.cn/api/user/balance",
+		Dialect:    DialectAnthropic, // 票02：预置皆 Anthropic 方言（缺省同值；显式在位使内存视图与回读产物逐字段相等）
 	}},
 	{"kimi", DockUpstream{
 		BaseURL:  "https://api.kimi.com/coding/",
 		ModelMap: map[string]string{"default": "kimi-for-coding", "sonnet": "kimi-for-coding", "opus": "k3", "haiku": "k3-256k"},
+		Dialect:  DialectAnthropic,
 	}},
 	{"deepseek", DockUpstream{
 		BaseURL:  "https://api.deepseek.com/anthropic",
 		ModelMap: map[string]string{"default": "deepseek-flash", "sonnet": "deepseek-flash", "haiku": "deepseek-flash", "opus": "deepseek-v4-pro"},
+		Dialect:  DialectAnthropic,
 	}},
 }
 
@@ -99,6 +102,7 @@ func MigrateDockFirstBoot(path string, cfg *Config) error {
 			ModelMap:   dcfg.ModelMap,
 			TextOnly:   dcfg.TextOnly,
 			BalanceURL: dcfg.BalanceURL,
+			Dialect:    DialectAnthropic, // 旧单值＝既有 Anthropic 线协议（票02 缺省归一）
 		},
 	}
 	for _, pr := range dockPresetUpstreams {
