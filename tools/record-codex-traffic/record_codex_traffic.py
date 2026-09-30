@@ -7,7 +7,7 @@
 转完即删（默认），绝不入 git。
 
 两条红线：
-  1. 原始捕获含真实密钥，只允许落本机 git 忽略目录（默认 .scratch/），
+  1. 原始捕获含真实密钥，只允许落本机 git 忽略目录（默认 仓库根/.scratch/recorded/，已入 .gitignore），
      转完即删；--keep-raw 仅排查时用，用完必须手工删。
   2. 工具只自动清"鉴权类"敏感物（鉴权头 + 真形密钥串）；payload 里的
      session_id/邮箱/代码片段等仍须人工复核后才可并入 internal/dock/fixtures/。
@@ -317,7 +317,7 @@ def main(argv=None):
     p_rec = sub.add_parser("record", help="本机捕获代理：录 codex→渡口 原始流量")
     p_rec.add_argument("--listen", default="127.0.0.1:15799", help="捕获口 host:port")
     p_rec.add_argument("--upstream", default="http://127.0.0.1:15722", help="渡口地址")
-    p_rec.add_argument("--out", default="../../.scratch/recorded", help="捕获根目录（须被 git 忽略）")
+    p_rec.add_argument("--out", default=str(Path(__file__).resolve().parents[2] / ".scratch" / "recorded"), help="捕获根目录（默认=仓库根/.scratch/recorded，已被 .gitignore 忽略）")
     p_rec.set_defaults(func=cmd_record)
 
     p_san = sub.add_parser("sanitize", help="脱敏门禁：剥鉴权/密钥 → 候选夹具 → 删原始捕获")
