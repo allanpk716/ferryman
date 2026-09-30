@@ -163,8 +163,8 @@ body.tray-collapsed #restoreBtn{display:block}
 
 /* ── 0.2.3 紧凑外观档（body.compact；窗口尺寸由 Rust design_size("compact")
    =80×322 联动，实测推导见 lib.rs COMPACT_* 注释——CSS 与 Rust 常量互指，
-   改一边必须核另一边；0.2.5 迷你标签行使内容高 253→303，272→322） ── */
-body.compact .widget{gap:4px; padding:8px 4px 4px}
+   改一边必须核另一边；0.2.5 迷你标签行使内容高 253→303，272→322；0.2.7 票 02：padding 8/4/4→10/4/14，底距=14−6=8、顶距=10−6=4，内容/窗高 +12） ── */
+body.compact .widget{gap:4px; padding:10px 4px 14px}
 body.compact .grip{font-size:10px; letter-spacing:1px; padding:0 4px 2px}
 body.compact .gear{display:none} /* 托盘菜单「设置…」可达 */
 body.compact .disc svg{width:48px; height:48px}
