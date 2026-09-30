@@ -94,17 +94,27 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	//    由下方 2.5 的 machine-waiting 豁免接住放行；只有未停车窗照旧闭。
 	d.NoteGatePrompt(agent, sessionID)
 
-	// 1. 魔法前缀：单次放行（「强续」为主——CC 下 ! 首字符触发 bash 模式，!! 打不出来；
-	//    !! 保留匹配以兼容 Codex）
+	// 1. 魔法前缀：放行 + 解除本轮拦截（「强续」为主——CC 下 ! 首字符触发 bash
+	//    模式，!! 打不出来；!! 保留匹配以兼容 Codex）。强续=用户明确选择留在本
+	//    会话，必须清 pending：inWindow 含 `|| pok`，pending 不清则活跃会话被
+	//    永久卡在拦截窗口（2026-09-30 06703fbd 案：强续放行后 58.6s 的下一条
+	//    消息仍被分支6第3次拦截——pending 原只在闲置≥summarize_s 的新周期才清，
+	//    正在对话的用户永不满足，强续沦为每条消息都要带前缀的跑步机）。清除后
+	//    若再长闲置，从分支7警告重新起圈，拦截保护不丢。
 	if strings.HasPrefix(prompt, "强续") || strings.HasPrefix(prompt, "!!") {
 		d.Stats.addBypass()
 		stB := d.Ledger.Get(agent, sessionID) // 只取一次（lineage 尽力而为）
+		if stB == nil {
+			stB = d.Ledger.GetByPath(transcriptPath) // 与分支6/7 的 pending 键同源解析
+		}
 		peak := 0
 		if stB != nil {
 			d.Ledger.Mu().Lock()
 			peak = stB.PeakCtx
 			d.Ledger.Mu().Unlock()
+			d.Pending.Clear([2]string{agent, stB.SessionID})
 		}
+		d.Pending.Clear([2]string{agent, sessionID})
 		d.Acct("bypass", stB, agent, sessionID, "",
 			accounts.Fields{"prefix_tokens": peak})
 		return map[string]any{"decision": "allow", "reason": "bypass"}
@@ -192,7 +202,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 				"  2. 新会话开场会自动收到两样东西：干到哪的交接 + 你刚这句原话"+
 				"（所以不用重新打字）\n"+
 				"  3. 随便发一个字（如「继续」）——它会接着你刚那句继续干\n"+
-				"不想换会话：以「强续」开头重发你的内容，本会话强制继续"+
+				"不想换会话：以「强续」开头重发你的内容，本会话强制继续、本轮拦截解除"+
 				"（注意：原话只随 /clear 自动带回，强续必须自己带上）。\n"+
 				"交接文档: %s", idle/60, h.Path),
 			"suppressOriginalPrompt": true,
@@ -212,8 +222,9 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		d.Store.SavePendingPrompt(snap.sid, prompt)
 		return map[string]any{"decision": "block",
 			"reason": fmt.Sprintf("此会话闲置超时被拦（第 %d 次）；你刚输入的内容已保存、不会丢。\n"+
-				"继续干活：每次以「强续」开头发消息（每一条都会放行，无需数次数，"+
-				"内容须自己带上）；或 /clear 换会话（若交接已生成会自动注入"+
+				"继续干活：以「强续」开头重发这条内容——放行同时解除本轮拦截"+
+				"（之后的正常消息不再拦，直到再次长时间闲置；原话须自己带上）；"+
+				"或 /clear 换会话（若交接已生成会自动注入"+
 				"交接与你的原话）。", n),
 			"suppressOriginalPrompt": true}
 	}
