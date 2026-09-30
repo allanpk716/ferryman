@@ -148,6 +148,7 @@ func (w *Worker) do(item map[string]any) {
 	}
 	res := make(chan ferryRes, 1)
 	pr := w.Providers[w.Cfg.FerryProvider] // 缺键 → 零值 Provider（未配置摆渡必败 → 骨架）
+	timeoutS := FerryWallTimeoutS // 起协程前快照一次：遗弃协程/定时器/超时文案共用同值，不与测试收尾恢复全局的写竞争（NUC10 race 实证 2026-09-30）
 	go func() {
 		// Python _run 线程内 `except Exception: result["error"]=e`——线程内
 		// 异常带回主线程；Go panic 跨 goroutine 不传播，recover 后按错误回带
@@ -157,10 +158,10 @@ func (w *Worker) do(item map[string]any) {
 				res <- ferryRes{err: fmt.Errorf("%v", r)}
 			}
 		}()
-		md, meta, err := w.Ferry(path, pr, FerryWallTimeoutS, agent)
+		md, meta, err := w.Ferry(path, pr, timeoutS, agent)
 		res <- ferryRes{md: md, meta: meta, err: err}
 	}()
-	timer := time.NewTimer(time.Duration(FerryWallTimeoutS * float64(time.Second)))
+	timer := time.NewTimer(time.Duration(timeoutS * float64(time.Second)))
 	defer timer.Stop()
 	var r ferryRes
 	timedOut := false
@@ -172,7 +173,7 @@ func (w *Worker) do(item map[string]any) {
 	if timedOut || r.err != nil {
 		var e error
 		if timedOut {
-			e = fmt.Errorf("摆渡墙钟超时 %gs", FerryWallTimeoutS) // Python TimeoutError 文案逐字
+			e = fmt.Errorf("摆渡墙钟超时 %gs", timeoutS) // Python TimeoutError 文案逐字
 		} else {
 			e = r.err
 		}
