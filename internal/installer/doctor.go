@@ -23,6 +23,12 @@
 //     条目装进"开关显式开"的探针交 dock.ResolveRewrite 单源裁决；新增渡口上游
 //     检查组 CheckDockUpstreams（active 可解析/非本地条目 default/缺钥逐条提示/
 //     deepseek 官方边界声明）。
+//   - 服务商接管票05（2026-09-30 夜链）：新三项 provider_cc_dock /
+//     provider_codex_dock / provider_orca_codex——CC 指向渡口、codex 两份指向
+//     渡口且 wire_api=responses 且 hooks 旗标在位、orca codex 健康（配置存在/
+//     指向渡口/认证形态合法）。判定单源 internal/provider（与接管写入器同一套
+//     解析）；[dock] 未配置 → 三项显式 not_checked（清单 24→27 的计数同步见
+//     doctor_test 的结论行公式）。
 package installer
 
 import (
@@ -44,6 +50,7 @@ import (
 	"ferryman/internal/dock"
 	"ferryman/internal/ferry"
 	"ferryman/internal/prices"
+	"ferryman/internal/provider"
 	"ferryman/internal/update"
 )
 
@@ -686,7 +693,11 @@ type doctorDeps struct {
 	// 参数传入（internal 包不 import cmd——显式传参不做全局单例）；空串/dev
 	// 都按「非 release 构建」呈现。
 	Version string
-	Out     io.Writer
+	// OrcaCodexHome orca 生态 CODEX_HOME（服务商接管体检用，票05）；空 = 按
+	// <Home>/AppData/Roaming/orca/codex-runtime-home/home 解析（与
+	// daemon.CodexWatchDirs 的 orca 目录解析同位）。测试注入临时目录。
+	OrcaCodexHome string
+	Out           io.Writer
 }
 
 // HomeDir / RepoRoot 目标解析导出面（票05：agent 面 MCP doctor 经此取 HOME/
@@ -851,7 +862,56 @@ func doctorResults(d doctorDeps) []CheckResult {
 		exeDir = filepath.Dir(targetExe)
 	}
 	out = append(out, CheckUpdateResidues(dataDir, exeDir).named("update_residues"))
+	// 服务商接管三项体检（票05，spec Implementation Decisions 7）：
+	// provider_cc_dock / provider_codex_dock / provider_orca_codex——判定单源
+	// internal/provider（与写入器同一套解析与目标地址派生，绝不两套判据）。
+	// [dock] 未配置/配置加载失败 → 三项显式 not_checked（接管目标不可判——
+	// 如实标注不伪造）。续接末位：既有检查项顺序零漂移。
+	out = append(out, providerCheckResults(cfg, err, d)...)
 	return out
+}
+
+// providerCheckResults 服务商接管三项（票05）：dock 未配置 → 三行 not_checked；
+// 否则按 cfg.Dock.Listen 派生渡口目标（CC=http 根、codex=http+/v1，单源
+// provider.DockURLFromListen / DockCodexURLFromListen）交 provider 探针判定。
+func providerCheckResults(cfg *config.Config, cfgErr error, d doctorDeps) []CheckResult {
+	notChecked := func() []CheckResult {
+		rows := make([]CheckResult, 0, 3)
+		for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
+			rows = append(rows, CheckResult{Name: n, Status: StatusNotChecked,
+				Detail: "服务商接管体检未检查（[dock] 未配置——接管目标不可判，如实标注不伪造）"})
+		}
+		return rows
+	}
+	if cfgErr != nil || cfg == nil || cfg.Dock == nil {
+		return notChecked()
+	}
+	orcaHome := d.OrcaCodexHome
+	if orcaHome == "" {
+		orcaHome = filepath.Join(d.Home, "AppData", "Roaming", "orca",
+			"codex-runtime-home", "home")
+	}
+	orcaCfg := filepath.Join(orcaHome, "config.toml")
+	return []CheckResult{
+		providerVerdict("provider_cc_dock", provider.CheckCCPointsDock(
+			filepath.Join(d.Home, ".claude", "settings.json"),
+			provider.DockURLFromListen(cfg.Dock.Listen))),
+		providerVerdict("provider_codex_dock", provider.CheckCodexPointsDock(
+			CodexConfigPath(d.Home), orcaCfg,
+			provider.DockCodexURLFromListen(cfg.Dock.Listen))),
+		providerVerdict("provider_orca_codex", provider.CheckOrcaCodexHealth(
+			orcaCfg, provider.DockCodexURLFromListen(cfg.Dock.Listen))),
+	}
+}
+
+// providerVerdict provider.Verdict → CheckResult 换装（与 Check.named 同款：
+// OK→pass、!OK→fail；Detail 原样透传——判定在 provider 单源，本包不重复）。
+func providerVerdict(name string, v provider.Verdict) CheckResult {
+	st := StatusFail
+	if v.OK {
+		st = StatusPass
+	}
+	return CheckResult{Name: name, Status: st, Detail: v.Detail}
 }
 
 // DoctorStructured 票05：结构化体检导出入口——agent 面 MCP doctor 工具进程内
