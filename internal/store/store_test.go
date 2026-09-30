@@ -350,3 +350,60 @@ func TestSaveHandoffOverwritesSameSessionAgent(t *testing.T) {
 		t.Fatalf("应保留新条目: %q vs %q", idx.Handoffs[0].HandoffID, e2.HandoffID)
 	}
 }
+
+// 2026-09-30 归还锚定（/clear 串台案）：按 (agent,cwd) 找最新未消费、未超窗的
+// 待续；旧条目（无锚定字段）不参与；消费后回落更早一条；全部消费/超窗不给。
+func TestLatestPendingForAnchor(t *testing.T) {
+	st := mk(t)
+	st.SavePendingPromptFor("cc", "C:/Proj", "s1", "第一条")
+	st.SavePendingPromptFor("cc", "C:/other", "s2", "别的项目") // cwd 不同
+	st.SavePendingPrompt("legacy", "旧条目无锚定字段")          // 旧形态（升级前存量）
+	p, ok := st.LatestPendingFor("cc", "c:/proj")               // 大小写/分隔符归一
+	if !ok || p.SessionID != "s1" || p.Prompt != "第一条" {
+		t.Fatalf("锚 = %+v ok=%v, want s1/第一条", p, ok)
+	}
+	if _, ok := st.LatestPendingFor("cc", "C:/nope"); ok {
+		t.Fatal("cwd 无匹配不应给锚")
+	}
+	if _, ok := st.LatestPendingFor("codex", "C:/Proj"); ok {
+		t.Fatal("agent 不同不应给锚")
+	}
+	if _, ok := st.LatestPendingFor("", "C:/Proj"); ok {
+		t.Fatal("空 agent 不应给锚（防御）")
+	}
+	// 同 cwd 两条未消费：倒扫取最新（追加序）
+	st.SavePendingPromptFor("cc", "C:/Proj", "s3", "第二条")
+	if p, _ := st.LatestPendingFor("cc", "C:/Proj"); p.SessionID != "s3" {
+		t.Fatalf("最新锚 = %s, want s3", p.SessionID)
+	}
+	// 消费最新 → 回落更早那条（仍新鲜未消费）
+	if got := st.PopPendingPrompt("s3", "consumer-1"); got != "第二条" {
+		t.Fatalf("Pop = %q", got)
+	}
+	if p, ok := st.LatestPendingFor("cc", "C:/Proj"); !ok || p.SessionID != "s1" {
+		t.Fatalf("消费后应回落 s1, got %+v ok=%v", p, ok)
+	}
+	st.PopPendingPrompt("s1", "consumer-2")
+	if _, ok := st.LatestPendingFor("cc", "C:/Proj"); ok {
+		t.Fatal("全部消费后不应给锚")
+	}
+	// 超窗残锚（3 小时前被拦、一直没 /clear）不得劫持今日开场
+	st.mu.Lock()
+	old := time.Now().Add(-3 * time.Hour).Format(dispTimeFmt)
+	st.index.PendingPrompts = append(st.index.PendingPrompts,
+		PendingPrompt{SessionID: "s9", Prompt: "残锚", BlockedAt: old,
+			Agent: "cc", Cwd: filepath.Join("C:", "Proj")}) // 反斜杠形态也须归一命中路径
+	st.mu.Unlock()
+	if _, ok := st.LatestPendingFor("cc", "C:/Proj"); ok {
+		t.Fatal("超窗残锚不应劫持归还")
+	}
+	// 坏 BlockedAt 同样不劫持（fail-safe）
+	st.mu.Lock()
+	st.index.PendingPrompts = append(st.index.PendingPrompts,
+		PendingPrompt{SessionID: "s10", Prompt: "坏时间", BlockedAt: "not-a-time",
+			Agent: "cc", Cwd: "C:/Proj"})
+	st.mu.Unlock()
+	if _, ok := st.LatestPendingFor("cc", "C:/Proj"); ok {
+		t.Fatal("坏 BlockedAt 不应给锚")
+	}
+}

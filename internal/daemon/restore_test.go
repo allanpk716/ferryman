@@ -217,3 +217,50 @@ func TestRestoreConsumesPendingOnce(t *testing.T) {
 		t.Fatalf("消费后不得再给: %q", ctx2)
 	}
 }
+
+// 2026-09-30 /clear 串台案（06703fbd→f65f65ce）锚定回归（用户令："一个目录
+// 多个会话，必须明确恢复注入的 handoff 会话，不猜、不取最新"）。
+func TestRestoreAnchoredPinsBlockedSessionOverNewerSibling(t *testing.T) {
+	// 被拦会话的交接较旧、别的线程交接更新：有锚（未消费待续）必须钉死被拦
+	// 会话那份，绝不因"更新"注入别的线程。
+	e := newGateEnv(t)
+	saveCand(t, e, "blocked-src", "被拦线程", 500, "md-blocked")
+	saveCand(t, e, "sibling-src", "别的线程", 100, "md-sibling")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "blocked-src", "被拦原话Q1")
+	r := e.d.Restore("cc", "C:/proj", "fresh")
+	ctx, _ := r["context"].(string)
+	if !strings.Contains(ctx, "会话 被拦线程") || strings.Contains(ctx, "会话 别的线程") {
+		t.Fatalf("应钉死被拦线程的交接: %q", ctx)
+	}
+	if !strings.Contains(ctx, "被拦原话Q1") {
+		t.Fatalf("应带被拦原话: %q", ctx)
+	}
+	// 锚已消费：再开新会话回落旧行为（两候选 → 列清单，不默认注入）
+	r2 := e.d.Restore("cc", "C:/proj", "fresh2")
+	ctx2, _ := r2["context"].(string)
+	if !strings.HasPrefix(ctx2, "[Ferryman] 本项目有 2 份可用交接") {
+		t.Fatalf("锚消费后应回落多候选清单: %q", ctx2)
+	}
+}
+
+func TestRestoreAnchoredNoHandoffDeliversPromptAndListsOthers(t *testing.T) {
+	// 锚会话没有交接（分支6形态：生成失败/未完成）：只带原话 + 明说 + 其他
+	// 线程列清单选读，绝不静默注入别的线程交接冒充续接。
+	e := newGateEnv(t)
+	saveCand(t, e, "sibling-src", "别的线程", 100, "md-sibling")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "no-handoff-src", "被拦原话R")
+	r := e.d.Restore("cc", "C:/proj", "fresh")
+	ctx, _ := r["context"].(string)
+	if !strings.Contains(ctx, "被拦原话R") {
+		t.Fatalf("应带被拦原话: %q", ctx)
+	}
+	if !strings.Contains(ctx, "没有生成") {
+		t.Fatalf("应明说无交接: %q", ctx)
+	}
+	if strings.Contains(ctx, "[Ferryman 交接 ·") {
+		t.Fatalf("不得静默注入别的线程交接: %q", ctx)
+	}
+	if !strings.Contains(ctx, "- 别的线程 → ") {
+		t.Fatalf("其他候选应列清单: %q", ctx)
+	}
+}

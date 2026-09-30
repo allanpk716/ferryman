@@ -79,6 +79,11 @@ type PendingPrompt struct {
 	Prompt     string  `json:"prompt"`
 	BlockedAt  string  `json:"blocked_at"`
 	ConsumedBy *string `json:"consumed_by"` // nil ≡ Python None
+	// Agent/Cwd 归还锚定字段（2026-09-30 /clear 串台案）：被拦时记下所属
+	// (agent,cwd)，/clear 后归还按它钉死"哪个会话被拦"，不再按目录取最新猜。
+	// 旧条目两字段为空 → LatestPendingFor 不匹配（回落"最新交接"旧行为）。
+	Agent string `json:"agent,omitempty"`
+	Cwd   string `json:"cwd,omitempty"`
 }
 
 // indexFile index.json 的内存形（Python dict {"handoffs": [], "pending_prompts": []}）。
@@ -348,8 +353,23 @@ func (s *Store) MarkBlocked(handoffID string) {
 
 // ---------- 待续 prompt（单源：index 内嵌，DESIGN §6.7） ----------
 
+// PendingAnchorS 归还锚定时效（2026-09-30）：被拦 → /clear 的接力窗。用户跟着
+// 拦截文案走是分钟级；超窗的未消费残锚视为自愿 /clear，回落"最新交接"旧行为，
+// 防止昨日残锚劫持今日开场注入。
+const PendingAnchorS = 7200.0 // 2h
+
 // SavePendingPrompt 覆盖同 session 旧条目；超 500 token 截断加尾标。
 func (s *Store) SavePendingPrompt(sessionID, prompt string) {
+	s.savePending(PendingPrompt{}, sessionID, prompt)
+}
+
+// SavePendingPromptFor 带归还锚定字段的保存（gate 拦截路径用）：记下被拦会话
+// 所属 (agent,cwd)。空串等同 SavePendingPrompt（无法锚定，回落旧行为）。
+func (s *Store) SavePendingPromptFor(agent, cwd, sessionID, prompt string) {
+	s.savePending(PendingPrompt{Agent: agent, Cwd: cwd}, sessionID, prompt)
+}
+
+func (s *Store) savePending(anchor PendingPrompt, sessionID, prompt string) {
 	if extract.TokenEstimate(prompt) > pendingPromptCap {
 		prompt = mathx.RuneTrunc(prompt, pendingPromptCap) + pendingTruncMark
 	}
@@ -361,14 +381,39 @@ func (s *Store) SavePendingPrompt(sessionID, prompt string) {
 			kept = append(kept, p)
 		}
 	}
-	kept = append(kept, PendingPrompt{
-		SessionID:  sessionID,
-		Prompt:     prompt,
-		BlockedAt:  time.Now().Format(dispTimeFmt),
-		ConsumedBy: nil,
-	})
+	anchor.SessionID = sessionID
+	anchor.Prompt = prompt
+	anchor.BlockedAt = time.Now().Format(dispTimeFmt)
+	anchor.ConsumedBy = nil
+	kept = append(kept, anchor)
 	s.index.PendingPrompts = kept
 	s.flush()
+}
+
+// LatestPendingFor 归还锚点（2026-09-30 /clear 串台案）：该 (agent,cwd) 下最新
+// 一条未消费、且被拦未超 PendingAnchorS 的待续——即"用户刚被拦、正照文案指引
+// /clear"的那个会话。cwd 归一与 RestoreCandidates 同口径；BlockedAt 解析失败
+// 按超窗处理（fail-safe 回落旧行为）。旧条目（无锚定字段）不参与匹配。
+func (s *Store) LatestPendingFor(agent, cwd string) (PendingPrompt, bool) {
+	if agent == "" || cwd == "" {
+		return PendingPrompt{}, false
+	}
+	norm := strings.ToLower(resolvePath(cwd))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.index.PendingPrompts) - 1; i >= 0; i-- { // 倒扫第一条即最新
+		p := s.index.PendingPrompts[i]
+		if p.Agent != agent || strings.ToLower(resolvePath(p.Cwd)) != norm || p.ConsumedBy != nil {
+			continue
+		}
+		bat, err := time.ParseInLocation(dispTimeFmt, p.BlockedAt, time.Local)
+		// BlockedAt 由 time.Now 写入，同源比对（clock 包可被测试冻结，混用会假超窗）。
+		if err != nil || time.Since(bat).Seconds() > PendingAnchorS {
+			continue
+		}
+		return p, true
+	}
+	return PendingPrompt{}, false
 }
 
 // PopPendingPrompt 取未消费的待续 prompt；consumeFor 非空时同时标记消费

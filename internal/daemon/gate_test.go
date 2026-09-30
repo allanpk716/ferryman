@@ -1366,3 +1366,51 @@ func TestQWatchStopHealthConcurrentModeAccess(t *testing.T) {
 		t.Fatalf("health qwatch mode 应读活值: %v", h["qwatch"])
 	}
 }
+
+// 2026-09-30 603fef0f 案回归：真闲置 78 分钟被无时间戳状态块（mode/snapshot/
+// lastPrompt 幻影写）把文件时钟顶新成 17 分钟——闸门只提醒不拦。闲置锚点改
+// 内容时钟后：mtime 再新，内容时钟停在最后带时间戳记录 → 照进拦窗；真实新
+// 内容落地 → 内容时钟前进 → 放行。文件取不到时间戳（本套件其余用例的假路径
+// 形态）回落文件时钟＝旧行为，天然回归。
+func TestGateIdleAnchoredToContentClock(t *testing.T) {
+	e := newGateEnv(t)
+	proj := filepath.Join(e.tmp, "proj")
+	path := filepath.Join(e.tmp, "cc.jsonl")
+	tsFmt := "2006-01-02T15:04:05.000Z"
+	old := time.Unix(int64(e.t0-(testBlockS+600)), 0).UTC().Format(tsFmt)
+	// 内容：最后带时间戳记录停在 t0-41min；尾部混一条幻影写（无 timestamp 字段）
+	os.WriteFile(path, []byte(fmt.Sprintf(
+		`{"type":"user","timestamp":%q,"message":{"content":"早"}}`+"\n"+
+			`{"type":"mode","mode":"default"}`+"\n", old)), 0o644)
+	// 文件时钟被幻影写顶新到现在（mtime=t0）
+	e.led.TouchFull("cc", "pc1", path, e.t0, 10, proj, "", 99999, 0)
+
+	r1 := e.d.Gate(gateBody4("pc1", path, proj, "继续")) // 内容闲置 41min → 分支7 警告
+	if r1["decision"] != "allow" {
+		t.Fatalf("分支7 decision = %v", r1["decision"])
+	}
+	if ctx, _ := r1["additional_context"].(string); ctx == "" {
+		t.Fatal("分支7 应带警告")
+	}
+	r2 := e.d.Gate(gateBody4("pc1", path, proj, "继续")) // 分支6 拦（pending 置位后）
+	if r2["decision"] != "block" {
+		t.Fatalf("幻影写不得稀释拦窗, decision = %v", r2["decision"])
+	}
+
+	// 真实新内容（带时间戳）落地 + mtime 前进 → 内容时钟前进 → 强续清 pending 后正常放行
+	e.advance(200)
+	fresh := time.Unix(int64(e.t0+190), 0).UTC().Format(tsFmt)
+	os.WriteFile(path, []byte(fmt.Sprintf(
+		`{"type":"user","timestamp":%q,"message":{"content":"回来了"}}`+"\n", fresh)), 0o644)
+	e.led.TouchFull("cc", "pc1", path, e.t0+190, 20, proj, "", 99999, 0)
+	if rb := e.d.Gate(gateBody4("pc1", path, proj, "强续清场")); rb["reason"] != "bypass" {
+		t.Fatalf("强续 = %v", rb)
+	}
+	r4 := e.d.Gate(gateBody4("pc1", path, proj, "继续"))
+	if r4["decision"] != "allow" {
+		t.Fatalf("内容时钟前进后应放行, decision = %v", r4["decision"])
+	}
+	if ctx, has := r4["additional_context"]; has && ctx != "" {
+		t.Fatalf("新内容后不应再警告: %v", ctx)
+	}
+}
