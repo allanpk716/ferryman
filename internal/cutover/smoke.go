@@ -178,8 +178,14 @@ func smokeEnforceChains(base *config.Config, tmp, fakeBaseURL string) (res2, res
 		fmt.Println("[smoke] ② 摆渡链路: FAIL — fresh 交接未落盘（20s 超时）")
 		return "", "", ""
 	}
-	rows := sb.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: sid})
-	if len(rows) != 1 || rows[0]["outcome"] != "fresh" {
+	// 账本行与交接落盘是 worker 内两步，慢机（CI runner）上可能相隔百余微秒
+	// ——v0.5.0 发版 CI 实证：文件已落、行晚 100µs，立即读掐进缝里。同款
+	// 轮询等待收口（b066090 冒烟夹具时敏修复同族）。
+	var rows []map[string]any
+	if !waitFor(10*time.Second, func() bool {
+		rows = sb.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: sid})
+		return len(rows) == 1 && rows[0]["outcome"] == "fresh"
+	}) {
 		fmt.Printf("[smoke] ② 摆渡链路: FAIL — 账本 handoff 行缺失或 outcome 异常: %v\n", rows)
 		return "", "", ""
 	}
