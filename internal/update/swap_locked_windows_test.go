@@ -165,10 +165,12 @@ func TestSwapColonizedBackupStillSwaps(t *testing.T) {
 // TestSelfImageTargetSwapsDirectly 票02/F1 零副本钉(端到端):自身映像 ==
 // 换装目标 → 监督者直接两步换装跑完全程,盘面零 supervisor-copy,备份 =
 // .old-<版本>(旧字节)。以节映射(lockLikeRunningImage,运行映像同款锁语义)
-// 让本测试进程——即监督者本人——全程持有换装目标的运行锁:副本机制删除前
-// 此形态只能交棒 .supervisor-copy 副本接手(旧码红,relayed=true 盘面留副本);
-// 改名让位对运行映像放行,监督者自己跑完即成功;若回归单次替换,让位/落位
-// 步必 Access denied 同样红。
+// 让本测试进程——即监督者本人——全程持有换装目标的运行锁:改名让位对运行
+// 映像放行,监督者自己跑完即成功;若回归单次替换,让位/落位步必 Access
+// denied 红。钉的本体=两步换装不变量+盘面零副本断言;注:副本分支若被原样
+// 复原,本测试因身份判定(os.Executable()==测试二进制≠w.exePath)不触发副本
+// 而仍绿——自映像==目标形态的红绿实证由 tools/rehearsal 真机彩排承担
+// (rehearsal supervisor 的 os.Executable 即目标本尊,票02 验收实测)。
 func TestSelfImageTargetSwapsDirectly(t *testing.T) {
 	w, sup := newUpdateWorld(t, nil, nil)
 	release := lockLikeRunningImage(t, w.exePath) // 监督者自身映像的运行锁

@@ -39,7 +39,6 @@ type txOpts struct {
 // txResult 监督者事务结论（影子 exe 写盘的 JSON 形态）。
 type txResult struct {
 	Success     bool     `json:"success"`
-	Relayed     bool     `json:"relayed"`
 	From        string   `json:"from"`
 	To          string   `json:"to"`
 	RolledBack  bool     `json:"rolled_back"`
