@@ -28,7 +28,7 @@
 - internal/update/swap_locked_windows_test.go
 - cmd/ferryman/main.go
 - cmd/ferryman/main_test.go
-- tools/rehearsal/main.go（票面修订：该演练工具引用 Config.SelfRelay 与 Result.Relayed，删字段后必须同步适配，否则全仓编译红——票01 评审后发现的原票面疏漏）
+- tools/rehearsal/（票面修订×2：main.go/rehearsal_test.go 引用删除的 Config.SelfRelay 与 Result.Relayed 须同步适配；txn.go 死环境导出与旧自中继注释、faults.go 旧注释一并收尾——协调者诊断发现并随票落地）
 
 ## 副作用声明
 无独占验证命令；包级测试即可（全仓 go test 留给协调者终局跑）

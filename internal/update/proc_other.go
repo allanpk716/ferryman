@@ -37,14 +37,3 @@ func launchCmdImpl(cmdPath string) error {
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return c.Start()
 }
-
-// spawnRelayImpl 新会话直拉自中继副本(detached 等价)。
-func spawnRelayImpl(exe string, args []string) error {
-	c := exec.Command(exe, args...)
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return c.Start()
-}
-
-// selfDeleteImpl 非 Windows 空操作：Unix 允许 unlink 运行中的映像，收尾的
-// cleanSwapResidues 即已删净自身，无需 Windows 式延迟把戏。
-func selfDeleteImpl(string) error { return nil }

@@ -637,7 +637,8 @@ func cmdVersion(args []string, w io.Writer) int {
 // 发现新版/显式降级注明；dev 等非 semver 如实提示无从比较），只报告不动手
 // （D6：升级纯手动；D8：网络走环境代理；D11：固定产物名）。无 --check =
 // 监督者执行（票05：锁/journal/停旧/原子换装/校验/回滚/崩溃恢复；票02 静默
-// 门：动手前等流量空闲）；--supervise 为托盘派生用的内部旗标（detached 隐藏
+// 门：动手前等流量空闲），恒同步跑完全程（v0.5.2 票02 删自中继副本机制后
+// 不再交棒副本）；--supervise 为托盘派生用的内部旗标（detached 隐藏
 // spawn），行为与无参一致（规格 §C 统一监督者）——两入口收敛同一
 // runUpdateExecute。--wait-quiet=<秒>/--force 为静默门脚本态旗标（票02）。
 func cmdUpdate(args []string, w io.Writer) int {
@@ -645,7 +646,9 @@ func cmdUpdate(args []string, w io.Writer) int {
 	check := fs.Bool("check", false, "只检查并报告，不下载不换文件")
 	pre := fs.Bool("prerelease", false, "检查纳入预发布版（rc/beta；缺省只看稳定版）")
 	_ = fs.Bool("supervise", false, "内部旗标：托盘隐藏派生用，行为与无参一致")
-	selfRelay := fs.Bool("self-relay", false, "内部旗标：本进程是自中继副本，不再自中继")
+	// --self-relay 已废弃（自中继副本机制 v0.5.2/票02 整体删除）：解析但忽略，
+	// 仅防旧脚本/旧茬 argv 报错；旗标本身次版（v0.5.3）删除。
+	_ = fs.Bool("self-relay", false, "内部旗标（已废弃）：解析但忽略，次版删除")
 	waitQuiet := fs.Int("wait-quiet", 60, "静默门等待预算（秒；判据不满足时的轮询上限；0=不等；缺省 60s）")
 	force := fs.Bool("force", false, "跳过静默门直接停旧（脚本态）")
 	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason", "wait-quiet")); err != nil {
@@ -660,7 +663,7 @@ func cmdUpdate(args []string, w io.Writer) int {
 		spec = fs.Arg(0)
 	}
 	if !*check {
-		return runUpdateExecute(spec, *pre, *selfRelay, *waitQuiet, *force, w)
+		return runUpdateExecute(spec, *pre, *waitQuiet, *force, w)
 	}
 	out, err := update.Check(update.Endpoints{}, version, spec, *pre)
 	if err != nil {
@@ -719,7 +722,7 @@ func orderFlagPairsFirst(args []string, valueFlags ...string) []string {
 // 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）；同一
 // 通道也接进监督者事务告警（票03 评审移交的生产接线）与静默门兜底告警
 // （票02：门未达成非交互硬切前一条）。
-var runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, force bool, w io.Writer) int {
+var runUpdateExecute = func(spec string, pre bool, waitQuiet int, force bool, w io.Writer) int {
 	dataDir, port := "", update.DefaultDaemonPort
 	var cfg *config.Config
 	if c, err := config.Load("", false); err == nil {
@@ -735,7 +738,6 @@ var runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, for
 		Current:    version,
 		Spec:       spec,
 		Prerelease: pre,
-		SelfRelay:  selfRelay,
 		WaitQuiet:  quietWaitFromFlag(waitQuiet),
 		Force:      force,
 		Alert: func(title, msg string) {
@@ -744,12 +746,8 @@ var runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, for
 			}
 		},
 	}).Run()
-	if res.Relayed {
-		// 自中继交棒：副本进程已接手（detached 无控制台），结果走 notify；
-		// journal/doctor 可查。本进程使命结束，退出码 0。
-		fmt.Fprintln(w, "已转交升级代理进程接手（自身即换装目标，副本接力）；结果将经通知推送")
-		return 0
-	}
+	// v0.5.2（票02）删自中继副本机制：监督者恒同步跑完全程,无交棒分支——
+	// 自身映像==换装目标时直接两步换装（改名让位），盘面零 supervisor-copy。
 	var summary string
 	switch {
 	case res.Success:

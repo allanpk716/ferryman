@@ -68,7 +68,6 @@ type Config struct {
 	Current      string                      // 当前版本(main.version)
 	Spec         string                      // 显式目标版本(可空;含降级)
 	Prerelease   bool                        // 纳入预发布
-	SelfRelay    bool                        // 本进程已是自中继副本,不再自中继(内部旗标)
 	StartCmd     string                      // 点火脚本;空 = <DataDir>/start-daemon.cmd
 	HTTP         *http.Client                // 守护面客户端;空 = 3s 超时内建
 	PortWait     time.Duration               // 停旧等端口释放+进程退场上限;0 = 240s（覆盖 v0.2.4+ 排水窗）
@@ -89,10 +88,10 @@ type Config struct {
 	Logf     func(format string, args ...any)
 }
 
-// Result 升级结论(seam F 结果通知与 CLI stdout 的单源)。
+// Result 升级结论(seam F 结果通知与 CLI stdout 的单源)。v0.5.2(票02)删
+// 自中继副本机制起,Relayed 语义退役——`ferryman update` 恒同步跑完全程。
 type Result struct {
 	Success     bool
-	Relayed     bool // 已转交自中继副本接手,本进程只负责退出(v0.1.0 首发实测补)
 	From, To    string
 	RolledBack  bool   // 失败但已回滚恢复旧版服务
 	RollbackErr string // 回滚也失败(服务可能中断,需人工介入)
@@ -101,17 +100,16 @@ type Result struct {
 
 // Supervisor 监督者。proc* 为进程面 seam(测试注桩);launch 为拉起 seam
 // (缺省注入 txLauncher 的事务形态——W2 起固定 cmd.exe 直拉,事务调用点经
-// launchTx 附带拉起验证探针;测试可换桩);selfExe/spawnRelay 为自中继
-// seam(同上)。
+// launchTx 附带拉起验证探针;测试可换桩)。
+// v0.5.2(票02)删自中继副本机制:selfExe/spawnRelay/selfDelete 三 seam 随
+// selfRelayIfNeeded/relaySelfDelete 一并退场(自身映像==换装目标时直接跑
+// 两步换装——改名让位对运行映像放行,单监督者全程无副本)。
 type Supervisor struct {
 	cfg         Config
 	procAlive   func(pid int) bool
 	procImage   func(pid int) (string, error)
 	killPID     func(pid int) error
 	launch      func(cmdPath string) error
-	selfExe     func() (string, error)
-	spawnRelay  func(exe string, args []string) error
-	selfDelete  func(path string) error
 }
 
 // txLauncher 事务拉起缺省注点(平台面注入):Windows 侧由 proc_windows.go 的
@@ -165,16 +163,13 @@ func NewSupervisor(cfg Config) *Supervisor {
 		procImage:  procImageImpl,
 		killPID:    killImpl,
 		launch:     launchFn,
-		selfExe:    os.Executable,
-		spawnRelay: spawnRelayImpl,
-		selfDelete: selfDeleteImpl,
 	}
 }
 
 func (s *Supervisor) logf(format string, a ...any) { s.cfg.Logf(format, a...) }
 
 // fileTeeLogf 缺省日志:stdout + 追加 <DataDir>/update.log。落盘是留证——
-// 自中继副本/托盘派生场景 stdout 无人看,而部分失败路径清 journal 即失现场
+// 托盘/脚本 detached 派生场景 stdout 无人看,而部分失败路径清 journal 即失现场
 // (2026-09-22 v0.1.4 失败即因此无痕,只剩备份文件的时间戳可推)。逐行开合
 // (升级全程日志量寥寥,不值得留常开句柄——还挡测试 TempDir 清理)。
 func fileTeeLogf(dataDir string) func(format string, a ...any) {
@@ -196,11 +191,11 @@ func fileTeeLogf(dataDir string) func(format string, a ...any) {
 }
 
 // Run 监督者主序列。返回 Result;过程日志走 Logf。
+// v0.5.2(票02)删自中继副本机制:自身映像 == 换装目标时不再交棒副本,直接
+// 进入主序列——两步换装(改名让位)对运行映像放行,监督者自己的镜像被改名
+// 成 .old-<版本> 备份即设计保留件;并发第二监督者的防线只剩 update.lock
+// 的三族持活判据(lock.go holderAlive)。
 func (s *Supervisor) Run() Result {
-	// 自中继副本收尾自删（2026-09-30 副本残留案）：defer 挂在一切退出路径上，
-	// 副本退场前拉起延迟自删（见 relaySelfDelete 注）。非副本（SelfRelay=false）
-	// 内部空转。
-	defer s.relaySelfDelete()
 	// 0. 换装目标解析(seam E)
 	targetExe, err := s.resolveTargetExe()
 	if err != nil {
@@ -208,17 +203,8 @@ func (s *Supervisor) Run() Result {
 	}
 	exeDir := filepath.Dir(targetExe)
 
-	// 0.5 自中继(v0.1.0 首发实测补):监督者自身映像 == 换装目标时,单次原子
-	// 替换会被自己的运行镜像锁死(实测 Access is denied——停旧只停了守护,
-	// 没停监督者本人)。复制自身为副本、detached 拉起副本接手(副本与目标不同
-	// 文件,seam A 恢复可行),本进程交棒退出。
-	if relayed, rerr := s.selfRelayIfNeeded(targetExe); rerr != nil {
-		return Result{Err: rerr}
-	} else if relayed {
-		return Result{Relayed: true, From: s.cfg.Current}
-	}
-
-	// 1. 锁(seam B:持有者活 = PID 活且映像==换装目标)
+	// 1. 锁(seam B:持有者活 = PID 活且映像∈三族{目标, supervisor-copy(过渡),
+	// .old-* 备份族})
 	lk, err := acquireUpdateLock(s.cfg.DataDir, targetExe, s.procAlive, s.procImage, s.logf)
 	if err != nil {
 		return Result{Err: err}
@@ -315,79 +301,14 @@ func (s *Supervisor) Run() Result {
 	return s.rollback(j, seen)
 }
 
-// selfRelayIfNeeded 自中继判定:自身映像 == 换装目标且未携中继标记时,复制
-// 自身为 <目标>.supervisor-copy 并 detached 拉起副本接手(副本携 --self-relay,
-// 不会再次自中继),本进程交棒。复制失败/拉起失败如实报错中止——此时硬走
-// swap 必然 Access denied(自己的镜像锁着目标),早失败比晚失败诚实。
-func (s *Supervisor) selfRelayIfNeeded(targetExe string) (bool, error) {
-	if s.cfg.SelfRelay {
-		return false, nil
-	}
-	self, err := s.selfExe()
-	if err != nil {
-		return false, nil // 拿不到自身映像(几乎不可能):不拦,让后续按原样走
-	}
-	if !samePath(self, targetExe) {
-		return false, nil
-	}
-	copyPath := relayCopyPath(targetExe)
-	if err := copyFile(self, copyPath); err != nil {
-		return false, fmt.Errorf("自中继副本落盘失败: %w", err)
-	}
-	if err := s.spawnRelay(copyPath, s.relayArgs()); err != nil {
-		_ = os.Remove(copyPath)
-		return false, fmt.Errorf("自中继副本拉起失败: %w", err)
-	}
-	s.logf("监督者自身即换装目标——已转交副本接手升级,本进程退出(副本 %s)", copyPath)
-	return true, nil
-}
-
-// relayCopyPath 自中继副本落点(在 cleanSwapResidues 清扫域内:副本退出后
-// 无法删除自身运行镜像,留待下次 update/doctor 驱动的清扫收走)。
+// relayCopyPath 自中继副本落点(历史遗留,过渡保留一版):副本机制已于
+// v0.5.2(票02)整体删除,本函数仅因 lock.go holderAlive 家族②的过渡判据
+// 引用它而保留——升级换代窗口内,旧版(≤v0.5.1)交棒出去的活副本仍持锁,
+// 判活须认;与家族②一并于 v0.5.3 删除(lock_test 回归钉同注)。另:
+// cleanSwapResidues 的 supervisor-copy* 清扫模式同理保留,收旧茬残留
+// (spec F7:首跳后的一过性红由下次 update 清扫自愈)。
 func relayCopyPath(targetExe string) string {
 	return targetExe + ".supervisor-copy"
-}
-
-// relaySelfDelete 自中继副本的收尾自删（2026-09-30 副本残留案）：副本跑完
-// Run 即退场，但 Windows 不许删除运行中的映像——收尾的 cleanSwapResidues 对
-// 自己 os.Remove 必败（Access denied，静默忽略），文件滞留到下次 update 才被
-// 扫走，期间 doctor 的 update_residues 一直红（v0.4.2/v0.4.3 两次换装两次
-// 手动删的实证）。故在退场前拉起隐藏的延迟删除（平台面 selfDelete seam，
-// Windows=cmd ping≈3s 等退场后 del）。失败静默——兜底链不动：下次 update
-// 的 cleanSwapResidues 照旧扫走。
-func (s *Supervisor) relaySelfDelete() {
-	if !s.cfg.SelfRelay || s.selfDelete == nil {
-		return
-	}
-	self, err := s.selfExe()
-	if err != nil {
-		return
-	}
-	_ = s.selfDelete(self)
-}
-
-// relayArgs 副本接手参数:监督者旗标 + 自中继标记 + 原样的版本意图 + 静默门
-// 意图(--force 与非缺省 --wait-quiet 透传——副本重跑静默门时不丢用户意图;
-// 等待哨兵负值回落旗标 0=不等。缺省预算 60s 不落旗标,与未显式给同义)。
-func (s *Supervisor) relayArgs() []string {
-	args := []string{"update", "--supervise", "--self-relay"}
-	if s.cfg.Spec != "" {
-		args = append(args, s.cfg.Spec)
-	}
-	if s.cfg.Prerelease {
-		args = append(args, "--prerelease")
-	}
-	if s.cfg.Force {
-		args = append(args, "--force")
-	}
-	if s.cfg.WaitQuiet != defaultQuietWait {
-		n := int(s.cfg.WaitQuiet / time.Second)
-		if n < 0 {
-			n = 0 // 负值哨兵(不等待)→ 旗标 0=不等
-		}
-		args = append(args, fmt.Sprintf("--wait-quiet=%d", n))
-	}
-	return args
 }
 
 // resolveTargetExe seam E:点火脚本引号 exe 优先;失败回落本进程映像。
