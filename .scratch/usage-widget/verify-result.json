@@ -1,0 +1,172 @@
+[
+ {
+  "name": "a. 完整版七项自测",
+  "ok": true,
+  "detail": "7/7 全 1"
+ },
+ {
+  "name": "b1. 悬浮态四角 12px 圆+投影",
+  "ok": true,
+  "detail": "{\"br\": \"12px\", \"shadow\": \"rgba(0, 0, 0, 0.5) 0px 3px 12px 0px\", \"right\": \"6px\"}"
+ },
+ {
+  "name": "b2. docked-right 右两角直角+右缘贴窗",
+  "ok": true,
+  "detail": "{\"tr\": \"0px\", \"br_\": \"0px\", \"tl\": \"12px\", \"right\": \"0px\"}"
+ },
+ {
+  "name": "c1. 紧凑档 class 生效 + 4 盘",
+  "ok": true,
+  "detail": "discs=4"
+ },
+ {
+  "name": "c2. 盘缩至 48px",
+  "ok": true,
+  "detail": "svgW=48"
+ },
+ {
+  "name": "c3. cap/cdline 全隐",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "name": "c4. 内容不溢出（scrollH ≤ clientH）",
+  "ok": true,
+  "detail": "scrollH=303 clientH=303"
+ },
+ {
+  "name": "c5. 紧凑交接盘圆心=单个大数字 23（0.2.5：删「次 · 本月」行——48px 盘里 ≈6px 物理不可读）",
+  "ok": true,
+  "detail": "23"
+ },
+ {
+  "name": "c6. 紧凑圆心大数字：GLM=8% 红 / Kimi=17% 黄（最紧环+告警色联动）",
+  "ok": true,
+  "detail": "{\"glm\": [{\"cls\": \"c-pct\", \"txt\": \"8%\", \"fill\": \"#E85D5D\"}], \"kimi\": [{\"cls\": \"c-pct\", \"txt\": \"17%\", \"fill\": \"#E8C33D\"}]}"
+ },
+ {
+  "name": "c7. 紧凑圆心大数字：DS=余额单行（无 CNY/可用 小字行）",
+  "ok": true,
+  "detail": "[{\"cls\": \"c-money\", \"txt\": \"87.50\", \"fill\": null}]"
+ },
+ {
+  "name": "c8. 紧凑圆心无第二行（glm/kimi/deepseek 各只一个 text，无 c-sub/c-label）",
+  "ok": true,
+  "detail": "{\"glm\": [{\"cls\": \"c-pct\", \"txt\": \"8%\", \"fill\": \"#E85D5D\"}], \"kimi\": [{\"cls\": \"c-pct\", \"txt\": \"17%\", \"fill\": \"#E8C33D\"}], \"deepseek\": [{\"cls\": \"c-money\", \"txt\": \"87.50\", \"fill\": null}]}"
+ },
+ {
+  "name": "c9. 紧凑交接盘恰一个 .c-pct=23、无 c-sub/c-label",
+  "ok": true,
+  "detail": "[{\"cls\": \"c-pct\", \"txt\": \"23\", \"fill\": null}]"
+ },
+ {
+  "name": "c10. 紧凑档 4 盘 mini-tag 文本=GLM/Kimi/DeepSeek/交接",
+  "ok": true,
+  "detail": "{\"glm\": \"GLM\", \"kimi\": \"Kimi\", \"deepseek\": \"DeepSeek\", \"handoff\": \"交接\"}"
+ },
+ {
+  "name": "c11. mini-tag 品牌色点（kimi #1783FF / glm #4268FA / deepseek #4D6BFE / handoff 紫）",
+  "ok": true,
+  "detail": "{\"glm\": \"rgb(66, 104, 250)\", \"kimi\": \"rgb(23, 131, 255)\", \"deepseek\": \"rgb(77, 107, 254)\", \"handoff\": \"rgb(155, 126, 222)\"}"
+ },
+ {
+  "name": "c12. 紧凑档内容实测 ≤ 新设计内高（322−12=310）",
+  "ok": true,
+  "detail": "scrollH=303"
+ },
+ {
+  "name": "d1. DS 盘 cap 单行月花费",
+  "ok": true,
+  "detail": "[{\"text\": \"月 ¥58.60估\", \"w\": 67.15625, \"clipped\": false}]"
+ },
+ {
+  "name": "d2. DS 单行不超宽不裁切",
+  "ok": true,
+  "detail": "w=67.2 contentW=120"
+ },
+ {
+  "name": "d3. 交接盘月/周两行完整无裁切",
+  "ok": true,
+  "detail": "[{\"text\": \"月 23 次估\", \"clipped\": false}, {\"text\": \"周 5 次估\", \"clipped\": false}]"
+ },
+ {
+  "name": "d4. 完整版高度不变量（余量≥6px）",
+  "ok": true,
+  "detail": "内容=585 面板内高=608 余量=23"
+ },
+ {
+  "name": "d5. 超长文本 → 省略号兜底（truncate 且限宽）",
+  "ok": true,
+  "detail": "{\"te\": \"ellipsis\", \"ws\": \"nowrap\", \"truncated\": true, \"w\": 116}"
+ },
+ {
+  "name": "d6. ?superset=1 回归不炸",
+  "ok": true,
+  "detail": "discs=4 errs=[]"
+ },
+ {
+  "name": "d7. 完整档零变化：无 mini-tag，交接盘圆心仍两行（c-money+c-sub）",
+  "ok": true,
+  "detail": "{\"miniTags\": 0, \"hoCenter\": [\"c-money\", \"c-sub\"]}"
+ },
+ {
+  "name": "e1. 双击 grip → set_appearance(compact) + profile-changed + compact class",
+  "ok": true,
+  "detail": "{\"set_appearance\": [{\"mode\": \"compact\"}], \"pc_appearance\": [\"compact\"]}"
+ },
+ {
+  "name": "e2. 齿轮点击 → invoke open_settings_window（浮层退役后走独立设置窗）",
+  "ok": true,
+  "detail": "[\"get_profile\", \"fit_height\", \"save_profile\", \"set_appearance\", \"fit_height\", \"open_settings_window\"]"
+ },
+ {
+  "name": "e3. profile-changed(show_countdown) → render 驱动倒计时行显隐（浮层退役后唯一链路）",
+  "ok": true,
+  "detail": "{\"off\": {\"n\": 2, \"hidden\": true}, \"on\": {\"n\": 2, \"shown\": true}}"
+ },
+ {
+  "name": "e4. 渲染后 fit_height 上报：完整档 ≈585（±3，同 d4 实测口径）/ 紧凑档 ≈303（±3）",
+  "ok": true,
+  "detail": "{\"full\": [585, 552, 585], \"compact\": [303]}"
+ },
+ {
+  "name": "e5. 同档同内容重复 render 不重复上报（计数不涨）",
+  "ok": true,
+  "detail": "4→4"
+ },
+ {
+  "name": "e6. 显隐一盘（藏 deepseek）→ 新上报值回落 ~50-70",
+  "ok": true,
+  "detail": "{\"compact\": [303, 303, 235]}"
+ },
+ {
+  "name": "e7. tray-collapsed 下 fitHeight 不上报（计数不涨）",
+  "ok": true,
+  "detail": "6→6"
+ },
+ {
+  "name": "f1. 设置窗自测四项全 1（卡片结构）",
+  "ok": true,
+  "detail": "4/4 全 1"
+ },
+ {
+  "name": "f2. 4 卡齐全且控件齐（套餐=3 色+2 阈值+月预算；DS=1 色+2 阈值+预算开关/金额；交接=仅显隐排序）",
+  "ok": true,
+  "detail": "{\"n\": 4, \"glm\": {\"visible\": true, \"colors\": 3, \"ths\": 2, \"mb\": true, \"dsbOn\": false, \"dsbAmt\": false, \"up\": true, \"down\": true}, \"kimi\": {\"visible\": true, \"colors\": 3, \"ths\": 2, \"mb\": true, \"dsbOn\": false, \"dsbAmt\": false, \"up\": true, \"down\": true}, \"deepseek\": {\"visible\": true, \"colors\": 1, \"ths\": 2, \"mb\": false, \"dsbOn\": true, \"dsbAmt\": true, \"up\": true, \"down\": true}, \"handoff\": {\"visible\": true, \"colors\": 0, \"ths\": 0, \"mb\": false, \"dsbOn\": false, \"dsbAmt\": false, \"up\": true, \"down\": true}}"
+ },
+ {
+  "name": "f3. 图例与帮助默认收起（details[open] 为假、内容在）",
+  "ok": true,
+  "detail": "{\"open\": false, \"txt\": true}"
+ },
+ {
+  "name": "f4. 帮助点开后内容可见",
+  "ok": true,
+  "detail": "{\"open\": true, \"visible\": true}"
+ },
+ {
+  "name": "f5. collect 往返（阈值改动经 collect→profile→重渲染读回 33；排序交换生效）",
+  "ok": true,
+  "detail": "{\"glmY\": \"33\", \"firstCard\": \"kimi\", \"status\": \"演示语境（无 Tauri 壳）：改动仅本页生效、不落盘\"}"
+ }
+]

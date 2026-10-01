@@ -196,7 +196,7 @@ func handleWidgetSummary(d *Daemon, w http.ResponseWriter, r *http.Request) {
 		ups = append(ups, entry)
 	}
 
-	handoff := map[string]any{"id": "handoff", "kind": "handoff", "label": "摆渡",
+	handoff := map[string]any{"id": "handoff", "kind": "handoff", "label": "交接",
 		"metrics": []map[string]any{}}
 	if agg != nil {
 		handoff["metrics"] = []map[string]any{

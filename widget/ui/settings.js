@@ -2,7 +2,7 @@
  * 票 04 · 设置窗逻辑（settings.html；窗口按需创建、关闭即销毁——销毁在 Rust 侧）。
  *
  * 职责：对象目录（=data.js 演示契约的 id/label/kind；live 目录接线属票 06–08）
- * × 显示配置 profile（归一化/校验纯函数在 profile.js）→ 配置表格。
+ * × 显示配置 profile（归一化/校验纯函数在 profile.js）→ 0.2.4 起分组卡片（每对象一张卡）。
  * 改动即收集即持久化：壳内 invoke save_profile 落盘 + emit('profile-changed') 广播，
  * 主窗订阅后即时重渲染。无 Tauri 壳（headless 断言/浏览器演示）：照常渲染与自测，
  * 仅不落盘并在状态行如实提示。
@@ -25,12 +25,14 @@ const PALETTE = { window_5h: getVar('--c5h'), week: getVar('--cweek'),
                   month_budget: getVar('--cmonth'), ds_budget: getVar('--cds') };
 const COLOR_TITLE = { window_5h: '5h 环基色', week: '周环基色',
                       month_budget: '月预算环基色', ds_budget: 'DS 预算环基色' };
+/** 色选器带名（0.2.4 卡片式：每字段就地一句人话）。 */
+const COLOR_NAME = { window_5h: '5h', week: '周', month_budget: '月预算', ds_budget: '预算环' };
 
 /** 对象目录（id 稳定=渡口上游表条目名；演示契约副本即目录，live 化在票 06–08）。 */
 const CATALOG = [...data.DEMO_SUMMARY.upstreams, data.DEMO_SUMMARY.handoff]
   .map((p) => ({ id: p.id, label: p.label, kind: p.kind, plan: p.plan || '' }));
 
-const tbody = document.getElementById('objRows');
+const cardsEl = document.getElementById('objCards');
 const statusEl = document.getElementById('status');
 const noticeEl = document.getElementById('resetNotice');
 const optCdline = document.getElementById('optCdline');
@@ -66,69 +68,76 @@ function materialize() {
   currentProfile.objects = objects;
 }
 
-/** 生成一行（对象目录条目 c × 材料化 entry × 原始存量 raw）。 */
-function rowHTML(c, e, raw) {
+/** 生成一张卡（对象目录条目 c × 材料化 entry × 原始存量 raw）。
+ *  0.2.4 卡片式：卡头=label（plan）+显隐+↑↓排序；卡体每字段一行、就地一句人话 hint。
+ *  控件类名与类型不变（f-visible/f-color/f-th/f-mb/f-dsb-on/f-dsb-amt/f-up/f-down），
+ *  collect() 只换遍历容器（tr→卡），产出的 profile 结构与净化规则与表格时代一致。 */
+function cardHTML(c, e, raw) {
   const isPlan = c.kind === 'coding_plan', isPaygo = c.kind === 'paygo';
   const colorOf = (k) => (raw.ring_colors && typeof raw.ring_colors[k] === 'string' && raw.ring_colors[k]) || PALETTE[k];
   const colors = isPlan
     ? ['window_5h', 'week', 'month_budget'].map((k) =>
-        `<input type="color" class="f-color" data-key="${k}" value="${colorOf(k)}" title="${COLOR_TITLE[k]}">`).join('')
+        `<label class="c-field">${COLOR_NAME[k]} <input type="color" class="f-color" data-key="${k}" value="${colorOf(k)}" title="${COLOR_TITLE[k]}"></label>`).join('')
+      + '<span class="hint">点色块换基色；剩余低于阈值时自动变黄/红</span>'
     : isPaygo
-      ? `<input type="color" class="f-color" data-key="ds_budget" value="${colorOf('ds_budget')}" title="${COLOR_TITLE.ds_budget}"> <span class="hint">预算环</span>`
-      : '<span class="hint">无环</span>';
-  const th = (isPlan || isPaygo)
-    ? `黄 <input type="number" class="f-th" data-th="yellow" min="0" max="100" value="${e.thresholds.yellow}"> ／ 红 <input type="number" class="f-th" data-th="red" min="0" max="100" value="${e.thresholds.red}"> %`
-    : '<span class="hint">—</span>';
-  const budget = isPlan
-    ? `<input type="number" class="f-mb" min="1" value="${typeof raw.month_budget === 'number' ? raw.month_budget : ''}" placeholder="未设"> <span class="hint">tok/月 · 不设=文字计数</span>`
-    : isPaygo
-      ? `<label><input type="checkbox" class="f-dsb-on"${raw.ds_budget && raw.ds_budget.enabled ? ' checked' : ''}> 开</label> ¥<input type="number" class="f-dsb-amt" min="1" value="${raw.ds_budget && typeof raw.ds_budget.amount_cny === 'number' ? raw.ds_budget.amount_cny : ''}" placeholder="如 300"> <span class="hint">/月</span>`
-      : '<span class="hint">—</span>';
-  return `<tr data-id="${c.id}">
-    <td><input type="checkbox" class="f-visible"${e.visible ? ' checked' : ''}></td>
-    <td>${c.label}${c.plan ? `（${c.plan}）` : ''}</td>
-    <td>${colors}</td>
-    <td>${th}</td>
-    <td>${budget}</td>
-    <td><button class="f-up" title="上移">↑</button><button class="f-down" title="下移">↓</button></td>
-  </tr>`;
+      ? `<label class="c-field">预算环 <input type="color" class="f-color" data-key="ds_budget" value="${colorOf('ds_budget')}" title="${COLOR_TITLE.ds_budget}"></label> <span class="hint">DeepSeek 预算环基色</span>`
+      : '<span class="hint">无环，仅显隐与顺序</span>';
+  const rows = [`<div class="obj-row"><span class="k">环色</span>${colors}</div>`];
+  if (isPlan || isPaygo) {
+    rows.push(`<div class="obj-row"><span class="k">告警阈值</span>黄 <input type="number" class="f-th" data-th="yellow" min="0" max="100" value="${e.thresholds.yellow}"> ／ 红 <input type="number" class="f-th" data-th="red" min="0" max="100" value="${e.thresholds.red}"> % <span class="hint">剩余低于阈值，环与紧凑档圆心数字变黄/红</span></div>`);
+  }
+  if (isPlan) {
+    rows.push(`<div class="obj-row"><span class="k">月预算</span><input type="number" class="f-mb" min="1" value="${typeof raw.month_budget === 'number' ? raw.month_budget : ''}" placeholder="未设"> <span class="hint">tok/月 · 不设=文字计数；设了=紫环（剩余制：1−已用/预算）</span></div>`);
+  }
+  if (isPaygo) {
+    rows.push(`<div class="obj-row"><span class="k">月预算</span><label><input type="checkbox" class="f-dsb-on"${raw.ds_budget && raw.ds_budget.enabled ? ' checked' : ''}> 开</label> ¥<input type="number" class="f-dsb-amt" min="1" value="${raw.ds_budget && typeof raw.ds_budget.amount_cny === 'number' ? raw.ds_budget.amount_cny : ''}" placeholder="如 300"> <span class="hint">/月 · 已用=本月花费，剩余制绿环</span></div>`);
+  }
+  return `<div class="obj-card" data-id="${c.id}">
+    <div class="obj-head">
+      <input type="checkbox" class="f-visible"${e.visible ? ' checked' : ''} title="显示该服务商">
+      <span class="obj-name">${c.label}${c.plan ? `（${c.plan}）` : ''}</span>
+      <span class="obj-order"><button class="f-up" title="上移">↑</button><button class="f-down" title="下移">↓</button></span>
+    </div>
+    ${rows.join('')}
+  </div>`;
 }
 
-function renderTable() {
-  tbody.innerHTML = [...CATALOG].sort((a, b) => orderOf(a.id) - orderOf(b.id))
-    .map((c) => rowHTML(c, profileLib.effectiveObject(currentProfile, c.id), currentProfile.objects[c.id] || {}))
+function renderCards() {
+  cardsEl.innerHTML = [...CATALOG].sort((a, b) => orderOf(a.id) - orderOf(b.id))
+    .map((c) => cardHTML(c, profileLib.effectiveObject(currentProfile, c.id), currentProfile.objects[c.id] || {}))
     .join('');
 }
 
-/** 表格控件 → profile（净化在 profile.js 语义内：阈值钳位/红≤黄、预算须正数）。 */
+/** 卡片控件 → profile（净化在 profile.js 语义内：阈值钳位/红≤黄、预算须正数）。
+ *  0.2.4：遍历容器 tr→.obj-card，产出结构与净化规则与表格时代逐字段一致。 */
 function collect() {
   const clamp = (v, d) => {
     const n = parseFloat(v);
     return isFinite(n) ? Math.min(100, Math.max(0, n)) : d;
   };
   const objects = {};
-  for (const tr of [...tbody.querySelectorAll('tr[data-id]')]) {
-    const id = tr.dataset.id;
+  for (const card of [...cardsEl.querySelectorAll('.obj-card[data-id]')]) {
+    const id = card.dataset.id;
     const c = CATALOG.find((x) => x.id === id);
     const entry = /** @type {Record<string, *>} */ ({
-      visible: tr.querySelector('.f-visible').checked,
+      visible: card.querySelector('.f-visible').checked,
       order: orderOf(id),
     });
     if (c.kind !== 'handoff') {
-      const yellow = clamp(tr.querySelector('[data-th=yellow]').value, 20);
-      entry.thresholds = { yellow, red: Math.min(clamp(tr.querySelector('[data-th=red]').value, 10), yellow) };
+      const yellow = clamp(card.querySelector('[data-th=yellow]').value, 20);
+      entry.thresholds = { yellow, red: Math.min(clamp(card.querySelector('[data-th=red]').value, 10), yellow) };
     }
     const rc = {};
-    [...tr.querySelectorAll('.f-color')].forEach((i) => { rc[i.dataset.key] = i.value; });
+    [...card.querySelectorAll('.f-color')].forEach((i) => { rc[i.dataset.key] = i.value; });
     if (Object.keys(rc).length) entry.ring_colors = rc;
     if (c.kind === 'coding_plan') {
-      const mb = parseFloat(tr.querySelector('.f-mb').value);
+      const mb = parseFloat(card.querySelector('.f-mb').value);
       if (isFinite(mb) && mb > 0) entry.month_budget = mb;
     }
     if (c.kind === 'paygo') {
-      const amt = parseFloat(tr.querySelector('.f-dsb-amt').value);
+      const amt = parseFloat(card.querySelector('.f-dsb-amt').value);
       entry.ds_budget = {
-        enabled: tr.querySelector('.f-dsb-on').checked,
+        enabled: card.querySelector('.f-dsb-on').checked,
         amount_cny: isFinite(amt) && amt > 0 ? amt : 0,
       };
     }
@@ -136,6 +145,7 @@ function collect() {
   }
   return {
     layout: (document.querySelector('input[name=layout]:checked') || { value: 'vertical' }).value,
+    appearance: (document.querySelector('input[name=appearance]:checked') || { value: 'full' }).value,
     show_countdown: optCdline.checked,
     objects,
   };
@@ -155,20 +165,21 @@ function persist() {
   }
 }
 
-/** 上移/下移：相邻两项交换 order 值，重排表格并持久化。 */
-function moveRow(id, dir) {
+/** 上移/下移：相邻两项交换 order 值，重排卡片并持久化。 */
+function moveCard(id, dir) {
   const seq = CATALOG.map((c) => ({ id: c.id, order: orderOf(c.id) }))
     .sort((a, b) => a.order - b.order);
   const i = seq.findIndex((x) => x.id === id), j = i + dir;
   if (i < 0 || j < 0 || j >= seq.length) return;
   const tmp = seq[i].order; seq[i].order = seq[j].order; seq[j].order = tmp;
   for (const x of [seq[i], seq[j]]) currentProfile.objects[x.id].order = x.order;
-  renderTable();
+  renderCards();
   persist();
 }
 
 function syncHeader() {
   document.querySelectorAll('input[name=layout]').forEach((r) => { r.checked = r.value === currentProfile.layout; });
+  document.querySelectorAll('input[name=appearance]').forEach((r) => { r.checked = r.value === currentProfile.appearance; });
   optCdline.checked = currentProfile.show_countdown;
 }
 
@@ -185,15 +196,17 @@ function showNotice(resetReason, repaired) {
   }
 }
 
-// ── 事件绑定（委托：tbody innerHTML 重建不丢监听） ──
-tbody.addEventListener('change', persist);
-tbody.addEventListener('click', (e) => {
-  const tr = e.target.closest('tr[data-id]');
-  if (!tr) return;
-  if (e.target.classList.contains('f-up')) moveRow(tr.dataset.id, -1);
-  else if (e.target.classList.contains('f-down')) moveRow(tr.dataset.id, +1);
+// ── 事件绑定（委托：cardsEl innerHTML 重建不丢监听） ──
+cardsEl.addEventListener('change', persist);
+cardsEl.addEventListener('click', (e) => {
+  const card = e.target.closest('.obj-card[data-id]');
+  if (!card) return;
+  if (e.target.classList.contains('f-up')) moveCard(card.dataset.id, -1);
+  else if (e.target.classList.contains('f-down')) moveCard(card.dataset.id, +1);
 });
 document.querySelectorAll('input[name=layout]').forEach((r) =>
+  r.addEventListener('change', persist));
+document.querySelectorAll('input[name=appearance]').forEach((r) =>
   r.addEventListener('change', persist));
 optCdline.addEventListener('change', persist);
 
@@ -202,14 +215,14 @@ function runSelftest() {
   const res = [];
   const set = (k, v) => res.push([k, v]);
   try {
-    set('rows', tbody.querySelectorAll('tr[data-id]').length === 4);
-    const glmRow = tbody.querySelector('tr[data-id=glm]');
+    set('rows', cardsEl.querySelectorAll('.obj-card[data-id]').length === 4);
+    const glmCard = cardsEl.querySelector('.obj-card[data-id=glm]');
     set('defaults',
       document.querySelector('input[name=layout][value=vertical]').checked === true &&
       optCdline.checked === true &&
-      glmRow.querySelector('[data-th=yellow]').value === '20' &&
-      glmRow.querySelector('[data-th=red]').value === '10' &&
-      !tbody.querySelector('.f-dsb-on').checked);
+      glmCard.querySelector('[data-th=yellow]').value === '20' &&
+      glmCard.querySelector('[data-th=red]').value === '10' &&
+      !cardsEl.querySelector('.f-dsb-on').checked);
     set('console', consoleErrors.length === 0);
   } catch (err) {
     console.error('settings selftest 异常', err);
@@ -238,7 +251,7 @@ function runSelftest() {
   currentProfile = n.profile;
   materialize();
   syncHeader();
-  renderTable();
+  renderCards();
   showNotice(resetReason, n.repaired);
   if (new URLSearchParams(location.search).has('selftest')) runSelftest();
 })();

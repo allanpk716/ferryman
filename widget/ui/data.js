@@ -78,10 +78,12 @@ export const DEMO_SUMMARY = {
     },
   ],
   handoff: {
-    id: 'handoff', label: '摆渡', kind: 'handoff',
+    id: 'handoff', label: '交接', kind: 'handoff',
+    // 镜像真机形态（query_widget.go）：只发 handoffs_month/week 两条计数——
+    // 交接执行器 provider 无价格表，spend_* 不可算不造数
     metrics: [
-      { key: 'spend_month_cny', text: '月 ¥12.80', source: 'estimated', as_of: '12:03' },
-      { key: 'spend_week_cny', text: '周 ¥4.20', source: 'estimated', as_of: '12:03' },
+      { key: 'handoffs_month', text: '月 23 次', value: 23, source: 'estimated', as_of: '12:03' },
+      { key: 'handoffs_week', text: '周 5 次', value: 5, source: 'estimated', as_of: '12:03' },
     ],
   },
 };
@@ -157,7 +159,8 @@ export function now() {
 /**
  * 票 09 · live 取数目标解析：
  * 壳内=invoke get_daemon_config（Rust 每次现读 ~/ferryman/daemon.token——daemon
- * 重启换 token 后下次轮询自动生效；端点=127.0.0.1:15700/widget/summary）；
+ * 重启换 token 后下次轮询自动生效；端点=127.0.0.1:15700/widget/summary，
+ * 2026-09-29 守护口从 7311 迁至 15700，与 lib.rs get_daemon_config 同步）；
  * 浏览器/测试语境=window.__WIDGET_DAEMON_URL__ 注入（缺省=不可达，如实灰化）。
  * @returns {Promise<{url:string, token:string}|null>} null=不可达
  */

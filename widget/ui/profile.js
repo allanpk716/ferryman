@@ -10,6 +10,7 @@
  *
  * 形状（JSDoc 即契约）：
  * @typedef {'vertical'|'horizontal'} Layout
+ * @typedef {'full'|'compact'} Appearance 外观档：完整 / 紧凑（迷你环列）
  *
  * @typedef {Object} Thresholds 告警阈值（%）；红阈=更紧急=更低
  * @property {number} yellow 默认 20
@@ -31,6 +32,7 @@
  *
  * @typedef {Object} Profile
  * @property {Layout} layout 竖排（默认）/横排
+ * @property {Appearance} appearance 外观档：完整（默认）/紧凑（0.2.3）
  * @property {boolean} show_countdown 倒计时行开关（默认 true）
  * @property {Record<string, ObjectProfile>} objects
  *
@@ -133,6 +135,10 @@ export function normalizeProfile(raw) {
   let show_countdown = true;
   if (src && src.show_countdown === false) show_countdown = false;
   else if (src && 'show_countdown' in src && src.show_countdown !== true) repaired = true;
+  // 外观档（0.2.3）：非法值 → full 且记修复
+  let appearance = 'full';
+  if (src && (src.appearance === 'full' || src.appearance === 'compact')) appearance = src.appearance;
+  else if (src && 'appearance' in src) repaired = true;
   const objects = {};
   if (src && isPlainObj(src.objects)) {
     for (const [id, o] of Object.entries(src.objects)) {
@@ -142,7 +148,7 @@ export function normalizeProfile(raw) {
       if (dirty) repaired = true;
     }
   } else if (src && 'objects' in src) repaired = true;
-  return { profile: { layout, show_countdown, objects }, repaired };
+  return { profile: { layout, appearance, show_countdown, objects }, repaired };
 }
 
 /**
@@ -228,9 +234,16 @@ export function orderedVisible(entries, prof) {
  * budgets：GLM 月预算 4,000,000 tok（剩 20% 紫环）+ 5h 基色覆写；Kimi 月预算 8,000,000
  * （已用 5.1M→剩 36.25%）+ 阈值覆写 85/70；DS 预算 ¥100（月花 58.6→剩 41.4% 绿环）；
  * handoff order=-1 提前。hidden：glm/handoff 关显隐。
+ * compact（0.2.3）：外观档=紧凑，其余全默认——供 ?profile=compact 注入测紧凑形态。
  * @type {Record<string, Profile>}
  */
 export const PRESETS = {
+  compact: {
+    appearance: 'compact',
+    layout: 'vertical',
+    show_countdown: true,
+    objects: {},
+  },
   budgets: {
     layout: 'vertical',
     show_countdown: true,

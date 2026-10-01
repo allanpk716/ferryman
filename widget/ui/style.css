@@ -12,18 +12,40 @@ body{
   width:100vw; height:100vh; overflow:hidden;
   color:var(--txt);
   font:14px/1.5 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
-  background:var(--wbg);
+  background:transparent; /* 圆角+贴边融入（2026-09-29 视觉票）：窗口透明化（conf transparent:true），底色移到 .widget 面板 */
   user-select:none;
 }
+/* 设置窗（settings.html）是非透明独立窗口，底色不随悬浮窗透明化 */
+body.settings-page{background:var(--wbg)}
 
-/* ── 悬浮窗本体：铺满窗口，竖排（默认）/横排 ── */
+/* ── 悬浮窗本体：铺满窗口，竖排（默认）/横排。视觉面板在 ::before 上画（圆角+
+   贴边融入，2026-09-29 视觉票）——.widget 本身必须保持铺满窗口：jsDrag/自测
+   等既有逻辑以它的 rect 为参照，面板内缩挪位会把它们打破。
+   ::before 四边让 6px 透明边距给投影容身——窗口尺寸不动，box-shadow 画出窗外
+   会被裁，只能向窗内借位；6px 经实测装得下内容（演示满载高 593≤608−16、
+   圆控件宽 100≤108）。贴边停靠（docked-*，由 Rust 磁吸 emit "widget-docked"
+   驱动）：该侧边距归零顶到屏缘、圆角转直角、该侧投影被窗缘裁掉即消失——
+   看起来像从屏幕边缘长出来。 ── */
 .widget{
   position:fixed; left:0; top:0; right:0;
-  display:flex; flex-direction:column; align-items:center; gap:6px;
+  display:flex; flex-direction:column; align-items:center; gap:5px; /* 0.2.3: 6→5，真机 Kimi 工具兜底行(619px)超面板内高608 的预算压缩 */
   padding:10px 6px 6px;
   max-height:100vh; overflow:hidden;
 }
+.widget::before{
+  content:''; position:fixed; left:6px; top:6px; right:6px; bottom:6px;
+  /* fixed 相对视口（壳内视口=窗口），不随 .widget 内容高度走；
+     z-index:-1 垫在内容底下当面板——body 透明，不会藏到页面底色后面 */
+  z-index:-1;
+  background:var(--wbg); border-radius:12px;
+  box-shadow:0 3px 12px rgba(0,0,0,.5);
+}
 .widget.horizontal{flex-direction:row; align-items:flex-start; flex-wrap:nowrap; bottom:auto}
+/* 停靠侧：面板边距归零（投影随窗缘裁掉）+ 该侧两角转直角，其余三角保持圆 */
+.widget.docked-left::before{left:0; border-top-left-radius:0; border-bottom-left-radius:0}
+.widget.docked-right::before{right:0; border-top-right-radius:0; border-bottom-right-radius:0}
+.widget.docked-top::before{top:0; border-top-left-radius:0; border-top-right-radius:0}
+.widget.docked-bottom::before{bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0}
 .grip{
   align-self:center; color:var(--txt-faint); cursor:grab; font-size:13px;
   letter-spacing:2px; padding:0 6px 4px;
@@ -56,7 +78,9 @@ body.conn-down .widget .disc{filter:grayscale(1); opacity:.55}
 body.dev .dev-badge{display:block}
 
 /* ── 圆控件 ── */
-.disc{display:flex; flex-direction:column; align-items:center; cursor:pointer; padding:2px; border-radius:12px}
+/* 溢出修第三层·省略号兜底（0.2.3）：.disc/.cap max-width:100% + ellipsis——
+   任何未来超宽文本显示省略号，不再两端裸裁（居中+overflow:hidden 的旧行为） */
+.disc{display:flex; flex-direction:column; align-items:center; cursor:pointer; padding:2px; border-radius:12px; max-width:100%}
 .disc:hover{background:rgba(255,255,255,.06)}
 .disc svg{width:96px; height:96px; display:block}
 .disc .track{fill:none; stroke:rgba(255,255,255,.09); stroke-width:5.5}
@@ -68,7 +92,7 @@ body.dev .dev-badge{display:block}
 .c-sub{fill:var(--txt-dim); font-size:7.5px; text-anchor:middle}
 .c-money-sym{fill:var(--txt-dim); font-size:8px; text-anchor:middle}
 .c-money{fill:var(--txt); font-size:15px; font-weight:700; text-anchor:middle}
-.cap{font-size:11px; color:var(--txt-dim); margin-top:1px; text-align:center; white-space:nowrap}
+.cap{font-size:11px; color:var(--txt-dim); margin-top:0; text-align:center; white-space:nowrap; line-height:1.3; max-width:100%; overflow:hidden; text-overflow:ellipsis} /* 0.2.3: margin 1→0、行高 1.5→1.3——同上高度预算压缩（紧凑档 cap 全隐不受影响） */
 .cap i{font-style:normal; color:var(--cmonth); font-size:10px; border:1px dashed rgba(155,126,222,.55); border-radius:3px; padding:0 2px; margin-left:2px}
 .cap.cdline{margin-top:2px}
 .cap.cdline .cdot{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:3px; vertical-align:-1px}
@@ -84,10 +108,11 @@ body.dev .dev-badge{display:block}
 }
 .tooltip .t-sw{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:0}
 
-/* ── 详情卡：窗口内覆盖式弹出（原 mock 定位在窗外会被裁） ── */
+/* ── 详情卡：窗口内覆盖式弹出（原 mock 定位在窗外会被裁）。
+   圆角面板后四边各让 8px（面板 6px 透明边距 + 2px 内距），不压透明窗缘 ── */
 .detail{
-  position:fixed; z-index:65; left:4px; top:4px; right:4px;
-  max-height:calc(100% - 8px); overflow-y:auto;
+  position:fixed; z-index:65; left:8px; top:8px; right:8px;
+  max-height:calc(100% - 16px); overflow-y:auto;
   background:rgba(14,16,22,.97); border:1px solid var(--wborder);
   border-radius:10px; padding:10px 8px; box-shadow:0 10px 40px rgba(0,0,0,.55);
 }
@@ -111,21 +136,16 @@ body.dev .dev-badge{display:block}
 .b.fetch{color:#7ECB9B; border:1px solid rgba(126,203,155,.45)}
 .b.est{color:var(--cmonth); border:1px dashed rgba(155,126,222,.55)}
 
-/* ── 设置浮层（图例帮助并入于此；完整设置窗=票 04） ── */
-.overlay{
-  position:fixed; inset:0; z-index:70; background:rgba(5,7,10,.62);
-  display:flex; align-items:flex-start; justify-content:center; padding:8px 4px;
-}
+/* ── 设置窗面板（0.2.4 浮层退役：.overlay 规则已删，.sheet 只剩 settings.html 在用） ── */
 .sheet{
   background:#171b26; border:1px solid var(--wborder); border-radius:12px;
   width:100%; max-height:calc(100% - 4px); overflow-y:auto; padding:10px 8px;
 }
 .sheet h2{font-size:13px; margin-bottom:4px}
-.sheet .note{font-size:10.5px; color:var(--txt-dim); margin-bottom:10px}
-.sheet .close{float:right; background:none; border:none; color:var(--txt-dim); font-size:16px; cursor:pointer}
-.radioline{font-size:12px; margin:4px 0}
+.sheet .note{font-size:10.5px; color:var(--txt-dim); margin-bottom:6px}
+.radioline{font-size:12px; margin:3px 0}
 input[type=checkbox]{accent-color:#5B9BD5}
-h4.sec{font-size:12px; margin:10px 0 4px; color:#9CC4E8}
+h4.sec{font-size:12px; margin:7px 0 3px; color:#9CC4E8}
 .help{font-size:11px; color:var(--txt-dim); display:flex; flex-direction:column; gap:4px}
 .help .sw{display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; vertical-align:-1px}
 .help i{font-style:normal; color:var(--cmonth); font-size:10px; border:1px dashed rgba(155,126,222,.55); border-radius:3px; padding:0 2px; margin-left:2px}
@@ -141,32 +161,116 @@ body.tray-collapsed #restoreBtn{display:block}
 
 .hidden{display:none!important}
 
-/* ── 票 04 · 设置窗（独立窗口 settings.html；按需创建、关闭即销毁） ── */
-body.settings-page{overflow:auto; padding:10px 12px}
-body.settings-page .sheet{max-height:none; width:100%; padding:12px 10px}
+/* ── 0.2.3 紧凑外观档（body.compact；窗口尺寸由 Rust design_size("compact")
+   =80×322 联动，实测推导见 lib.rs COMPACT_* 注释——CSS 与 Rust 常量互指，
+   改一边必须核另一边；0.2.5 迷你标签行使内容高 253→303，272→322；0.2.7 票 02：padding 8/4/4→10/4/14，底距=14−6=8、顶距=10−6=4，内容/窗高 +12） ── */
+body.compact .widget{gap:4px; padding:10px 4px 14px}
+/* 夜链票 04（2026-09-30）· 内容收口对称＋贴边重心补偿＋tooltip 收口：
+   窗宽 80、面板净宽 68（::before 左右 inset 6）。.disc 限宽 60 → 悬浮态左右缝各
+   10 逻辑 px（=15 物理 px 整数对称，150% DPI 下不再 1px 客观不对称；超宽 mini-tag
+   走 .mini-tag 既有 ellipsis 兜底，属预期）。docked-left/right 面板可视区偏侧
+   （0..74 / 6..80），padding 左右 ±3 补偿使内容中心对齐面板可视区中心（37 / 43）；
+   特异性 (0,3,1) 高于上行 (0,2,1)，只覆写左右、上下 padding 不触。tooltip 限宽 64
+   （font/padding 同步缩小）不再伸出 80 宽窗口被裁。 */
+body.compact .disc{max-width:60px}
+body.compact .widget.docked-left{padding-left:1px;padding-right:7px}
+body.compact .widget.docked-right{padding-left:7px;padding-right:1px}
+body.compact .tooltip{max-width:64px;font-size:10px;padding:5px 6px}
+/* 夜链票 03（2026-10-01）· 胶囊条把手（问题 3）：⠿ 10px×0.35 透明度≈隐形 →
+   font-size:0 藏字符（DOM 与 data-tauri-drag-region 原样；不新增任何 click/dblclick
+   监听——0.2.3 原生拖动区吞双击红线），::after 画 22×3 胶囊条，hover 提亮
+   0.30→0.60 作唯一「可拖」提示。width:100% 撑满面板净宽（80−左右 padding 4×2=72）
+   把手热区变大更好按；height 10 取代旧 grip 行高 17（窗高链 −7，经 fitHeight
+   上报自动收敛，Rust 零改动）。 */
+body.compact .grip{font-size:0; letter-spacing:0; width:100%; height:10px; padding:0; display:flex; align-items:center; justify-content:center}
+body.compact .grip::after{content:''; width:22px; height:3px; border-radius:1.5px; background:rgba(232,234,240,.30)}
+body.compact .grip:hover::after{background:rgba(232,234,240,.60)}
+body.compact .gear{display:none} /* 托盘菜单「设置…」可达 */
+body.compact .disc svg{width:48px; height:48px}
+body.compact .cap, body.compact .cdline{display:none} /* 文字行/倒计时行全隐 */
+/* 圆心文字适配 48px 盘：SVG 随盘缩 0.48，字号反向抬升补回视觉大小 */
+body.compact .c-label{font-size:20px}
+body.compact .c-sub{font-size:13px}
+body.compact .c-money-sym{font-size:12px}
+body.compact .c-money{font-size:26px}
+/* 0.2.4 紧凑档圆心大数字：套餐盘=最紧环剩余% 单行大字（告警色=inline fill 随该环阈值联动，
+   不走 CSS 变体；完整档无此元素） */
+body.compact .c-pct{font-size:28px; font-weight:700; text-anchor:middle}
+/* 0.2.5 交接盘紧凑档大数字=中性白：交接计数无阈值告警语义，不随指标变色
+   （套餐盘 c-pct 的 inline fill 告警色不受此规则影响） */
+body.compact .disc.handoff .c-pct{fill:var(--txt)}
+/* 0.2.5 迷你标签行：紧凑档每盘下方名字+品牌色小点（文字识别为主、色点辅助——
+   GLM/Kimi/DeepSeek 三家品牌色全蓝系分不开）。渲染由 app.js 按档位门控，
+   完整档不产此元素，故此处用普通类名即可。 */
+.mini-tag{display:flex;align-items:center;justify-content:center;gap:4px;
+  margin-top:1px;font-size:10px;line-height:1.15;color:var(--txt-dim);
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mini-tag .dot{width:7px;height:7px;border-radius:50%;flex:none}
+body.compact .conn-warn{font-size:9px; padding:0 2px 2px; white-space:normal}
+/* 交接盘虚线圈在 48px 缩放下（2px×0.48≈1px）近乎不可见，圆心数字像悬空文字——
+   紧凑档专属加粗提亮（真机视觉验收 2026-09-29 发现） */
+body.compact .disc.handoff svg .houtline{stroke-width:3.5; stroke:rgba(255,255,255,.4)}
+body.compact .update-warn{font-size:9px; gap:2px 4px; padding:2px 4px; line-height:1.35}
+body.compact #btnUpdateInstall{font-size:9px; padding:0 4px}
+/* 横排紧凑档守卫：竖条变体属 spec out of scope——上行胶囊新几何（width:100%/
+   display:flex/height:10px）只限竖排，这里还原字符形态，不让新几何泄进横排挤压盘列；
+   ::after 条一并关。选择器特异性 (0,3,1) 高于胶囊三条 (0,2,1) 且在后，覆写成立。 */
+body.compact .widget.horizontal .grip{font-size:10px; letter-spacing:1px; padding:2px 0; width:auto; height:auto; display:block}
+body.compact .widget.horizontal .grip::after{display:none}
+/* 夜链票 01（2026-09-30）· 圆心 % 上标＋满格特判（R1 实测校准）。推导模型修正为实测口径：
+   本机 system-ui 解析为微软雅黑，数字进给 0.617em（非旧模型的 0.5em），Chromium 对 SVG
+   text 的 getBBox 是字体度量盒（进给宽×升部+降部）而非墨迹。票面初值 28/24/12 按 0.5em
+   模型推导，实测度量盒宽 ≈47.0/≈46.3 超 38.5 横向硬界——按 R1 校准：
+   · 两位数母字号 28→22，仅限带 % 的套餐盘圆心（:has(> .c-pct-pct)）——交接盘计数、报错
+     ⚠ 复用 .c-pct 不在票内，保持 28 不受累；
+   · % 12→9（9/22≈41%，在 [35%,45%] 视觉比带内）；
+   · 100 特判 24→19。
+   校准后 preset {72,78,100} getBBox 宽 ≈36.7/36.6 ≤37.5（38.5 留 ≥1 余量），三 preset
+   全过票面横向字面断言（x≥30.75 且 x+width≤69.25）；纵向墨迹盒同步达标。断言留证
+   assert-static pct1 组。规则位于 body.compact .c-pct 基础规则之后——同特异性后写覆盖
+   （F4-2）。 */
+body.compact .c-pct:has(> .c-pct-pct){font-size:22px}
+body.compact .c-pct-pct{font-size:9px}
+body.compact .c-pct-full{font-size:19px}
+
+/* ── 票 04 · 设置窗（独立窗口 settings.html；按需创建、关闭即销毁）。
+   0.2.4 卡片式重排：基准 ~13px、控件 12.5px；服务商每对象一张卡（.obj-card） ── */
+body.settings-page{overflow:auto; padding:8px 12px; font-size:13px}
+body.settings-page .sheet{max-height:none; width:100%; padding:10px}
 .note.warn{
   display:block; font-size:11px; color:var(--alert-y);
   border:1px solid rgba(232,195,61,.4); background:rgba(232,195,61,.1);
   border-radius:8px; padding:5px 8px; margin-bottom:8px;
 }
-.set{width:100%; border-collapse:collapse; font-size:11.5px; margin:6px 0}
-.set th,.set td{border:1px solid rgba(255,255,255,.08); padding:4px 6px; text-align:left; vertical-align:middle}
-.set th{background:rgba(255,255,255,.04); font-weight:600; font-size:11px}
-.set .hint{font-size:10px; color:var(--txt-faint)}
-.set input[type=number]{
+.obj-card{
+  border:1px solid var(--wborder); border-radius:10px; background:rgba(255,255,255,.03);
+  padding:6px 10px; margin:5px 0; /* 0.2.4 一屏目标：间距从 8/8 收到 5/6（660×640 实测 703→≤640） */
+}
+.obj-head{display:flex; align-items:center; gap:8px; font-weight:600}
+.obj-head .obj-name{flex:1}
+.obj-head .obj-order{flex:none; display:flex; gap:4px}
+.obj-row{display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; font-size:12.5px}
+.obj-row .k{color:var(--txt-dim); width:52px; flex:none}
+.obj-row .c-field{display:inline-flex; align-items:center; gap:3px; margin-right:6px}
+.settings-page .hint{font-size:11px; color:var(--txt-faint)}
+.settings-page input[type=number]{
   width:56px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.14);
   color:var(--txt); border-radius:4px; padding:1px 4px; font:inherit;
 }
-.set .f-mb{width:84px}
-.set .f-dsb-amt{width:64px}
-.set input[type=color]{
+.settings-page .f-mb{width:84px}
+.settings-page .f-dsb-amt{width:64px}
+.settings-page input[type=color]{
   width:24px; height:18px; padding:0; border:none; background:none;
   cursor:pointer; vertical-align:-4px; margin-right:2px;
 }
-.set button{
+.obj-card button{
   background:none; border:1px solid rgba(255,255,255,.16); color:var(--txt-dim);
-  font-size:11px; line-height:1; border-radius:4px; padding:2px 5px; cursor:pointer;
+  font-size:12px; line-height:1; border-radius:4px; padding:2px 6px; cursor:pointer;
 }
-.set button:hover{color:var(--txt); background:rgba(255,255,255,.08)}
+.obj-card button:hover{color:var(--txt); background:rgba(255,255,255,.08)}
+/* 图例与帮助：默认收起，点开展开 */
+details.sec-help{margin-top:10px}
+details.sec-help summary{cursor:pointer; font-size:12px; font-weight:600; color:#9CC4E8}
+details.sec-help .help{margin-top:6px}
 .radioline .hint{font-size:10.5px; color:var(--txt-faint)}
 .statusline{margin-top:8px; font-size:11px; color:var(--txt-dim); min-height:16px}

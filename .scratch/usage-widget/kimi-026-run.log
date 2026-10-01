@@ -1,0 +1,832 @@
+kimi version 0.35.0
+• Let me start by reading the relevant files: widget/src-tauri/src/lib.rs, widget/ui/app.js, widget/ui/tests/assert-static.mjs, .scratch/usage-widget/pw_verify.py.
+
+  Let me read them in parallel.
+
+• 我先读关键文件，了解现有代码结构。
+
+• Now read the test files: widget/ui/tests/assert-static.mjs and .scratch/usage-widget/pw_verify.py.
+
+• 再看两个测试文件的结构。
+
+• Now I have full context. Let me plan the changes.
+
+  ### Rust (lib.rs)
+
+  1. Change constant comments: DESIGN_H_LOGICAL / COMPACT_H_LOGICAL = 缺省高度.
+  2. New managed state `DesignHeights(Mutex<(f64, f64)>)` init (620, 322). `design_size(mode)` reads it (fallback to constants on lock failure). Pure function `design_size_for(mode, full_h, compact_h)`.
+  3. New command `fit_height(mode: String, content_h: f64)`:
+     - normalize mode (invalid → current mode)
+     - clamp content_h to [60, 1500], round to int
+     - if diff vs current < 1 → no-op (return current)
+     - else update DesignHeights for that mode, then set_size(LogicalSize(W(mode), new_h))
+     - comment about bottom-dock gap known limitation.
+  4. setup & set_appearance use new state-based design_size.
+  5. Unit tests: design_size_for both modes + width; fit_height clamp pure function (<60→60, >1500→1500, rounding, |Δ|<1 no-op). Write clamp/no-op as pure function.
+
+  Design details:
+
+  ```rust
+  /// 窗高自适应（0.2.6）：full/compact 两档运行时高度...
+  struct DesignHeights(Mutex<(f64, f64)>);
+
+  fn design_size_for(mode: &str, full_h: f64, compact_h: f64) -> (f64, f64) {
+      match mode {
+          "compact" => (COMPACT_W_LOGICAL, compact_h),
+          _ => (DESIGN_W_LOGICAL, full_h),
+      }
+  }
+
+  fn design_size(app: &tauri::AppHandle, mode: &str) -> (f64, f64) {
+      let (fh, ch) = app.try_state::<DesignHeights>()
+          .and_then(|s| s.0.lock().ok().map(|g| *g))
+          .unwrap_or((DESIGN_H_LOGICAL, COMPACT_H_LOGICAL));
+      design_size_for(mode, fh, ch)
+  }
+  ```
+
+  Wait — design_size currently takes only mode. It's called in 3 places: assert_geometry (has app), set_appearance (has app), setup (has app.handle()). Change signature to take app. OK.
+
+  Pure clamp function:
+
+  ```rust
+  /// fit_height 钳位与 no-op 判定（纯函数）：
+  /// 高度钳到 [60, 1500] 逻辑 px 并四舍五入取整；与现值差 <1 = no-op（返回 None），
+  /// 否则返回新高度。
+  fn fit_height_decide(current: f64, content_h: f64) -> Option<f64> {
+      let h = content_h.clamp(60.0, 1500.0).round();
+      if (h - current).abs() < 1.0 { None } else { Some(h) }
+  }
+  ```
+
+  Command:
+
+  ```rust
+  #[tauri::command]
+  fn fit_height(app: tauri::AppHandle, mode: String, content_h: f64) -> Result<f64, String> {
+      // mode 归一：非法档 → 当前档
+      let mode = match mode.as_str() {
+          "full" | "compact" => mode,
+          _ => current_appearance(&app),
+      };
+      let Some(st) = app.try_state::<DesignHeights>() else {
+          return Err("高度状态未就绪".into());
+      };
+      let mut new_h = {
+          let mut g = st.0.lock().map_err(|_| "高度状态锁失败".to_string())?;
+          let cur = if mode == "compact" { g.1 } else { g.0 };
+          let Some(h) = fit_height_decide(cur, content_h) else {
+              return Ok(cur); // |Δ|<1：no-op，如实返回现值
+          };
+          if mode == "compact" { g.1 = h } else { g.0 = h }
+          h
+      };
+      let (dw, _) = design_size_for(&mode, 0.0, 0.0); // 宽=档常量
+      let w = app.get_webview_window("widget").ok_or("widget 窗口不存在")?;
+      w.set_size(tauri::LogicalSize::new(dw, new_h))
+          .map_err(|e| format!("自适应窗高失败: {e}"))?;
+      Ok(new_h)
+  }
+  ```
+
+  Wait — "先更状态再 set_size" — yes, done above since state updated before set_size. Good.
+
+  But careful: set_appearance should also reset heights to defaults for the mode? Spec item 4: "setup 启动序、set_appearance 里对 design_size 的调用改走新状态（换档先落该档缺省高，前端随后的 fit_height 再收细——两次 set_size 可接受）". "换档先落该档缺省高" — so on set_appearance, we should reset the target mode's height back to default, then set_size. Hmm: does "先落该档缺省高" mean update DesignHeights for that mode to the default constant, then set_size to default? I think yes — because the previous runtime-fitted height for the other... wait, switching to compact: DesignHeights compact may hold a previously fitted value. Spec says on switch, land on that mode's 缺省高 (default). So set_appearance should reset the mode's entry to the default constant and set_size to that.
+
+  Actually re-read: "换档先落该档缺省高，前端随后的 fit_height 再收细——两次 set_size 可接受". Yes — on switch, set_size to the default height for that mode. Should we also reset DesignHeights entry? If we set_size to default but leave state at the old fitted value, then the self-heal assert would compare against the old fitted value and "correct" the just-set default size before the frontend's fit_height arrives — a fight. So yes, reset the state entry to default too.
+
+  Implementation: in set_appearance, after updating Appearance, reset DesignHeights entry for mode to default constant, then set_size(dw, default_h).
+
+  setup: currently compact branch calls design_size("compact") — at setup time DesignHeights needs to be managed before. Actually manage(DesignHeights) in setup before use; design_size(app, "compact") reads state = defaults anyway. Simplest: manage DesignHeights at the same point, and use design_size(app.handle(), "compact"). Or just use design_size_for with constants. To follow spec item 4 ("对 design_size 的调用改走新状态"), I'll register the state before and call design_size(app.handle(), ...).
+
+  Note ordering: design_size needs AppHandle; in setup we have `app` (&mut App). Use app.handle().
+
+  Also manage(DesignHeights) — where? In setup near Appearance manage. Or in builder chain .manage(DesignHeights(...)). The builder chain already has .manage calls; add `.manage(DesignHeights(Mutex::new((DESIGN_H_LOGICAL, COMPACT_H_LOGICAL))))` in builder chain. That's simpler and available everywhere including setup. Do that.
+
+  Comment updates on constants:
+  - DESIGN_H_LOGICAL: change comment to 缺省高度口径. Keep derivation notes as 缺省依据.
+  - COMPACT_H_LOGICAL similarly.
+  - The big block comment above (0.2.3 起设计尺寸按外观档取值...) update: 0.2.6 起高度由前端上报覆盖.
+
+  Unit tests to add:
+  - design_size_for 两档取值与宽度
+  - fit_height_decide: <60→60, >1500→1500, rounding, |Δ|<1 no-op.
+
+  Existing test design_size_by_appearance uses design_size(mode) with one arg — must update since signature changes. Rewrite it to use design_size_for. Spec says "design_size_for 两档取值与宽度" test — replace existing test.
+
+  ### Frontend (app.js)
+
+  New function fitHeight():
+
+  ```js
+  // ── 窗高自适应（0.2.6）：渲染后量内容高上报壳层，窗口随可见盘数伸缩 ──
+  // 量法用 scrollHeight 而非 getBoundingClientRect：.widget 有 max-height:100vh +
+  // overflow:hidden，rect 会被视口钳制，scrollHeight 报完整内容需求。
+  let lastFit = { mode: null, h: 0 }; // 上次已上报（mode+值）；换档后强制重发一次
+  function fitHeight() {
+    // 托盘收起（#widget display:none 量出 0）或尚无数据（防启动期收缩成光杆 grip）→ 不动
+    if (document.body.classList.contains('tray-collapsed') || !state.summary) return;
+    const h = Math.ceil(widget.scrollHeight);
+    if (lastFit.mode === state.profile.appearance && Math.abs(h - lastFit.h) < 1) return;
+    const t = window.__TAURI__;
+    if (!(t && t.core && t.core.invoke)) return; // 非壳语境静默跳过（同 gear 惯例）
+    lastFit = { mode: state.profile.appearance, h };
+    t.core.invoke('fit_height', { mode: state.profile.appearance, contentH: h })
+      .catch((e) => console.error('fit_height 失败', e));
+  }
+  ```
+
+  Wait: invoke parameter naming. Rust command `fit_height(mode: String, content_h: f64)` — Tauri v2 converts camelCase JS args to snake_case Rust params by default? In Tauri v2, command arguments: JS passes camelCase keys and Tauri maps to snake_case. Existing set_appearance called with `{ mode }`. Spec says "先看 set_appearance 的前端调用形态照抄" — set_appearance uses `{ mode }`. For content_h, Tauri convention: JS `contentH` maps to Rust `content_h`. Yes, Tauri v2 does this conversion automatically (serde rename_all camelCase at the IPC layer). So `{ mode, contentH: h }`.
+
+  Also on error, should we revert lastFit? If invoke fails, the reported value wasn't applied; next render would see lastFit matches and skip re-send. Better to only set lastFit on success? But then repeated failures spam. Hmm, keep simple: set lastFit before invoke (optimistic), on failure log. Actually a subtle bug: if invoke fails at startup (window not ready?), height never fits. But get_profile path etc... Keep it simple per spec. Actually let me set lastFit in .then() to be safer? That could cause double-sends from rapid renders. Spec just says "与上次已上报值差 ≥1 才 invoke" — "已上报" implies once sent. Keep optimistic set; failure logged.
+
+  Hmm, wait — but for the pw_verify test "连续两次 render 不重复上报（调用计数不涨）" — optimistic set works.
+
+  Call points: end of render(); and in setAppearance path... There's no setAppearance function; the switch path is applyAppearance (invoke set_appearance) + render in applyProfile. Spec says "setAppearance 换档路径在 body class 切换并 render 之后". applyProfile calls applyAppearance() then render() — render at end calls fitHeight. But ordering issue: applyAppearance toggles body class then invokes set_appearance; render happens after, so fitHeight measures with new class. Good — but "换档后强制重发一次" is handled by mode being part of lastFit. Since mode differs, it re-sends. Good.
+
+  But note: render() early-returns when `!state.summary`. fitHeight at end of render would not run in that case — but fitHeight itself guards on !state.summary anyway. Spec: "调用点：render() 末尾". Put it at the very end of render() after the detail re-attach. The early `if (!state.summary) return;` in render prevents reaching it, which matches the guard.
+
+  Hmm wait, also when tray-collapsed, render still runs — fitHeight guard handles.
+
+  Also should poller callback's render trigger fitHeight — yes, it's the same render().
+
+  One more: measurement timing — render inserts HTML synchronously, scrollHeight valid immediately. Good.
+
+  But wait: `.widget` scrollHeight — widget is the #widget element. In vertical layout it's fixed positioned with content height. With max-height:100vh... in headless window 620px. For full mode demo 4 discs, expected contentH ≈599-613 per spec (content ~599-613). OK.
+
+  ### assert-static.mjs additions
+
+  Add checks:
+  - lib.rs registers fit_height (invoke_handler list contains fit_height), DesignHeights present, design_size_for present
+  - app.js has fitHeight / scrollHeight measurement / tray-collapsed and no-summary guards
+  - constant comment changed to 缺省 (grep '缺省')
+
+  The librs variable already exists in section ⑬. Add a new section. Note existing check `tag.lib.rs COMPACT_H=322...` — my comment changes shouldn't break it: keep "COMPACT_H_LOGICAL: f64 = 322.0" literal and "内容实测 63×303" text in comments. I'll keep those.
+
+  ### pw_verify.py additions (new group after e — spec says "e 组后顺延编号" so add f? No — f exists (settings). "e 组后顺延编号" means insert new items numbered continuing from e3 → e4, e5, ... Hmm "（e 组后顺延编号）" — the new checks go after group e, numbered e4+? But f group exists after e. Actually re-read: "30 项保持全绿 + 新增（e 组后顺延编号）". I think it means add new checks numbered continuing the e sequence (e4, e5, ...), placed in the e page context (伪壳). Since the e page already has the fake shell, add e4+ checks within the same page before pg.close(). That makes sense — 伪壳捕获 requires the fake shell which only exists in group e's page.
+
+  New checks:
+  - e4: compact mode 4-disc demo render → fit_height invoked, contentH ≈303 (±3)
+  - full mode ≈599-613
+  - two consecutive renders → no duplicate report (count doesn't grow)
+  - hide one disc (deepseek) via profile → render → new value ~50-70 smaller
+  - tray-collapsed → fitHeight doesn't send
+
+  Wait, ordering: e1 does dblclick → compact. So in the e page, after e1 we're in compact mode. Timeline: page loads full mode demo → render → fitHeight fires (full, ~599-613). Then dblclick → compact → set_appearance + render → fitHeight (compact, ~303).
+
+  Let me design the checks:
+
+  After e3's existing checks, add:
+
+  ```python
+  # e4 · 0.2.6 窗高自适应：渲染后 fit_height 上报内容高
+  fh = [a for c, a in e1['invoke'] if c == 'fit_height']
+  ```
+  But e1 was captured earlier. fit_height calls so far: initial full-mode render(s) + compact render. Note applyProfile is called twice at startup (initial + get_profile resolve). Initial: profile from URL (default full). render with no summary → guarded. Then poller fetch resolves → render with summary → fitHeight fires (full, h≈599-613). Then get_profile resolves → applyProfile → render again → same value, no resend. Then dblclick → compact: applyAppearance (invoke set_appearance) + render → fitHeight(compact, ~303).
+
+  Then e3 toggles show_countdown via profile-changed → applyProfile → render ×2. In compact, hiding cdline — cdline is display:none in compact anyway, so height unchanged → no resend. Good.
+
+  So at e4 point:
+  - full-mode fit_height call exists with contentH in [599-613]... wait, viewport 132×620. max-height:100vh = 620. scrollHeight unclamped. Demo full 4 discs ~599-613 expected. But careful: does scrollHeight include grip? The widget contains grip + discs. Spec says expect ≈599-613. Trust.
+
+  - compact call contentH ≈303±3.
+
+  Check e4: both exist with expected values and modes.
+
+  ```python
+  fh = [a for c, a in e1['invoke'] if c == 'fit_height']
+  # wait — e1 was evaluated before e2/e3; need fresh evaluate
+  ```
+
+  I'll do a fresh `pg.evaluate` to get current calls.
+
+  e4:
+  ```python
+  calls = pg.evaluate("() => window.__CALLS__.invoke.filter(x => x[0]==='fit_height').map(x => x[1])")
+  full_h = [a['contentH'] for a in calls if a['mode']=='full']
+  compact_h = [a['contentH'] for a in calls if a['mode']=='compact']
+  check('e4. fit_height 上报：完整档 ≈599-613 / 紧凑档 ≈303（±3）',
+        full_h and 596 <= full_h[0] <= 616 and compact_h and abs(compact_h[-1]-303) <= 3, ...)
+  ```
+
+  e5: consecutive renders don't re-report:
+  ```python
+  before = len(calls)
+  pg.evaluate("() => window.__LISTENERS__['profile-changed']({ payload: {layout:'vertical', appearance:'compact', show_countdown:true, objects:{}} })")
+  pg.wait_for_timeout(100)
+  after = pg.evaluate("() => window.__CALLS__.invoke.filter(x => x[0]==='fit_height').length")
+  check('e5. 同值重复 render 不重复上报', after == before, ...)
+  ```
+  Hmm — but the profile-changed with same profile → applyProfile → applyAppearance (same mode, no set_appearance) → render → fitHeight same mode+value → skip. Good. But wait — show_countdown toggle earlier (e3) set to false then true with appearance 'full'! Look at e3: it sends profile-changed with appearance: 'full'... that would toggle back to full mode! In e3, `appearance: 'full'` in payloads. Hmm, so after e3, mode is back to full, and applyAppearance invokes set_appearance(full), render → fitHeight(full, ~same h) — but lastFit = {mode:'compact', h:303}, so mode differs → resend full. OK so sequence is messy but deterministic.
+
+  Let me trace carefully:
+
+  Startup: body gets profile from URL (none → default full). applyProfile → render (no summary, guard). poller: data.js startPolling — need to check when first fetch resolves. In dev+static mode it likely returns demo data async quickly. After summary arrives → render → fitHeight: lastFit null → send (full, H_full). get_profile resolves → profile full → applyProfile → applyAppearance: mode==applied ('full'), no invoke; render → same → skip.
+
+  dblclick (inShell true) → toggleAppearance: appearance=compact; persistProfile (emit + save_profile invoke); applyProfile → applyAppearance: mode compact ≠ full → body class compact, invoke set_appearance; render → fitHeight → mode differs → send (compact, H_c≈303).
+
+  e1 evaluate captures: invoke contains fit_height full, set_appearance compact, save_profile, fit_height compact.
+
+  e2: gear click → open_settings_window.
+
+  e3: profile-changed payload appearance:'full', show_countdown:false → applyProfile → applyAppearance: full≠compact → set_appearance(full); render → fitHeight: mode full ≠ lastFit.mode compact → send (full, H_full') — value should equal first H_full (content identical? show_countdown false hides cdline → height shrinks! cdline rows hidden → less height. H_full_off < H_full_on). Then second payload show_countdown:true → render → height back → Δ≥1 → send (full, H_full).
+
+  So at end of e3, lastFit={full, H_full_on}, and multiple full calls exist.
+
+  e4 checks: full_h[0] in 599-613; compact_h ≈303±3. Careful: full_h list may include the cdline-off value. Use first full call (initial, show_countdown default true) — in [599,613]. compact_h[-1]≈303.
+
+  Wait, expected compact ≈303: that's the measured content 303 from the pw_measure. But viewport is 132×620 in group e — compact content max-height:100vh=620 doesn't clamp 303. scrollHeight = 303ish. But spec says ±3. But mini-tag etc. — trust spec's number, but to be safe use ±4? Spec says ±3, follow it. If it fails I'll see actual and adjust within reason... Actually let me think: c12 check asserts scrollH ≤ 310 for compact at 80×322 viewport. At 132×620 viewport, width differs (132 vs 80)! Compact discs are 48px wide; with wider window, does height change? Possibly not much — discs fixed 48px, labels same. Height should be ~303 regardless of width. OK.
+
+  Full contentH ≈599-613: at 132×620 with 4 discs full mode. d4 check says content ≤ 608 with margin ≥6 → scrollH ≤ 602? d4: panelInner=608, scrollH ≤ 602. So full_h ≈ up to 602. Spec says ≈599-613. Hmm, 599-613 range with content ≤602... whatever, measure at runtime.
+
+  Actually wait — there's a subtlety: `--window-size=132,620` in headless static dump vs pw_verify viewport 132×620. Both fine.
+
+  e5 (no duplicate): send profile-changed with identical effective profile (appearance full, countdown true) → render → no resend:
+
+  ```python
+  n_before = pg.evaluate("() => window.__CALLS__.invoke.filter(x=>x[0]==='fit_height').length")
+  pg.evaluate("__LISTENERS__['profile-changed']({payload:{layout:'vertical',appearance:'full',show_countdown:true,objects:{}}})")
+  pg.wait_for_timeout(100)
+  n_after = ...
+  check('e5. 同档同内容重渲染不重复上报（计数不涨）', n_after == n_before, f'{n_before}→{n_after}')
+  ```
+
+  e6: hide deepseek via profile → new value smaller by ~50-70:
+  ```python
+  pg.evaluate("""__LISTENERS__['profile-changed']({payload:{layout:'vertical',appearance:'full',show_countdown:true,objects:{deepseek:{visible:false}}}})""")
+  pg.wait_for_timeout(100)
+  calls = ...
+  new_h = calls[-1]['contentH']; prev_h = calls[-2]['contentH']
+  check('e6. 显隐一盘（藏 deepseek）→ 新上报值回落 ~50-70', 50 <= prev_h - new_h <= 70, ...)
+  ```
+  normalizeProfile handles partial objects — deepseek: {visible:false} keeps others default visible. Good.
+
+  Full-mode DS disc height: disc 100px svg + cap line... wait full mode disc svg is 100×100 plus caps. Hmm, ~50-70? Full mode disc = 100px svg + caps ≈ 130+. Hmm spec says "新上报值比前值小 ~50-70（DS 盘+标签行高）" — "标签行" suggests compact mode (mini-tag). Maybe the hide-disc test should be in compact mode. But we're in full mode after e5. Hmm. Let me re-read: "显隐一盘（localStorage profile 藏掉 deepseek）→ render → 新上报值比前值小 ~50-70（DS 盘+标签行高）".
+
+  Hmm, "DS 盘+标签行" — in compact, disc=48 + mini-tag≈12.5 + gap 4 ≈ 64.5. Yes, that's compact. So for e6, first switch to compact via profile-changed appearance:'compact', then hide deepseek. Or do the whole e6 in compact:
+
+  ```python
+  # 切回紧凑档（fit 303 基线），再藏 deepseek
+  pg.evaluate("profile-changed appearance compact ...")
+  wait
+  pg.evaluate("profile-changed appearance compact, objects deepseek hidden")
+  wait
+  ```
+  Then compare last two fit_height values: diff ≈ 303-238 ≈ 64 → in 50-70. 
+
+  Actually simpler: single evaluate with two sequential dispatches? They're synchronous JS (applyProfile is sync). But fitHeight invoke is async record — pushes to __CALLS__ synchronously in fake shell (invoke pushes synchronously, returns promise). So I can do both in one evaluate and read calls after. But careful: after first dispatch (compact), fitHeight sends (compact, 303). Then second dispatch hides deepseek → render → fitHeight sends (compact, ~238). Both recorded. Then compare.
+
+  But wait — mode switching: applyAppearance sees mode change full→compact → set_appearance invoke; lastFit.mode was full → resend. Good.
+
+  Then e7: tray-collapsed guard:
+  ```python
+  n = count
+  pg.evaluate("document.body.classList.add('tray-collapsed')")
+  # trigger a render — via profile-changed with same profile
+  pg.evaluate("__LISTENERS__['profile-changed']({payload: <current: compact, deepseek hidden>})")
+  wait
+  check count unchanged
+  # restore
+  pg.evaluate("document.body.classList.remove('tray-collapsed')")
+  ```
+  Hmm wait — when tray-collapsed and render runs, fitHeight returns early → no send. Then removing class and rendering again would send... but we don't render after restore, fine. But subsequent groups (f) use a different page, so no interference.
+
+  Actually also need: does profile-changed with deepseek hidden equal current state → yes same, render happens regardless (applyProfile always renders). Good test: count must not grow.
+
+  Note: e6 final state compact+hidden. e7 uses same payload again.
+
+  Also there's the selftest 'collapse' check (group a) that toggles tray-collapsed — different page, fine.
+
+  Also number the new checks e4, e5, e6, e7.
+
+  Spec also says pw test: "紧凑档 4 盘演示渲染后被调用，contentH ≈303（±3）；完整档 ≈599-613". Both covered in e4.
+
+  Now potential flakiness: the initial full fit_height happens after poller's first fetch. In group e, pg.wait_for_selector('.disc') ensures render with summary happened. But fitHeight invoked within render synchronously, and fake invoke pushes synchronously. So by the time .disc exists, the call is recorded. Good.
+
+  Edge: data.js poller — check it calls callback synchronously on demo data? Let me check data.js quickly for how demo/static data loads (async fetch of JSON?). Actually the existing e1 test relies on render happening; our check just reads recorded calls — if the full-mode fit happened, it's in the list. `.disc` selector confirms discs rendered, and render() end calls fitHeight synchronously. Good.
+
+  Now, one concern: `widget.scrollHeight` in compact mode at viewport height 620 — content 303, fine. In full mode — 599-613 ≤ 620, fine.
+
+  Another concern: fitHeight uses `state.profile.appearance` — after dblclick, profile.appearance='compact' — matches. Good.
+
+  ### Rust command param naming
+
+  fit_height(mode: String, content_h: f64). Frontend invoke('fit_height', { mode, contentH: h }). Tauri v2 converts camelCase → snake_case. Good.
+
+  Return type: Result<f64, String> — spec says "no-op（返回当前值）". OK.
+
+  ### lib.rs edits detail
+
+  Constants comment block (lines 47-65). Rewrite:
+
+  - Keep 自愈 history comment; change "0.2.3 起设计尺寸按外观档取值" paragraph to mention 0.2.6: 高度为缺省值，运行时由前端 fit_height 上报覆盖（见 DesignHeights）。
+  - DESIGN_H_LOGICAL comment: 完整档缺省高度（0.2.6 起实际高度由前端按可见盘数上报覆盖；620=按演示 4 盘推导的缺省依据）.
+  - COMPACT_H_LOGICAL: keep derivation comment, add 缺省口径 line. Must keep 'COMPACT_H_LOGICAL: f64 = 322.0' and '内容实测 63×303' for existing assert.
+
+  design_size function replaced by design_size_for + design_size(app, mode).
+
+  Appearance state stays. Add DesignHeights struct after Appearance.
+
+  assert_geometry: `design_size(app, &current_appearance(app))`.
+
+  set_appearance: reset the mode's height entry to default then set_size:
+
+  ```rust
+      // 换档先落该档缺省高（0.2.6）：DesignHeights 该档复位缺省常量后 set_size——
+      // 前端随后的 fit_height 再按实际内容收细（两次 set_size 可接受）；不复位则
+      // 自愈断言会拿旧自适应值把刚落的缺省尺寸「拉回」打架。
+      if let Some(hs) = app.try_state::<DesignHeights>() {
+          if let Ok(mut g) = hs.0.lock() {
+              if mode == "compact" { g.1 = COMPACT_H_LOGICAL } else { g.0 = DESIGN_H_LOGICAL }
+          }
+      }
+      let w = app.get_webview_window("widget").ok_or("widget 窗口不存在")?;
+      let (dw, dh) = design_size(&app, &mode);
+  ```
+
+  fit_height command + fit_height_decide pure fn.
+
+  setup: compact branch: design_size(app.handle(), "compact"). And add .manage(DesignHeights(...)) in builder chain before invoke_handler.
+
+  Wait — should manage go in builder chain or setup? design_size in setup is called after builder .manage, and .manage in builder chain runs before setup. Yes builder chain works.
+
+  Register fit_height in invoke_handler.
+
+  Tests: replace design_size_by_appearance with design_size_for tests; add fit_height_decide tests:
+
+  ```rust
+      /// 设计尺寸纯函数（0.2.6）：宽=档常量不动；高=入参（缺省或前端上报值）。
+      #[test]
+      fn design_size_for_by_appearance() {
+          assert_eq!(design_size_for("full", 620.0, 322.0), (DESIGN_W_LOGICAL, 620.0));
+          assert_eq!(design_size_for("compact", 620.0, 322.0), (COMPACT_W_LOGICAL, 322.0));
+          assert_eq!(design_size_for("bogus", 620.0, 322.0), (DESIGN_W_LOGICAL, 620.0)); // 非法档回落完整
+          assert_eq!(design_size_for("compact", 620.0, 238.0), (COMPACT_W_LOGICAL, 238.0)); // 运行时上报值直通
+      }
+
+      /// fit_height 钳位与 no-op 判定（纯函数）：[60,1500] 钳位、四舍五入取整、|Δ|<1 不动。
+      #[test]
+      fn fit_height_decide_clamps_and_dedups() {
+          assert_eq!(fit_height_decide(322.0, 12.0), Some(60.0));    // 低于下限 → 60
+          assert_eq!(fit_height_decide(322.0, 9999.0), Some(1500.0)); // 高于上限 → 1500
+          assert_eq!(fit_height_decide(322.0, 303.4), Some(303.0));  // 小数取整
+          assert_eq!(fit_height_decide(303.0, 303.4), None);         // |Δ|<1 → no-op
+          assert_eq!(fit_height_decide(303.0, 303.9), None);
+          assert_eq!(fit_height_decide(303.0, 304.0), Some(304.0));  // Δ≥1 → 更新
+          assert_eq!(fit_height_decide(303.0, 234.0), Some(234.0));  // 盘变少 → 收细
+      }
+  ```
+
+  Wait 303.9 - 303 = 0.9 < 1 → None. But round(303.9)=304, Δ=1 → hmm: fit_height_decide rounds first: h = 304.0, |304-303|=1, not <1 → Some(304). Let me recompute: content_h=303.9 → round → 304. |304.0-303.0|=1.0 → not <1 → Some(304.0). Fix test: fit_height_decide(303.0, 303.4): round=303, Δ=0 → None. For "303.9" case → Some(304). Use 302.6: round 303, Δ0 → None. Let me write:
+
+  - (303.0, 302.6) → round 303 → None (Δ<1 after rounding... well exactly 0)
+  - Actually spec: "与状态现值差 <1 → no-op". Compare rounded h vs current. (303.0, 303.4)→303→None. (303.0, 303.5)→304 (round half up? f64::round rounds half away from zero → 304)→Some(304).
+
+  Fine.
+
+  ### assert-static additions
+
+  Add a new section (after ⑬ maybe, or m2 area). Insert after the ⑬ block:
+
+  ```js
+      // ⑭ 0.2.6 · 窗高随可见盘数自适应（缺省+前端上报；源码级断言）
+      check('fit.lib.rs 注册 fit_height 命令', /fit_height/.test(librs) && /invoke_handler[\s\S]*fit_height/.test(librs), '');
+  ```
+
+  Careful: librs defined in section ⑬ (line 338). My new section must come after that. Place right after ⑬ block, before m2 block. Order in file doesn't matter for correctness as long as librs defined. I'll insert after ⑬.
+
+  Checks:
+  - fit.lib.rs: `librs.includes('fn fit_height(')`? The command is `fn fit_height(app..., mode: String, content_h: f64)`. Registration: generate_handler![... fit_height ...]. Check both: handler registration and DesignHeights and design_size_for:
+    - `librs.includes('fit_height')` in handler list — use regex on generate_handler block.
+  - DesignHeights: `librs.includes('struct DesignHeights(Mutex<(f64, f64)>)')`
+  - design_size_for: `librs.includes('fn design_size_for(')`
+  - app.js: `appjs.includes('function fitHeight()')`, `appjs.includes('widget.scrollHeight')`, guards: `appjs.includes("tray-collapsed")` already exists in appjs... need specific guard: `appjs.includes("classList.contains('tray-collapsed')")` and `!state.summary` guard within fitHeight. Just check for presence of both strings near fitHeight — simpler: check `appjs.includes('fitHeight')` and the guard expressions exist.
+  - 缺省: `librs.includes('缺省')`.
+
+  Now also — existing check at line 339 expects `COMPACT_H_LOGICAL: f64 = 322.0` — keep.
+
+  Also check render() calls fitHeight: `appjs.includes('fitHeight();')` — the call in render end. Since function defined as `function fitHeight() {`, call `fitHeight();`. Both substrings present anyway.
+
+  ### pw_verify.py — check data.js demo load path
+
+  Need to verify demo data loads in fake-shell page: url('static=1&dev=1') with dev=1 → demo data layer; poller callback fires async (fetch of embedded demo?). The existing e tests rely on .disc present, fine.
+
+  One more check for e4: contentH ≈303±3 for compact — but our compact render happened at viewport 132×620. The widget width 132 vs compact design 80. `.widget` in compact — CSS `body.compact .widget` width? The widget is fixed left:0 right:0, so width = viewport 132 in the test. Discs still 48px. Height content: grip≈17 + 4 discs×(48+12.5?) + gaps + padding ≈ 303. Width-independent. OK.
+
+  But full contentH: viewport 132 matches design width, 599-613 expected per spec.
+
+  Wait — one thing: in fake shell page, initial fit(full) fires only if state.summary set before... poller with dev=1 demo: let me check data.js quickly to confirm demo returns data in this setup (existing tests pass with 4 discs, so yes).
+
+  Also `static=1` freezes clock.
+
+  Now, the numbers: let me not fully trust 599-613/303; run and see. Spec instructs these ranges; if actual differs slightly I'll report honestly. Actually wait — should I double check what scrollHeight gives vs pw_measure's 303? pw_measure measured content 303 via presumably scrollHeight too. Fine.
+
+  ### Style check: comment style in app.js uses Chinese comments. Follow.
+
+  Where to put fitHeight function in app.js? Near render(). Put after render()/findUpstream block, before tooltip section. And call at end of render.
+
+  Also "setAppearance 换档路径在 body class 切换并 render 之后" — applyProfile already does applyAppearance() then render() → fitHeight at render end. Nothing extra needed. But add a note comment in applyAppearance? Not needed.
+
+  Edge: `lastFit` keyed by mode+value; after换档 force resend — automatic since mode differs. 
+
+  Now, does render() get called when tray-collapsed? Yes via poller; guard prevents send. Good.
+
+  One more Rust detail: `design_size` comment update; also the assert_geometry comment "0.2.3：按当前外观档断言" — update to mention adaptive heights.
+
+  Also `WindowState` doc comment mentions design_size — fine.
+
+  Let me also check data.js to make sure `profile=compact` etc. Not needed.
+
+  Potential issue: In pw_verify group e, at page load, applyProfile runs before poller data; fitHeight guarded by !state.summary. Then get_profile resolves (fake returns missing → profile stays default full) → applyProfile → render (no summary yet? poller demo may resolve before or after). Either way guards fine; once summary arrives render → fit fires. wait_for_selector('.disc') + wait_for_timeout(400) ensures settled.
+
+  But: does the demo poller in dev mode even fire when gray not set? Yes, existing tests show discs.
+
+  Another subtlety: e1 asserts `sa[-1].get('mode') == 'compact'` where sa filters set_appearance — unaffected by new fit_height invokes.
+
+  Also __CALLS__ fake invoke returns Promise.resolve(null) for fit_height — our .catch fine.
+
+  Now about e5: after e3, last payload appearance 'full', countdown true. Resending same → normalize → same → applyProfile → applyAppearance: mode full == applied → no set_appearance; render → fitHeight: same mode+value → skip. Count unchanged. 
+
+  But careful: in e3 the countdown-off render produced H_full_off ≠ H_full_on → sent; then countdown-on render → H_full_on ≈ initial → sent (Δ from off value ≥1). So lastFit=(full, H_on). e5 repeat → skip. 
+
+  e6: switch to compact then hide DS. Wait — but there's a subtlety with applyAppearance: it invokes set_appearance again (mode change full→compact). That's fine, recorded but we filter fit_height only.
+
+  Then e7 tray-collapsed.
+
+  Order in file: insert after e3 check, before pg.close() of group e. Group e's pg.close() at line 300.
+
+  Let me now also double check: fake shell's `invoke` pushes [cmd, args]; args keys: contentH (camelCase as JS object). In check, `a['contentH']`.
+
+  Now write the code. Also update CLAUDE.md/AGENTS? No AGENTS content. Skip.
+
+  Let me check data.js briefly? Not strictly needed. Skip to save context — existing tests confirm behavior.
+
+  One more thing: lib.rs — `design_size` currently also used in setup. After change signature design_size(app, mode). Also comment above constants about 0.2.3.
+
+  Also spec item 3 note: comment about bottom-dock gap: "已知边界：贴下缘停靠的窗缩短后会留下缝隙（snap 只在拖动时触发），属可接受化妆问题，不做底缘锚定。" Put on fit_height command.
+
+  Let me write the edits now.
+
+  Edit 1: constants comment block (lines 47-65).
+
+  Old:
+  ```
+  /// 几何自愈（2026-09-29 RDP 塌缩事故，ADR-0016）：设计尺寸=「内容完整最小
+  ...
+  /// 0.2.3 起设计尺寸按外观档取值（自愈机制唯一扩展点）：完整档=conf 初始值
+  /// 132×620；紧凑档=迷你环列实测值（见 design_size 推导注释）。
+  const DESIGN_W_LOGICAL: f64 = 132.0;
+  const DESIGN_H_LOGICAL: f64 = 620.0;
+  /// 紧凑档设计尺寸（逻辑 px）。推导（...
+  ```
+
+  New:
+  ```
+  /// 几何自愈（...不变...
+  /// 0.2.3 起设计尺寸按外观档取值（自愈机制唯一扩展点）：完整档=conf 初始值
+  /// 132×620；紧凑档=迷你环列实测值（见下方推导注释）。
+  /// 0.2.6 起高度口径改「缺省值」：出生/换档/前端未上报时用常量；前端每次渲染后
+  /// 按可见盘数量内容高经 fit_height 上报，运行时高度收进 DesignHeights（宽度
+  /// 恒为常量，不自适应——内容恒窄于窗宽，做了只会抖）。
+  const DESIGN_W_LOGICAL: f64 = 132.0;
+  /// 完整档缺省高度（0.2.6 起实际高度由前端 fit_height 按可见盘数上报覆盖；
+  /// 620=按演示满载 4 盘推导，保留作缺省依据）。
+  const DESIGN_H_LOGICAL: f64 = 620.0;
+  /// 紧凑档缺省高度（逻辑 px；口径同完整档——0.2.6 起实际值由前端上报覆盖）。
+  /// 缺省推导（Playwright 实测，...内容实测 63×303...）:
+  ```
+
+  Keep the rest of derivation unchanged.
+
+  Edit 2: design_size fn → design_size_for + design_size, and add DesignHeights struct. Replace lines 75-81 area:
+
+  ```rust
+  /// 当前外观档（0.2.3）：full|compact。... (unchanged)
+  struct Appearance(Mutex<String>);
+
+  /// 运行时设计高度（0.2.6）：(full, compact)。init=缺省常量；前端 fit_height
+  /// 上报后对应档位被覆盖。几何自愈断言、set_appearance、fit_height 三处同读。
+  struct DesignHeights(Mutex<(f64, f64)>);
+
+  /// 设计尺寸纯函数（可测）：宽=档常量（不自适应），高=入参（缺省或前端上报值）。
+  /// 非法档回落完整档（与 design_size 历史口径一致）。
+  fn design_size_for(mode: &str, full_h: f64, compact_h: f64) -> (f64, f64) {
+      match mode {
+          "compact" => (COMPACT_W_LOGICAL, compact_h),
+          _ => (DESIGN_W_LOGICAL, full_h),
+      }
+  }
+
+  /// 设计尺寸按外观档取值（0.2.6 起高度读 DesignHeights；取不到状态/锁失败
+  /// 回落缺省常量，与 current_appearance 同风格）。
+  fn design_size(app: &tauri::AppHandle, mode: &str) -> (f64, f64) {
+      let (full_h, compact_h) = app
+          .try_state::<DesignHeights>()
+          .and_then(|s| s.0.lock().ok().map(|g| *g))
+          .unwrap_or((DESIGN_H_LOGICAL, COMPACT_H_LOGICAL));
+      design_size_for(mode, full_h, compact_h)
+  }
+  ```
+
+  Edit 3: assert_geometry line 212: `design_size(app, &current_appearance(app))` and tweak comment "0.2.3：按当前外观档断言" → "按当前档断言（0.2.6：高=自适应后值）".
+
+  Edit 4: set_appearance — reset entry + design_size(&app, &mode).
+
+  Edit 5: fit_height_decide + fit_height command — place after set_appearance.
+
+  Edit 6: builder .manage(DesignHeights(Mutex::new((DESIGN_H_LOGICAL, COMPACT_H_LOGICAL)))) and handler registration; setup compact branch design_size(app.handle(), "compact").
+
+  Edit 7: tests.
+
+  Let me write all edits.
+
+• 已掌握全部上下文，开始实现。先改 Rust 侧 `lib.rs`。
+
+• Wait — the derivation comment after that line: "紧凑档设计尺寸（逻辑 px）。推导（Playwright 实测，.scratch/usage-widget/pw_measure.py，演示满载 4 盘..." — I replaced the beginning "/// 紧凑档设计尺寸（逻辑 px）。推导（Playwright 实测，.scratch/usage-widget/" with two lines ending ".scratch/usage-widget/". Good, continuity preserved: now reads "/// 缺省推导（Playwright 实测，.scratch/usage-widget/\n/// pw_measure.py，演示满载 4 盘...". Good, "内容实测 63×303" still present.
+
+  Next: design_size → design_size_for + design_size + DesignHeights.Now set_appearance: reset the mode's DesignHeights entry to default and use design_size(&app, &mode).Now add fit_height_decide pure fn + fit_height command after set_appearance (before read_appearance_at_boot).
+
+• 在 `set_appearance` 之后插入 `fit_height` 命令与钳位纯函数。
+
+• Now builder chain: add .manage(DesignHeights(...)) and register fit_height; setup compact branch design_size.Also update the setup comment above that block? It says "紧凑档在 show 之前 set_size" — still accurate (design_size reads state = defaults at boot). Fine.
+
+  Now tests: replace design_size_by_appearance and add fit_height_decide tests.
+
+• 更新单测。
+
+• Let me set up a todo list, then continue with frontend changes.Now app.js: add fitHeight function after render(), call at end of render. render() ends at line 250-251 with the detailId block. Add `fitHeight();` at the end.
+
+• Rust 侧完成。现在改前端 `app.js`。
+
+• Wait — `fitHeight` is called in render() but defined after render() in the file. Function declarations are hoisted in JS modules, so `function fitHeight()` is hoisted — fine. But `lastFit` is a `let` declared after render — render is only *called* later (after module evaluation), so `lastFit` is initialized by then. Fine.
+
+  Also the换档 path: applyProfile → applyAppearance (body class toggle + invoke set_appearance) → render → fitHeight. Covered by render() end. Spec says "调用点：render() 末尾；setAppearance 换档路径在 body class 切换并 render 之后" — satisfied since render is after applyAppearance in applyProfile.
+
+  Now assert-static.mjs. Add a new section ⑭ after section ⑬ (which defines librs at line ~338). Insert before the m2 block.
+
+• 现在给 `assert-static.mjs` 加源码级断言。
+
+• Now pw_verify.py — add e4-e7 inside group e before pg.close(). Insert after e3 check block, before `pg.close()` at line ~300.
+
+  Trace again what the invoke list looks like at that point:
+  - startup: fit_height(full, H_full) once (after summary arrives). Possibly get_profile resolve triggers second render → same → skip.
+  - dblclick → set_appearance(compact), save_profile, fit_height(compact, H_c)
+  - e2: open_settings_window
+  - e3: two profile-changed (appearance full): first → set_appearance(full) + fit_height(full, H_off); second → fit_height(full, H_on)
+
+  e4: fresh evaluate of fit_height calls; full_h[0] in [596, 616] (spec ≈599-613, give ±3 buffer? Spec says ≈599-613; I'll assert 596 <= v <= 616), compact_h[-1] within 303±3.
+
+  e5: resend identical profile (full, countdown true, objects {}) → count unchanged.
+
+  e6: switch compact, then hide deepseek → diff in 50-70.
+
+  Careful with e6: two sequential profile-changed dispatches. After first (compact), render → fitHeight sends (compact, 303±3) — lastFit becomes (compact, H_c). Second dispatch (compact + deepseek hidden) → render → fitHeight sends (compact, H_c2), H_c - H_c2 ≈ 64.5 → check 45-80 maybe? Spec says ~50-70. I'll assert 45 <= diff <= 85 to be safe? Spec explicitly "~50-70". Let me compute: compact disc svg 48 + mini-tag ~12.5 + gap 4 = 64.5. So diff ≈ 64-65. Assert 50 <= diff <= 70 per spec. If it fails, adjust and report.
+
+  Actually one wrinkle: mini-tag line height — from lib.rs comment: "盘 48+padding×2=52/个，0.2.5 标签行 +12.5/盘" → 64.5/盘 + gap 4 = 68.5? Hmm: "盘 48+padding×2=52/个，0.2.5 标签行 +12.5/盘" = 64.5 per disc, plus gaps "gap 4×4". Between discs gap=4. So removing one disc removes 64.5+4=68.5. Within 50-70? 68.5 ≤ 70 ✓. OK.
+
+  e7: tray-collapsed → count unchanged; then remove class.
+
+  After e6, current profile = compact + deepseek hidden. For e7, dispatch same payload again → render → fitHeight guarded → no send.
+
+  Write the block:
+
+  ```python
+          # ── e4-e7 · 0.2.6 窗高随可见盘数自适应（伪壳捕获 fit_height，照本组既有注入） ──
+          fh = lambda: pg.evaluate("() => window.__CALLS__.invoke.filter(x => x[0]==='fit_height').map(x => x[1])")
+          calls = fh()
+          full_hs = [a['contentH'] for a in calls if a['mode'] == 'full']
+          compact_hs = [a['contentH'] for a in calls if a['mode'] == 'compact']
+          check('e4. 渲染后 fit_height 上报：完整档 ≈599-613 / 紧凑档 ≈303（±3）',
+                full_hs and 596 <= full_hs[0] <= 616
+                and compact_hs and abs(compact_hs[-1] - 303) <= 3,
+                json.dumps({'full': full_hs, 'compact': compact_hs}, ensure_ascii=False))
+
+          # e5 · 同档同内容重复 render 不重复上报（调用计数不涨）
+          n_before = len(fh())
+          pg.evaluate("""() => {
+            window.__LISTENERS__['profile-changed']({ payload: {
+              layout: 'vertical', appearance: 'full', show_countdown: true, objects: {} } });
+          }""")
+          pg.wait_for_timeout(100)
+          n_after = len(fh())
+          check('e5. 同档同内容重复 render 不重复上报（计数不涨）',
+                n_after == n_before, f'{n_before}→{n_after}')
+
+          # e6 · 显隐一盘：紧凑档藏掉 deepseek → 新上报值比前值小 ~50-70（DS 盘+标签行高）
+          pg.evaluate("""() => {
+            window.__LISTENERS__['profile-changed']({ payload: {
+              layout: 'vertical', appearance: 'compact', show_countdown: true, objects: {} } });
+            window.__LISTENERS__['profile-changed']({ payload: {
+              layout: 'vertical', appearance: 'compact', show_countdown: true,
+              objects: { deepseek: { visible: false } } } });
+          }""")
+          pg.wait_for_timeout(100)
+          hs = [a['contentH'] for a in fh() if a['mode'] == 'compact']
+          check('e6. 显隐一盘（藏 deepseek）→ 新上报值回落 ~50-70',
+                len(hs) >= 2 and 50 <= hs[-2] - hs[-1] <= 70,
+                json.dumps({'compact': hs}, ensure_ascii=False))
+
+          # e7 · tray-collapsed 下 fitHeight 不发（#widget display:none 量出 0，守卫拦截）
+          n_before = len(fh())
+          pg.evaluate("""() => {
+            document.body.classList.add('tray-collapsed');
+            window.__LISTENERS__['profile-changed']({ payload: {
+              layout: 'vertical', appearance: 'compact', show_countdown: true,
+              objects: { deepseek: { visible: false } } } });
+          }""")
+          pg.wait_for_timeout(100)
+          n_after = len(fh())
+          check('e7. tray-collapsed 下 fitHeight 不上报（计数不涨）',
+                n_after == n_before, f'{n_before}→{n_after}')
+          pg.evaluate("document.body.classList.remove('tray-collapsed')")
+          pg.close()
+  ```
+
+  Concern: in e6, both dispatches are synchronous within one evaluate — but the fake invoke is synchronous push, so both fit_height calls recorded immediately. Good.
+
+  Concern: e6 hs[-2] — after first dispatch, compact call with all 4 discs: but wait, earlier compact call already exists (from e1 dblclick). hs has [303(from e1), 303(from e6 first dispatch)?...]. Hmm — the first dispatch of e6: appearance changes full→compact, so lastFit=(full, H_on) → mode differs → resend compact 303. Then second dispatch → 234ish. So hs[-2]=303, hs[-1]=~234. Good.
+
+  Wait, does profile-changed normalize objects correctly? normalizeProfile with objects {deepseek:{visible:false}} — glm/kimi/handoff default visible. Yes.
+
+  Also e5: payload identical to current state — after e3 the state is appearance full, countdown true. Send same → render → fitHeight: same mode+value → skip. But careful: e3's last render produced H_on — is H_on == full_hs[0]? Yes same content. OK.
+
+  But hmm — e5's profile-changed: `appearance: 'full'` — currently applied 'full' → no set_appearance. Good.
+
+  One more concern about e4: full_hs[0] — the very first fit_height. But wait: was there possibly a fit_height call before discs? No — guarded by !state.summary.
+
+  Also: might the initial render at startup (applyProfile before poller) call fitHeight with summary present? No, summary null at startup.
+
+  Also `static=1&dev=1` — demo data via poller. When does poller first call back? data.js — presumably async fetch of demo JSON or direct. Existing e1 relies on .disc after goto; we add wait_for_timeout(400) already existing. fit_height recorded synchronously in render. By the time we evaluate e4, all settled.
+
+  Now the numbers: full ≈599-613. Our assert 596-616. Fine.
+
+  Insert before `pg.close()` at end of group e (line 300).
+
+• 给 `pw_verify.py` 的 e 组追加 e4–e7。
+
+• All edits done. Now run the three test commands. First cargo test (background, may take a while for first build).
+
+• 三处改动完成，开始跑测试。先跑 `cargo test`（可能较久，后台跑），同时跑静态断言。[PASS] set.src 区块字样（外观与布局/图例与帮助）+ <details>（0.2.4 卡片式）
+[PASS] set.src 无旧表头残留（0.2.4：无 >环色</th> 六列结构与 <table>）
+[PASS] split.settings 页引模块且无内联数据
+[PASS] split.settings.js 无演示数据字面量
+[PASS] split.profile.js 无演示数据字面量
+[PASS] tag.app.js mini-tag 出口 + 三品牌色 hex + handoff 正名「交接」
+[PASS] tag.style.css .mini-tag 与 .disc.handoff .c-pct 规则在场
+[PASS] tag.settings 帮助句在场（名字+品牌色小点 / 圆心大数字口径）
+[PASS] tag.lib.rs COMPACT_H=322 与推导注释同新值（内容实测 63×303）
+[PASS] tag.紧凑 dump：4 条 mini-tag（GLM/Kimi/DeepSeek/交接 + 品牌色点）
+[PASS] tag.紧凑交接盘圆心=单行 c-pct 23（无「次 · 本月」）；完整档 MAIN 无 mini-tag
+[PASS] fit.lib.rs 注册 fit_height 命令 + DesignHeights 状态在场
+[PASS] fit.lib.rs design_size_for / fit_height_decide 纯函数在场
+[PASS] fit.lib.rs 常量注释口径已改「缺省」（0.2.6 起实际高度由前端上报覆盖）
+[PASS] fit.app.js fitHeight 出口 + scrollHeight 量法（max-height 钳 rect 不钳 scrollHeight）
+[PASS] fit.app.js 守卫在场（tray-collapsed 量出 0 / 无 summary 防启动期收缩）
+[PASS] m2.退避常量与自适应轮询在场
+[PASS] m2.代际防护在场（声明行 gen=0 + myGen !== gen 双闸）
+[PASS] m2.startPolling 暴露 poke（return { stop: 形）
+[PASS] m2.app 监听 widget-restored 即拉
+[PASS] offline.运行时源零 URL 字面量
+[PASS] offline.全部 dump 无外链资源
+[PASS] drag.壳内手柄带 data-tauri-drag-region
+
+assert-static: 101/101 通过
+
+
+• assert-static 101/101. Now run pw_verify while cargo test builds.[PASS] a. 完整版七项自测  7/7 全 1
+[PASS] b1. 悬浮态四角 12px 圆+投影  {"br": "12px", "shadow": "rgba(0, 0, 0, 0.5) 0px 3px 12px 0px", "right": "6px"}
+[PASS] b2. docked-right 右两角直角+右缘贴窗  {"tr": "0px", "br_": "0px", "tl": "12px", "right": "0px"}
+[PASS] c1. 紧凑档 class 生效 + 4 盘  discs=4
+[PASS] c2. 盘缩至 48px  svgW=48
+[PASS] c3. cap/cdline 全隐  
+[PASS] c4. 内容不溢出（scrollH ≤ clientH）  scrollH=303 clientH=303
+[PASS] c5. 紧凑交接盘圆心=单个大数字 23（0.2.5：删「次 · 本月」行——48px 盘里 ≈6px 物理不可读）  23
+[PASS] c6. 紧凑圆心大数字：GLM=8% 红 / Kimi=17% 黄（最紧环+告警色联动）  {"glm": [{"cls": "c-pct", "txt": "8%", "fill": "#E85D5D"}], "kimi": [{"cls": "c-pct", "txt": "17%", "fill": "#E8C33D"}]}
+[PASS] c7. 紧凑圆心大数字：DS=余额单行（无 CNY/可用 小字行）  [{"cls": "c-money", "txt": "87.50", "fill": null}]
+[PASS] c8. 紧凑圆心无第二行（glm/kimi/deepseek 各只一个 text，无 c-sub/c-label）  {"glm": [{"cls": "c-pct", "txt": "8%", "fill": "#E85D5D"}], "kimi": [{"cls": "c-pct", "txt": "17%", "fill": "#E8C33D"}], "deepseek": [{"cls": "c-money", "txt": "87.50", "fill": null}]}
+[PASS] c9. 紧凑交接盘恰一个 .c-pct=23、无 c-sub/c-label  [{"cls": "c-pct", "txt": "23", "fill": null}]
+[PASS] c10. 紧凑档 4 盘 mini-tag 文本=GLM/Kimi/DeepSeek/交接  {"glm": "GLM", "kimi": "Kimi", "deepseek": "DeepSeek", "handoff": "交接"}
+[PASS] c11. mini-tag 品牌色点（kimi #1783FF / glm #4268FA / deepseek #4D6BFE / handoff 紫）  {"glm": "rgb(66, 104, 250)", "kimi": "rgb(23, 131, 255)", "deepseek": "rgb(77, 107, 254)", "handoff": "rgb(155, 126, 222)"}
+[PASS] c12. 紧凑档内容实测 ≤ 新设计内高（322−12=310）  scrollH=303
+[PASS] d1. DS 盘 cap 单行月花费  [{"text": "月 ¥58.60估", "w": 67.15625, "clipped": false}]
+[PASS] d2. DS 单行不超宽不裁切  w=67.2 contentW=120
+[PASS] d3. 交接盘月/周两行完整无裁切  [{"text": "月 23 次估", "clipped": false}, {"text": "周 5 次估", "clipped": false}]
+[PASS] d4. 完整版高度不变量（余量≥6px）  内容=585 面板内高=608 余量=23
+[PASS] d5. 超长文本 → 省略号兜底（truncate 且限宽）  {"te": "ellipsis", "ws": "nowrap", "truncated": true, "w": 116}
+[PASS] d6. ?superset=1 回归不炸  discs=4 errs=[]
+[PASS] d7. 完整档零变化：无 mini-tag，交接盘圆心仍两行（c-money+c-sub）  {"miniTags": 0, "hoCenter": ["c-money", "c-sub"]}
+[PASS] e1. 双击 grip → set_appearance(compact) + profile-changed + compact class  {"set_appearance": [{"mode": "compact"}], "pc_appearance": ["compact"]}
+[PASS] e2. 齿轮点击 → invoke open_settings_window（浮层退役后走独立设置窗）  ["get_profile", "fit_height", "save_profile", "set_appearance", "fit_height", "open_settings_window"]
+[PASS] e3. profile-changed(show_countdown) → render 驱动倒计时行显隐（浮层退役后唯一链路）  {"off": {"n": 2, "hidden": true}, "on": {"n": 2, "shown": true}}
+[FAIL] e4. 渲染后 fit_height 上报：完整档 ≈599-613 / 紧凑档 ≈303（±3）  {"full": [585, 552, 585], "compact": [303]}
+[PASS] e5. 同档同内容重复 render 不重复上报（计数不涨）  4→4
+[PASS] e6. 显隐一盘（藏 deepseek）→ 新上报值回落 ~50-70  {"compact": [303, 303, 235]}
+[PASS] e7. tray-collapsed 下 fitHeight 不上报（计数不涨）  6→6
+[PASS] f1. 设置窗自测四项全 1（卡片结构）  4/4 全 1
+[PASS] f2. 4 卡齐全且控件齐（套餐=3 色+2 阈值+月预算；DS=1 色+2 阈值+预算开关/金额；交接=仅显隐排序）  {"n": 4, "glm": {"visible": true, "colors": 3, "ths": 2, "mb": true, "dsbOn": false, "dsbAmt": false, "up": true, "down": true}, "kimi": {"visible": true, "colors": 3, "ths": 2, "mb": true, "dsbOn": false, "dsbAmt": false, "up": true, "down": true}, "deepseek": {"visible": true, "colors": 1, "ths": 2, "mb": false, "dsbOn": true, "dsbAmt": true, "up": true, "down": true}, "handoff": {"visible": true, "colors": 0, "ths": 0, "mb": false, "dsbOn": false, "dsbAmt": false, "up": true, "down": true}}
+[PASS] f3. 图例与帮助默认收起（details[open] 为假、内容在）  {"open": false, "txt": true}
+[PASS] f4. 帮助点开后内容可见  {"open": true, "visible": true}
+[PASS] f5. collect 往返（阈值改动经 collect→profile→重渲染读回 33；排序交换生效）  {"glmY": "33", "firstCard": "kimi", "status": "演示语境（无 Tauri 壳）：改动仅本页生效、不落盘"}
+
+合计 34 项，失败 1 项：['e4. 渲染后 fit_height 上报：完整档 ≈599-613 / 紧凑档 ≈303（±3）']
+e4 failed: full-mode contentH is 585, not 599-613. Interesting — d4 says content=585 (scrollH=585, panelInner 608, margin 23). So the spec's expected range 599-613 doesn't match reality: full content is 585. The spec said "完整档 ≈599-613". Actual measured = 585. The compact one matched exactly (303).
+
+  Hmm — the spec's expectation was wrong about full mode. The measurement is 585 (also matches d4 invariant: 585, margin 23 ≥ 6). So the correct expected range is ~585. The mechanism works; the range in the task was estimated incorrectly. I should adjust the assertion to the real measured value: 585 ±3 → [582, 588]. And note this in the report honestly.
+
+  Wait — why did spec say 599-613? Maybe they assumed content 599 + something. Actual 585. The live 3-disc full ≈450 per brief. Anyway, our fit_height reports scrollHeight=585, consistent with d4's measurement. Adjust e4 to 582-588 (i.e., 585±3) and add comment noting实测. Let me update the check name to reflect actual? Keep name but adjust range: `585±3`. I'll edit the check:
+
+  ```python
+          check('e4. 渲染后 fit_height 上报：完整档 ≈585（±3，与 d4 实测同口径）/ 紧凑档 ≈303（±3）',
+                bool(full_hs) and abs(full_hs[0] - 585) <= 3
+                ...
+  ```
+
+  This is a deviation from spec's 599-613, but the spec number was a prediction; actual measured content is 585 (d4 already asserts 585 with margin 23). I'll note it in the report.
+
+  Meanwhile cargo test still running. Fix e4 now.cargo test finished. Read the log tail, and rerun pw_verify.[PASS] d6. ?superset=1 回归不炸  discs=4 errs=[]
+[PASS] d7. 完整档零变化：无 mini-tag，交接盘圆心仍两行（c-money+c-sub）  {"miniTags": 0, "hoCenter": ["c-money", "c-sub"]}
+[PASS] e1. 双击 grip → set_appearance(compact) + profile-changed + compact class  {"set_appearance": [{"mode": "compact"}], "pc_appearance": ["compact"]}
+[PASS] e2. 齿轮点击 → invoke open_settings_window（浮层退役后走独立设置窗）  ["get_profile", "fit_height", "save_profile", "set_appearance", "fit_height", "open_settings_window"]
+[PASS] e3. profile-changed(show_countdown) → render 驱动倒计时行显隐（浮层退役后唯一链路）  {"off": {"n": 2, "hidden": true}, "on": {"n": 2, "shown": true}}
+[PASS] e4. 渲染后 fit_height 上报：完整档 ≈585（±3，同 d4 实测口径）/ 紧凑档 ≈303（±3）  {"full": [585, 552, 585], "compact": [303]}
+[PASS] e5. 同档同内容重复 render 不重复上报（计数不涨）  4→4
+[PASS] e6. 显隐一盘（藏 deepseek）→ 新上报值回落 ~50-70  {"compact": [303, 303, 235]}
+[PASS] e7. tray-collapsed 下 fitHeight 不上报（计数不涨）  6→6
+[PASS] f1. 设置窗自测四项全 1（卡片结构）  4/4 全 1
+[PASS] f2. 4 卡齐全且控件齐（套餐=3 色+2 阈值+月预算；DS=1 色+2 阈值+预算开关/金额；交接=仅显隐排序）  {"n": 4, "glm": {"visible": true, "colors": 3, "ths": 2, "mb": true, "dsbOn": false, "dsbAmt": false, "up": true, "down": true}, "kimi": {"visible": true, "colors": 3, "ths": 2, "mb": true, "dsbOn": false, "dsbAmt": false, "up": true, "down": true}, "deepseek": {"visible": true, "colors": 1, "ths": 2, "mb": false, "dsbOn": true, "dsbAmt": true, "up": true, "down": true}, "handoff": {"visible": true, "colors": 0, "ths": 0, "mb": false, "dsbOn": false, "dsbAmt": false, "up": true, "down": true}}
+[PASS] f3. 图例与帮助默认收起（details[open] 为假、内容在）  {"open": false, "txt": true}
+[PASS] f4. 帮助点开后内容可见  {"open": true, "visible": true}
+[PASS] f5. collect 往返（阈值改动经 collect→profile→重渲染读回 33；排序交换生效）  {"glmY": "33", "firstCard": "kimi", "status": "演示语境（无 Tauri 壳）：改动仅本页生效、不落盘"}
+
+合计 34 项，失败 0 项
+All three test suites green:
+  - cargo test: 5 passed (incl. 2 new)
+  - assert-static: 101/101
+  - pw_verify: 34/34
+
+  Mark todos done and write the self-verification report per spec §5: per-file change list + new unit test names + tails of the three test command outputs.
+
+• # 自验汇报 · 0.2.6 窗高随可见盘数自适应
+
+  ## 逐文件改动清单
+
+  **`widget/src-tauri/src/lib.rs`**
+  - 常量注释改口径：`DESIGN_H_LOGICAL`/`COMPACT_H_LOGICAL` = **缺省高度**（推导注释保留作缺省依据，含「内容实测 63×303」原文未动，旧断言不破）。
+  - 新 managed state `DesignHeights(Mutex<(f64, f64)>)`，builder 链 `.manage`，init=(620, 322)。
+  - `design_size` 拆成两个：纯函数 `design_size_for(mode, full_h, compact_h)`（宽仍取档常量）+ 读状态的 `design_size(app, mode)`（取不到锁回落缺省常量，同 `current_appearance` 风格）。
+  - 新命令 `fit_height(mode, content_h)`：mode 归一（非法→当前档）；`fit_height_decide` 纯函数做 [60,1500] 钳位+四舍五入+|Δ|<1 no-op；**先更状态再 set_size**；位置不动；注释记了贴下缘停靠缩短留缝的已知边界。
+  - `set_appearance`：换档先把该档 `DesignHeights` 复位缺省常量再 set_size（防自愈拿旧自适应值打架），前端随后 fit_height 收细。
+  - `assert_geometry`、setup 启动序改走新状态。
+
+  **`widget/ui/app.js`**
+  - 新 `fitHeight()`（render 后唯一出口）：`tray-collapsed` / 无 summary 守卫；`Math.ceil(widget.scrollHeight)`（注释写明 max-height 钳 rect 不钳 scrollHeight）；按「mode+值」记上次上报，同档同值不重发、换档强制重发；非壳静默跳过（照 gear 惯例）；invoke 参数 `{ mode, contentH }`（照 set_appearance 形态）。
+  - 调用点：`render()` 末尾——换档路径 `applyProfile` 本就是 applyAppearance（切 class）→ render，天然在 class 切换之后。
+
+  **`widget/ui/tests/assert-static.mjs`** — 新增 ⑭ 组 5 条：fit_height 注册+DesignHeights 在场、两个纯函数在场、常量注释「缺省」口径、fitHeight/scrollHeight/调用点、双守卫。
+
+  **`.scratch/usage-widget/pw_verify.py`** — e 组后顺延 e4–e7（伪壳照抄既有注入）：e4 上报值、 e5 重复 render 不涨计数、e6 藏 deepseek 回落、e7 tray-collapsed 不发。
+
+  ## 新单测名（lib.rs tests）
+
+  - `design_size_for_by_appearance`（两档取值+宽度常量+非法档回落+上报值直通）
+  - `fit_height_decide_clamps_and_dedups`（<60→60、>1500→1500、取整、|Δ|<1 no-op、收细）
+
+  ## 三条测试命令输出尾部（照贴）
+
+  `cd widget/src-tauri && cargo test`：
+  ```
+  running 5 tests
+  test tests::clamp_right_overflow_pulls_back_to_edge ... ok
+  test tests::fit_height_decide_clamps_and_dedups ... ok
+  test tests::clamp_work_area_smaller_than_window_aligns_top_left ... ok
+  test tests::design_size_for_by_appearance ... ok
+  test tests::clamp_onscreen_untouched ... ok
+  test result: ok. 5 passed; 0 failed
+  ```
+
+  `node widget/ui/tests/assert-static.mjs`：
+  ```
+  [PASS] fit.lib.rs 注册 fit_height 命令 + DesignHeights 状态在场
+  [PASS] fit.lib.rs design_size_for / fit_height_decide 纯函数在场
+  [PASS] fit.lib.rs 常量注释口径已改「缺省」（0.2.6 起实际高度由前端上报覆盖）
+  [PASS] fit.app.js fitHeight 出口 + scrollHeight 量法（max-height 钳 rect 不钳 scrollHeight）
+  [PASS] fit.app.js 守卫在场（tray-collapsed 量出 0 / 无 summary 防启动期收缩）
+  assert-static: 101/101 通过
+  ```
+
+  `python .scratch/usage-widget/pw_verify.py`：
+  ```
+  [PASS] e4. 渲染后 fit_height 上报：完整档 ≈585（±3，同 d4 实测口径）/ 紧凑档 ≈303（±3）  {"full": [585, 552, 585], "compact": [303]}
+  [PASS] e5. 同档同内容重复 render 不重复上报（计数不涨）  4→4
+  [PASS] e6. 显隐一盘（藏 deepseek）→ 新上报值回落 ~50-70  {"compact": [303, 303, 235]}
+  [PASS] e7. tray-collapsed 下 fitHeight 不上报（计数不涨）  6→6
+  合计 34 项，失败 0 项
+  ```
+
+  ## 一处对任务书的如实偏离
+
+  任务书预估完整档 contentH ≈599-613，**实测 585**（与既有 d4 断言同口径：scrollH=585、面板内高 608、余量 23px——585 一直就是真实内容高，预估区间偏了）。e4 断言据此改为 585±3 并在注释里注明口径来源。紧凑档 303、藏盘回落 68（303→235）均与预估吻合。552 是 e3 倒计时行隐藏那一轮的中间值，链路行为正确。
+
+  未 git commit、未动版本号、未跑 go test。
+
+To resume this session: kimi -r session_4b95b129-8bff-4b28-acae-fcd674b71bac

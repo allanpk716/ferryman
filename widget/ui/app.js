@@ -26,7 +26,6 @@ console.error = (...a) => { consoleErrors.push(a.map(String).join(' ')); origErr
 const widget = document.getElementById('widget');
 const tip = document.getElementById('tooltip');
 const detail = document.getElementById('detail');
-const settings = document.getElementById('settings');
 const grip = document.querySelector('#widget .grip');
 const restoreBtn = document.getElementById('restoreBtn');
 
@@ -82,7 +81,7 @@ const PROVENANCE_BY_ID = {
 const provenanceOf = (u, m) => PROVENANCE_BY_ID[u.id]?.[m.key] ?? PROVENANCE_BASE[`${u.kind}:${m.key}`] ?? '';
 
 /** 详情卡长名（展示别名；缺省回落契约 label）。 */
-const DETAIL_NAME_OF = { glm: '智谱 GLM', kimi: 'Kimi Coding', deepseek: 'DeepSeek 按量', handoff: '摆渡行（handoff 供应商）' };
+const DETAIL_NAME_OF = { glm: '智谱 GLM', kimi: 'Kimi Coding', deepseek: 'DeepSeek 按量', handoff: '摆渡行 · 交接计数与花费' };
 const PLAN_LINE = { coding_plan: (p) => `订阅套餐 · ${p.plan || 'Coding Plan'}`, paygo: () => '充值按量计费', handoff: () => 'OpenAI 协议 · 摆渡执行器专用' };
 
 // ── 倒计时/时刻（演示态基准=契约生成时刻，接真数据后=真实时钟；见 data.now） ──
@@ -153,10 +152,16 @@ function ringSVG(p, m1, m2, m3) { // m1=外环(5h) m2=中环(周) m3=内环(月�
 }
 function discHTML(p) {
   const label = p.label || p.id;
+  const compact = state.profile.appearance === 'compact';
   let svgInner = '', center = '', cap = '';
   if (p.error) { // 该上游整体查询失败：不画环不造数
     svgInner = '';
     center = `<text x="50" y="47" class="c-label">⚠</text><text x="50" y="60" class="c-sub">${label}</text>`;
+    if (compact) {
+      // 0.2.5 紧凑档顺带修：圆心只留一个大 ⚠（告警黄，inline 字面量 hex 与 c-pct
+      // 既有 inline fill 用法一致）；原第二行 label 由 mini-tag 标签行承载。完整档不动。
+      center = `<text x="50" y="60" class="c-pct" fill="#E8C33D">⚠</text>`;
+    }
     cap = `<div class="cap">查询失败 · ${p.error.category}</div>`;
   } else if (p.kind === 'coding_plan') {
     const mt = metricOf(p, 'month_tokens');
@@ -168,13 +173,35 @@ function discHTML(p) {
       budgetRing(p, 'month_budget', mt && mt.value));
     center = `<text x="50" y="47" class="c-label">${label}</text>
               <text x="50" y="60" class="c-sub">${p.plan || 'Coding Plan'}</text>`;
+    if (state.profile.appearance === 'compact') {
+      // 0.2.4 紧凑档圆心大数字：本盘实际画出的环（喂给 ringSVG 的三槽位非空者）
+      // 里 remaining_pct 最紧的一条；数字色=该环 ringColor（随该对象阈值黄/红告警
+      // 联动，inline fill 不走 CSS 变体）。一条环都没有 → 回落 label 单行大字。
+      const rings = [metricOf(p, 'window_5h'), mid, budgetRing(p, 'month_budget', mt && mt.value)]
+        .filter(Boolean);
+      const tight = rings.length
+        ? rings.reduce((a, b) => (b.remaining_pct < a.remaining_pct ? b : a))
+        : null;
+      // 夜链票 01（2026-09-30）：% 缩为上标（tspan dy=-4 属性写法——WebView2 对 CSS
+      // dy 支持不稳）；满格特判省略 %（D8 晨报否决清单；round 语义下 99.5~99.9 也走
+      // 特判，属预期）。字号初值 28/12/24 按「数字宽 0.5em」模型推导，实测本机
+      // system-ui=微软雅黑（数字进给 0.617em、getBBox=度量盒语义）超 38.5 横向硬界，
+      // R1 校准为 22/9/19（数值与推导在 style.css；三 preset {72,78,100} 实测留证在
+      // assert-static pct1 组）。报错盘/交接盘同用 c-pct 但无 % 字面量，不受累；
+      // 完整档圆心走 c-label/c-sub，零触碰。
+      const n = tight ? Math.round(tight.remaining_pct) : null;
+      center = !tight
+        ? `<text x="50" y="57" class="c-label">${label}</text>`
+        : n === 100
+          ? `<text x="50" y="60" class="c-pct c-pct-full" fill="${ringColor(p, tight.key, tight.remaining_pct)}">100</text>`
+          : `<text x="50" y="60" class="c-pct" fill="${ringColor(p, tight.key, tight.remaining_pct)}">${n}<tspan class="c-pct-pct" dy="-4">%</tspan></text>`;
+    }
     cap = cdlineHTML(p) + `<div class="cap">${mt ? mt.text : ''}${estBadge(mt)}</div>`;
     if (metricOf(p, 'week') && tq) { // V2+：工具环无槽位，文字行兜底
       cap += `<div class="cap">${labelOf('tools_quota')} 剩 ${Math.round(tq.remaining_pct)}%${tq.abs ? ` · ${tq.abs}` : ''}</div>`;
     }
   } else if (p.kind === 'paygo') {
-    const bal = metricOf(p, 'balance_cny'), st = metricOf(p, 'spend_today_cny'),
-          sw = metricOf(p, 'spend_week_cny'), sm = metricOf(p, 'spend_month_cny');
+    const bal = metricOf(p, 'balance_cny'), sm = metricOf(p, 'spend_month_cny');
     // DS 预算环（票 04）：开关+金额在设置窗；已用=spend_month_cny 原始值，剩余制绿环
     const dsr = budgetRing(p, 'ds_budget', sm && sm.value);
     svgInner = `${trackCircle(43)}${dsr ? ringCircle(p, dsr, 43) : ''}`;
@@ -182,17 +209,42 @@ function discHTML(p) {
     center = `<text x="50" y="38" class="c-money-sym">CNY</text>
               <text x="50" y="56" class="c-money">${money}</text>
               <text x="50" y="68" class="c-sub">${!bal || bal.available !== false ? '可用' : '不可用'}</text>`;
-    cap = `<div class="cap">${[sm, st, sw].filter(Boolean).map((m) => `${m.text}${estBadge(m)}`).join(' · ')}</div>`;
-  } else { // handoff
-    const sm = metricOf(p, 'spend_month_cny'), sw = metricOf(p, 'spend_week_cny');
+    if (state.profile.appearance === 'compact') {
+      // 0.2.4 紧凑档圆心大数字：只放余额单行（与完整档同源 bal.text 去 ¥，
+      // 无 bal → '—'）；CNY/可用 两行小字在紧凑档不渲染。
+      center = `<text x="50" y="59" class="c-money">${money}</text>`;
+    }
+    cap = sm ? `<div class="cap">${sm.text}${estBadge(sm)}</div>` : ''; // 溢出修第一层·内容取舍：cap 只显月花费（今/周在 tooltip 与详情卡）
+  } else { // handoff（0.2.3 交接盘：圆心=本月次数，cap=月/周两行）
     const hm = metricOf(p, 'handoffs_month'), hw = metricOf(p, 'handoffs_week');
-    svgInner = `<circle class="houtline" cx="50" cy="50" r="43"></circle>`;
-    center = `<text x="50" y="47" class="c-label">${label}</text>
-              <text x="50" y="60" class="c-sub">handoff</text>`;
-    cap = `<div class="cap">${[sm, hm, sw, hw].filter(Boolean).map((m) => `${m.text}${estBadge(m)}`).join(' · ')}</div>`;
+    svgInner = `<circle class="houtline" cx="50" cy="50" r="43"></circle>`; // 虚线空圈保留当装饰
+    if (hm && typeof hm.value === 'number' && isFinite(hm.value)) {
+      center = `<text x="50" y="51" class="c-money">${hm.value}</text>
+                <text x="50" y="65" class="c-sub">次 · 本月</text>`;
+    } else { // handoffs_month 缺席（旧契约/异常）：回落 label 居中，不造数
+      center = `<text x="50" y="47" class="c-label">${label}</text>
+                <text x="50" y="60" class="c-sub">handoff</text>`;
+    }
+    if (compact) {
+      // 0.2.5 紧凑档大数字（与 coding_plan/paygo 紧凑写法同构）：完整档两行
+      // 「次数 / 次 · 本月」缩进 48px 盘后小字行 ≈6px 物理不可读——紧凑档只留单行
+      // 大数字（中性白=CSS fill:var(--txt)，计数无告警语义不带 fill 属性），
+      // 含义靠 mini-tag 标签行+悬停提示。hm 缺席 → 占位「—」（名字由标签行承载，
+      // 不再重复 label）。完整档两行布局逐字节不动。
+      center = hm && typeof hm.value === 'number' && isFinite(hm.value)
+        ? `<text x="50" y="60" class="c-pct">${hm.value}</text>`
+        : `<text x="50" y="60" class="c-pct">—</text>`;
+    }
+    cap = [hm, hw].filter(Boolean).map((m) => `<div class="cap">${m.text}${estBadge(m)}</div>`).join(''); // 溢出修第二层·结构化分行
   }
+  // 0.2.5 迷你标签行（仅紧凑档渲染）：盘下名字+品牌色点，文字负责识别、色点辅助。
+  // 单一出口追加，不进各分支；完整档零变化（圆心 c-label 已承载名字）。cap 在紧凑档
+  // 本就 display:none，标签行用新 class mini-tag（不复用 .cap）。
+  const miniTag = compact
+    ? `<div class="mini-tag"><i class="dot" style="background:${brandDot(p)}"></i>${tagText(p)}</div>`
+    : '';
   return `<div class="disc${p.kind === 'handoff' ? ' handoff' : ''}" data-id="${p.id}" tabindex="0">
-            <svg viewBox="0 0 100 100">${svgInner}${center}</svg>${cap}</div>`;
+            <svg viewBox="0 0 100 100">${svgInner}${center}</svg>${miniTag}${cap}</div>`;
 }
 
 /** 全量重渲染（30s 轮询/profile 变更后调用；显隐与顺序随 profile，票 04）。 */
@@ -206,9 +258,44 @@ function render() {
     const p = findUpstream(state.detailId);
     if (p) renderDetail(p); else closeDetail();
   }
+  fitHeight(); // 0.2.6：渲染落定后量内容高上报壳层，窗高随可见盘数自适应
 }
 const findUpstream = (id) => state.summary &&
   [...state.summary.upstreams, state.summary.handoff].find((x) => x.id === id);
+
+// ── 窗高自适应（0.2.6）：渲染后量内容高上报壳层，一处出口 ──
+// 量法用 scrollHeight 而非 getBoundingClientRect：.widget 有 max-height:100vh +
+// overflow:hidden，rect 会被视口钳制，scrollHeight 报完整内容需求。
+// 上次已上报值按「mode+值」记：同档同值不重复 invoke（30s 轮询每轮 render 一次，
+// 内容没变不打扰壳层）；换档后 mode 变了强制重发一次（换档时壳层先落该档缺省
+// 高，这里紧接着按实际内容收细）。
+let lastFit = { mode: null, h: 0 };
+function fitHeight() {
+  // 托盘收起（#widget display:none 量出 0）或尚无数据（防启动期收缩成光杆 grip）→ 不动
+  if (document.body.classList.contains('tray-collapsed') || !state.summary) return;
+  const h = Math.ceil(widget.scrollHeight);
+  if (lastFit.mode === state.profile.appearance && Math.abs(h - lastFit.h) < 1) return;
+  const t = window.__TAURI__;
+  if (!(t && t.core && t.core.invoke)) return; // 非壳语境静默跳过（同 gear 的 open_settings_window 惯例）
+  lastFit = { mode: state.profile.appearance, h };
+  t.core.invoke('fit_height', { mode: state.profile.appearance, contentH: h })
+    .catch((e) => console.error('fit_height 失败', e));
+}
+
+// ── 0.2.5 紧凑档迷你标签行：文字负责识别，品牌色小点只是辅助点缀 ──
+// 品牌色调研结论（2026-09-29）：智谱/GLM #4268FA、Kimi #1783FF、DeepSeek #4D6BFE
+// ——三家全蓝系，色相分不开，所以色点只能当辅助、不能当唯一识别。live 的上游 id
+// 可能是中文（如「智谱」），id 与 label 两种键都认；拉丁字母统一转小写比较。
+const BRAND_DOT = { kimi: '#1783FF', glm: '#4268FA', '智谱': '#4268FA', deepseek: '#4D6BFE' };
+function brandDot(p) {
+  if (p.id === 'handoff') return 'var(--cmonth)'; // 紫 #9B7EDE=widget 自家强调色，非品牌色
+  return BRAND_DOT[String(p.id || '').toLowerCase()]
+      || BRAND_DOT[String(p.label || '').toLowerCase()]
+      || '#8A93A6'; // 未命中=灰
+}
+/** 标签行文本：交接盘以 CONTEXT.md 正名「交接」为准——live 的 daemon label 目前
+ *  还是「摆渡」，等 daemon label 换装后两边自然一致；其余盘吃契约 label。 */
+const tagText = (p) => (p.id === 'handoff' ? '交接' : p.label || p.id);
 
 // ── tooltip（hover 各环数字） ──
 function labelOf(k) { return { window_5h: '5h', week: '周', month_budget: '月预算', ds_budget: '预算', tools_quota: '工具' }[k] || k; }
@@ -218,7 +305,10 @@ widget.addEventListener('mouseover', (e) => {
   const rows = p.metrics.filter((m) => m.remaining_pct != null).map((m) =>
     `<div><span class="t-sw" style="background:${ringColor(p, m.key, m.remaining_pct)}"></span>${labelOf(m.key)} 剩 ${m.remaining_pct}%${m.resets_at ? ` · 重置 ${countdownText(m.resets_at)}` : ''}</div>`
   ).join('');
-  tip.innerHTML = rows || "<div style='color:var(--txt-dim)'>无环指标 · 单击看详情</div>";
+  // 交接盘首行一句人话（0.2.3），之后照旧列环指标或「无环指标 · 单击看详情」
+  const intro = p.kind === 'handoff'
+    ? '<div style="color:var(--txt-dim)">闲置会话自动交接：读档→提炼→写交接文档；此处计次数与花费</div>' : '';
+  tip.innerHTML = intro + (rows || "<div style='color:var(--txt-dim)'>无环指标 · 单击看详情</div>");
   tip.classList.remove('hidden');
 });
 widget.addEventListener('mousemove', (e) => {
@@ -274,13 +364,20 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('.disc') && !e.target.closest('#detail')) closeDetail();
 });
 
-// ── 设置浮层（布局/倒计时开关/图例帮助；完整设置窗=票 04） ──
-document.getElementById('btnSettings').addEventListener('click', () => settings.classList.remove('hidden'));
-document.querySelectorAll('[data-close]').forEach((b) =>
-  b.addEventListener('click', () => document.getElementById(b.dataset.close).classList.add('hidden')));
-settings.addEventListener('click', (e) => { if (e.target === settings) settings.classList.add('hidden'); });
+// ── 设置入口（0.2.4 窗内浮层退役：浮层随窗口缩水成一小条不可用，设置统一走
+// 独立设置窗）——齿轮壳内 invoke 开独立设置窗；非壳（浏览器演示）语境无窗可开，
+// 控制台如实提示、无操作（不得报错）。 ──
+document.getElementById('btnSettings').addEventListener('click', () => {
+  const t = window.__TAURI__;
+  if (t && t.core && t.core.invoke) {
+    t.core.invoke('open_settings_window').catch((e) => console.error('open_settings_window 失败', e));
+  } else {
+    console.info('演示语境（无 Tauri 壳）：设置窗在壳内经托盘菜单「设置…」或齿轮打开');
+  }
+});
 
-/** 横竖切换（票 04 起 profile.layout 是唯一事实源；窗体几何随动属票 09）。 */
+/** 横竖切换（票 04 起 profile.layout 是唯一事实源；窗体几何随动属票 09）。
+ *  0.2.4 浮层退役后页内已无 layout radio，同步行=安全空集（空 forEach）。 */
 function setLayout(mode) {
   widget.classList.remove('vertical', 'horizontal');
   widget.classList.add(mode);
@@ -295,23 +392,28 @@ function persistProfile() {
       .catch((e) => console.error('save_profile 失败', e));
   }
 }
-document.querySelectorAll('input[name=layout]').forEach((r) =>
-  r.addEventListener('change', () => {
-    setLayout(r.value);
-    state.profile.layout = r.value;
-    persistProfile();
-  }));
-
-// 倒计时行显隐（widget 本地显示配置，daemon 不感知；票 04 起持久化进 profile）
-document.getElementById('optCdline').addEventListener('change', (e) => {
-  state.profile.show_countdown = e.target.checked;
-  document.querySelectorAll('.cdline').forEach((el) => el.classList.toggle('hidden', !e.target.checked));
-  persistProfile();
-});
+// 0.2.4 浮层退役：布局/外观/倒计时的页内 radio、checkbox 接线一并删除——
+// 这三项此后只由设置窗改 profile → profile-changed 广播 → applyProfile→render
+// 驱动（倒计时行显隐=render 内 cdlineHTML 吃 show_countdown，链路在本文件自测
+// 与 pw_verify 均有断言背书）。
 
 // ── 收起/恢复（壳内=托盘菜单与关窗，票 02；浏览器/测试语境=dblclick 手柄的 UI 演示） ──
+// 外观快捷切换（0.2.3）：统一走完整流向（toggle→persistProfile→applyProfile→
+// invoke set_appearance）。壳内 grip 双击会被原生拖动区吞掉（2026-09-29 真机
+// SendInput 实证），托盘菜单「切换…外观」emit "toggle-appearance" 才是可达路径，
+// 这里一并监听；grip 双击接线保留（Tauri 若改行为即生效，浏览器语境仍走收起演示）。
+function toggleAppearance() {
+  state.profile.appearance = state.profile.appearance === 'compact' ? 'full' : 'compact';
+  persistProfile(); // 落盘+广播；自广播回自身监听时 applyProfile 幂等（档位没变不重复 invoke）
+  applyProfile();
+}
+(function wireToggleAppearance() {
+  const t = window.__TAURI__;
+  if (!t || !t.event || !t.event.listen) return;
+  t.event.listen('toggle-appearance', () => toggleAppearance());
+})();
 grip.addEventListener('dblclick', () => {
-  if (inShell()) return; // 壳内真收起走原生托盘，不留只剩恢复钮的空窗口
+  if (inShell()) { toggleAppearance(); return; } // 壳内真收起走原生托盘
   document.body.classList.add('tray-collapsed');
   closeDetail(); tip.classList.add('hidden');
 });
@@ -357,12 +459,10 @@ function runSelftest() {
   const res = [];
   const set = (k, v) => res.push([k, v]);
   try {
-    // 1 横竖切换
-    const h = document.querySelector('input[name=layout][value=horizontal]');
-    h.checked = true; h.dispatchEvent(new Event('change', { bubbles: true }));
+    // 1 横竖切换（0.2.4 浮层退役：页内 radio 已无，直接调 setLayout 断言 class）
+    setLayout('horizontal');
     const wasH = widget.classList.contains('horizontal');
-    const v = document.querySelector('input[name=layout][value=vertical]');
-    v.checked = true; v.dispatchEvent(new Event('change', { bubbles: true }));
+    setLayout('vertical');
     set('layout', wasH && widget.classList.contains('vertical'));
 
     // 2 收起/恢复
@@ -409,10 +509,26 @@ function initialProfile() {
   const pv = new URLSearchParams(location.search).get('profile');
   return profile.normalizeProfile((pv && profile.PRESETS[pv]) || null).profile;
 }
+// 外观档（0.2.3）：窗口出生=conf 132×620 完整档。比对已生效档位，变了才
+// invoke set_appearance——自广播回自身监听时幂等（不重复 invoke）。compact
+// class 挂 body（演示/headless 无壳也能模拟），.widget/.disc 样式从它派生。
+let appliedAppearance = 'full';
+function applyAppearance() {
+  const mode = state.profile.appearance === 'compact' ? 'compact' : 'full';
+  document.body.classList.toggle('compact', mode === 'compact');
+  // 0.2.4 浮层退役：页内已无 appearance radio，此行=安全空集（空 forEach）
+  document.querySelectorAll('input[name=appearance]').forEach((r) => { r.checked = r.value === mode; });
+  if (mode === appliedAppearance) return;
+  appliedAppearance = mode;
+  const t = window.__TAURI__;
+  if (t && t.core && t.core.invoke) {
+    t.core.invoke('set_appearance', { mode }).catch((e) => console.error('set_appearance 失败', e));
+  }
+}
 function applyProfile() {
   setLayout(state.profile.layout);
-  document.getElementById('optCdline').checked = state.profile.show_countdown;
-  render();
+  applyAppearance();
+  render(); // 倒计时行显隐由 cdlineHTML 吃 show_countdown（0.2.4 起页内无 optCdline）
 }
 state.profile = initialProfile();
 applyProfile();
@@ -435,6 +551,21 @@ applyProfile();
     // 靠退避收敛（最坏 ≤60s）——“立即”语义只属于托盘路径。poller 在下方 startPolling 处声明。
     t.event.listen('widget-restored', () => poller.poke());
   }
+})();
+
+// ── 贴边融入（壳内）：磁吸吸附落定/启动初始态时 Rust emit "widget-docked"
+// （载荷 {left,right,top,bottom} 四边布尔，角落可多边同贴），这里给根容器加/删
+// docked-* class——贴边侧圆角转直角、投影消失（具体形态由 CSS 控制）。
+// 演示/headless 语境无事件源，恒悬浮态（全圆+投影）。──
+(function wireDockedSides() {
+  const t = window.__TAURI__;
+  if (!t || !t.event || !t.event.listen) return;
+  t.event.listen('widget-docked', (e) => {
+    const p = (e && e.payload) || {};
+    for (const side of ['left', 'right', 'top', 'bottom']) {
+      widget.classList.toggle(`docked-${side}`, !!p[side]);
+    }
+  });
 })();
 
 // ── 票 05 · 升级通知条（壳内）：托盘「检查更新」→ Rust emit 结果，这里如实显示。
