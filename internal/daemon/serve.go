@@ -1,6 +1,8 @@
 // serve.go — 票17：serve 装配（规格 ferryman/daemon.py:606-663 逐字平移）。
 //
-// 装配序：配置 → 数据目录 → token → Ledger/Store/Accounts → 工人（队列）→
+// 装配序：配置 → 数据目录 → 升级锁让路查（票04：update.lock 被活监督者
+// 持有即打印一行 + 退出码 0 静默让路，先于一切装配副作用）→ token →
+// Ledger/Store/Accounts → 工人（队列）→
 // QWatchStats → Daemon → 监听（绑定失败分流：唯一化跳过 / 端口被占失败）→
 // pid 文件 → Watcher/Worker 起 → 横幅逐字 → 阻塞 → SIGINT/ctx 优雅停
 // （watcher.Stop/worker 停/pid 删除）；POST /shutdown 管理端点（票04）取消
@@ -30,6 +32,7 @@ import (
 	"ferryman/internal/ferry"
 	"ferryman/internal/ledger"
 	"ferryman/internal/store"
+	"ferryman/internal/update"
 )
 
 // FerrySession 生产摆渡执行器（票18：internal/ferry 落地，票17 的恒错占位
@@ -73,11 +76,40 @@ func ServeContext(ctx context.Context, relaxMinGap bool, version string) int {
 	return serveConfig(cfg, ctx, version)
 }
 
+// ---- 票04（规格 Implementation Decisions 第4条，D8）：守护层锁让路 ----
+
+// serveSelfExe 自身映像路径（让路判定里的换装目标 = 守护自己；var 形 = 测试缝）。
+var serveSelfExe = os.Executable
+
+// lockYieldProbe 锁让路单源判定的接缝（var 形 = 测试缝，对齐 FerrySession
+// 惯例）：update 包导出的只读助手，daemon 只调用、不复制第二份锁逻辑；探针
+// 传 nil 用 update 包平台真实现（daemon 不碰进程面）。锁态→判定的映射矩阵
+// （不存在/坏锁/持有者死/映像无关/目标映像/副本映像）在 update 包
+// TestLockHeldByLiveSupervisor 钉死，此处不重复。
+var lockYieldProbe = update.LockHeldByLiveSupervisor
+
 // serveConfig serve() 的可测核心：cfg 由调用方给定（Serve 走 config.Load），
 // ctx 取消 ≡ KeyboardInterrupt（优雅停）。version 版本号装配进 Daemon（/stats
 // version 字段；测试传 "" 或 "dev" = 未注入回落态）。返回退出码。
 func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	dataDir := cfg.DataDir()
+	// 守护层锁让路（票04，D8）：升级事务进行中（update.lock 被活监督者持有）
+	// → 打印一行 + 静默退出码 0（唯一化跳过 return 0 的同款早退，但更早——
+	// 绑端口与一切装配副作用之前）：升级窗口内蜂群/看门/Run 键抢拉起的实例
+	// 到此为止，事务拉起权归监督者独占。锁不存在/陈旧/映像无关 → 照常启动
+	// ——正常开机/钩子拉起时 update.lock 不存在，零行为变化，只在升级事务
+	// 持锁期间生效。自身映像取不到留空 → samePath 恒 false → 判定恒不持有
+	// → 照常启动（让路面绝不阻塞启动）。
+	// 监督者自拉起豁免(票04 集成缺陷修):带 SupervisorLaunchEnv 标记启动的
+	// 是升级正主,不得给持锁的监督者让路——否则监督者拉的新守护一律静默
+	// 退出,升级必败。蜂群/看门/Run 键不带标记,照常让路。
+	if os.Getenv(update.SupervisorLaunchEnv) == "" {
+		selfExe, _ := serveSelfExe()
+		if holderPID, held := lockYieldProbe(dataDir, selfExe, nil, nil); held {
+			fmt.Printf("[ferryman] 升级事务进行中（持有者 PID %d）——本实例静默让路\n", holderPID)
+			return 0
+		}
+	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil { // mkdir(parents=True, exist_ok=True)
 		fmt.Println(err)
 		return 1
@@ -109,7 +141,8 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		providers = map[string]ferry.Provider{}
 	}
 	worker := NewWorker(cfg, st, acc, providers, FerrySession)
-	worker.Ledger = led // ADR-0013：摆渡产出回写处置边界（HandledContentTS）
+	worker.Ledger = led                               // ADR-0013：摆渡产出回写处置边界（HandledContentTS）
+	wireFerryChain(cfg.FerryChain, providers, worker) // 票03：显式链才开（见函数注释）
 	startedAt := clock.Now()
 	qwatchStats := beat.NewQWatchStats() // 票04：daemon/watcher 共享计数器
 	enqueue := func(s *ledger.SessionState) bool {
@@ -146,10 +179,22 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	signal.Notify(srcCh, os.Interrupt)
 	defer signal.Stop(srcCh)
 	go watchInterruptOnce(ctx, srcCh, marker.mark)
+	// 票02（供应商接管，F4）：活跃上游内存态持有者——渡口逐请求读它（热切换
+	// seam），/provider_switch 管理端点对它换绑＋落盘（provider_switch.go）。
+	// 渡口未启用（[dock] 缺失）＝nil，端点不装。落盘路径与守护 Load 同源解析
+	// （显式参数 > FERRYMAN_CONFIG > ~/ferryman/config.toml 单源）。
+	var dockState *dockUpstreamState
+	if cfg.Dock != nil {
+		dockState = newDockUpstreamState(cfg.Dock, config.ResolveConfigPath(""))
+	}
+	var providerSwitchHook ProviderSwitchFunc
+	if dockState != nil {
+		providerSwitchHook = dockState.switchTo
+	}
 	ln, srv, err := ListenAndServeWithShutdown(d, cfg.Server.Port, token, func() {
 		marker.mark("shutdown端点")
 		cancel()
-	})
+	}, providerSwitchHook)
 	if err != nil {
 		// 唯一化（钩子自举的并发兜底）：绑定失败 = 端口已有监听者
 		if AlreadyRunning(cfg.Server.Port, token) {
@@ -178,6 +223,13 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		return 1
 	}
 
+	// 控制面即刻开始服务（v0.2.6：从渡口段之后提前至此）——pid 落盘后 7311 即
+	// 应答 /stats：渡口绑定重试（最长 bind_retry_s=240s）阻塞装配期间，监督者
+	// 的 90s 版本校验、看门/ensure 探活、restart 脚本的健康等待都必须能看到
+	// 控制面应答（v0.2.5 实战回滚教训：Serve 排在渡口段后＝重试期 7311 只绑
+	// 不服务，版本校验必超时）。
+	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
+
 	// 渡口（票01，F11 opt-in 裁定）：配置 [dock] 节才构造并启动——不配＝
 	// 不绑端口、零行为变化。独立 listener/生命周期：构造或绑定失败只告警
 	// 降级，绝不拖垮主服务（渡口挂＝CC 直连上游旧行为，base_url 指回即回退）。
@@ -192,16 +244,25 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		} else {
 			// 票06 接线（票01 起条目化）：改写隐含开启，守卫/doctor 判定在
 			// dock 包内单源裁决（本地中转地址拒绝即退纯透传）。
-			ds, derr := dock.NewWithOptions(cfg.Dock.Listen, up.BaseURL, dock.Options{
-				Upstream: up,
-				Accounts: acc,
-				Alert:    dock.AlertViaNotify(cfg),
-			})
+			// 2026-09-29 复盘：单发绑定改有界重试（[dock].bind_retry_s 缺省
+			// 240s）——升级/重启排水窗内渡口口被旧守护暂占时等得起，不再直接
+			// 降级"无渡口"半死形态；控制口已先绑，重试期间探活面健康。
+			newDock := func() (*dock.Server, error) {
+				return dock.NewWithOptions(cfg.Dock.Listen, up.BaseURL, dock.Options{
+					Upstream: up,
+					// 票02（F4）：逐请求活跃上游 seam——热切换即时生效（在途请求
+					// 持既有上游跑完）；dockState 恒非 nil（本分支 cfg.Dock 非 nil）。
+					Resolver: dockState,
+					Accounts: acc,
+					Alert:    dock.AlertViaNotify(cfg),
+				})
+			}
+			ds, derr := startDockWithRetry(newDock,
+				time.Duration(cfg.Dock.BindRetryS*float64(time.Second)), dockRetryInterval,
+				func(f string, a ...any) { fmt.Printf("[ferryman] %s\n", fmt.Sprintf(f, a...)) })
 			if derr != nil {
-				fmt.Printf("[ferryman] ⚠ 渡口未启动（配置无效）: %v\n", derr)
-			} else if derr = ds.Start(); derr != nil {
-				fmt.Printf("[ferryman] ⚠ 渡口未启动（监听 %s 失败，主服务不受影响）: %v\n",
-					cfg.Dock.Listen, derr)
+				fmt.Printf("[ferryman] ⚠ 渡口未启动（监听 %s 失败，重试 %.0fs 后放弃，主服务不受影响）: %v\n",
+					cfg.Dock.Listen, cfg.Dock.BindRetryS, derr)
 			} else {
 				dockSrv = ds
 				d.DockSnap = ds.Snapshots()
@@ -220,7 +281,7 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// 演练＋告警一次"降级路径原样保留。
 	watcher := NewWatcher(cfg, led, st, enqueue, startedAt, acc, d,
 		newBeatSender(cfg, d.DockSnap), qwatchStats)
-	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
+	// （srv.Serve 已提前至 pid 落盘后——见上；此处不再重复起服务。）
 	go watcher.Run(ctx)
 	go worker.Run(ctx)
 	// 交接库 30 天清理（DESIGN §6.15 TODO 落地，ADR-0013）：启动一次 + 每日
@@ -281,6 +342,26 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 // DockSnapshot 渡口快照只读句柄（未启用返回 nil）。票03 HttpBeatSender 经
 // 此取会话主快照（最大体）做心跳前缀源——daemon 其余代码不碰快照内部。
 func (d *Daemon) DockSnapshot() *dock.SnapshotStore { return d.DockSnap }
+
+// wireFerryChain 票03：显式顺位链装配——chainNames 非空（[ferry] chain 显式
+// 配置）才解析装上链执行器；provider 单键不开链（等价单元素链的既有单级
+// 路径行为零变化——结构校验/记账粒度对单 provider 配置保持原样）。解析失败
+// （config.Load 已对同文件校验，正常不可达；providers 坏 TOML 降级空表后
+// 可达）→ 警告不开链，回落 provider 既有路径（骨架兜底不变量优先）。返回
+// 是否已开链（装配缝，测试直调）。
+func wireFerryChain(chainNames []string, providers map[string]ferry.Provider, worker *Worker) bool {
+	if len(chainNames) == 0 {
+		return false
+	}
+	chain, err := ferry.ResolveChain(chainNames, providers)
+	if err != nil {
+		fmt.Printf("[ferry] ⚠ 摆渡链解析失败，链未启用（回落 provider 既有路径）: %v\n", err)
+		return false
+	}
+	worker.Chain = chain
+	worker.ChainFerry = ferry.ChainSession
+	return true
+}
 
 // newBeatSender 票03 serve 注入点：渡口开（配了 [dock] 且快照句柄在——含
 // 渡口构造/绑定失败降级为 nil 的情形）→ HttpBeatSender（发往渡口入站口）；

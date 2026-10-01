@@ -43,6 +43,13 @@ const (
 	defaultWindow = 131072 // Provider.Window 缺省（Python dataclass 默认）
 )
 
+// 票02：供应商协议档位。Protocol 零值 "" 与 ProtocolOpenAI 同义（消费侧按
+// 非 anthropic 即 openai 处理——手工构造 Provider 的零值向后兼容）。
+const (
+	ProtocolOpenAI    = "openai"    // OpenAI 兼容 /chat/completions（既有 Chat 行为）
+	ProtocolAnthropic = "anthropic" // Anthropic /v1/messages（运行时消费在票03 执行器）
+)
+
 // SystemPrompt ferry.py:31-58 逐字平移（Python 行尾 \ 续行已按其语义拼回单行；
 // 防注入声明 + 六节结构 + 要求，一字不改——ferry_providers_test.go 钉常量对照）。
 const SystemPrompt = `你是开发会话的交接总结器（摆渡人）。输入是一段开发会话记录的提取材料，你要产出一份"交接 MD"，让一个全新会话不读原始记录就能接着干。
@@ -79,6 +86,12 @@ type Provider struct {
 	Model   string
 	APIKey  string
 	Window  int
+	// 票02：协议档位与透传字典（数据结构层，运行时消费在票03 执行器——本票
+	// 不改 Chat 行为）。Protocol 缺省/空 = openai（LoadProviders 已把缺省填为
+	// "openai"，零值手工构造仍按 openai 语义）；ExtraBody nil/空 = 无透传，
+	// 逐键并入请求体（键冲突时以透传为准的裁决归票03）。
+	Protocol  string
+	ExtraBody map[string]any
 }
 
 // providerBlock [providers.<name>] 单节（ferry.py load_config 的 blk.get 形）。
@@ -87,6 +100,11 @@ type providerBlock struct {
 	Model   string `toml:"model"`
 	APIKey  string `toml:"api_key"`
 	Window  int    `toml:"window"`
+	// 票02：protocol 缺省 openai；extra_body 透传字典（TOML 内联表/子表均可）。
+	// 非法 protocol 值不在解析层拦（dock upstream dialect 同款口径：解析不替
+	// 校验做决定，消费侧按非 anthropic 即 openai 兜底）。
+	Protocol  string         `toml:"protocol"`
+	ExtraBody map[string]any `toml:"extra_body"`
 }
 
 // ferryToml config.toml 顶层只取 providers 节（同一文件还服务 [server]/
@@ -125,10 +143,33 @@ func LoadProviders(path string) (map[string]Provider, error) {
 		if w == 0 { // Python int(blk.get("window", 131072))——键缺失取默认
 			w = defaultWindow
 		}
+		proto := blk.Protocol
+		if proto == "" { // 票02：protocol 键缺失/空 → 缺省 openai
+			proto = ProtocolOpenAI
+		}
 		out[key] = Provider{Name: key, BaseURL: blk.BaseURL, Model: blk.Model,
-			APIKey: blk.APIKey, Window: w}
+			APIKey: blk.APIKey, Window: w, Protocol: proto, ExtraBody: blk.ExtraBody}
 	}
 	return out, nil
+}
+
+// ResolveChain 按顺位名字表解析摆渡链（票02 数据结构层；票03 执行器消费，
+// 本票不接线运行时）。names 空/nil = 未配置 → (nil, nil)（与 LoadProviders
+// 无配置同形的降级骨架语义不变）；名字不在供应商表 → error 上抛（坏 TOML
+// 同款：装配处捕获降级骨架 + 警告，不由本函数吞）。链序 = names 序，不去重。
+func ResolveChain(names []string, providers map[string]Provider) ([]Provider, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	chain := make([]Provider, 0, len(names))
+	for _, n := range names {
+		p, ok := providers[n]
+		if !ok {
+			return nil, fmt.Errorf("ferry: chain 引用未定义的 provider %q", n)
+		}
+		chain = append(chain, p)
+	}
+	return chain, nil
 }
 
 // Chat 一次 OpenAI 兼容 chat 调用，返回 (reply, usage)（ferry.py chat 1:1）。
@@ -137,6 +178,17 @@ func LoadProviders(path string) (map[string]Provider, error) {
 // 超时全链由 context 承载（http.NewRequestWithContext + WithTimeout）——到点
 // 请求被取消，无悬挂 goroutine。
 func Chat(pr Provider, system, user string, timeoutS float64, maxTokens int) (string, map[string]any, error) {
+	return chatOpenAI(http.DefaultClient, pr, system, user, timeoutS, maxTokens)
+}
+
+// chatCall 单发调用面：OpenAI Chat 与 Anthropic 适配器同签名，链执行器按
+// Provider.Protocol 分派并注入拨号策略（票03）。
+type chatCall func(pr Provider, system, user string, timeoutS float64, maxTokens int) (string, map[string]any, error)
+
+// chatOpenAI Chat 的 client 注入形（票03：链执行器本地级拨号限时共用同一
+// 请求/解析实现；Chat 本体行为零变化——http.DefaultClient 直传）。
+func chatOpenAI(client *http.Client, pr Provider, system, user string,
+	timeoutS float64, maxTokens int) (string, map[string]any, error) {
 	payload := map[string]any{
 		"model": pr.Model,
 		"messages": []map[string]string{
@@ -146,6 +198,11 @@ func Chat(pr Provider, system, user string, timeoutS float64, maxTokens int) (st
 		"temperature": 0.2,
 		"max_tokens":  maxTokens,
 		"stream":      false,
+	}
+	for k, v := range pr.ExtraBody { // extra_body 透传（票02 键，终局修复1）：openai
+		// 档与 anthropic 档同款并入、冲突以透传为准——GLM 关 thinking 等供应商
+		// 特异参数经配置注入，不硬编码（ferry.py 平移在链化役扩此缝）。
+		payload[k] = v
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -164,7 +221,7 @@ func Chat(pr Provider, system, user string, timeoutS float64, maxTokens int) (st
 		req.Header.Set("Authorization", "Bearer "+pr.APIKey)
 	}
 	t0 := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", nil, err
 	}
@@ -310,88 +367,115 @@ func HandoffMarkdown(title, inject, full string, meta map[string]any) string {
 // input/3) 逐段纪要（max_tokens 2048）+ reduce（骨架+分段纪要拼装）。
 func FerrySession(path string, pr Provider, timeoutS float64, agent string) (string, map[string]any, error) {
 	t0 := time.Now()
-	if pr.Window <= 0 { // Go 零值 ≡ Python dataclass 默认 131072
-		pr.Window = defaultWindow
-	}
-	var facts extract.Facts
-	var items []extract.Item
-	if agent == "codex" {
-		facts, items = codextrans.ExtractCodex(path)
-	} else {
-		f, its, _ := extract.Extract(path)
-		facts, items = f, its
-	}
-	skeleton := facts.SkeletonText()
-	material := extract.MaterialText(facts, items)
-	matTokens := extract.TokenEstimate(material)
-	inputBudget := pr.Window - WindowGuard - PromptReserve
-
-	calls := []map[string]any{}
-	var reply string
-	mode := "L1"
-	if matTokens <= inputBudget {
-		r, u, err := Chat(pr, SystemPrompt, material, timeoutS, PromptReserve)
-		if err != nil {
-			return "", nil, err
-		}
-		reply = r
-		calls = append(calls, u)
-	} else {
-		mode = "L2"
-		chunkBudget := max(16000, inputBudget/3)
-		chunks := extract.ChunkItems(items, chunkBudget)
-		interims := []string{}
-		for i, chunk := range chunks {
-			lines := make([]string, len(chunk))
-			for j, it := range chunk {
-				lines[j] = "[" + it.Role + "] " + it.Text
-			}
-			sub := fmt.Sprintf("以下是长会话的第 %d/%d 段。请输出该段的要点纪要"+
-				"（≤1200 token：做了什么/结论/涉及的文件与命令，逐字引用路径）。", i+1, len(chunks))
-			r, u, err := Chat(pr, SystemPrompt, sub+"\n\n"+strings.Join(lines, "\n"),
-				timeoutS, 2048)
-			if err != nil {
-				return "", nil, err
-			}
-			calls = append(calls, u)
-			interims = append(interims, strings.TrimSpace(r))
-		}
-		sections := make([]string, len(interims))
-		for i, s := range interims {
-			sections[i] = fmt.Sprintf("### 段 %d\n%s", i+1, s)
-		}
-		reduceMaterial := skeleton + "\n\n## 分段纪要\n" + strings.Join(sections, "\n\n")
-		r, u, err := Chat(pr, SystemPrompt, reduceMaterial, timeoutS, PromptReserve)
-		if err != nil {
-			return "", nil, err
-		}
-		reply = r
-		calls = append(calls, u)
+	facts, items, skeleton, material, matTokens := sessionMaterial(path, agent)
+	reply, mode, calls, err := sessionReply(pr, skeleton, material, items, matTokens,
+		timeoutS, Chat)
+	if err != nil {
+		return "", nil, err
 	}
 
 	inject, full := ParseOutput(reply)
-	usageSums := map[string]any{}
-	for _, k := range []string{"prompt_tokens", "completion_tokens", "total_tokens"} {
-		var sum float64
-		for _, c := range calls {
-			sum += numOr0(c[k])
-		}
-		usageSums[k] = sum
-	}
-	callWalls := make([]float64, len(calls))
-	for i, c := range calls {
-		callWalls[i] = numOr0(c["wall_s"])
-	}
 	meta := map[string]any{
 		"source": path, "title": facts.Title, "mode": mode,
 		"model": pr.Model, "provider": pr.Name,
 		"covers_until_iso": facts.LastTS, // 稳定快照内最后带时间戳行（DESIGN §6.13 覆盖截止）
 		"mat_tokens_est":   matTokens, "chunks": len(calls),
 		"wall_s":            round1(time.Since(t0).Seconds()),
-		"usage":             usageSums,
-		"call_walls":        callWalls,
+		"usage":             sumUsage(calls),
+		"call_walls":        callWallsOf(calls),
 		"inject_tokens_est": extract.TokenEstimate(inject),
 		"full_tokens_est":   extract.TokenEstimate(full),
 	}
 	return HandoffMarkdown(facts.Title, inject, full, meta), meta, nil
+}
+
+// sessionMaterial 会话材料一次抽取（票03 抽出：FerrySession 与链执行器
+// ChainSession 共用——提取与 provider 无关，链上逐级复用不分摊读盘）。agent
+// 分流 codex/cc（2026-09-17 事故同款分派）。
+func sessionMaterial(path, agent string) (facts extract.Facts, items []extract.Item,
+	skeleton, material string, matTokens int) {
+	if agent == "codex" {
+		facts, items = codextrans.ExtractCodex(path)
+	} else {
+		f, its, _ := extract.Extract(path)
+		facts, items = f, its
+	}
+	skeleton = facts.SkeletonText()
+	material = extract.MaterialText(facts, items)
+	matTokens = extract.TokenEstimate(material)
+	return
+}
+
+// sessionReply L1/L2 取回模型最终回复（票03 抽出，FerrySession 逐字同源；
+// 窗口预算随 provider，调用面由调用方注入——链执行器按协议分派/拨号策略）。
+// L1：mat_tokens <= window-8192-4096 单发；L2：chunk_budget=max(16000,
+// input/3) 逐段纪要（max_tokens 2048）+ reduce（骨架+分段纪要拼装）。
+// 任一调用失败即整体失败（错误上抛，calls 不含失败调用）。
+func sessionReply(pr Provider, skeleton, material string, items []extract.Item,
+	matTokens int, timeoutS float64, call chatCall) (reply, mode string, calls []map[string]any, err error) {
+	if pr.Window <= 0 { // Go 零值 ≡ Python dataclass 默认 131072
+		pr.Window = defaultWindow
+	}
+	inputBudget := pr.Window - WindowGuard - PromptReserve
+	calls = []map[string]any{}
+	mode = "L1"
+	if matTokens <= inputBudget {
+		r, u, err := call(pr, SystemPrompt, material, timeoutS, PromptReserve)
+		if err != nil {
+			return "", "", nil, err
+		}
+		return r, mode, append(calls, u), nil
+	}
+	mode = "L2"
+	chunkBudget := max(16000, inputBudget/3)
+	chunks := extract.ChunkItems(items, chunkBudget)
+	interims := []string{}
+	for i, chunk := range chunks {
+		lines := make([]string, len(chunk))
+		for j, it := range chunk {
+			lines[j] = "[" + it.Role + "] " + it.Text
+		}
+		sub := fmt.Sprintf("以下是长会话的第 %d/%d 段。请输出该段的要点纪要"+
+			"（≤1200 token：做了什么/结论/涉及的文件与命令，逐字引用路径）。", i+1, len(chunks))
+		r, u, err := call(pr, SystemPrompt, sub+"\n\n"+strings.Join(lines, "\n"),
+			timeoutS, 2048)
+		if err != nil {
+			return "", "", nil, err
+		}
+		calls = append(calls, u)
+		interims = append(interims, strings.TrimSpace(r))
+	}
+	sections := make([]string, len(interims))
+	for i, s := range interims {
+		sections[i] = fmt.Sprintf("### 段 %d\n%s", i+1, s)
+	}
+	reduceMaterial := skeleton + "\n\n## 分段纪要\n" + strings.Join(sections, "\n\n")
+	r, u, err := call(pr, SystemPrompt, reduceMaterial, timeoutS, PromptReserve)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return r, mode, append(calls, u), nil
+}
+
+// sumUsage 多次调用的 usage 三键求和（FerrySession/ChainSession 共用；
+// 失败无 calls → 三键 0）。
+func sumUsage(calls []map[string]any) map[string]any {
+	sums := map[string]any{}
+	for _, k := range []string{"prompt_tokens", "completion_tokens", "total_tokens"} {
+		var sum float64
+		for _, c := range calls {
+			sum += numOr0(c[k])
+		}
+		sums[k] = sum
+	}
+	return sums
+}
+
+// callWallsOf 各调用 wall_s 序列（meta["call_walls"] 单源）。
+func callWallsOf(calls []map[string]any) []float64 {
+	ws := make([]float64, len(calls))
+	for i, c := range calls {
+		ws[i] = numOr0(c["wall_s"])
+	}
+	return ws
 }

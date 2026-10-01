@@ -4,7 +4,7 @@
 > `internal/viewer/{server,demo,ledger}`，web 前端与 `icon.ico` 随本包放置
 > （`go:embed` 只能引用包目录子树）。以下构建/开发命令一律在仓库根执行。
 
-单一 exe：守护（127.0.0.1:7311）+ 时间线面板（15900）+ 托盘 + 全部 CLI 子命令。
+单一 exe：守护（127.0.0.1:15700）+ 时间线面板（15900）+ 托盘 + 全部 CLI 子命令。
 面板读取 `accounts/*.jsonl` 流水，提供会话列表、单会话 token 时序图（SVG 手绘）与
 心跳"反跑"仿真面板。前端为原生 HTML/JS/CSS 三件套，经 `go:embed` 打进 exe，无任何
 外部资源（离线铁律：无 CDN、无字体、无图标库）。
@@ -24,7 +24,7 @@ powershell -File build.ps1 -Release   # -ldflags "-s -w" 变体（同样无 wind
 ## 运行
 
 ```
-ferryman.exe                # 无参 = serve：守护(7311)+面板(15900)+托盘
+ferryman.exe                # 无参 = serve：守护(15700)+面板(15900)+托盘
 ferryman.exe serve [--no-browser]    # 同上（点火脚本 start-daemon.cmd 调它；面板口被占探到活面板时不自动开浏览器）
 ferryman.exe serve --no-tray --smoke    # 前台 Ctrl+C 退出；放宽阈值差校验
 ferryman.exe doctor         # 一键体检
@@ -32,6 +32,7 @@ ferryman.exe install-cc [--events SessionStart,SubagentStart,SubagentStop]
 ferryman.exe install-ccswitch
 ferryman.exe install-codex [--events ...]
 ferryman.exe account report --json
+ferryman.exe provider <list|switch|add|remove|import-ccswitch|apply>    # 供应商命令族：列表(密钥脱敏+codex 可用性)、热切换(不重启,unsupported 默认拒/--cc-only 放行)、增删本机表、从 cc-switch.db 导入、接管三份配置(--restore 还原回 interim)
 
 # 面板族（viewer 原样，只起面板不起守护）：
 ferryman.exe --demo --no-tray --no-browser             # 演示合成账本

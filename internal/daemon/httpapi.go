@@ -98,31 +98,38 @@ func AlreadyRunning(port int, token string) bool {
 // go srv.Serve(ln)（ThreadingHTTPServer.serve_forever 的 Go 形：一连接一
 // goroutine，daemon_threads=True 同位）。
 func ListenAndServe(d DaemonLike, port int, token string) (net.Listener, *http.Server, error) {
-	return ListenAndServeWithShutdown(d, port, token, nil) // nil＝不装 /shutdown
+	return ListenAndServeWithShutdown(d, port, token, nil, nil) // nil＝不装 /shutdown、/provider_switch
 }
 
 // ListenAndServeWithShutdown 票04（规格 §C 第5条 停旧）：ListenAndServe +
 // POST /shutdown 守护内部管理端点（不在 agent 面 MCP 动词面，internal/mcp
 // 零改动）。onShutdown 是端点过守门后的停机触发器——serveConfig 传子 ctx 的
 // cancel，与 os.Interrupt 同一 Done 源；nil ＝ 未装配，/shutdown 落未知路径
-// 旧行为（POST 404 / GET 404）。
-func ListenAndServeWithShutdown(d DaemonLike, port int, token string, onShutdown func()) (net.Listener, *http.Server, error) {
+// 旧行为（POST 404 / GET 404）。票02（供应商接管）：onProviderSwitch 非 nil
+// 时同族加装 POST /provider_switch 热切换端点（provider_switch.go）。
+func ListenAndServeWithShutdown(d DaemonLike, port int, token string, onShutdown func(),
+	onProviderSwitch ProviderSwitchFunc) (net.Listener, *http.Server, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return nil, nil, err
 	}
-	srv := &http.Server{Handler: makeHandler(d, token, onShutdown)}
+	srv := &http.Server{Handler: makeHandler(d, token, onShutdown, onProviderSwitch)}
 	return ln, srv, nil
 }
 
 // makeHandler Handler 类（server.py:721-781）的闭包形：token 与 daemon 由
 // make_server 构造器捕获，do_POST/do_GET 落到两个分派函数。票04 起带停机
-// 钩子：/shutdown 在方法分派前拦截——管理端点自带守门序（loopback → 方法
-// → 鉴权），与 POST/GET 面的 auth 顺序无关；钩子 nil＝旧行为原样。
-func makeHandler(d DaemonLike, token string, onShutdown func()) http.Handler {
+// 钩子、票02 起带热切换钩子：管理端点在方法分派前拦截——管理端点自带守门
+// 序（loopback → 方法 → 鉴权），与 POST/GET 面的 auth 顺序无关；钩子
+// nil＝旧行为原样（落未知路径）。
+func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch ProviderSwitchFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.RequestURI == "/shutdown" && onShutdown != nil {
 			doShutdown(onShutdown, token, w, r)
+			return
+		}
+		if r.RequestURI == "/provider_switch" && onProviderSwitch != nil {
+			doProviderSwitch(onProviderSwitch, token, w, r)
 			return
 		}
 		switch r.Method {

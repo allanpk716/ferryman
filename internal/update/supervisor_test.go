@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,6 +67,11 @@ func newUpdateWorld(t *testing.T, rels []fakeRel, mod func(*Config, *updateWorld
 		PortWait:     1500 * time.Millisecond,
 		PollTimeout:  4 * time.Second,
 		PollInterval: 80 * time.Millisecond,
+		// 探针窗测试尺寸(生产缺省 2s/10s 由 TestProbeDefaultsMatchSpec 钉):
+		// 首测 50ms 后开始,2s 内应答即过——替身启动常在数百 ms,过窗只是
+		// 多一条告警日志,不影响流程断言(探针只报告不裁决)。
+		ProbeDelay:  50 * time.Millisecond,
+		ProbeTimeout: 2 * time.Second,
 		Logf:         func(f string, a ...any) { fmt.Fprintf(logs, f+"\n", a...) },
 	}
 	if mod != nil {
@@ -532,6 +538,178 @@ func TestSupervisorPrunesBackups(t *testing.T) {
 	}
 }
 
+// ---- W2 票03:事务拉起直连 cmd + 拉起验证探针(ADR-0015 2026-09-29 补记) ----
+
+// TestTransactionalLaunchIsCmdDirect 事务拉起不再走 wscript/VBS:隐藏 VBS 在位
+// (launchCmdImpl 旧形态在此必优先命中 wscript)时,launch 缺省注入仍直拉
+// cmd.exe /c——标记只出现 CMD、绝不出现 VBS。VBS 三级转手吞 stderr 且成败
+// 不验(07:31 事故第一根因),事务级拉起必须直连可验;Run 键/看门/蜂群的
+// VBS 链不经此路径(launchCmdImpl 与 installer 包通道维持不变)。
+func TestTransactionalLaunchIsCmdDirect(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	marker := filepath.Join(w.dataDir, "marker.txt")
+	// 覆写点火脚本:写 CMD 标记即退(探针语义另测,此处只验拉起通道)。
+	if err := os.WriteFile(w.cmdPath,
+		[]byte("@echo off\r\necho CMD>> \""+marker+"\"\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 同目录摆上隐藏点火 VBS:若走 VBS 链,它会先写 VBS 标记再转拉 cmd。
+	vbs := filepath.Join(filepath.Dir(w.cmdPath), hiddenLauncherName)
+	vbsSrc := "CreateObject(\"Scripting.FileSystemObject\").OpenTextFile(\"" + marker +
+		"\", 8, True).WriteLine \"VBS\"\r\n"
+	if err := os.WriteFile(vbs, []byte(vbsSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sup.launch(w.cmdPath); err != nil { // 缺省注入 = 事务拉起形态
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(marker); err == nil {
+			if strings.Contains(string(b), "VBS") {
+				t.Fatal("事务拉起走了 VBS 链——应直连 cmd.exe")
+			}
+			if strings.Contains(string(b), "CMD") {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("10s 内未见 CMD 标记——事务拉起未执行点火脚本")
+}
+
+// TestProbeDefaultsMatchSpec 探针窗缺省:launch 后 2s 起测、10s(自拉起计)
+// 截止(spec W2 Implementation Decisions 3)。(测试世界已显式给小窗,故直构
+// NewSupervisor 验缺省,同 TestDefaultPortWaitCoversDrain 手法。)
+func TestProbeDefaultsMatchSpec(t *testing.T) {
+	sup := NewSupervisor(Config{DataDir: t.TempDir(),
+		Logf: func(string, ...any) {}})
+	if sup.cfg.ProbeDelay != 2*time.Second || sup.cfg.ProbeTimeout != 10*time.Second {
+		t.Fatalf("探针缺省 = delay %v / timeout %v, want 2s / 10s",
+			sup.cfg.ProbeDelay, sup.cfg.ProbeTimeout)
+	}
+}
+
+// TestVerifyLaunchProbeTargetsConfiguredPort 探针端点取 cfg.Port:同款拉起,
+// Port 指向有应答者则通过且零告警;指向死口则报「拉起验证失败（相位错误）」
+// + 告警,且 launchTx 不因此报错(探针只报告,不改变事务走向)。死口分支同时
+// 钉死「不硬编码 15700」——若探针偷瞄生产口,生产守护在场时死口分支必假通过。
+func TestVerifyLaunchProbeTargetsConfiguredPort(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.ProbeDelay, c.ProbeTimeout = 30*time.Millisecond, 400*time.Millisecond
+	})
+	startStandinProcess(t, w.exePath, w.port, w.token, t.TempDir(), false)
+	waitServe(t, w.port, w.token, "v0.1.0")
+
+	var alerts []string
+	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	sup.launch = func(string) error { return nil } // 只验探针语义,不真 spawn
+
+	if err := sup.launchTx(w.cmdPath); err != nil {
+		t.Fatalf("launchTx = %v(探针失败不得改变事务走向)", err)
+	}
+	if len(alerts) != 0 {
+		t.Fatalf("端点应答不应有告警: %v", alerts)
+	}
+	if !strings.Contains(w.logs.String(), "拉起验证通过") {
+		t.Fatalf("应有通过日志:\n%s", w.logs.String())
+	}
+
+	// 同一世界换监督者:Port 指向随机死口(无监听)。
+	logs2 := &syncBuf{}
+	var alerts2 []string
+	cfg2 := w.cfg
+	cfg2.Port = freePort(t)
+	cfg2.ProbeDelay, cfg2.ProbeTimeout = 30*time.Millisecond, 400*time.Millisecond
+	cfg2.Logf = func(f string, a ...any) { fmt.Fprintf(logs2, f+"\n", a...) }
+	cfg2.Alert = func(title, msg string) { alerts2 = append(alerts2, title+"|"+msg) }
+	sup2 := NewSupervisor(cfg2)
+	sup2.launch = func(string) error { return nil }
+
+	if err := sup2.launchTx(w.cmdPath); err != nil {
+		t.Fatalf("launchTx = %v(探针失败只报告,不报错)", err)
+	}
+	if len(alerts2) != 1 || !strings.Contains(alerts2[0], "相位错误") {
+		t.Fatalf("死口应恰一条相位错误告警: %v", alerts2)
+	}
+	if !strings.Contains(logs2.String(), "拉起验证失败（相位错误）") {
+		t.Fatalf("死口应有相位错误日志:\n%s", logs2.String())
+	}
+}
+
+// TestVerifyLaunchProbeAcceptsAnyStatus 成功谓词=任意 HTTP 应答(含 404,
+// probeDaemonAny 同语义):占口者只会 404,探针仍须判过——守护起来即应答,
+// 鉴权与路由不构成前提。
+func TestVerifyLaunchProbeAcceptsAnyStatus(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.ProbeDelay, c.ProbeTimeout = 20*time.Millisecond, 600*time.Millisecond
+	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	srv := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", w.port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	sup.launch = func(string) error { return nil }
+	if err := sup.launchTx(w.cmdPath); err != nil {
+		t.Fatalf("launchTx = %v", err)
+	}
+	if !strings.Contains(w.logs.String(), "拉起验证通过") {
+		t.Fatalf("404 应答应判探针通过:\n%s", w.logs.String())
+	}
+}
+
+// TestAlertFailureDoesNotBlock 告警通道故障(坏回调 panic)绝不传染事务:
+// alert 侧 recover 吞掉、只落日志留证(与 notify 包「尽力而为的旁路」同纪律)。
+func TestAlertFailureDoesNotBlock(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	sup.cfg.Alert = func(string, string) { panic("通知通道坏了") }
+	sup.alert("Ferryman 升级", "拉起验证失败（相位错误）") // 不得外泄 panic
+	if !strings.Contains(w.logs.String(), "告警通道故障") {
+		t.Fatalf("通道故障应落日志留证:\n%s", w.logs.String())
+	}
+}
+
+// TestLaunchVerifyFailAlertsButStillRollsBack 端到端:垃圾新版拉不起 →
+// 探针报「拉起验证失败（相位错误）」+ 告警;事务走向不变——回滚仍由既有
+// 版本校验裁决(结论为校验失败)并成功恢复旧版服务。
+func TestLaunchVerifyFailAlertsButStillRollsBack(t *testing.T) {
+	garbage := []byte("this is not a real windows executable - probe phase regression")
+	w, sup := newUpdateWorld(t, []fakeRel{{tag: "v0.2.0", bytes: garbage}}, nil)
+	var alerts []string
+	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	startStandinProcess(t, w.exePath, w.port, w.token, w.dataDir, false)
+	waitServe(t, w.port, w.token, "v0.1.0")
+
+	res := sup.Run()
+	if res.Success || !res.RolledBack {
+		t.Fatalf("垃圾新版应回滚: %+v\n日志:\n%s", res, w.logs.String())
+	}
+	if !strings.Contains(res.Err.Error(), "校验失败") {
+		t.Fatalf("回滚依据应是版本校验(非探针): %v", res.Err)
+	}
+	phased := false
+	for _, a := range alerts {
+		if strings.Contains(a, "相位错误") {
+			phased = true
+		}
+	}
+	if !phased {
+		t.Fatalf("应有相位错误告警: %v", alerts)
+	}
+	if !strings.Contains(w.logs.String(), "拉起验证失败（相位错误）") {
+		t.Fatalf("应有相位错误日志:\n%s", w.logs.String())
+	}
+	waitServe(t, w.port, w.token, "v0.1.0") // 旧版已恢复服务
+}
+
 // spawnDeadProcess 起一个即刻退出的进程,返回其(已死)PID——陈旧锁造现场。
 func spawnDeadProcess(t *testing.T) int {
 	t.Helper()
@@ -605,6 +783,39 @@ func TestSelfRelayHandoverCarriesIntent(t *testing.T) {
 	}
 }
 
+// TestRelaySelfDelete 副本收尾自删 seam（2026-09-30 副本残留案）：SelfRelay
+// 副本以自身映像路径发起延迟删除；非副本不删；selfDelete 缺位不炸；selfExe
+// 失败静默跳过（残留交 cleanSwapResidues 下次扫走）。
+func TestRelaySelfDelete(t *testing.T) {
+	_, sup := newUpdateWorld(t, nil, nil)
+	var delPath string
+	sup.cfg.SelfRelay = true
+	sup.selfExe = func() (string, error) { return `C:\x\ferryman.exe.supervisor-copy`, nil }
+	sup.selfDelete = func(p string) error { delPath = p; return nil }
+	sup.relaySelfDelete()
+	if delPath != `C:\x\ferryman.exe.supervisor-copy` {
+		t.Fatalf("应以自身映像路径发起延迟删除, got %q", delPath)
+	}
+
+	delPath = ""
+	sup.cfg.SelfRelay = false // 非副本（原监督者）不删
+	sup.relaySelfDelete()
+	if delPath != "" {
+		t.Fatal("非副本不得发起自删")
+	}
+
+	sup.cfg.SelfRelay = true
+	sup.selfDelete = nil // seam 缺位（裸构造）不炸
+	sup.relaySelfDelete()
+
+	sup.selfExe = func() (string, error) { return "", fmt.Errorf("无映像") }
+	sup.selfDelete = func(p string) error { delPath = p; return nil }
+	sup.relaySelfDelete()
+	if delPath != "" {
+		t.Fatal("selfExe 失败应静默跳过")
+	}
+}
+
 // TestSelfRelaySkippedWhenDifferentTarget 自身 != 换装目标 → 不交棒,全流程
 // 照常(成功升级)。
 func TestSelfRelaySkippedWhenDifferentTarget(t *testing.T) {
@@ -669,16 +880,51 @@ func TestStopDaemonWaitsForProcessExit(t *testing.T) {
 	}
 }
 
-// TestWaitProcessExitBudgetExhausted 等满预算如实放弃(pid 恒活),不留死等。
+// TestWaitProcessExitBudgetExhausted 等满预算如实返回 false(pid 恒活)——
+// 2026-09-29 起软等待改硬门:超时仍活由调用方报错中止,不再"放弃前进"。
 func TestWaitProcessExitBudgetExhausted(t *testing.T) {
 	_, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
 		c.PortWait = 300 * time.Millisecond
 	})
 	sup.procAlive = func(int) bool { return true }
 	start := time.Now()
-	sup.waitProcessExit(999, sup.cfg.PortWait)
+	if sup.waitProcessExit(999, sup.cfg.PortWait) {
+		t.Fatal("预算耗尽进程仍活应返回 false(硬门)")
+	}
 	if el := time.Since(start); el < 250*time.Millisecond {
 		t.Fatalf("应等满预算: elapsed=%v", el)
+	}
+}
+
+// TestStopDaemonHardGateOnStuckProcess 排水卡死硬门:控制口已释但旧进程
+// 恒活(排水中/退出卡住) → stopDaemon 必须报错中止,绝不带着在场旧进程换装
+// (2026-09-29 复盘:软等待前进会让新守护渡口绑定失败进半死形态)。
+func TestStopDaemonHardGateOnStuckProcess(t *testing.T) {
+	_, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.PortWait = 300 * time.Millisecond
+	})
+	if err := os.WriteFile(filepath.Join(sup.cfg.DataDir, "daemon.pid"),
+		[]byte(`{"pid":424243,"port":7311}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sup.procAlive = func(int) bool { return true }
+	err := sup.stopDaemon("whatever.exe", "测试停旧")
+	if err == nil {
+		t.Fatal("进程恒活时 stopDaemon 应报错(硬门),不得前进")
+	}
+	if !strings.Contains(err.Error(), "424243") {
+		t.Fatalf("报错应点名卡住的 PID: %v", err)
+	}
+}
+
+// TestDefaultPortWaitCoversDrain 停旧预算缺省 240s——必须覆盖 v0.2.4+ 排水窗
+// (drain_timeout_s 缺省 180s)加余量;30s 会抢跑。(newUpdateWorld 为测试速度
+// 硬编码短 PortWait,故此处直构 NewSupervisor 验缺省。)
+func TestDefaultPortWaitCoversDrain(t *testing.T) {
+	sup := NewSupervisor(Config{DataDir: t.TempDir(),
+		Logf: func(string, ...any) {}})
+	if sup.cfg.PortWait != 240*time.Second {
+		t.Fatalf("defaultPortWait = %v, want 240s", sup.cfg.PortWait)
 	}
 }
 
@@ -696,5 +942,391 @@ func TestFileTeeLogfAppends(t *testing.T) {
 	s := string(b)
 	if !strings.Contains(s, "[ferryman-update] 第一行 1") || !strings.Contains(s, "[ferryman-update] 第二行") {
 		t.Fatalf("日志内容缺失: %q", s)
+	}
+}
+
+// ---- 票02:监督者静默门(门前置三分支 + 判据 + 等待/交互/旗标) ----
+
+// forceNonInteractive 钉死 stdinInteractive 缝为「非交互」:缺省问询路径
+// (告警硬切)的确定性验证——与真实 shell 的 stdin 形态无关(go test 的 stdin
+// 常是 NUL,字符设备,会被启发式误判成交互终端)。
+func forceNonInteractive(t *testing.T) {
+	t.Helper()
+	orig := stdinInteractive
+	stdinInteractive = func() bool { return false }
+	t.Cleanup(func() { stdinInteractive = orig })
+}
+
+// startStatsStub 在端口 port 上起可控 /stats 桩(quietGate 直测用:不拉真
+// 替身进程,在途/最后请求字段逐案注入)。
+func startStatsStub(t *testing.T, port int, handler http.HandlerFunc) {
+	t.Helper()
+	srv := &http.Server{Handler: handler}
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+}
+
+// statsHandler /stats 桩应答:status 非 200 模拟不可达;inflight/lastTS 逐案注入。
+func statsHandler(status int, inflight int, lastTS int64) http.HandlerFunc {
+	return func(rw http.ResponseWriter, _ *http.Request) {
+		if status != http.StatusOK {
+			http.Error(rw, "unavailable", status)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(map[string]any{
+			"version":         "v0.1.0",
+			"dock_inflight":   inflight,
+			"last_request_ts": lastTS,
+		})
+	}
+}
+
+// TestDockQuietCriterion 判据真值表:在途 0 且距最后请求 ≥10s;
+// last_request_ts==0(从未有请求)视为静默成立。
+func TestDockQuietCriterion(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	cases := []struct {
+		name     string
+		inflight int
+		lastTS   int64
+		want     bool
+	}{
+		{"零值=从未有请求→静默成立", 0, 0, true},
+		{"最后请求 11s 前且无在途→静默", 0, now.Unix() - 11, true},
+		{"恰好 10s 边界→静默", 0, now.Unix() - 10, true},
+		{"9s 前有请求→不静默", 0, now.Unix() - 9, false},
+		{"在途 1(纵使请求久远)→不静默", 1, now.Unix() - 600, false},
+		{"在途且从未完成→不静默", 2, 0, false},
+	}
+	for _, tc := range cases {
+		if got := dockQuiet(tc.inflight, tc.lastTS, now); got != tc.want {
+			t.Fatalf("%s: dockQuiet(%d,%d) = %v, want %v", tc.name, tc.inflight, tc.lastTS, got, tc.want)
+		}
+	}
+}
+
+// TestQuietWaitDefaultMatchesSpec 静默门等待预算缺省 60s(spec W1)。
+func TestQuietWaitDefaultMatchesSpec(t *testing.T) {
+	sup := NewSupervisor(Config{DataDir: t.TempDir(),
+		Logf: func(string, ...any) {}})
+	if sup.cfg.WaitQuiet != 60*time.Second {
+		t.Fatalf("WaitQuiet 缺省 = %v, want 60s", sup.cfg.WaitQuiet)
+	}
+}
+
+// TestQuietGatePassesImmediatelyOnQuiet 分支③判据满足即放行不额外等待:
+// 可达且静默(/stats 零值=从未有请求)→ nil + 放行日志,零告警。
+func TestQuietGatePassesImmediatelyOnQuiet(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 0, 0))
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("静默应放行: %v", err)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("判据满足不应等待: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "静默门放行") {
+		t.Fatalf("应有放行日志:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGatePassesAfterTrafficDrains 判据先不满足、等待窗内转为静默 →
+// 即刻放行,不等满预算。
+func TestQuietGatePassesAfterTrafficDrains(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 5 * time.Second
+	})
+	var inflight int32 = 2
+	oldTS := time.Now().Unix() - 30 // 最后请求在 30s 前,只差在途清零
+	startStatsStub(t, w.port, func(rw http.ResponseWriter, _ *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(map[string]any{
+			"version": "v0.1.0", "dock_inflight": atomic.LoadInt32(&inflight),
+			"last_request_ts": oldTS,
+		})
+	})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		atomic.StoreInt32(&inflight, 0)
+	}()
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("流量排空后应放行: %v", err)
+	}
+	if el := time.Since(start); el >= 4*time.Second {
+		t.Fatalf("判据转满足即放行,不应等满预算: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "静默门放行") {
+		t.Fatalf("应有放行日志:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateWaitsBudgetThenAlertsHardCut 判据不满足:等满预算后非交互
+// 缺省(测试 stdin 非终端)→ notify 告警一条并硬切放行;logf(update.log)有
+// 硬切兜底记录行(带在途观测)。
+func TestQuietGateWaitsBudgetThenAlertsHardCut(t *testing.T) {
+	forceNonInteractive(t)
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 400 * time.Millisecond
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 2, time.Now().Unix()-3))
+	var alerts []string
+	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("兜底应放行硬切(不中止): %v", err)
+	}
+	if el := time.Since(start); el < 350*time.Millisecond {
+		t.Fatalf("应等满预算再兜底: elapsed=%v", el)
+	}
+	logs := w.logs.String()
+	if !strings.Contains(logs, "硬切兜底：门未达成") {
+		t.Fatalf("应有硬切兜底记录行:\n%s", logs)
+	}
+	if !strings.Contains(logs, "末次在途 2") {
+		t.Fatalf("硬切行应带在途观测:\n%s", logs)
+	}
+	if len(alerts) != 1 || !strings.Contains(alerts[0], "静默门未达成，硬切兜底") {
+		t.Fatalf("应恰一条静默门告警: %v", alerts)
+	}
+}
+
+// TestQuietGateAlertPanicDoesNotBlock 告警通道故障(panic)不阻塞兜底放行,
+// 硬切行照记。
+func TestQuietGateAlertPanicDoesNotBlock(t *testing.T) {
+	forceNonInteractive(t)
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 200 * time.Millisecond
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 1, 0))
+	sup.cfg.Alert = func(string, string) { panic("通道坏") }
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("告警失败不得阻塞事务: %v", err)
+	}
+	if !strings.Contains(w.logs.String(), "硬切兜底") {
+		t.Fatalf("硬切行应照记:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateWaitQuietZeroSkipsWait --wait-quiet=0(CLI 映射为负值哨兵):
+// 判据不满足不等待,直接进兜底(非交互 → 告警硬切),硬切行记等待 0s。
+func TestQuietGateWaitQuietZeroSkipsWait(t *testing.T) {
+	forceNonInteractive(t)
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = -time.Second
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 3, time.Now().Unix()))
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("零预算应立即兜底放行: %v", err)
+	}
+	if el := time.Since(start); el > time.Second {
+		t.Fatalf("零预算不应等待: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "等待 0s") {
+		t.Fatalf("硬切行应记等待 0s:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateForceSkipsGate --force:跳过门直接放行(可达且繁忙的 /stats
+// 也不看),零等待零告警。
+func TestQuietGateForceSkipsGate(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 5 * time.Second
+		c.Force = true
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 5, time.Now().Unix()))
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("--force 应直接放行: %v", err)
+	}
+	if el := time.Since(start); el > time.Second {
+		t.Fatalf("--force 不应等待: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "--force") {
+		t.Fatalf("应有跳过日志:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateBranchAbsentDaemon 门前置分支①:端口空且 daemon.pid 无活进程
+// (文件缺失或死 PID)→ 跳过门直接进停旧/拉新流程,不看 /stats。
+func TestQuietGateBranchAbsentDaemon(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, nil)
+	// 无桩、无 pid 文件
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("无守护应跳过门: %v", err)
+	}
+	if !strings.Contains(w.logs.String(), "静默门跳过") {
+		t.Fatalf("应有跳过日志:\n%s", w.logs.String())
+	}
+	// 死 PID 同判:pid 文件在场但进程已退
+	if err := os.WriteFile(filepath.Join(w.dataDir, "daemon.pid"),
+		[]byte(fmt.Sprintf(`{"pid":%d,"port":%d}`, spawnDeadProcess(t), w.port)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logs2 := &syncBuf{}
+	cfg2 := w.cfg
+	cfg2.Logf = func(f string, a ...any) { fmt.Fprintf(logs2, f+"\n", a...) }
+	sup2 := NewSupervisor(cfg2)
+	if err := sup2.quietGate(); err != nil {
+		t.Fatalf("死 PID 应视作无守护跳过门: %v", err)
+	}
+	if !strings.Contains(logs2.String(), "静默门跳过") {
+		t.Fatalf("死 PID 应有跳过日志:\n%s", logs2.String())
+	}
+}
+
+// TestQuietGateBranchStatsUnreachable 门前置分支②:守护在(pid 活)但 /stats
+// 不可达(端口无监听)→ 不干等静默窗(预算 5s 不消耗),直接进非静默兜底
+// (非交互 → 告警硬切),硬切行注明 /stats 不可达。
+func TestQuietGateBranchStatsUnreachable(t *testing.T) {
+	forceNonInteractive(t)
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 5 * time.Second
+	})
+	// 守护「在」:daemon.pid 指向活进程(本测试进程);端口无监听 → /stats 不可达
+	if err := os.WriteFile(filepath.Join(w.dataDir, "daemon.pid"),
+		[]byte(fmt.Sprintf(`{"pid":%d,"port":%d}`, os.Getpid(), w.port)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var alerts []string
+	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	start := time.Now()
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("分支②应直接进兜底: %v", err)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("分支②不应干等静默窗: elapsed=%v", el)
+	}
+	if !strings.Contains(w.logs.String(), "硬切兜底：门未达成（等待 0s，/stats 不可达）") {
+		t.Fatalf("硬切行应注明 /stats 不可达:\n%s", w.logs.String())
+	}
+	if len(alerts) != 1 || !strings.Contains(alerts[0], "静默门未达成，硬切兜底") {
+		t.Fatalf("应恰一条静默门告警: %v", alerts)
+	}
+}
+
+// TestQuietGateInteractiveAbort 交互问询缝:三选提示经注入缝可断言;选择
+// 放弃 → 门返回非 nil(调用方清账中止事务)。
+func TestQuietGateInteractiveAbort(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 200 * time.Millisecond
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 1, time.Now().Unix()))
+	var gotPrompt string
+	var gotOptions []string
+	sup.cfg.QuietAsk = func(prompt string, options []string) string {
+		gotPrompt, gotOptions = prompt, options
+		return quietChoiceAbort
+	}
+	err := sup.quietGate()
+	if err == nil || !strings.Contains(err.Error(), "放弃") {
+		t.Fatalf("放弃应中止升级: %v", err)
+	}
+	if !strings.Contains(gotPrompt, "静默门未达成") {
+		t.Fatalf("提示应说明门未达成: %q", gotPrompt)
+	}
+	if len(gotOptions) != 3 {
+		t.Fatalf("应三选: %v", gotOptions)
+	}
+}
+
+// TestQuietGateInteractiveWaitThenQuiet 继续等 → 下一窗内转静默 → 放行,
+// 问询恰好一次。
+func TestQuietGateInteractiveWaitThenQuiet(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 300 * time.Millisecond
+	})
+	var inflight int32 = 1
+	oldTS := time.Now().Unix() - 30
+	startStatsStub(t, w.port, func(rw http.ResponseWriter, _ *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(map[string]any{
+			"version": "v0.1.0", "dock_inflight": atomic.LoadInt32(&inflight),
+			"last_request_ts": oldTS,
+		})
+	})
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		atomic.StoreInt32(&inflight, 0)
+	}()
+	asks := 0
+	sup.cfg.QuietAsk = func(string, []string) string {
+		asks++
+		return quietChoiceWait
+	}
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("继续等后转静默应放行: %v", err)
+	}
+	if asks != 1 {
+		t.Fatalf("应恰好问一次(下一窗转静默): asks=%d", asks)
+	}
+	if !strings.Contains(w.logs.String(), "静默门放行") {
+		t.Fatalf("应有放行日志:\n%s", w.logs.String())
+	}
+}
+
+// TestQuietGateInteractiveSwitchNow 现在切 → 放行硬切并留用户选择日志。
+func TestQuietGateInteractiveSwitchNow(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 200 * time.Millisecond
+	})
+	startStatsStub(t, w.port, statsHandler(http.StatusOK, 2, time.Now().Unix()))
+	sup.cfg.QuietAsk = func(string, []string) string { return quietChoiceSwitch }
+	if err := sup.quietGate(); err != nil {
+		t.Fatalf("现在切应放行硬切: %v", err)
+	}
+	if !strings.Contains(w.logs.String(), "用户选择立即切换") {
+		t.Fatalf("应有用户选择日志:\n%s", w.logs.String())
+	}
+}
+
+// TestDefaultQuietAskNonInteractive 缺省问询实现:stdin 判定缝为非交互
+// (go test/计划任务/脚本形态)→ 返回 ""(调用方走告警硬切)。
+func TestDefaultQuietAskNonInteractive(t *testing.T) {
+	forceNonInteractive(t)
+	if got := defaultQuietAsk("提示", []string{"1) 继续等", "2) 现在切换", "3) 放弃"}); got != "" {
+		t.Fatalf("非交互应返回空(告警硬切): %q", got)
+	}
+}
+
+// TestSelfRelayHandoverCarriesQuietIntent 静默门意图随副本透传:--force 与
+// 非缺省 --wait-quiet 转旗标(等待哨兵负值回落旗标 0=不等),副本重跑门时
+// 不丢用户意图。
+func TestSelfRelayHandoverCarriesQuietIntent(t *testing.T) {
+	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.Force = true
+		c.WaitQuiet = -time.Second
+	})
+	var spawnArgs []string
+	sup.selfExe = func() (string, error) { return w.exePath, nil }
+	sup.spawnRelay = func(_ string, args []string) error { spawnArgs = args; return nil }
+	if res := sup.Run(); !res.Relayed {
+		t.Fatalf("应交棒: %+v", res)
+	}
+	want := []string{"update", "--supervise", "--self-relay", "--force", "--wait-quiet=0"}
+	if fmt.Sprint(spawnArgs) != fmt.Sprint(want) {
+		t.Fatalf("副本参数 = %v, want %v", spawnArgs, want)
+	}
+
+	// 显式非缺省预算:90s 原样透传
+	var args2 []string
+	w2, sup2 := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
+		c.WaitQuiet = 90 * time.Second
+	})
+	sup2.selfExe = func() (string, error) { return w2.exePath, nil }
+	sup2.spawnRelay = func(_ string, a []string) error { args2 = a; return nil }
+	if res := sup2.Run(); !res.Relayed {
+		t.Fatalf("应交棒: %+v", res)
+	}
+	want2 := []string{"update", "--supervise", "--self-relay", "--wait-quiet=90"}
+	if fmt.Sprint(args2) != fmt.Sprint(want2) {
+		t.Fatalf("副本参数 = %v, want %v", args2, want2)
 	}
 }

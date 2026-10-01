@@ -233,3 +233,14 @@ func pyStrOr(v any, def string) string {
 	}
 	return def
 }
+
+// dockProxyStats 渡口代理面统计抄表（票01 W1 静默门数据面）：/stats 的
+// dock_inflight 与 last_request_ts 数据源。经 DockSnap 只读转发（回写侧在
+// dock.Server，读侧同源无二次抄表）；DockSnap 为 nil（无 [dock] 配置 / 渡口
+// 构造或绑定失败降级）＝0/0——未启用如实报零，不报错。
+func (d *Daemon) dockProxyStats() (inflight int, lastTS int64) {
+	if d.DockSnap == nil {
+		return 0, 0
+	}
+	return d.DockSnap.ProxyStats()
+}

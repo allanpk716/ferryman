@@ -312,6 +312,7 @@ func (w *Watcher) pollCC() {
 		mtime, size := statMTime(info), int(info.Size())
 		prev := w.prevQwatchOpen("cc", pathStem(d.Name())) // 票04：touch 前窗口态（关窗事件用）
 		st := w.Ledger.Touch("cc", pathStem(d.Name()), p, mtime, size, w.StartedAt)
+		w.observeRecent(st, mtime) // 重启观察窗：存量近活会话补观察（见函数注）
 		w.bookQwatchClose(st, prev)
 		w.harvestUsage(p, info.Size(), st)
 		w.maybeQwatch(st)
@@ -417,6 +418,7 @@ func (w *Watcher) pollCodex() {
 			}
 			seen[sid] = true
 			st := w.Ledger.Touch("codex", sid, p, statMTime(info), int(info.Size()), w.StartedAt)
+			w.observeRecent(st, statMTime(info)) // 重启观察窗：存量近活会话补观察（见函数注）
 			w.maybeEnqueue(st)
 			return nil
 		})
@@ -432,6 +434,25 @@ func codexSidFromStem(stem string) string {
 }
 
 // ---- 入队判定：六道推迟（daemon.py:186-218 逐字） ----
+
+// observeRecent 重启观察窗（2026-09-30 重启无交接保护案）：mtime 落在
+// now−FreshWindowS(24h) 内的存量会话置 ObservedActive=true。daemon 重启后台账
+// 清零，TouchFull 只认 mtime ≥ daemonStartedAt 的新写入——重启时已闲置的会话
+// 永不被观察，maybeEnqueue 第一门挡死、摆渡永不入队，用户回来时没有交接
+// （分支6跑步机而非分支5）。重启前的活动是真实活动，daemon 死过不改变这一
+// 点，故窗内补观察；窗外古老文件维持不观察——防全量摆渡风暴（Python 期有意
+// 设计）。窗值=交接新鲜窗（FreshWindowS）：窗外会话即使摆渡，covers 即刻
+// 超窗、闸门/归还皆不可用，摆渡 provably 无用。mtime 口径：stat 已做完零
+// 额外读盘；开窗会话的幻影写顶新 mtime 恰好该观察（它开着），关窗闲置会话
+// mtime=末次真实写。
+func (w *Watcher) observeRecent(st *ledger.SessionState, mtime float64) {
+	if mtime < clock.Now()-store.FreshWindowS {
+		return
+	}
+	w.Ledger.Mu().Lock()
+	st.ObservedActive = true
+	w.Ledger.Mu().Unlock()
+}
 
 func (w *Watcher) maybeEnqueue(st *ledger.SessionState) {
 	th := w.Cfg.ThresholdFor(st.Agent)
@@ -486,12 +507,31 @@ func (w *Watcher) maybeEnqueue(st *ledger.SessionState) {
 	w.enrich(st) // 懒富化：标题/峰值（每版本一次读盘）
 	w.Ledger.Mu().Lock()
 	peak := st.PeakCtx
+	cwd := st.Cwd
 	w.Ledger.Mu().Unlock()
 	if peak < th.MinCtxTokens {
 		w.Ledger.Mu().Lock()
 		st.HandedOffAt = st.LastWrite // 过小会话：标记已处理防反复读盘
 		if contentTS > 0 {
 			st.HandledContentTS = contentTS // 同基准防状态块幻影写入的反复富化读盘
+		}
+		w.Ledger.Mu().Unlock()
+		return
+	}
+	// 去重（2026-09-30 重启无交接保护案配套）：库中已有有效交接覆盖当前内容 →
+	// 不重摆。与闸门分支5同款判定（ValidHandoff 同函数同口径）——它命中 ⇔
+	// 闸门本来就能用现存交接拦，跳过重摆不可能造成"该有交接而没有"的回归。
+	// 重启后 HandedOffAt/HandledContentTS 归零，无此检查会在每次重启时把 24h
+	// 观察窗内全部闲置会话重摆一遍（重复 provider 调用）。
+	dedupeBar := lastWrite
+	if contentTS > 0 {
+		dedupeBar = contentTS // 与闸门 coversBar 同义：内容钟优先
+	}
+	if w.Store != nil && w.Store.ValidHandoff(st.Agent, cwd, dedupeBar) != nil {
+		w.Ledger.Mu().Lock()
+		st.HandedOffAt = st.LastWrite
+		if contentTS > 0 {
+			st.HandledContentTS = contentTS
 		}
 		w.Ledger.Mu().Unlock()
 		return

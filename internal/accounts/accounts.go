@@ -31,8 +31,10 @@ var kindFields = map[string][]string{
 	// lane 三档标注（票03，ADR-0015 决定六：same_model|third_party|skeleton，
 	// 分档核算不混淆）——Go 版在 Python 白名单之上追加（beat.lane 同款先例）；
 	// 当前为可选字段（见 kindOptional：worker 存量产线暂未带 lane）。
+	// chain_pos 顺位序号（票03 执行器：链上逐级尝试各一行的顺位定位，0 起；
+	// 可选——存量单级产线不带）。
 	"handoff": {"provider", "model", "price_ver", "prompt_tokens",
-		"completion_tokens", "outcome", "wall_s", "lane"},
+		"completion_tokens", "outcome", "wall_s", "lane", "chain_pos"},
 	// 心跳（T41 占坑，T51 票03 起有生产者）：三态 outcome ∈ hit|miss|error
 	// + observe（演练跳未真发）。T41 的 hit 布尔被三态取代（当时无生产者）。
 	// lane 泳道标记（票04 双泳道：qwatch|wait）——Go 版在 Python 白名单之上
@@ -83,11 +85,12 @@ var kindFields = map[string][]string{
 // kindOptional 科目可选字段：白名单放行（未知字段照拒的隐私铁律不动）、
 // 但必填豁免——存量生产者未带也不拒行。handoff.lane（票03）：lane 标注随
 // 同模型档引入，worker 存量行（第三方/骨架产线，不在票03 涉及路径）暂未
-// 带 lane；后续票接线补写后可移出本表恢复必填。dock.truncated（票02 错误
-// 契约热修 4）：截断标记仅出现在截断行（spec 接口与兼容：缺省不写，旧流水
-// 不受影响），恒可选。
+// 带 lane；后续票接线补写后可移出本表恢复必填。handoff.chain_pos（票03
+// 执行器）：链上逐级尝试行携带（0 起）；存量单级产线不带，恒可选。
+// dock.truncated（票02 错误契约热修 4）：截断标记仅出现在截断行（spec
+// 接口与兼容：缺省不写，旧流水不受影响），恒可选。
 var kindOptional = map[string][]string{
-	"handoff": {"lane"},
+	"handoff": {"lane", "chain_pos"},
 	"dock":    {"truncated"},
 }
 

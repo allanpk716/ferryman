@@ -1,8 +1,14 @@
 // watchdog.go — 票02：看门单次探活（规格 F5：HTTP 健康端点探活非探进程）＋
 // 看门计划任务 schtasks 注册（每 5 分钟调 `ferryman watchdog`）。
 //
-// 判定三分支（钉死语义，评审 F5：HTTP 探活/无监听才拉起/占用不双拉）：
+// 判定四分支（钉死语义，评审 F5：HTTP 探活/无监听才拉起/占用不双拉；第四支
+// 2026-09-29 复盘追加——半死形态可见性）：
 //   ① 有 HTTP 响应（任何状态码，含 401/5xx）＝ daemon 在 → 正常退出；
+//      ①b 装配了渡口探针时加查半死：控制口活但渡口口 connection refused ＝
+//      "半死形态"（典型成因：升级/重启排水竞态里渡口绑定失败、或渡口异常挂掉）
+//      ——只落日志告警（watchdog.log 是计划任务的唯一持久留痕），不拉起（控制
+//      口被占，拉起是唯一化空转）、不杀（占口者身份不可知的既有红线），
+//      处置指向 restart-daemon.ps1；
 //   ② connection refused ＝ 无监听 → 拉起 daemon（与 Run 键同一命令构造
 //      daemonStartScript）后本次结束；
 //   ③ 端口被占但非 daemon（超时/断连等一切非拒绝错误）→ 只记日志退出，
@@ -10,7 +16,7 @@
 //
 // 探活目标：daemon 无 /health 路由（httpapi.go 五端点），按票面指示探 GET
 // /stats——GET 先 auth 后判路径，无 token 也回 401，语义同为「HTTP 有响应」。
-// 端口 FERRYMAN_PORT 环境变量（缺省 7311，钩子自举 ferryman-ensure.ps1 同源）。
+// 端口 FERRYMAN_PORT 环境变量（缺省 15700，钩子自举 ferryman-ensure.ps1 同源）。
 //
 // 真实冒烟清单（runbook 票引用；本票单测走 httptest/注入 fake/构造层，
 // 绝不真建/删计划任务、不真写注册表）：
@@ -32,6 +38,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -41,19 +48,26 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"ferryman/internal/update"
 )
 
-// 常量：口/环境变量/任务名/超时（票面逐字：2s 短超时、每 5 分钟、缺省 7311）。
+// 常量：口/环境变量/任务名/超时（票面逐字：2s 短超时、每 5 分钟；缺省口
+// 2026-09-29 由 7311 改 15700——旧数字含不吉联想，用户令换）。
 const (
-	DefaultDaemonPort = 7311
+	DefaultDaemonPort = 15700
 	DaemonPortEnv     = "FERRYMAN_PORT"
-	WatchdogTaskName  = "FerrymanWatchdog"
-	watchdogTimeout   = 2 * time.Second
-	daemonProbePath   = "/stats"
-	watchdogLogName   = "watchdog.log"
+	// DefaultDockPort 渡口缺省口（config [dock].listen 缺省 15722 同值；看门无
+	// config 访问面，环境变量可覆写——DaemonPortEnv 同款模式）。
+	DefaultDockPort  = 15722
+	DockPortEnv      = "FERRYMAN_DOCK_PORT"
+	WatchdogTaskName = "FerrymanWatchdog"
+	watchdogTimeout  = 2 * time.Second
+	daemonProbePath  = "/stats"
+	watchdogLogName  = "watchdog.log"
 )
 
-// DaemonPort 探活口：FERRYMAN_PORT 数值优先，缺省/坏值回落 7311。
+// DaemonPort 探活口：FERRYMAN_PORT 数值优先，缺省/坏值回落 15700。
 func DaemonPort() int {
 	if v := strings.TrimSpace(os.Getenv(DaemonPortEnv)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -61,6 +75,16 @@ func DaemonPort() int {
 		}
 	}
 	return DefaultDaemonPort
+}
+
+// DockPort 半死加查的渡口口：FERRYMAN_DOCK_PORT 数值优先，缺省/坏值回落 15722。
+func DockPort() int {
+	if v := strings.TrimSpace(os.Getenv(DockPortEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultDockPort
 }
 
 // DaemonProbeURL 探活目标（/stats：见文件头「探活目标」注）。
@@ -79,6 +103,16 @@ func probeHTTP(url string, timeout time.Duration) error {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)) // 排水礼节（连接可复用）
 	return nil
+}
+
+// probeTCPPort 渡口半死加查真探针：TCP 拨号，连上即 nil（渡口是 Anthropic
+// 协议流式端点，无廉价健康路径——可连＝在听，语义与分支①"有应答"分层即可）。
+func probeTCPPort(port int, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 // wsaEConnRefused Windows 连接拒绝码（10061）；stdlib syscall 不导出 WSA 常量
@@ -100,11 +134,27 @@ func isConnRefused(err error) bool {
 
 // WatchdogDeps 看门可注入面（测试注 fake 探针/拉起；真装配 realWatchdogDeps）。
 type WatchdogDeps struct {
-	Port    int // 0 = FERRYMAN_PORT 或 7311
+	Port    int // 0 = FERRYMAN_PORT 或 15700
 	Timeout time.Duration
 	Probe   func(url string, timeout time.Duration) error
 	Launch  func() error
 	Logf    func(format string, args ...any)
+	// DockPort 半死加查的渡口口；0 = FERRYMAN_DOCK_PORT 或 15722。
+	DockPort int
+	// DockProbe 渡口 TCP 探针（半死加查）；nil = 不加查（旧三分支行为——
+	// 既有测试/最小装配零改动）。
+	DockProbe func(port int, timeout time.Duration) error
+	// DataDir 复位取证的数据目录（P1 守护无痕死亡，2026-09-30）；空 = 不
+	// 取证（既有测试/最小装配零改动）。真装配注 <home>/ferryman。
+	DataDir string
+	// PidAlive PID 活性判定缝（复位取证用，真装配注 update.PIDAlive 单源
+	// 助手）；nil = 活性不可判（取证行如实标注）。
+	PidAlive func(pid int) bool
+	// VerifyDelay 拉起后复核延迟（P1③：09-25 那次 110 分钟不可达里看门
+	// 22 连拉全部"成功"——cmd.Start() 返回 nil 就完事，守护起没起来无人
+	// 验）。>0 = 拉起后睡这么久再探一次并留复核行；0 = 不复核（旧行为）。
+	// 真装配 5s（覆盖冷启实测 3s 余量）。
+	VerifyDelay time.Duration
 }
 
 // runWatchdog 单次判定（返回进程退出码：0 = 正常/占用告警；1 = 拉起失败/
@@ -125,12 +175,32 @@ func runWatchdog(d WatchdogDeps) int {
 	url := DaemonProbeURL(port)
 	err := d.Probe(url, timeout)
 	if err == nil {
-		// 分支①：有响应（任何状态码）
+		// 分支①：有响应（任何状态码）。装配了渡口探针时加查半死形态
+		// （①b，2026-09-29 复盘）：控制口活但渡口无监听——只告警，不拉起
+		// 不杀；处置人工/脚本走 restart-daemon.ps1。
+		if d.DockProbe != nil {
+			dockPort := d.DockPort
+			if dockPort == 0 {
+				dockPort = DockPort()
+			}
+			if derr := d.DockProbe(dockPort, timeout); derr != nil {
+				if isConnRefused(derr) {
+					logf("[watchdog] daemon 有响应但渡口 %d 无监听（connection refused）——"+
+						"半死形态（控制口活/渡口死）；只告警不拉起不杀（单实例）。处置: "+
+						"restart-daemon.ps1（详见 docs/20260929_守护重启事故复盘.md）", dockPort)
+					return 0
+				}
+				logf("[watchdog] 渡口 %d 探测异常（%v）——仅记录，不影响本次判定", dockPort, derr)
+			}
+		}
 		logf("[watchdog] daemon 有响应（%s）——正常退出", url)
 		return 0
 	}
 	if isConnRefused(err) {
-		// 分支②：无监听才拉起（单实例约束的正面）
+		// 分支②：无监听才拉起（单实例约束的正面）。拉起前先落复位取证
+		// （P1 守护无痕死亡，2026-09-30）：前守护 pid/末次应答/是否优雅
+		// 退出——旁路尽力而为，不影响判定。
+		logRespawnForensics(d.DataDir, d.PidAlive, logf)
 		logf("[watchdog] %s 无监听（connection refused）——拉起 daemon", url)
 		if d.Launch == nil {
 			logf("[watchdog] 未装配拉起动作（装配错误）")
@@ -139,6 +209,22 @@ func runWatchdog(d WatchdogDeps) int {
 		if lerr := d.Launch(); lerr != nil {
 			logf("[watchdog] daemon 拉起失败: %v", lerr)
 			return 1
+		}
+		// 拉起后复核（P1③）：拉起"成功"只代表 spawn 动作成——守护起没
+		// 起来另说（09-25 实证：22 连拉全"成功"、serve 侧零痕迹）。复核
+		// 只留痕不裁决：失败不是本次看门的失败（拉起动作已尽），下轮
+		// 5 分钟自动再判。
+		if d.VerifyDelay > 0 {
+			time.Sleep(d.VerifyDelay)
+			switch perr := d.Probe(url, timeout); {
+			case perr == nil:
+				logf("[watchdog] 拉起后复核有响应——复位确认")
+			case isConnRefused(perr):
+				logf("[watchdog] 拉起后复核仍无监听——守护疑似引导即死/拉起链吞错"+
+					"（serve.out.log / serve.err.log 无痕则起前死）；下轮 5 分钟自动再试")
+			default:
+				logf("[watchdog] 拉起后复核异常（%v）——仅记录", perr)
+			}
 		}
 		return 0
 	}
@@ -308,12 +394,16 @@ func RunWatchdogCLI() int {
 }
 
 // realWatchdogDeps 真装配：真探针 + 真拉起（点火脚本与 Run 键同款路径）+
-// 日志双写（见 realWatchdogLogf）。
+// 日志双写（见 realWatchdogLogf）+ 复位取证/拉起复核（P1，2026-09-30）。
 func realWatchdogDeps() WatchdogDeps {
 	return WatchdogDeps{
-		Probe:  probeHTTP,
-		Launch: func() error { return LaunchDaemon(filepath.Join(homeDir(), "ferryman", LauncherName)) },
-		Logf:   realWatchdogLogf,
+		Probe:      probeHTTP,
+		DockProbe:  probeTCPPort,
+		Launch:     func() error { return LaunchDaemon(filepath.Join(homeDir(), "ferryman", LauncherName)) },
+		Logf:       realWatchdogLogf,
+		DataDir:    filepath.Join(homeDir(), "ferryman"),
+		PidAlive:   update.PIDAlive,
+		VerifyDelay: 5 * time.Second,
 	}
 }
 

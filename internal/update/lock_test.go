@@ -97,6 +97,25 @@ func TestLockBusyHolder(t *testing.T) {
 	}
 }
 
+// TestLockBusyHolderViaRelayCopy 盲区修(票04):持有者是自中继副本(映像 ==
+// target+".supervisor-copy",监督者 --self-relay 交棒后的常态形态)→ 也判活,
+// 不得误接管——修前副本映像恒判陈旧,并发第二次 update 会接管成双监督者齐跑。
+func TestLockBusyHolderViaRelayCopy(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ferryman.exe")
+	copyImg := target + ".supervisor-copy"
+	probes := fakeProbes{alive: map[int]bool{5150: true}, images: map[int]string{5150: copyImg}}
+	writeLock(t, dir, lockInfo{PID: 5150, Image: copyImg, Generation: 2})
+
+	_, err := acquireUpdateLock(dir, target, probes.aliveFn, probes.imageFn, quietLogf)
+	if !errors.Is(err, ErrUpdateInProgress) {
+		t.Fatalf("副本持有者应判活(不误接管), got %v", err)
+	}
+	if got := readLockFor(t, dir); got.PID != 5150 || got.Generation != 2 {
+		t.Fatalf("锁文件应原样保留持有者的, got %+v", got)
+	}
+}
+
 // TestLockTakeoverStale 陈旧两态接管:PID 死 / PID 活但映像≠换装目标
 // (seam B:不匹配=不活)→ 接管,generation 递增。
 func TestLockTakeoverStale(t *testing.T) {
@@ -149,6 +168,55 @@ func TestLockAliveButImageUnqueryable(t *testing.T) {
 	_, err := acquireUpdateLock(dir, target, probes.aliveFn, probes.imageFn, quietLogf)
 	if !errors.Is(err, ErrUpdateInProgress) {
 		t.Fatalf("映像查不出应保守按活, got %v", err)
+	}
+}
+
+// TestLockHeldByLiveSupervisor 导出只读助手(票04 守护层让路的单源判定):
+// 锁态到 (持有者PID, 是否持有) 的映射——不存在/内容坏/持有者死/映像无关一律
+// (0,false)=照常启动;目标映像与自中继副本映像皆判持有。探针全注入,测试
+// 不依赖真进程面;daemon 侧只经本助手判定,不复制锁逻辑。
+func TestLockHeldByLiveSupervisor(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ferryman.exe")
+
+	// 锁不存在 → (0,false)
+	if pid, held := LockHeldByLiveSupervisor(dir, target, fakeProbes{}.aliveFn, fakeProbes{}.imageFn); held || pid != 0 {
+		t.Fatalf("无锁应不判持有, got pid=%d held=%v", pid, held)
+	}
+
+	// 锁内容坏(半写) → (0,false)
+	if err := os.WriteFile(filepath.Join(dir, lockName), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, held := LockHeldByLiveSupervisor(dir, target, fakeProbes{}.aliveFn, fakeProbes{}.imageFn); held {
+		t.Fatal("坏锁应不判持有")
+	}
+
+	// 持有者死 → (0,false)
+	dead := fakeProbes{alive: map[int]bool{}, images: map[int]string{}}
+	writeLock(t, dir, lockInfo{PID: 4242, Image: target, Generation: 1})
+	if _, held := LockHeldByLiveSupervisor(dir, target, dead.aliveFn, dead.imageFn); held {
+		t.Fatal("死持有者应不判持有")
+	}
+
+	// PID 活但映像无关进程 → (0,false)
+	unrelated := fakeProbes{alive: map[int]bool{4242: true},
+		images: map[int]string{4242: `C:\Windows\System32\svchost.exe`}}
+	if _, held := LockHeldByLiveSupervisor(dir, target, unrelated.aliveFn, unrelated.imageFn); held {
+		t.Fatal("映像无关应不判持有")
+	}
+
+	// 映像 == 换装目标 → (4242,true)
+	live := fakeProbes{alive: map[int]bool{4242: true}, images: map[int]string{4242: target}}
+	if pid, held := LockHeldByLiveSupervisor(dir, target, live.aliveFn, live.imageFn); !held || pid != 4242 {
+		t.Fatalf("目标映像持有者应判持有, got pid=%d held=%v", pid, held)
+	}
+
+	// 映像 == 自中继副本 → (4242,true)(盲区修同步暴露给守护层让路面)
+	relay := fakeProbes{alive: map[int]bool{4242: true},
+		images: map[int]string{4242: target + ".supervisor-copy"}}
+	if pid, held := LockHeldByLiveSupervisor(dir, target, relay.aliveFn, relay.imageFn); !held || pid != 4242 {
+		t.Fatalf("副本映像持有者应判持有, got pid=%d held=%v", pid, held)
 	}
 }
 

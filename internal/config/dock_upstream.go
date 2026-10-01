@@ -17,19 +17,66 @@ import (
 	"strings"
 )
 
+// 渡口上游方言（票02 供应商接管，spec Implementation Decisions 1）：条目
+// 供应商说的线协议。缺省 anthropic＝既有行为零变化。
+const (
+	// DialectAnthropic CC 说的 /v1/messages 线协议（既有车道行为）。
+	DialectAnthropic = "anthropic"
+	// DialectOpenAIResponses codex 说的 OpenAI /responses 线协议（原生透传，
+	// 翻译车道在后续票落地；本票只入表可解析可校验）。
+	DialectOpenAIResponses = "openai_responses"
+)
+
+// codex 可用性三态（CodexAvailability 的裁决值）。
+const (
+	// CodexUnsupported 显式否决：该条目不可作 codex 上游（switch 默认拒绝在
+	// CLI 层（票06），端点只做存在性校验）。
+	CodexUnsupported = "unsupported"
+	// CodexTranslation anthropic 方言→需经渡口翻译车道。
+	CodexTranslation = "translation"
+	// CodexNative openai_responses 方言→原生透传（仅鉴权注入＋model 改写）。
+	CodexNative = "native"
+)
+
 // DockUpstream 渡口上游条目（[dock.upstreams.<名>]）。字段：
 // base_url（必填）/ api_key（可为空＝未激活预置，空 key 不影响解析，只在
 // CLI/doctor 层提示）/ model_map（非本地条目必含非空 default，可选 opus/
-// sonnet/haiku 档位键；本地条目属守卫透传域，可无）/ text_only（可选，命中
-// 映射后模型名则 image 块降级文本占位）/ balance_url（可选，不配不显示——
-// D11）。text_only 语义沿用票06 的名单制（映射后目标模型名列表）。
+// sonnet/haiku 档位键与 codex 主模型键；本地条目属守卫透传域，可无）/
+// text_only（可选，命中映射后模型名则 image 块降级文本占位）/ balance_url
+// （可选，不配不显示——D11）/ dialect（可选，缺省 anthropic）/ codex（可选，
+// 仅 "unsupported" 否决位）。text_only 语义沿用票06 的名单制（映射后目标
+// 模型名列表）。
 type DockUpstream struct {
 	BaseURL    string
 	APIKey     string            // 真钥：只进出站 Authorization，永不入日志/账本/错误（T39）
-	ModelMap   map[string]string // 别名→上游原生模型名；default 键＝未知名兜底
+	ModelMap   map[string]string // 别名→上游原生模型名；default 键＝未知名兜底；codex 键＝codex 车道主模型
 	TextOnly   []string          // text-only 模型名单（按映射后模型名匹配）
 	BalanceURL string            // 余额端点；空＝该条目不显示余额行
+	// Dialect 线协议方言（票02）：解析层归一（缺省/空 → anthropic＝旧行为）；
+	// 消费方（渡口车道分流/翻译车道）直接判等，不再各自兜缺省。
+	Dialect string
+	// Codex 显式否决位（票02）：仅认 "unsupported"（其余值 Validate 拒）；
+	// 空＝按 dialect 推导（见 CodexAvailability）。
+	Codex string
 }
+
+// CodexAvailability codex 可用性裁决（票02，spec 决定 1）：显式否决位优先；
+// 否则按 dialect 推导——anthropic→需翻译、openai_responses→原生透传。
+// 零值结构体（旧形态）＝translation（与既有"渡口上游皆 Anthropic 线协议"
+// 语义一致）。
+func (u *DockUpstream) CodexAvailability() string {
+	if u.Codex == CodexUnsupported {
+		return CodexUnsupported
+	}
+	if u.Dialect == DialectOpenAIResponses {
+		return CodexNative
+	}
+	return CodexTranslation
+}
+
+// CodexModel codex 主模型位（model_map 的 "codex" 键）；缺键＝空（不凭空
+// 造默认——codex 车道改写规则属后续票，本票只供读）。
+func (u *DockUpstream) CodexModel() string { return u.ModelMap["codex"] }
 
 // ActiveUpstream 渡口上游解析单源（serve 装配与 /stats 余额查询都走这里）：
 //   - upstreams 表非空：返回 active 指向的条目（拷贝，改返回值不污染配置）；
@@ -55,6 +102,7 @@ func (d *DockCfg) ActiveUpstream() (string, *DockUpstream) {
 		ModelMap:   d.ModelMap,
 		TextOnly:   d.TextOnly,
 		BalanceURL: d.BalanceURL,
+		Dialect:    DialectAnthropic, // 旧单值形态＝既有 Anthropic 线协议行为（票02 缺省归一）
 	}
 }
 
@@ -115,6 +163,15 @@ func validateDockUpstreams(d *DockCfg) []string {
 		if !IsLocalRelayAddr(up.BaseURL) && up.ModelMap["default"] == "" {
 			probs = append(probs, "[dock.upstreams."+name+"] 非本地 base_url 的条目 "+
 				"model_map 必含非空 default（本地中转地址＝守卫透传域，可豁免）")
+		}
+		// 票02：dialect/codex 枚举校验（空＝缺省合法——零值结构体与旧配置同态）。
+		if up.Dialect != "" && up.Dialect != DialectAnthropic && up.Dialect != DialectOpenAIResponses {
+			probs = append(probs, "[dock.upstreams."+name+"] dialect 非法: "+
+				up.Dialect+"（可选 anthropic（缺省）/openai_responses）")
+		}
+		if up.Codex != "" && up.Codex != CodexUnsupported {
+			probs = append(probs, "[dock.upstreams."+name+"] codex 非法: "+
+				up.Codex+"（仅可选 \"unsupported\" 否决位；可用性按 dialect 推导）")
 		}
 	}
 	return probs

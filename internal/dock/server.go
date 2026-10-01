@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ferryman/internal/accounts"
@@ -57,11 +58,54 @@ type Options struct {
 	// 开启（D13/D15：无开关）——非本地上游即改写＋真钥替换；上游为本地中转
 	// 地址由守卫强制退透传（防双重改写）。nil＝纯透传不观察（票01 旧形状）。
 	Upstream *config.DockUpstream
+	// Resolver 逐请求活跃上游解析 seam（票02 供应商接管，F4）：非 nil 时渡口
+	// 对每个新请求向它要当前活跃条目——热切换即时生效；在途请求/SSE 流持有
+	// 进入时的视图（上游连接/真钥/改写配置）自然跑完。nil＝构造期固化（票01
+	// 既有行为零变化，Upstream/target 即全部）。实现须并发安全（daemon 生产
+	// 装配为原子换绑持有者，internal/daemon/provider_switch.go）。
+	Resolver UpstreamResolver
 	// Accounts dock 科目账本；nil＝不记账（旧测试零改动）。
 	Accounts *accounts.Accounts
 	// Alert 形态漂移推送函数（daemon 侧给 AlertViaNotify(cfg) 的闭包）；
 	// nil＝只记日志不推送。
 	Alert func(title, message string)
+}
+
+// UpstreamResolver 逐请求活跃上游解析 seam（票02，F4："渡口对每个新请求读
+// 内存态活跃供应商"）。config.DockCfg 自带同名方法即天然实现；daemon 生产
+// 装配传入原子换绑持有者，测试可注桩。
+type UpstreamResolver interface {
+	ActiveUpstream() (string, *config.DockUpstream)
+}
+
+// upstreamView 单请求生效的上游视图（票02，F4 边界语义的载体）：目标/改写
+// 配置/真钥三件一套，ServeHTTP 入口解析一次——在途请求与本 view 同生命周期
+// （切上游不影响已进入的请求），新请求即刻拿新视图。票03 增设 up/upName：
+// 条目原貌（dialect/codex 可用性/模型位/codex 主模型键）与活跃条目标签——
+// responses 车道从同一 view 取目标与钥（车道分支与 model 改写据此裁决）。
+type upstreamView struct {
+	target    *url.URL
+	rewriteOn bool
+	rwCfg     RewriteConfig
+	apiKey    string
+	up        *config.DockUpstream // nil＝纯透传旧形态（票01 无条目）
+	upName    string               // 活跃条目标签（""＝旧单值/未知）
+}
+
+// newUpstreamView 由上游条目派生视图：URL 解析＋守卫改写准入（与构造期
+// resolveRewrite 同一判据单源；本地中转地址/缺 default＝透传）。条目原貌
+// 与标签随行（票03 车道用）。
+func newUpstreamView(name string, up *config.DockUpstream) (*upstreamView, string, error) {
+	target, err := url.Parse(up.BaseURL)
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		return nil, "", fmt.Errorf("dock: 上游地址无效: %q", up.BaseURL)
+	}
+	v := &upstreamView{target: target, up: up, upName: name}
+	rw, ok, reason := resolveRewrite(true, up.BaseURL, up.ModelMap, up.TextOnly)
+	if ok {
+		v.rewriteOn, v.rwCfg, v.apiKey = true, rw, up.APIKey
+	}
+	return v, reason, nil
 }
 
 // reqMeta 单请求记账元数据。指针经 context 从 handler 带到出站 transport
@@ -85,6 +129,41 @@ type reqMeta struct {
 // ctxKeyMeta context 私有键。
 type ctxKeyMeta struct{}
 
+// proxyStats 代理面流量统计（票01 W1 静默门数据面）：渡口上真实 CC 流量的
+// 在途数与最后完成时刻。回写点＝记账路径 handler 的进出（与在途注册表同事件，
+// 但独立记账——注册表还收心跳自产重放，统计口径排除它）；读侧经
+// SnapshotStore.ProxyStats() 只读转发给 daemon /stats。"零请求视为静默成立"
+// 的判定归消费方（升级门，票02），此处如实暴露零值。
+type proxyStats struct {
+	mu       sync.Mutex
+	inflight int   // 非 replay 的在途记账请求数（回填窗 ⊇ 注册表窗，瞬时读数不欠账）
+	lastTS   int64 // 最后一个代理面请求完成的 Unix 秒；守护启动以来无请求恒 0
+}
+
+// enter 在途 +1（请求进入记账路径时；replay 已在调用点排除）。
+func (p *proxyStats) enter() {
+	p.mu.Lock()
+	p.inflight++
+	p.mu.Unlock()
+}
+
+// done 完成一单：在途 -1 并记完成时刻。秒级截断是有意的——门判据是
+// "距最后请求 ≥10 秒"，秒级精度足够，亚秒信息对消费方无意义。
+func (p *proxyStats) done() {
+	now := time.Now().Unix()
+	p.mu.Lock()
+	p.inflight--
+	p.lastTS = now
+	p.mu.Unlock()
+}
+
+// snapshot 只读抄表（一把锁一次抄齐，两字段同帧）。
+func (p *proxyStats) snapshot() (inflight int, lastTS int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.inflight, p.lastTS
+}
+
 // Server 渡口服务：本机透传/改写中转（CC → 渡口 → 上游）＋内存快照捕获。
 // Handler 形（ServeHTTP）可独立挂 httptest；Start/Close 是真实监听生命周期。
 type Server struct {
@@ -102,6 +181,14 @@ type Server struct {
 
 	srv *http.Server
 
+	// 票02（供应商接管，F4）：逐请求活跃上游 seam。resolver nil＝固定模式
+	// （fixedView＝构造期视图，票01 行为零变化）；非 nil＝每请求解析（见
+	// resolveView）。lastUpstream 是活跃条目标签的换绑日志锁存（同条目逐请求
+	// 解析不重复记行；指针比较见 noteUpstream）。
+	resolver     UpstreamResolver
+	fixedView    *upstreamView
+	lastUpstream atomic.Pointer[string]
+
 	// 票02 优雅排水（热修 1）：在途记账请求注册表＋排水广播。drainCh 关闭
 	// 即全体收尾（闸门转 504、drainBody 转注入）；drained 为幂等位。字段
 	// 一律经 mu 访问（expireDrain 从 Shutdown 调用方 goroutine 侧进来）。
@@ -110,6 +197,16 @@ type Server struct {
 	drainCh   chan struct{}
 	idleCh    chan struct{}
 	inflights map[*inflight]struct{}
+
+	// 票01 W1：代理面统计回写侧（读侧在 store.stats，NewWithOptions 里两处
+	// 指到同一份——daemon 经 DockSnap 取数与回写同源，无二次抄表漂移）。
+	stats *proxyStats
+
+	// 票03（responses 翻译车道）：独立出站客户端（与 proxy 的 transport 同
+	// 参数——首包 50min 上限、不设整体超时保长流；车道自带响应处理不经
+	// ReverseProxy）与车道事件日志（一次一值去重，测试断言面）。
+	laneClient  *http.Client
+	codexEvents *codexLaneEvent
 }
 
 // New 构造纯透传渡口（票01 形状：签名与行为保持不变，daemon 既有调用点
@@ -139,9 +236,15 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 		drainCh:   make(chan struct{}),
 		idleCh:    idle,
 		inflights: make(map[*inflight]struct{}),
+		stats:     &proxyStats{},
+	}
+	// 票01 W1：统计读侧挂到快照库（server 回写、store 只读转发）——daemon 手里
+	// 只有 DockSnap，这是统计出渡口的唯一既有通道，不新增装配面。
+	s.store.stats = s.stats
+	if o.Upstream != nil || o.Resolver != nil {
+		s.drift = NewDriftTracker(o.Alert)
 	}
 	if o.Upstream != nil {
-		s.drift = NewDriftTracker(o.Alert)
 		// 票01（D13/D15）：改写隐含开启——无开关，守卫单源裁决（本地中转
 		// 地址退透传；非本地缺 default 退透传——配置层已拒，构造期兜底）。
 		rw, ok, reason := resolveRewrite(true, upstreamBaseURL, o.Upstream.ModelMap, o.Upstream.TextOnly)
@@ -154,15 +257,40 @@ func NewWithOptions(listen, upstreamBaseURL string, o Options) (*Server, error) 
 	if o.Accounts != nil {
 		s.acc = o.Accounts
 	}
+	// 票02：构造期视图固化（固定模式的逐请求零开销快照；resolver 模式的
+	// 悬空/解析失败回落位）。既有字段（rewriteOn/rwCfg/apiKey/target）保留
+	// 原义——构造期日志与既有测试面不动。票03：条目原貌随行（responses 车
+	// 道分流用；纯 New 无条目＝nil＝车道退整体代理）。
+	s.fixedView = &upstreamView{
+		target: s.target, rewriteOn: s.rewriteOn, rwCfg: s.rwCfg, apiKey: s.apiKey,
+		up: o.Upstream,
+	}
+	s.resolver = o.Resolver
+	// 票03：responses 车道装配——出站客户端（与 proxy 同参数口径）+ 事件
+	// 日志。纯 New（全零 Options）也建（车道入口可达即用，构造廉价）。
+	s.codexEvents = newCodexLaneEvent()
+	s.laneClient = &http.Client{Transport: &http.Transport{
+		Proxy:                 nil, // 显式不走环境代理：上游是直连目标
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: TransportTimeoutS,
+		// 不设整体 Timeout/正文超时：长 SSE 流按需无限流（同 proxy 口径）
+	}}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			// 票02（F4）：出站目标取本请求入口解析的视图（resolver 模式经
+			// context 带来；固定模式/防御路径回落构造期视图）——在途请求持有
+			// 既有上游连接跑完，切上游只影响新请求。
+			v := s.viewOf(pr.In.Context())
 			// SetURL 保留入站路径与 query（join 语义）；Host 显式指上游——
 			// 客户端 Host 不外泄、后端看到的就是它自己（F7 断言同款）
-			pr.SetURL(target)
-			pr.Out.Host = target.Host
-			if s.rewriteOn {
+			pr.SetURL(v.target)
+			pr.Out.Host = v.target.Host
+			if v.rewriteOn {
 				// 改写模式出站头卫生（透传模式零处理——票01 保真语义不动）
-				sanitizeOutboundHeaders(pr.Out.Header, s.apiKey)
+				sanitizeOutboundHeaders(pr.Out.Header, v.apiKey)
 				// 删 Accept-Encoding 让 Transport 自加 gzip 并透明解压：
 				// 客户端原值照抄会把 gzip 字节喂进 usage 扫描器；删掉后
 				// Transport 自加并自行解压，扫描只见明文（透传模式不删——
@@ -206,6 +334,63 @@ func isCountTokens(method, path string) bool {
 	return method == http.MethodPost && strings.HasSuffix(path, "/v1/messages/count_tokens")
 }
 
+// ctxKeyUpstream 每请求上游视图的 context 私有键（ServeHTTP 入口解析→
+// Rewrite 闭包取用；在途请求持有同一视图跑完＝F4 边界）。
+type ctxKeyUpstream struct{}
+
+// resolveView 每请求一次的活跃上游视图解析（票02，F4 seam 唯一入口）：
+//   - 固定模式（resolver nil）：直返构造期视图，零额外开销，票01 行为不变；
+//   - resolver 模式：逐请求向 resolver 要当前活跃条目并派生整套视图（目标/
+//     改写配置/真钥一次换齐，绝不半换）。条目悬空（nil）或地址无效＝回落
+//     构造期视图（与 ActiveUpstream 防御路径同纪律），守卫拒绝的条目如实
+//     降透传并经 noteUpstream 记一次原因。
+func (s *Server) resolveView() *upstreamView {
+	if s.resolver == nil {
+		return s.fixedView
+	}
+	name, up := s.resolver.ActiveUpstream()
+	if up == nil {
+		return s.fixedView
+	}
+	v, reason, err := newUpstreamView(name, up)
+	if err != nil {
+		logger.Printf("[dock] %v（活跃条目无效，回落构造期上游）", err)
+		return s.fixedView
+	}
+	s.noteUpstream(name, up, v, reason)
+	return v
+}
+
+// viewOf Rewrite 闭包取视图：context 带（resolver 模式每请求在
+// ServeHTTP 入口塞入）用带的；否则构造期视图（固定模式/防御路径）。
+func (s *Server) viewOf(ctx context.Context) *upstreamView {
+	if v, ok := ctx.Value(ctxKeyUpstream{}).(*upstreamView); ok && v != nil {
+		return v
+	}
+	return s.fixedView
+}
+
+// noteUpstream 活跃条目标签变化时记一行（热切换可见性）：同条目逐请求解析
+// 不重复记；守卫拒绝（透传）时附原因。标签比较经原子锁存，并发竞争最多
+// 多记一行，无害。
+func (s *Server) noteUpstream(name string, up *config.DockUpstream, v *upstreamView, guardReason string) {
+	label := name
+	if label == "" {
+		label = "旧单值" // 无表兜底包装（与 serve 装配横幅同词）
+	}
+	if old := s.lastUpstream.Swap(&label); old != nil && *old == label {
+		return
+	}
+	mode := "改写"
+	if !v.rewriteOn {
+		mode = "透传"
+		if guardReason != "" {
+			mode += "：" + guardReason
+		}
+	}
+	logger.Printf("活跃上游: %s → %s（%s）", label, up.BaseURL, mode)
+}
+
 // ServeHTTP 渡口入口（票06 双模式）：
 //   - 纯透传（rewriteOn=false 且不记账）：与票01 逐字同路径——仅 /v1/messages
 //     POST 读体捕获快照，其余流式直通；
@@ -213,6 +398,24 @@ func isCountTokens(method, path string) bool {
 //     状态码，代理返回后落一行 dock 科目（任何记账失败不影响转发）；
 //   - 改写模式：体改写发生在进代理前；快照存改写前原始体。
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 票02（供应商接管，F4）：每请求入口解析一次活跃上游视图——resolver 模式
+	// 下新请求即刻新上游；本请求后续全程（改写判定/出站目标/真钥）用同一视
+	// 图，在途请求/SSE 流据此持有既有上游连接自然跑完。固定模式与构造期固化
+	// 同值，行为零变化。
+	view := s.resolveView()
+	if s.resolver != nil {
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyUpstream{}, view))
+	}
+	// 票03（供应商接管，spec 决策 2）：responses 车道路径分流——/responses
+	// 及对照表 §4.1 全部变体（POST）进新车道；既有 /v1/messages 分支以下
+	// 零变化。车道内部自读体/自记账（不接快照/摆渡），出错自答（错误形状
+	// 见 codexlane.go）。
+	if r.Method == http.MethodPost {
+		if canonical, ok := canonicalResponsesPath(r.URL.Path); ok {
+			s.serveResponsesLane(w, r, view, canonical)
+			return
+		}
+	}
 	// 票03：自产重放（追加重放带 x-ferryman-replay 标记头）不入快照、不喂
 	// 漂移——追加体会顶替主快照（见 replayguard.go）；dock 科目照记（record
 	// 以 messagesPost 计，重放也有传输流水）。
@@ -222,7 +425,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	capture := messagesPost && !replay
 	record := s.acc != nil && (messagesPost || countTok)
 
-	needBody := capture || record || (s.rewriteOn && countTok)
+	needBody := capture || record || (view.rewriteOn && countTok)
 	var body []byte
 	if needBody {
 		b, err := io.ReadAll(r.Body)
@@ -235,22 +438,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	}
 
+	// 票01 头回落：会话归因一次提取、两个消费点（快照捕获/记账归因）共用——
+	// 体 metadata.session_id 第一优先，缺失回落 X-Claude-Code-Session-Id 头
+	//（UUID 格式校验、头体冲突以体为准留痕，语义见 ExtractSessionID）。
+	var sessionID string
+	if capture || record {
+		sessionID = ExtractSessionID(body, r.Header)
+	}
+
 	if capture {
 		// 快照＝CC 原始请求（改写前）：beat 重放原始请求经渡口再走同一改写。
-		// 空 session_id（缺失/非 JSON）＝Capture 内部跳过计数，不入库。
-		s.store.Capture(ExtractSessionID(body), body, r.Header)
+		// 空 session_id（缺失且头回落也无/坏）＝Capture 内部跳过计数，不入库。
+		s.store.Capture(sessionID, body, r.Header)
 		// 形态漂移观察同点喂原始头体（nil 安全：纯透传不观察）
 		s.drift.Observe(r.Header.Get("Anthropic-Beta"), body)
 	}
 
-	// 改写独立于记账：不接账本时改写照常生效（rewriteOn 才有此分支）。
+	// 改写独立于记账：不接账本时改写照常生效（view.rewriteOn 才有此分支）。
 	// count_tokens 仅同映射 model（不做图片降级，其余键不动）。
 	// rewritten/rewriteDone 为请求局部值（并发请求不共享任何状态）。
 	var rewritten Rewritten
 	rewriteDone := false
-	if s.rewriteOn && (capture || countTok) {
+	if view.rewriteOn && (capture || countTok) {
 		if capture {
-			rw, err := Rewrite(body, s.rwCfg)
+			rw, err := Rewrite(body, view.rwCfg)
 			if err != nil {
 				// 非法体：原体透传交上游校验应答（不替上游造 400）
 				logger.Printf("改写失败（原体透传）: %v", err)
@@ -258,7 +469,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				applyRewritten(r, body, rw.Body)
 				rewritten, rewriteDone = rw, true
 			}
-		} else if nb, mi, mo, ok := mapCountTokensModel(body, s.rwCfg); ok {
+		} else if nb, mi, mo, ok := mapCountTokensModel(body, view.rwCfg); ok {
 			applyRewritten(r, body, nb)
 			rewritten, rewriteDone = Rewritten{Body: nb, ModelIn: mi, ModelOut: mo}, true
 		}
@@ -267,8 +478,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var meta *reqMeta
 	if record {
 		meta = &reqMeta{start: time.Now()}
-		meta.session = ExtractSessionID(body)
-		if s.rewriteOn {
+		meta.session = sessionID
+		if view.rewriteOn {
 			meta.mode = modeRewrite
 			if rewriteDone {
 				meta.modelIn, meta.modelOut = rewritten.ModelIn, rewritten.ModelOut
@@ -289,8 +500,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// 的请求由 expireDrain 取消（ErrorHandler 回 504），响应已确立的流
 		// 走 drainBody 注入。defers 在 recordRow 之后才跑（LIFO），行落账时
 		// 仍在册，宽限等待据此涵盖注入交付。
+		// 票01 W1：统计回填＝记账路径的非 replay 流量（心跳自产重放经同一
+		// 注册表用于排水，但不计入统计——升级静默门只看真实 CC 流量，本程序
+		// 自产心跳不该把门按住）。enter 先于注册、done 后于出册（defer LIFO：
+		// untrackInflight 先跑），每个计入请求的统计窗 ⊇ 其注册表窗(重放刻意只入注册表不统计——dock_inflight=0 不蕴含注册表空)，瞬时读数不欠账。
 		rctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
+		if !replay {
+			s.stats.enter()
+			defer s.stats.done()
+		}
 		s.trackInflight(meta, cancel)
 		defer s.untrackInflight(meta)
 		r = r.WithContext(context.WithValue(rctx, ctxKeyMeta{}, meta))
@@ -581,7 +800,7 @@ func (a *sseUsageAcc) flushEvent() {
 	if len(a.data) == 0 {
 		return
 	}
-	a.sawEvent = true // 事件边界到达即"见过事件"（非 JSON data 也算，热修 4）
+	a.sawEvent = true                     // 事件边界到达即"见过事件"（非 JSON data 也算，热修 4）
 	payload := strings.Join(a.data, "\n") // SSE 多行 data 并接（规范行为）
 	a.data = a.data[:0]
 	var ev dockSSEEvent
@@ -612,10 +831,10 @@ func (a *sseUsageAcc) finish() usageSnapshot {
 	}
 	a.flushEvent()
 	return usageSnapshot{
-		input:          a.input,
-		cacheRead:      a.cacheRead,
-		cacheCreation:  a.cacheCreation,
-		output:         a.output,
-		truncated:      a.sawEvent && !a.sawStop,
+		input:         a.input,
+		cacheRead:     a.cacheRead,
+		cacheCreation: a.cacheCreation,
+		output:        a.output,
+		truncated:     a.sawEvent && !a.sawStop,
 	}
 }

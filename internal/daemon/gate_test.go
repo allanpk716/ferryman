@@ -72,6 +72,9 @@ func newGateEnv(t *testing.T) *gateEnv {
 	e.store = st
 	e.led = ledger.New()
 	cfg := config.Default()
+	// 测试卫生（2026-09-30 生产污染案）：DataDir 必须钉在沙箱——裸 Default 的
+	// 空值会解析到 ~/ferryman，gateWarn 的警告行写进生产 gate.log。
+	cfg.Server.DataDir = filepath.Join(e.tmp, "data")
 	cfg.GateCC = "enforce"
 	// Python ThresholdCfg(summarize_s, block_s, min_ctx_tokens)——cache_warn_s
 	// 携带 dataclass 默认 720，Go 显式同值。
@@ -145,6 +148,8 @@ func newWenv(t *testing.T) *wenvT {
 	w.store = st
 	w.led = ledger.New()
 	cfg := config.Default()
+	// 测试卫生（2026-09-30 生产污染案）：同 newGateEnv——DataDir 钉沙箱。
+	cfg.Server.DataDir = filepath.Join(w.tmp, "data")
 	cfg.GateCC = "enforce"
 	cfg.Thresholds = config.ThresholdCfg{
 		SummarizeS: testSummarizeS, BlockS: testBlockS, MinCtxTokens: testMinCtx,
@@ -470,6 +475,52 @@ func TestBranch7WarnThenBranch6BlocksThenDegrade(t *testing.T) {
 	}
 	if _, ok := e.d.Pending.Get(key); ok { // pending 清除
 		t.Fatal("降级应清除 pending")
+	}
+}
+
+// 2026-09-30 06703fbd 案回归：强续（bypass）必须清 pending——inWindow 含
+// `|| pok`，pending 不清则活跃会话被永久卡在拦截窗口（实案：强续放行后
+// 58.6s 的下一条消息仍被分支6第3次拦截，用户被逼弃会话）。清除后拦截计数
+// 归零、保护不丢：再次长闲置从分支7警告重新起圈。
+func TestBypassClearsPendingEscapesTreadmill(t *testing.T) {
+	e := newGateEnv(t)
+	proj := filepath.Join(e.tmp, "projT")
+	e.reg("t1", "C:/t1.jsonl", proj, testBlockS+5, 99999)
+	key := [2]string{"cc", "t1"}
+
+	if r := e.d.Gate(gateBody("t1", "C:/t1.jsonl", proj)); r["decision"] != "allow" {
+		t.Fatalf("分支7 decision = %v", r["decision"]) // 警告+置 pending
+	}
+	if r := e.d.Gate(gateBody("t1", "C:/t1.jsonl", proj)); r["decision"] != "block" {
+		t.Fatalf("分支6 第1次 decision = %v", r["decision"])
+	}
+
+	// 会话恢复活跃：助手已回复（lastWrite 推进到 t0-1），闲置仅 1s。
+	e.reg("t1", "C:/t1.jsonl", proj, 1, 99999)
+
+	rb := e.d.Gate(gateBody4("t1", "C:/t1.jsonl", proj, "强续原话自己带上"))
+	if rb["decision"] != "allow" || rb["reason"] != "bypass" {
+		t.Fatalf("bypass = %v", rb)
+	}
+	if _, ok := e.d.Pending.Get(key); ok {
+		t.Fatal("强续应清 pending")
+	}
+
+	// 强续后的下一条正常消息（无前缀、闲置 1s）——实案在此被拦第3次。
+	if r := e.d.Gate(gateBody("t1", "C:/t1.jsonl", proj)); r["decision"] != "allow" {
+		t.Fatalf("强续后活跃会话仍被拦: %v", r)
+	}
+
+	// 保护不丢：再次长闲置 → 分支7 重新警告（allow），下一条从「第 1 次」
+	// 重新计数（bypass 清除连计数一起归零，不残留降级进度）。
+	e.advance(testBlockS + 10)
+	if r := e.d.Gate(gateBody("t1", "C:/t1.jsonl", proj)); r["decision"] != "allow" {
+		t.Fatalf("新周期应分支7警告放行, got %v", r["decision"])
+	}
+	r2 := e.d.Gate(gateBody("t1", "C:/t1.jsonl", proj))
+	if r2["decision"] != "block" ||
+		!strings.Contains(r2["reason"].(string), "第 1 次") {
+		t.Fatalf("新周期应从第1次重新拦: %v", r2)
 	}
 }
 
@@ -860,8 +911,10 @@ func TestA10DanglingSelfheals(t *testing.T) {
 }
 
 func TestA5Branch6CopyDeterministicEscape(t *testing.T) {
-	// A5：分支6 新文案——确定性出路（每次强续都放行）；第4次降级不变。
+	// A5：分支6 新文案——确定性出路（强续一次解除本轮拦截）；第4次降级不变。
 	// （A3 口径：分支5/7 既有断言不动；分支6 文案断言随本条更新。）
+	// 2026-09-30 06703fbd 案后语义升级：原「每一条都要强续」跑步机改为强续即
+	// 清 pending（见 TestBypassClearsPendingEscapesTreadmill），文案随之改口径。
 	e := newGateEnv(t)
 	proj := filepath.Join(e.tmp, "projA5")
 	e.reg("a5", "C:/no-such-a5.jsonl", proj, testBlockS+5, 99999)
@@ -881,7 +934,8 @@ func TestA5Branch6CopyDeterministicEscape(t *testing.T) {
 		if !strings.Contains(reason, fmt.Sprintf("第 %d 次", i)) {
 			t.Fatalf("reason 缺「第 %d 次」: %s", i, reason)
 		}
-		if !strings.Contains(reason, "每次以「强续」开头") { // 确定性出路
+		if !strings.Contains(reason, "以「强续」开头") || // 确定性出路
+			!strings.Contains(reason, "解除本轮拦截") { // 强续一次即解，不再每条都要带
 			t.Fatalf("reason 缺确定性出路文案: %s", reason)
 		}
 		if !strings.Contains(reason, "已保存") { // 原话下落明确
@@ -1315,5 +1369,53 @@ func TestQWatchStopHealthConcurrentModeAccess(t *testing.T) {
 	}
 	if h := d.Health(); h["qwatch"].(map[string]any)["mode"] != "off" {
 		t.Fatalf("health qwatch mode 应读活值: %v", h["qwatch"])
+	}
+}
+
+// 2026-09-30 603fef0f 案回归：真闲置 78 分钟被无时间戳状态块（mode/snapshot/
+// lastPrompt 幻影写）把文件时钟顶新成 17 分钟——闸门只提醒不拦。闲置锚点改
+// 内容时钟后：mtime 再新，内容时钟停在最后带时间戳记录 → 照进拦窗；真实新
+// 内容落地 → 内容时钟前进 → 放行。文件取不到时间戳（本套件其余用例的假路径
+// 形态）回落文件时钟＝旧行为，天然回归。
+func TestGateIdleAnchoredToContentClock(t *testing.T) {
+	e := newGateEnv(t)
+	proj := filepath.Join(e.tmp, "proj")
+	path := filepath.Join(e.tmp, "cc.jsonl")
+	tsFmt := "2006-01-02T15:04:05.000Z"
+	old := time.Unix(int64(e.t0-(testBlockS+600)), 0).UTC().Format(tsFmt)
+	// 内容：最后带时间戳记录停在 t0-41min；尾部混一条幻影写（无 timestamp 字段）
+	os.WriteFile(path, []byte(fmt.Sprintf(
+		`{"type":"user","timestamp":%q,"message":{"content":"早"}}`+"\n"+
+			`{"type":"mode","mode":"default"}`+"\n", old)), 0o644)
+	// 文件时钟被幻影写顶新到现在（mtime=t0）
+	e.led.TouchFull("cc", "pc1", path, e.t0, 10, proj, "", 99999, 0)
+
+	r1 := e.d.Gate(gateBody4("pc1", path, proj, "继续")) // 内容闲置 41min → 分支7 警告
+	if r1["decision"] != "allow" {
+		t.Fatalf("分支7 decision = %v", r1["decision"])
+	}
+	if ctx, _ := r1["additional_context"].(string); ctx == "" {
+		t.Fatal("分支7 应带警告")
+	}
+	r2 := e.d.Gate(gateBody4("pc1", path, proj, "继续")) // 分支6 拦（pending 置位后）
+	if r2["decision"] != "block" {
+		t.Fatalf("幻影写不得稀释拦窗, decision = %v", r2["decision"])
+	}
+
+	// 真实新内容（带时间戳）落地 + mtime 前进 → 内容时钟前进 → 强续清 pending 后正常放行
+	e.advance(200)
+	fresh := time.Unix(int64(e.t0+190), 0).UTC().Format(tsFmt)
+	os.WriteFile(path, []byte(fmt.Sprintf(
+		`{"type":"user","timestamp":%q,"message":{"content":"回来了"}}`+"\n", fresh)), 0o644)
+	e.led.TouchFull("cc", "pc1", path, e.t0+190, 20, proj, "", 99999, 0)
+	if rb := e.d.Gate(gateBody4("pc1", path, proj, "强续清场")); rb["reason"] != "bypass" {
+		t.Fatalf("强续 = %v", rb)
+	}
+	r4 := e.d.Gate(gateBody4("pc1", path, proj, "继续"))
+	if r4["decision"] != "allow" {
+		t.Fatalf("内容时钟前进后应放行, decision = %v", r4["decision"])
+	}
+	if ctx, has := r4["additional_context"]; has && ctx != "" {
+		t.Fatalf("新内容后不应再警告: %v", ctx)
 	}
 }

@@ -1,6 +1,6 @@
 ﻿# Ferryman 子代理生命周期钩子（CC SubagentStart/SubagentStop，T32）—— fire-and-forget，任何故障静默
 # 上报 daemon /subagent 维护每会话子代理计数（摆渡推迟判定）。
-# 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 7311）；
+# 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 15700）；
 #               FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
 if ($env:FERRYMAN_DISABLE -eq '1') { exit 0 }
 # 自举：拉起不等就绪（fire-and-forget，下次事件自然上报）
@@ -11,7 +11,7 @@ try {
         [Console]::InputEncoding = [System.Text.Encoding]::UTF8
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     } catch {}
-    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 7311 }
+    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 15700 }
     $tokenFile = if ($env:FERRYMAN_TOKEN_FILE) { $env:FERRYMAN_TOKEN_FILE }
                  else { "$env:USERPROFILE\ferryman\daemon.token" }
     $raw = [Console]::In.ReadToEnd()

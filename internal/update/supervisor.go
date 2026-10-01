@@ -1,12 +1,13 @@
 package update
 
 // 升级监督者状态机(票05,规格 §C 全序列):换装目标解析(seam E)→ 锁
-// (seam B)→ journal → staging(票03 下载+SHA256)→ 停旧(/shutdown 票04 +
-// 身份校验兜底 kill)→ swap(seam A 单次原子替换)→ 拉起+校验(seam C 看门
-// 抢跑复停重拉)→ 回滚 → 崩溃恢复。CLI `ferryman update` 与内部旗标
-// --supervise 收敛到同一 Run(规格 §C 统一监督者)。
+// (seam B)→ journal → staging(票03 下载+SHA256)→ 静默门(票02 W1:等流量
+// 空闲才动手)→ 停旧(/shutdown 票04 + 身份校验兜底 kill)→ swap(seam A 单次
+// 原子替换)→ 拉起+校验(seam C 看门抢跑复停重拉)→ 回滚 → 崩溃恢复。CLI
+// `ferryman update` 与内部旗标 --supervise 收敛到同一 Run(规格 §C 统一监督者)。
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,56 +21,105 @@ import (
 	"time"
 )
 
-// 监督者缺省参数(规格 §C 第5/7条:等端口释放 ≤30s、轮询 /stats ≤90s)。
+// 监督者缺省参数。defaultPortWait 240s：v0.2.4 起守护优雅关停先排水（在途流
+// 最长 [dock].drain_timeout_s=180s，期间渡口 15722 仍被旧进程占着、进程未退），
+// 停旧预算必须覆盖排水窗+余量——2026-09-29 复盘（docs/20260929_守护重启事故
+// 复盘.md）：30s 会让监督者在排水中抢跑换装，新守护渡口绑定失败进半死形态。
 const (
 	// DefaultDaemonPort 守护口(与 installer.DefaultDaemonPort 同值;不 import
-	// installer,避免 update→installer 的面拉宽)。
-	DefaultDaemonPort = 7311
-	defaultPortWait   = 30 * time.Second
+	// installer,避免 update→installer 的面拉宽)。2026-09-29 由 7311 改 15700。
+	DefaultDaemonPort = 15700
+	defaultPortWait   = 240 * time.Second
 	defaultPollWait   = 90 * time.Second
 	defaultPollEvery  = 1 * time.Second
+	// 拉起验证探针窗(W2/spec Implementation Decisions 3):launch 后 2s 起
+	// 首测(刚 spawn 的守护尚在引导,立刻拨只是白敲连接拒绝),10s(自拉起
+	// 计)截止。
+	defaultProbeDelay   = 2 * time.Second
+	defaultProbeTimeout = 10 * time.Second
+	// SupervisorLaunchEnv 监督者自拉起标记(票04 集成缺陷修):监督者事务拉起
+	// (launchTxCmdImpl)给子进程注入本环境变量,daemon 侧让路判定见此标记即
+	// 豁免——否则监督者全程持锁,它自己拉起的新守护会按票04让路退出,升级
+	// 必败回滚(泳道04 评审发现;W4 彩排台真两版演练本会炸出)。
+	SupervisorLaunchEnv = "FERRYMAN_LAUNCHED_BY_SUPERVISOR"
 	// startCmdName 点火脚本名(installer.LauncherName 同名同位)。
 	startCmdName = "start-daemon.cmd"
+	// 静默门参数(W1/spec Implementation Decisions 2):判据 = 在途 0 且距最后
+	// 请求 ≥ defaultQuietRequired(last_request_ts==0 视为静默成立);判据不满足
+	// 默认轮询等待 defaultQuietWait,每 quietLogEvery 记一行进度日志。
+	defaultQuietRequired = 10 * time.Second
+	defaultQuietWait     = 60 * time.Second
+	quietLogEvery        = 10 * time.Second
+)
+
+// 静默门交互三选词表(askQuiet/Config.QuietAsk 的返回契约;"" = 非交互/
+// 无法判定/无效输入 → 调用方告警后硬切兜底)。
+const (
+	quietChoiceWait   = "wait"   // 继续等一个预算窗再判
+	quietChoiceSwitch = "switch" // 现在切换(硬切)
+	quietChoiceAbort  = "abort"  // 放弃本次升级
 )
 
 // Config 监督者装配面:全部路径/口/时限可注入——测试世界零生产面触碰。
 type Config struct {
 	DataDir      string // ~/ferryman:锁/journal/token/pid;空 = 回落 ~/ferryman
-	Port         int    // 守护口;0 = 7311
+	Port         int    // 守护口;0 = 15700
 	Endpoints    Endpoints
-	Current      string        // 当前版本(main.version)
-	Spec         string        // 显式目标版本(可空;含降级)
-	Prerelease   bool          // 纳入预发布
-	SelfRelay    bool          // 本进程已是自中继副本,不再自中继(内部旗标)
-	StartCmd     string        // 点火脚本;空 = <DataDir>/start-daemon.cmd
-	HTTP         *http.Client  // 守护面客户端;空 = 3s 超时内建
-	PortWait     time.Duration // 停旧等端口释放上限;0 = 30s
-	PollTimeout  time.Duration // 拉起校验轮询上限;0 = 90s
-	PollInterval time.Duration // 轮询间隔;0 = 1s
-	Logf         func(format string, args ...any)
+	Current      string                      // 当前版本(main.version)
+	Spec         string                      // 显式目标版本(可空;含降级)
+	Prerelease   bool                        // 纳入预发布
+	SelfRelay    bool                        // 本进程已是自中继副本,不再自中继(内部旗标)
+	StartCmd     string                      // 点火脚本;空 = <DataDir>/start-daemon.cmd
+	HTTP         *http.Client                // 守护面客户端;空 = 3s 超时内建
+	PortWait     time.Duration               // 停旧等端口释放+进程退场上限;0 = 240s（覆盖 v0.2.4+ 排水窗）
+	PollTimeout  time.Duration               // 拉起校验轮询上限;0 = 90s
+	PollInterval time.Duration               // 轮询间隔;0 = 1s
+	ProbeDelay   time.Duration               // 拉起验证探针首测延迟(自拉起计);0 = 2s
+	ProbeTimeout time.Duration               // 拉起验证探针截止(自拉起计);0 = 10s
+	Alert        func(title, message string) // 事务告警通道(cmd 侧装配 notify.NotifyAlert);nil = 只落 Logf
+	// WaitQuiet 静默门等待预算(判据不满足时轮询等待的上限):0 = 缺省 60s;
+	// 负值 = 不等待(CLI --wait-quiet=0 的映射哨兵:判据不满足立即进兜底)。
+	WaitQuiet time.Duration
+	// Force 跳过静默门直接停旧(CLI --force 脚本态)。
+	Force bool
+	// QuietAsk 静默门交互三选问询注入缝:参数为情境提示与三选项文本,返回
+	// quietChoiceWait/quietChoiceSwitch/quietChoiceAbort 之一;返回 ""(或 nil
+	// 缝下缺省实现判定非交互)= 告警后硬切。缺省实现看 stdin 是否字符设备。
+	QuietAsk func(prompt string, options []string) string
+	Logf     func(format string, args ...any)
 }
 
 // Result 升级结论(seam F 结果通知与 CLI stdout 的单源)。
 type Result struct {
 	Success     bool
-	Relayed     bool  // 已转交自中继副本接手,本进程只负责退出(v0.1.0 首发实测补)
+	Relayed     bool // 已转交自中继副本接手,本进程只负责退出(v0.1.0 首发实测补)
 	From, To    string
 	RolledBack  bool   // 失败但已回滚恢复旧版服务
 	RollbackErr string // 回滚也失败(服务可能中断,需人工介入)
 	Err         error
 }
 
-// Supervisor 监督者。proc* 为进程面 seam(测试注桩);launch 为拉起 seam;
-// selfExe/spawnRelay 为自中继 seam(同上)。
+// Supervisor 监督者。proc* 为进程面 seam(测试注桩);launch 为拉起 seam
+// (缺省注入 txLauncher 的事务形态——W2 起固定 cmd.exe 直拉,事务调用点经
+// launchTx 附带拉起验证探针;测试可换桩);selfExe/spawnRelay 为自中继
+// seam(同上)。
 type Supervisor struct {
-	cfg        Config
-	procAlive  func(pid int) bool
-	procImage  func(pid int) (string, error)
-	killPID    func(pid int) error
-	launch     func(cmdPath string) error
-	selfExe    func() (string, error)
-	spawnRelay func(exe string, args []string) error
+	cfg         Config
+	procAlive   func(pid int) bool
+	procImage   func(pid int) (string, error)
+	killPID     func(pid int) error
+	launch      func(cmdPath string) error
+	selfExe     func() (string, error)
+	spawnRelay  func(exe string, args []string) error
+	selfDelete  func(path string) error
 }
+
+// txLauncher 事务拉起缺省注点(平台面注入):Windows 侧由 proc_windows.go 的
+// init 固定为 launchTxCmdImpl(cmd.exe /c 直拉 + CREATE_NO_WINDOW——W2 弃
+// wscript/VBS,ADR-0015 2026-09-29 补记);非 Windows 世界无该文件,恒 nil,
+// 回落 launchCmdImpl 的新会话直执行(unix 上本无 wscript/cmd 通道之分,
+// 直执行即直连形态)。
+var txLauncher func(cmdPath string) error
 
 // NewSupervisor 装配(平台真实现见 proc_*.go / swap_*.go)。
 func NewSupervisor(cfg Config) *Supervisor {
@@ -93,17 +143,31 @@ func NewSupervisor(cfg Config) *Supervisor {
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = defaultPollEvery
 	}
+	if cfg.ProbeDelay == 0 {
+		cfg.ProbeDelay = defaultProbeDelay
+	}
+	if cfg.ProbeTimeout == 0 {
+		cfg.ProbeTimeout = defaultProbeTimeout
+	}
+	if cfg.WaitQuiet == 0 {
+		cfg.WaitQuiet = defaultQuietWait // 负值 = 不等待,保留原样
+	}
 	if cfg.Logf == nil {
 		cfg.Logf = fileTeeLogf(cfg.DataDir)
+	}
+	launchFn := launchCmdImpl
+	if txLauncher != nil {
+		launchFn = txLauncher
 	}
 	return &Supervisor{
 		cfg:        cfg,
 		procAlive:  procAliveImpl,
 		procImage:  procImageImpl,
 		killPID:    killImpl,
-		launch:     launchCmdImpl,
+		launch:     launchFn,
 		selfExe:    os.Executable,
 		spawnRelay: spawnRelayImpl,
+		selfDelete: selfDeleteImpl,
 	}
 }
 
@@ -133,6 +197,10 @@ func fileTeeLogf(dataDir string) func(format string, a ...any) {
 
 // Run 监督者主序列。返回 Result;过程日志走 Logf。
 func (s *Supervisor) Run() Result {
+	// 自中继副本收尾自删（2026-09-30 副本残留案）：defer 挂在一切退出路径上，
+	// 副本退场前拉起延迟自删（见 relaySelfDelete 注）。非副本（SelfRelay=false）
+	// 内部空转。
+	defer s.relaySelfDelete()
 	// 0. 换装目标解析(seam E)
 	targetExe, err := s.resolveTargetExe()
 	if err != nil {
@@ -198,14 +266,23 @@ func (s *Supervisor) Run() Result {
 		return res
 	}
 
-	// 5. 停旧(票04 /shutdown;端点不可达且守护在跑 → 身份校验兜底 kill)
+	// 5. 静默门(票02/W1):staging 完成后、停旧前——下载完新 exe 再等静默,
+	// 等待期不占下载时间;门通过(或兜底放行)后立即进停旧(postShutdown 紧随,
+	// 门与 shutdown 之间不插其他等待)。
+	if err := s.quietGate(); err != nil {
+		_ = clearJournal(s.cfg.DataDir)
+		res.Err = err
+		return res
+	}
+
+	// 6. 停旧(票04 /shutdown;端点不可达且守护在跑 → 身份校验兜底 kill)
 	if err := s.stopDaemon(j.TargetExe, "停旧"); err != nil {
 		_ = clearJournal(s.cfg.DataDir)
 		res.Err = fmt.Errorf("停旧失败: %w", err)
 		return res
 	}
 
-	// 6. swap(seam A:备份 → 单次原子替换;备份只留 2 份)
+	// 7. swap(seam A:备份 → 单次原子替换;备份只留 2 份)
 	j.Phase = PhaseSwap
 	if err := saveJournal(s.cfg.DataDir, j); err != nil {
 		res.Err = err
@@ -220,7 +297,7 @@ func (s *Supervisor) Run() Result {
 		return res
 	}
 
-	// 7. 拉起 + 校验(seam C:失败先查持有者,旧版抢跑 → 复停重拉再校验一轮)
+	// 8. 拉起 + 校验(seam C:失败先查持有者,旧版抢跑 → 复停重拉再校验一轮)
 	j.Phase = PhaseVerify
 	if err := saveJournal(s.cfg.DataDir, j); err != nil {
 		res.Err = err
@@ -234,7 +311,7 @@ func (s *Supervisor) Run() Result {
 		return res
 	}
 
-	// 8. 回滚
+	// 9. 回滚
 	return s.rollback(j, seen)
 }
 
@@ -257,7 +334,7 @@ func (s *Supervisor) selfRelayIfNeeded(targetExe string) (bool, error) {
 	if err := copyFile(self, copyPath); err != nil {
 		return false, fmt.Errorf("自中继副本落盘失败: %w", err)
 	}
-	if err := s.spawnRelay(copyPath, relayArgs(s.cfg.Spec, s.cfg.Prerelease)); err != nil {
+	if err := s.spawnRelay(copyPath, s.relayArgs()); err != nil {
 		_ = os.Remove(copyPath)
 		return false, fmt.Errorf("自中继副本拉起失败: %w", err)
 	}
@@ -271,14 +348,44 @@ func relayCopyPath(targetExe string) string {
 	return targetExe + ".supervisor-copy"
 }
 
-// relayArgs 副本接手参数:监督者旗标 + 自中继标记 + 原样的版本意图。
-func relayArgs(spec string, prerelease bool) []string {
-	args := []string{"update", "--supervise", "--self-relay"}
-	if spec != "" {
-		args = append(args, spec)
+// relaySelfDelete 自中继副本的收尾自删（2026-09-30 副本残留案）：副本跑完
+// Run 即退场，但 Windows 不许删除运行中的映像——收尾的 cleanSwapResidues 对
+// 自己 os.Remove 必败（Access denied，静默忽略），文件滞留到下次 update 才被
+// 扫走，期间 doctor 的 update_residues 一直红（v0.4.2/v0.4.3 两次换装两次
+// 手动删的实证）。故在退场前拉起隐藏的延迟删除（平台面 selfDelete seam，
+// Windows=cmd ping≈3s 等退场后 del）。失败静默——兜底链不动：下次 update
+// 的 cleanSwapResidues 照旧扫走。
+func (s *Supervisor) relaySelfDelete() {
+	if !s.cfg.SelfRelay || s.selfDelete == nil {
+		return
 	}
-	if prerelease {
+	self, err := s.selfExe()
+	if err != nil {
+		return
+	}
+	_ = s.selfDelete(self)
+}
+
+// relayArgs 副本接手参数:监督者旗标 + 自中继标记 + 原样的版本意图 + 静默门
+// 意图(--force 与非缺省 --wait-quiet 透传——副本重跑静默门时不丢用户意图;
+// 等待哨兵负值回落旗标 0=不等。缺省预算 60s 不落旗标,与未显式给同义)。
+func (s *Supervisor) relayArgs() []string {
+	args := []string{"update", "--supervise", "--self-relay"}
+	if s.cfg.Spec != "" {
+		args = append(args, s.cfg.Spec)
+	}
+	if s.cfg.Prerelease {
 		args = append(args, "--prerelease")
+	}
+	if s.cfg.Force {
+		args = append(args, "--force")
+	}
+	if s.cfg.WaitQuiet != defaultQuietWait {
+		n := int(s.cfg.WaitQuiet / time.Second)
+		if n < 0 {
+			n = 0 // 负值哨兵(不等待)→ 旗标 0=不等
+		}
+		args = append(args, fmt.Sprintf("--wait-quiet=%d", n))
 	}
 	return args
 }
@@ -345,7 +452,7 @@ func (s *Supervisor) restoreServiceQuiet(j journal) {
 	if _, ok := s.queryVersion(); ok {
 		return
 	}
-	if err := s.launch(j.StartCmd); err != nil {
+	if err := s.launchTx(j.StartCmd); err != nil {
 		s.logf("swap 失败后拉起旧版失败(看门/自举会兜底): %v", err)
 		return
 	}
@@ -354,10 +461,67 @@ func (s *Supervisor) restoreServiceQuiet(j journal) {
 	}
 }
 
+// launchTx 事务拉起(launchAndVerify/rollback/restoreServiceQuiet 同缝):经
+// launch 缺省注入(launchTxCmdImpl,固定 cmd.exe /c + CREATE_NO_WINDOW——W2
+// 起不再探测 wscript/VBS)拉起,随后做拉起验证活性探针。launch 本体失败照旧
+// 返回错误(探针无意义);探针结论只报告不裁决——launchTx 不因探针失败返回
+// 错误,事务走向仍由既有 PollTimeout(90s)版本校验裁决。探针是相位可见性,
+// 不是第二裁判。
+func (s *Supervisor) launchTx(cmdPath string) error {
+	if err := s.launch(cmdPath); err != nil {
+		return err
+	}
+	s.verifyLaunch()
+	return nil
+}
+
+// verifyLaunch 拉起验证(W2/ADR-0015 2026-09-29 补记):launch 后 ProbeDelay
+// (缺省 2s)起对本事务配置的管理端点(cfg.Port 经 daemonAddr 拼接——不硬
+// 编码 15700)做活性探针,成功谓词=任意 HTTP 应答(含 401/404,probeDaemonAny
+// 同语义:守护起来即应答,鉴权与路由不构成前提),重试至 ProbeTimeout(缺省
+// 10s,自拉起计)截止。端点始终无应答(含拉起进程秒退——口永远不会响,cmd.exe
+// 转手下无法跟踪守护 PID,以端点静默为准)→ 报「拉起验证失败（相位错误）」+
+// 告警;但只报告,不触发回滚——回滚仍由既有版本校验裁决。动机(07:31 事故):
+// VBS 三级转手吞 stderr 且成败不验,拉起静默失败无处追。
+func (s *Supervisor) verifyLaunch() {
+	time.Sleep(s.cfg.ProbeDelay) // 首测自 2s 起:引导期内拨号只是白敲
+	deadline := time.Now().Add(s.cfg.ProbeTimeout - s.cfg.ProbeDelay)
+	for {
+		if s.probeDaemonAny() {
+			s.logf("拉起验证通过: 端点 %s 已应答", s.daemonAddr())
+			return
+		}
+		if !time.Now().Before(deadline) {
+			msg := fmt.Sprintf("拉起验证失败（相位错误）: 端点 %s 于 %v 内无应答——"+
+				"拉起进程可能已退出或未监听;事务继续,以版本校验为准",
+				s.daemonAddr(), s.cfg.ProbeTimeout)
+			s.logf("%s", msg)
+			s.alert("Ferryman 升级", msg)
+			return
+		}
+		time.Sleep(s.cfg.PollInterval)
+	}
+}
+
+// alert 事务告警注入缝(cmd 侧装配 notify.NotifyAlert;nil = 只落 Logf,update
+// 包不 import notify,依赖面不拉宽)。尽力而为的旁路(notify 包同纪律):通道
+// 任何故障 recover 吞掉只记日志,绝不影响事务走向。
+func (s *Supervisor) alert(title, message string) {
+	if s.cfg.Alert == nil {
+		return // 未接通道:正文已由调用方落 Logf/update.log,不重复
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logf("告警通道故障(忽略): %v", r)
+		}
+	}()
+	s.cfg.Alert(title, message)
+}
+
 // launchAndVerify 拉起并校验 want 版本;seam C:失败判定前先查 7311 持有者,
 // 旧版本(看门/自举抢跑重拉)→ 复停一次 → 重拉起 → 重校验一轮。
 func (s *Supervisor) launchAndVerify(j journal, want string) (string, bool) {
-	if err := s.launch(j.StartCmd); err != nil {
+	if err := s.launchTx(j.StartCmd); err != nil {
 		s.logf("拉起失败: %v", err)
 	}
 	seen, ok := s.pollVersionMatch(want, s.cfg.PollTimeout)
@@ -371,7 +535,7 @@ func (s *Supervisor) launchAndVerify(j journal, want string) (string, bool) {
 			s.logf("复停失败: %v", err)
 			return nonEmpty(seen, holder), false
 		}
-		if err := s.launch(j.StartCmd); err != nil {
+		if err := s.launchTx(j.StartCmd); err != nil {
 			s.logf("重拉起失败: %v", err)
 		}
 		seen2, ok2 := s.pollVersionMatch(want, s.cfg.PollTimeout)
@@ -399,7 +563,7 @@ func (s *Supervisor) rollback(j journal, seen string) Result {
 		s.logf("回滚:%v(现场保持,请人工检查)", err)
 		return res
 	}
-	if err := s.launch(j.StartCmd); err != nil {
+	if err := s.launchTx(j.StartCmd); err != nil {
 		s.logf("回滚拉起失败: %v", err)
 	}
 	v, ok := s.pollVersionMatch(j.From, s.cfg.PollTimeout)
@@ -508,6 +672,262 @@ func (s *Supervisor) recoverPostSwap(j journal, targetExe string) (string, error
 	return "", fmt.Errorf("中断恢复回滚失败: %s(%v)", rb.RollbackErr, rb.Err)
 }
 
+// ---- 静默门(票02/W1,spec Implementation Decisions 2) ----
+
+// quietGate 停旧前的静默门:升级动手前等流量空闲(没有在途请求、10 秒没新
+// 请求)。门前置三分支——①已验证旧守护不存在(cfg.Port 端口探测空且
+// daemon.pid 无活进程)→ 跳过门直接进既有停旧/拉新流程;②守护在但 /stats
+// 不可达 → 直接进入非静默兜底路径(含交互问/告警/硬切,不干等无法观测的
+// 静默窗);③可达 → 严格执行判据(dockQuiet)。判据不满足:轮询等待
+// WaitQuiet(缺省 60s,每 10s 一行进度),到期交互终端在场则三选问询(继续等/
+// 现在切/放弃),非交互 notify 告警一条后按既有语义硬切(D10:拒连窗与截断
+// 如实记录进 update.log)。--force 跳过门直接停旧。
+//
+// 返回 nil = 放行(调用方立即停旧,门与 shutdown 之间无其他等待);非 nil =
+// 放弃升级(调用方清账中止)。判据满足即放行,不额外等待。
+func (s *Supervisor) quietGate() error {
+	if s.cfg.Force {
+		s.logf("静默门跳过(--force):直接停旧")
+		return nil
+	}
+	if s.daemonAbsent() {
+		s.logf("静默门跳过:旧守护不在场(端口空且 daemon.pid 无活进程),直接进停旧/拉新流程")
+		return nil
+	}
+	inflight, lastTS, ok := s.fetchDockStats()
+	if ok && dockQuiet(inflight, lastTS, time.Now()) {
+		s.logf("静默门放行:在途 0/距最后请求 %s,判据成立", lastReqAge(lastTS))
+		return nil
+	}
+	// 判据不满足(或 /stats 不可达):可达且预算为正 → 先轮询一个等待窗;
+	// 不可达(分支②)或预算 ≤0(不等)→ 不干等,直接进非静默兜底。
+	var waited time.Duration
+	lastInflight, lastSeenTS := inflight, lastTS
+	if ok && s.cfg.WaitQuiet > 0 {
+		quiet, inf, ts, el := s.waitQuietWindow()
+		waited += el
+		lastInflight, lastSeenTS = inf, ts
+		if quiet {
+			s.logf("静默门放行:在途 0/距最后请求 %s,判据成立(等了 %v)", lastReqAge(ts), el.Round(time.Second))
+			return nil
+		}
+	}
+	return s.quietFallback(lastInflight, lastSeenTS, waited, ok)
+}
+
+// waitQuietWindow 轮询等待一个静默窗(预算 cfg.WaitQuiet,≤0 视为 0=只查
+// 一次):判据满足即放行(quiet=true),到期仍不满足 quiet=false。返回窗内
+// 末次观测的渡口统计与实际等待时长。每 quietLogEvery 记一行进度日志。
+func (s *Supervisor) waitQuietWindow() (quiet bool, inflight int, lastTS int64, waited time.Duration) {
+	start := time.Now()
+	budget := s.cfg.WaitQuiet
+	if budget < 0 {
+		budget = 0
+	}
+	deadline := start.Add(budget)
+	lastLog := start
+	reported := false
+	for {
+		inf, ts, ok := s.fetchDockStats()
+		if ok {
+			inflight, lastTS = inf, ts
+			if dockQuiet(inf, ts, time.Now()) {
+				return true, inf, ts, time.Since(start)
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return false, inflight, lastTS, time.Since(start)
+		}
+		if !reported || time.Since(lastLog) >= quietLogEvery {
+			s.logf("静默门等待中(已等 %v/预算 %v):末次在途 %d/距最后请求 %s",
+				time.Since(start).Round(time.Second), budget, inflight, lastReqAge(lastTS))
+			lastLog = time.Now()
+			reported = true
+		}
+		time.Sleep(s.cfg.PollInterval)
+	}
+}
+
+// quietFallback 非静默兜底路径(W1/D10):交互终端在场 → 三选问询(继续等
+// 一个预算窗/现在切/放弃);非交互或无法判定 → notify 告警一条(「静默门未
+// 达成,硬切兜底」)后按既有语义直接走停旧。告警是尽力而为的旁路(alert 内
+// 已护,失败不阻塞事务);硬切路径在 update.log 记一行留证。statsOK=false
+// (门前置分支②,/stats 不可达)时本路径被直接进入、无等待窗。
+func (s *Supervisor) quietFallback(lastInflight int, lastTS int64, waited time.Duration, statsOK bool) error {
+	for {
+		switch s.askQuiet(waited) {
+		case quietChoiceWait:
+			quiet, inf, ts, el := s.waitQuietWindow()
+			waited += el
+			lastInflight, lastTS = inf, ts
+			if quiet {
+				s.logf("静默门放行:在途 0/距最后请求 %s,判据成立(等了 %v)", lastReqAge(ts), el.Round(time.Second))
+				return nil
+			}
+			continue // 仍不静默:再问一轮
+		case quietChoiceSwitch:
+			s.logf("静默门未达成——用户选择立即切换(硬切,已等 %v)", waited.Round(time.Second))
+			return nil
+		case quietChoiceAbort:
+			return fmt.Errorf("静默门未达成,用户选择放弃升级(已等 %v)", waited.Round(time.Second))
+		default: // 非交互/无法判定/无效输入 → 告警后硬切兜底
+			s.logf("%s", hardCutLine(lastInflight, lastTS, waited, statsOK))
+			s.alert("Ferryman 升级", "静默门未达成，硬切兜底（"+hardCutDetail(lastInflight, lastTS, statsOK)+"）")
+			return nil
+		}
+	}
+}
+
+// hardCutLine 硬切兜底留证行(票02:硬切路径在 update.log 记一行——等待
+// 时长与末次观测;statsOK=false 时注明 /stats 不可达)。
+func hardCutLine(lastInflight int, lastTS int64, waited time.Duration, statsOK bool) string {
+	return fmt.Sprintf("硬切兜底：门未达成（等待 %ds，%s）",
+		int(waited.Seconds()), hardCutDetail(lastInflight, lastTS, statsOK))
+}
+
+// hardCutDetail 硬切情境明细(留证行与告警共用)。
+func hardCutDetail(lastInflight int, lastTS int64, statsOK bool) string {
+	if !statsOK {
+		return "/stats 不可达"
+	}
+	return fmt.Sprintf("末次在途 %d/距最后请求 %s", lastInflight, lastReqAge(lastTS))
+}
+
+// lastReqAge 距最后请求的人话时长(last_request_ts==0 = 从未有请求)。
+func lastReqAge(lastTS int64) string {
+	if lastTS == 0 {
+		return "从未有请求"
+	}
+	return fmt.Sprintf("%ds", int(time.Since(time.Unix(lastTS, 0)).Seconds()))
+}
+
+// dockQuiet 静默判据(W1):在途 = 0 且距最后请求 ≥ defaultQuietRequired;
+// last_request_ts == 0(从未有请求)视为静默成立。
+func dockQuiet(inflight int, lastTS int64, now time.Time) bool {
+	if inflight != 0 {
+		return false
+	}
+	if lastTS == 0 {
+		return true
+	}
+	return now.Sub(time.Unix(lastTS, 0)) >= defaultQuietRequired
+}
+
+// daemonAbsent 门前置分支①的「已验证旧守护不存在」:cfg.Port 端口探测空
+// (拨不通)且 daemon.pid 无活进程(文件缺失/坏值/PID 已死)。
+func (s *Supervisor) daemonAbsent() bool {
+	if !s.portIdle() {
+		return false // 端口有人
+	}
+	if pid, err := s.readDaemonPID(); err == nil && s.procAlive(pid) {
+		return false // pid 活着
+	}
+	return true
+}
+
+// portIdle 守护口探测:拨不通(拒绝/无监听)= 空。
+func (s *Supervisor) portIdle() bool {
+	conn, err := net.DialTimeout("tcp", s.daemonAddr(), 500*time.Millisecond)
+	if err != nil {
+		return true
+	}
+	_ = conn.Close()
+	return false
+}
+
+// fetchDockStats GET /stats(Bearer)取渡口统计(票01 字段,dock_inflight/
+// last_request_ts);任何失败(网络错/非 200/解码败)= 不可达(false → 门前置
+// 分支②)。
+func (s *Supervisor) fetchDockStats() (inflight int, lastTS int64, ok bool) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"http://"+s.daemonAddr()+"/stats", nil)
+	if err != nil {
+		return 0, 0, false
+	}
+	req.Header.Set("Authorization", "Bearer "+s.daemonToken())
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 读一次:先排水后解码会扑空
+	if err != nil {
+		return 0, 0, false
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, false
+	}
+	var out struct {
+		DockInflight  int   `json:"dock_inflight"`
+		LastRequestTs int64 `json:"last_request_ts"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, 0, false
+	}
+	return out.DockInflight, out.LastRequestTs, true
+}
+
+// askQuiet 三选问询:cfg.QuietAsk 注入缝优先(测试桩保可测);nil 走缺省
+// 实现(stdin 字符设备判定,非交互返回 "" → 调用方告警硬切)。
+func (s *Supervisor) askQuiet(waited time.Duration) string {
+	prompt := fmt.Sprintf("静默门未达成(已等 %v):升级动手前流量未空闲,继续会打扰在途会话。",
+		waited.Round(time.Second))
+	options := []string{
+		fmt.Sprintf("  1) 继续等 %v 再判", s.quietWaitBudget()),
+		"  2) 现在切换(硬切,可能打断在途请求)",
+		"  3) 放弃本次升级",
+	}
+	if s.cfg.QuietAsk != nil {
+		return s.cfg.QuietAsk(prompt, options)
+	}
+	return defaultQuietAsk(prompt, options)
+}
+
+// quietWaitBudget 「继续等」选项展示用的预算(负值哨兵 = 不等,展示缺省)。
+func (s *Supervisor) quietWaitBudget() time.Duration {
+	if s.cfg.WaitQuiet > 0 {
+		return s.cfg.WaitQuiet
+	}
+	return defaultQuietWait
+}
+
+// stdinInteractive 判 stdin 是否交互终端(var 缝,测试注桩)。ModeCharDevice
+// 是启发式:/dev/null 与 Windows NUL 也是字符设备(计划任务/go test 的 stdin
+// 常是它们)——误判成终端也不悬死:defaultQuietAsk 的读行立即 EOF 返回 "",
+// 调用方照样走告警硬切。
+var stdinInteractive = func() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+// defaultQuietAsk 缺省问询:stdin 为交互终端才提示三选并读一行(trim);
+// 非交互/无法判定/读失败/无法识别的输入返回 ""(调用方告警硬切)。
+// 输入映射:1/等 → wait,2/切 → switch,3/放弃 → abort。
+func defaultQuietAsk(prompt string, options []string) string {
+	if !stdinInteractive() {
+		return "" // 非交互/无法判定
+	}
+	fmt.Println(prompt)
+	for _, o := range options {
+		fmt.Println(o)
+	}
+	fmt.Print("> ")
+	line, rerr := bufio.NewReader(os.Stdin).ReadString('\n')
+	input := strings.TrimSpace(line)
+	if rerr != nil && input == "" {
+		return ""
+	}
+	switch input {
+	case "1", "等", "wait":
+		return quietChoiceWait
+	case "2", "切", "现在切", "switch":
+		return quietChoiceSwitch
+	case "3", "放弃", "abort":
+		return quietChoiceAbort
+	}
+	return ""
+}
+
 // ---- 停旧与守护面探活 ----
 
 // stopDaemon 停守护(规格 §C 第5条):① 优雅 POST /shutdown(票04:loopback
@@ -525,7 +945,10 @@ func (s *Supervisor) stopDaemon(targetExe, what string) error {
 		s.logf("%s:/shutdown 端点未应(%v)——走兜底判定", what, err)
 	}
 	if s.waitPortFree(s.cfg.PortWait) {
-		s.waitProcessExit(oldPID, s.cfg.PortWait)
+		if !s.waitProcessExit(oldPID, s.cfg.PortWait) {
+			return fmt.Errorf("%s:端口已释但 PID %d 仍活(排水/退出卡住,等满 %v)——"+
+				"拒绝在旧进程在场时换装,人工介入或稍后重试", what, oldPID, s.cfg.PortWait)
+		}
 		return nil
 	}
 	if !s.probeDaemonAny() {
@@ -551,28 +974,35 @@ func (s *Supervisor) stopDaemon(targetExe, what string) error {
 	if !s.waitPortFree(s.cfg.PortWait) {
 		return fmt.Errorf("%s:kill 后端口 %d 仍未释放", what, s.cfg.Port)
 	}
-	s.waitProcessExit(pid, s.cfg.PortWait)
+	if !s.waitProcessExit(pid, s.cfg.PortWait) {
+		return fmt.Errorf("%s:kill PID %d 后进程仍未退出(等满 %v)", what, pid, s.cfg.PortWait)
+	}
 	s.logf("%s:兜底 kill PID %d(映像已核 == 换装目标)", what, pid)
 	return nil
 }
 
 // waitProcessExit 等进程真正退出(≤budget)。/shutdown 优雅停机里监听口先关、
 // 进程后走——端口释放 ≠ 镜像解锁,swap 若抢跑会 Access denied(v0.1.1 演练
-// 实证)。超时如实放弃并留日志:不静默假装等过,后续步骤撞锁会再如实报错。
-func (s *Supervisor) waitProcessExit(pid int, budget time.Duration) {
+// 实证);v0.2.4 排水落地后更是事故源:渡口 15722 在排水窗内仍被旧进程占着,
+// 抢跑换装会让新守护渡口绑定失败进半死形态(2026-09-29 复盘)。故自该日起
+// 软等待(超时放弃前进)改硬门:超时仍活返回 false,调用方报错中止。
+// pid≤0(pid 文件缺失的罕见形态)视为放行——无从跟踪,保持旧行为。
+func (s *Supervisor) waitProcessExit(pid int, budget time.Duration) bool {
 	if pid <= 0 || budget <= 0 {
-		return
+		return true
 	}
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		if !s.procAlive(pid) {
-			return
+			return true
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	if s.procAlive(pid) {
-		s.logf("PID %d 端口已释但进程未退(等满 %v 放弃;若后续撞锁将如实报错)", pid, budget)
+		s.logf("PID %d 端口已释但进程未退(等满 %v,硬门:中止本次停旧)", pid, budget)
+		return false
 	}
+	return true
 }
 
 // postShutdown POST /shutdown(票04 端点);非 200/网络错都算未应。

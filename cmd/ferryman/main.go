@@ -2,13 +2,15 @@
 //
 // 行为面（spec C9 console 子系统：终端输出全部可见，窗口性交给启动方）：
 //
-//	ferryman                     # 无参 = serve：守护(7311) + 面板(15900) + 托盘
+//	ferryman                     # 无参 = serve：守护(15700) + 面板(15900) + 托盘
 //	ferryman serve               # 同上（点火脚本 start-daemon.cmd 调它）
 //	ferryman doctor              # 一键体检
 //	ferryman version             # 版本号（dev = 非 release 构建）
-//	ferryman update [--check] [vX.Y.Z] [--prerelease]  # 无 --check = 执行升级
-//	                                   # （监督者：下载/校验/换装/重启/回滚）；--check
-//	                                   # 只报告不动手；显式版本支持降级
+//	ferryman update [--check] [vX.Y.Z] [--prerelease]          # 无 --check = 执行
+//	                                   # 升级（监督者：静默门/下载/校验/换装/重启/
+//	                                   # 回滚；--wait-quiet=<秒> 等流量空闲预算
+//	                                   # （0=不等，缺省 60s）；--force 跳门硬切；
+//	                                   # --check 只报告不动手；显式版本支持降级
 //	ferryman install-cc [--events E1,E2,…]
 //	ferryman install-ccswitch
 //	ferryman install-codex [--events E1,E2,…]
@@ -101,7 +103,7 @@ var version = "dev"
 const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交接守护（守望→摆渡→闸门→归还）
 
 用法:
-  ferryman                # 无参 = serve：守护(127.0.0.1:7311) + 面板(15900) + 托盘
+  ferryman                # 无参 = serve：守护(127.0.0.1:15700) + 面板(15900) + 托盘
   ferryman serve [--port N] [--no-tray] [--smoke]
   ferryman doctor         # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
   ferryman version        # 打印版本号（dev = 非 release 构建）
@@ -120,6 +122,12 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman backtest [--config 路径] [--projects glob]… [--exclude glob]…
                   [--json] [--out 路径]   # 等待窗扫参（离线只读）：账本 window
                                   # 行反事实重放 → docs 实验报告 + ttl_s 校准建议
+  ferryman eval-ferry --provider <名> --n <样本数> --out <目录>
+                  [--handoffs 目录] [--config 路径] [--timeout 秒]
+                                  # 盲评生成（票04）：最近 N 份交接的骨架素材经
+                                  #   指定供应商生成叙事，一样本一文件对（骨架/
+                                  #   叙事并排，文件名含时间戳与会话短 ID）落
+                                  #   --out，供人工盲评对照
   ferryman cutover backup [--data 目录] [--dest 目录]
   ferryman cutover rollback-write [--repo 目录] [--data 目录]
   ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
@@ -129,6 +137,10 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman upstream use <名> [--config 路径]   # 切换 active 并自动重启守护
                                              #   （在途请求中断；守护未起来时如实
                                              #   报告，不自动回滚/重试）
+  ferryman provider list|switch|add|remove|import-ccswitch|apply
+                                             # 供应商操作面（票06）：热切换走守护
+                                             #   管理口不重启；ferryman provider
+                                             #   不带子命令看用法
   ferryman tuning status [--config 路径] [--json]  # 调参面板：建议摘要与状态+
                                                 #   当前公式输入校准（只读）
   ferryman tuning sweep [--config 路径] [--projects glob]… [--exclude glob]…
@@ -196,12 +208,16 @@ func run(args []string) int {
 		return cmdCutover(args[1:])
 	case "upstream":
 		return cmdUpstream(args[1:], os.Stdout)
+	case "provider":
+		return cmdProvider(args[1:], os.Stdout)
 	case "tuning":
 		return cmdTuning(args[1:], os.Stdout, os.Stderr)
 	case "mcp":
 		return cmdMCP(args[1:])
 	case "backtest":
 		return cmdBacktest(args[1:], os.Stdout, os.Stderr)
+	case "eval-ferry":
+		return cmdEvalFerry(args[1:], os.Stdout, os.Stderr)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
@@ -620,20 +636,23 @@ func cmdVersion(args []string, w io.Writer) int {
 // cmdUpdate `ferryman update`：--check 解析目标版本并与当前版本比较（已是最新/
 // 发现新版/显式降级注明；dev 等非 semver 如实提示无从比较），只报告不动手
 // （D6：升级纯手动；D8：网络走环境代理；D11：固定产物名）。无 --check =
-// 监督者执行（票05：锁/journal/停旧/原子换装/校验/回滚/崩溃恢复）；--supervise
-// 为托盘派生用的内部旗标（detached 隐藏 spawn），行为与无参一致（规格 §C
-// 统一监督者）——两入口收敛同一 runUpdateExecute。
+// 监督者执行（票05：锁/journal/停旧/原子换装/校验/回滚/崩溃恢复；票02 静默
+// 门：动手前等流量空闲）；--supervise 为托盘派生用的内部旗标（detached 隐藏
+// spawn），行为与无参一致（规格 §C 统一监督者）——两入口收敛同一
+// runUpdateExecute。--wait-quiet=<秒>/--force 为静默门脚本态旗标（票02）。
 func cmdUpdate(args []string, w io.Writer) int {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	check := fs.Bool("check", false, "只检查并报告，不下载不换文件")
 	pre := fs.Bool("prerelease", false, "检查纳入预发布版（rc/beta；缺省只看稳定版）")
 	_ = fs.Bool("supervise", false, "内部旗标：托盘隐藏派生用，行为与无参一致")
 	selfRelay := fs.Bool("self-relay", false, "内部旗标：本进程是自中继副本，不再自中继")
-	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason")); err != nil {
+	waitQuiet := fs.Int("wait-quiet", 60, "静默门等待预算（秒；判据不满足时的轮询上限；0=不等；缺省 60s）")
+	force := fs.Bool("force", false, "跳过静默门直接停旧（脚本态）")
+	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason", "wait-quiet")); err != nil {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "用法: ferryman update [--check] [vX.Y.Z] [--prerelease]")
+		fmt.Fprintln(os.Stderr, "用法: ferryman update [--check] [vX.Y.Z] [--prerelease] [--wait-quiet=<秒>] [--force]")
 		return 2
 	}
 	spec := ""
@@ -641,7 +660,7 @@ func cmdUpdate(args []string, w io.Writer) int {
 		spec = fs.Arg(0)
 	}
 	if !*check {
-		return runUpdateExecute(spec, *pre, *selfRelay, w)
+		return runUpdateExecute(spec, *pre, *selfRelay, *waitQuiet, *force, w)
 	}
 	out, err := update.Check(update.Endpoints{}, version, spec, *pre)
 	if err != nil {
@@ -695,10 +714,12 @@ func orderFlagPairsFirst(args []string, valueFlags ...string) []string {
 }
 
 // runUpdateExecute 监督者执行路径（var 形 = main_test 注入缝，不真升级）。
-// 装配：config 可载则用其 DataDir/守护口，载不动回落缺省（~/ferryman、7311）
+// 装配：config 可载则用其 DataDir/守护口，载不动回落缺省（~/ferryman、15700）
 // ——升级不应因配置坏而不可用。结果 stdout 报告 + notify 通道推送（seam F，
-// 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）。
-var runUpdateExecute = func(spec string, pre, selfRelay bool, w io.Writer) int {
+// 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）；同一
+// 通道也接进监督者事务告警（票03 评审移交的生产接线）与静默门兜底告警
+// （票02：门未达成非交互硬切前一条）。
+var runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, force bool, w io.Writer) int {
 	dataDir, port := "", update.DefaultDaemonPort
 	var cfg *config.Config
 	if c, err := config.Load("", false); err == nil {
@@ -715,6 +736,13 @@ var runUpdateExecute = func(spec string, pre, selfRelay bool, w io.Writer) int {
 		Spec:       spec,
 		Prerelease: pre,
 		SelfRelay:  selfRelay,
+		WaitQuiet:  quietWaitFromFlag(waitQuiet),
+		Force:      force,
+		Alert: func(title, msg string) {
+			if cfg != nil {
+				notify.NotifyAlert(title, msg, cfg) // 旁路尽力而为（NotifyAlert 内已护）
+			}
+		},
 	}).Run()
 	if res.Relayed {
 		// 自中继交棒：副本进程已接手（detached 无控制台），结果走 notify；
@@ -741,6 +769,16 @@ var runUpdateExecute = func(spec string, pre, selfRelay bool, w io.Writer) int {
 		return 0
 	}
 	return 1
+}
+
+// quietWaitFromFlag --wait-quiet 秒数 → update.Config.WaitQuiet：0 = 不等
+// 映射为负值哨兵（update.Config 语义：负 = 不等待、0 = 缺省 60s——旗标缺省
+// 60 直接透传即缺省语义，零值位留给库用缺省）；其余秒→时长。
+func quietWaitFromFlag(seconds int) time.Duration {
+	if seconds == 0 {
+		return -1
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // ---- mcp（票04：agent 面 stdio MCP server） ----

@@ -94,17 +94,27 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	//    由下方 2.5 的 machine-waiting 豁免接住放行；只有未停车窗照旧闭。
 	d.NoteGatePrompt(agent, sessionID)
 
-	// 1. 魔法前缀：单次放行（「强续」为主——CC 下 ! 首字符触发 bash 模式，!! 打不出来；
-	//    !! 保留匹配以兼容 Codex）
+	// 1. 魔法前缀：放行 + 解除本轮拦截（「强续」为主——CC 下 ! 首字符触发 bash
+	//    模式，!! 打不出来；!! 保留匹配以兼容 Codex）。强续=用户明确选择留在本
+	//    会话，必须清 pending：inWindow 含 `|| pok`，pending 不清则活跃会话被
+	//    永久卡在拦截窗口（2026-09-30 06703fbd 案：强续放行后 58.6s 的下一条
+	//    消息仍被分支6第3次拦截——pending 原只在闲置≥summarize_s 的新周期才清，
+	//    正在对话的用户永不满足，强续沦为每条消息都要带前缀的跑步机）。清除后
+	//    若再长闲置，从分支7警告重新起圈，拦截保护不丢。
 	if strings.HasPrefix(prompt, "强续") || strings.HasPrefix(prompt, "!!") {
 		d.Stats.addBypass()
 		stB := d.Ledger.Get(agent, sessionID) // 只取一次（lineage 尽力而为）
+		if stB == nil {
+			stB = d.Ledger.GetByPath(transcriptPath) // 与分支6/7 的 pending 键同源解析
+		}
 		peak := 0
 		if stB != nil {
 			d.Ledger.Mu().Lock()
 			peak = stB.PeakCtx
 			d.Ledger.Mu().Unlock()
+			d.Pending.Clear([2]string{agent, stB.SessionID})
 		}
+		d.Pending.Clear([2]string{agent, sessionID})
 		d.Acct("bypass", stB, agent, sessionID, "",
 			accounts.Fields{"prefix_tokens": peak})
 		return map[string]any{"decision": "allow", "reason": "bypass"}
@@ -127,6 +137,16 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		return map[string]any{"decision": "allow", "reason": "mode-off"}
 	}
 
+	// 闲置锚点换内容时钟（ADR-0013 的幻影写入免疫，2026-09-30 603fef0f 案）：
+	// CC 对开着会话周期性落无时间戳状态块（mode/snapshot/lastPrompt，实测一场
+	// 会话 149 条），文件时钟被反复顶新——开窗口的会话闲置钟被稀释、永不进拦窗
+	// （真闲置 78 分钟被压成 17 分钟，只提醒不拦）。内容时钟=转录内最后带时间戳
+	// 记录；watcher 侧只在摆渡入队路径懒刷新（活跃会话不经过），闸门须自算。
+	// 取不到（0）回落文件时钟＝旧行为（fail-open）。仅 CC：幻影写与 cctrans 的
+	// timestamp 解析都是 CC 转录语义，codex 维持文件时钟（ADR-0013 范围）。
+	if agent == "cc" {
+		d.contentClockFresh(st)
+	}
 	// 台账快照（锁内抄齐；其后闸门逻辑不持台账锁）。
 	d.Ledger.Mu().Lock()
 	snap := sessionSnap{sid: st.SessionID, path: st.TranscriptPath,
@@ -147,11 +167,11 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	}
 
 	th := d.Cfg.ThresholdFor(agent)
-	idle := clock.Now() - snap.lastWrite
+	idle := clock.Now() - snap.coversBar() // coversBar=内容时钟优先，幻影写免疫
 	key := [2]string{agent, snap.sid}
 	// pending 清除条件之一：新闲置周期（用户回来过又离开了 summarize 时长）
 	p, pok := d.Pending.Get(key)
-	if pok && snap.lastWrite > p.SetAt && idle >= th.SummarizeS {
+	if pok && snap.coversBar() > p.SetAt && idle >= th.SummarizeS {
 		d.Pending.Clear(key)
 		pok = false
 	}
@@ -164,6 +184,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			if h == nil && snap.observed && snap.peak >= th.MinCtxTokens {
 				d.EnqueueFerry(st)
 			}
+			d.gateWarn(agent, snap.sid, "observe", idle)
 			return map[string]any{"decision": "allow",
 				"additional_context": d.warnCtx(idle, h, false)}
 		}
@@ -180,20 +201,19 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		d.Stats.addBlocks()
 		d.Acct("block", st, "", "", "", accounts.Fields{
 			"prefix_tokens": snap.peak, "idle_s": mathx.Round(idle, 1)})
-		d.Store.SavePendingPrompt(snap.sid, prompt)
+		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
 		d.Store.MarkBlocked(h.HandoffID)
 		d.notifyBlock(st, h, idle)
 		return map[string]any{"decision": "block",
-			"reason": fmt.Sprintf("此会话已闲置 %.0f 分钟，缓存已失效；"+
-				"你刚输入的内容没有发出去，已原样保存、不会丢。\n"+
-				"接下来这样做（约 10 秒）：\n"+
-				"  1. 输入 /clear 清空上下文（或另开一个新会话，效果相同）\n"+
-				"  2. 新会话开场会自动收到两样东西：干到哪的交接 + 你刚这句原话"+
-				"（所以不用重新打字）\n"+
-				"  3. 随便发一个字（如「继续」）——它会接着你刚那句继续干\n"+
-				"不想换会话：以「强续」开头重发你的内容，本会话强制继续"+
-				"（注意：原话只随 /clear 自动带回，强续必须自己带上）。\n"+
-				"交接文档: %s", idle/60, h.Path),
+			"reason": fmt.Sprintf("此会话已闲置 %.0f 分钟（缓存已失效）。"+
+				"你刚输入的内容没有发出去，原话已保存：%s\n"+
+				"\n【推荐】/clear 换新会话（约 10 秒，进度和原话自动带过去）：\n"+
+				"  1. 输入 /clear\n"+
+				"  2. 随便发一个字（如「继续」）\n"+
+				"  新会话开场自动收到：本会话的进度交接 + 你这条原话，接着原话继续干。\n"+
+				"\n【不想换会话】以「强续」开头重发你的内容（例：「强续 %s」），"+
+				"解除本轮拦截、留在本会话继续。\n"+
+				"交接文档: %s", idle/60, blockPreview(prompt), blockExample(prompt), h.Path),
 			"suppressOriginalPrompt": true,
 			"handoff_path":           h.Path}
 	}
@@ -201,23 +221,28 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		n := d.Pending.BumpBlocks(key)
 		if n > DegradeAfterBlocks { // 连续 3 次 block 之后降级（DESIGN §6.10-6）
 			d.Pending.Clear(key)
+			d.gateWarn(agent, snap.sid, "enforce-degrade", idle)
 			return map[string]any{"decision": "allow",
 				"additional_context": d.warnCtx(idle, nil, true)}
 		}
 		d.Stats.addBlocks()
 		d.Acct("block", st, "", "", "", accounts.Fields{
 			"prefix_tokens": snap.peak, "idle_s": mathx.Round(idle, 1)})
-		d.Store.SavePendingPrompt(snap.sid, prompt)
+		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
 		return map[string]any{"decision": "block",
-			"reason": fmt.Sprintf("此会话闲置超时被拦（第 %d 次）；你刚输入的内容已保存、不会丢。\n"+
-				"继续干活：每次以「强续」开头发消息（每一条都会放行，无需数次数，"+
-				"内容须自己带上）；或 /clear 换会话（若交接已生成会自动注入"+
-				"交接与你的原话）。", n),
+			"reason": fmt.Sprintf("此会话闲置超时被拦（第 %d 次）。"+
+				"你刚输入的内容没有发出去，原话已保存：%s\n"+
+				"\n【现在就能继续】以「强续」开头重发你的内容（例：「强续 %s」），"+
+				"解除本轮拦截、留在本会话。\n"+
+				"\n【或 /clear 换新会话】开场发一个字即可；本会话的交接若已生成会"+
+				"一并带给新会话，此刻还没好则新会话只会带回你这条原话（之前的进度"+
+				"需要自己简述两句）。", n, blockPreview(prompt), blockExample(prompt)),
 			"suppressOriginalPrompt": true}
 	}
 	// 分支 7：警告一次 + 置 pending + 触发摆渡
 	d.Pending.Set(key)
 	d.Stats.addWarns()
+	d.gateWarn(agent, snap.sid, "enforce", idle)
 	if snap.observed && snap.peak >= th.MinCtxTokens {
 		d.EnqueueFerry(st)
 	}
@@ -232,6 +257,48 @@ func allowAllow(info string) map[string]any {
 		return map[string]any{"decision": "allow"}
 	}
 	return map[string]any{"decision": "allow", "additional_context": info}
+}
+
+// contentClockFresh 闸门用的内容时钟现算：与 watcher.contentClock 同款缓存
+// 纪律（ContentStamp==LastWrite 版本一致直接用缓存，否则读尾重算并回填台账；
+// 读不到按 0 返回，调用侧 coversBar 回落文件时钟＝旧行为 fail-open）。两处
+// 共用 ContentTS/ContentStamp 缓存字段，同值幂等，互踩无害。
+func (d *Daemon) contentClockFresh(st *ledger.SessionState) float64 {
+	d.Ledger.Mu().Lock()
+	path := st.TranscriptPath
+	lastWrite := st.LastWrite
+	ts, stamp := st.ContentTS, st.ContentStamp
+	d.Ledger.Mu().Unlock()
+	if stamp == lastWrite {
+		return ts
+	}
+	ts2, ok := cctrans.LastTimestamp(path)
+	d.Ledger.Mu().Lock()
+	if st.LastWrite == lastWrite {
+		st.ContentTS, st.ContentStamp = ts2, lastWrite
+	}
+	d.Ledger.Mu().Unlock()
+	if !ok {
+		return 0
+	}
+	return ts2
+}
+
+// blockPreview 拦截文案里的原话预览（30 码点；空 prompt 占位）——"已保存"
+// 看得见，用户才敢放心 /clear。
+func blockPreview(prompt string) string {
+	if pv := mathx.RuneTrunc(strings.TrimSpace(prompt), 30); pv != "" {
+		return pv
+	}
+	return "（这条消息内容为空）"
+}
+
+// blockExample 强续前缀示例（同源截短；空 prompt 占位）。
+func blockExample(prompt string) string {
+	if ex := mathx.RuneTrunc(strings.TrimSpace(prompt), 20); ex != "" {
+		return ex
+	}
+	return "你的内容"
 }
 
 // machineWaiting _machine_waiting（server.py:251-277 逐字）：缺口A：机器等机器

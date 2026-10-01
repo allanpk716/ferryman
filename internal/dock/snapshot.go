@@ -63,6 +63,7 @@ type SnapshotStore struct {
 	sessions map[string]*sessionRec
 	clock    int64 // LRU 单调时钟（与真实时间无关，只比先后）
 	skipped  int   // session_id 提取失败/缺失的跳过计数（只记数不告警）
+	stats    *proxyStats // 票01 W1：代理面统计读侧（server 回写、此处只读转发；nil＝未接线报 0/0）
 }
 
 // NewSnapshotStore 构造空快照库。
@@ -156,6 +157,18 @@ func (s *SnapshotStore) Skipped() int {
 	return s.skipped
 }
 
+// ProxyStats 代理面流量统计只读抄表（票01 W1 静默门数据面）：在途数与最后
+// 完成时刻（Unix 秒）。统计只覆盖 15722 代理面上真实 CC 流量——心跳自产
+// 重放与管理口 15700 流量一律不在内（回写侧见 server.go proxyStats）。
+// stats 为 nil（直构快照库/统计未接线）＝0,0，与"渡口未启用如实报零"同语义，
+// 调用方（daemon /stats）不报错。
+func (s *SnapshotStore) ProxyStats() (inflight int, lastTS int64) {
+	if s.stats == nil {
+		return 0, 0
+	}
+	return s.stats.snapshot()
+}
+
 // tick 刷新 LRU 时钟（须持锁）。与真实时间脱钩：只要求全序一致。
 func (s *SnapshotStore) tick(rec *sessionRec) {
 	s.clock++
@@ -218,10 +231,38 @@ func ShouldCapture(method, path string) bool {
 	return strings.HasSuffix(path, "/v1/messages")
 }
 
-// ExtractSessionID 从请求体 JSON 提取 metadata.session_id；失败/缺失返回 ""
-// （调用方据此走跳过计数——透传不受影响）。只做一层浅解析，不用全量
-// map[string]any：CC 请求体可到 MB 级，省一次全量反序列化。
-func ExtractSessionID(body []byte) string {
+// HeaderClaudeCodeSessionID CC 每请求携带的会话 ID 头（claude-cli 2.1.273 地面
+// 真值：每请求带裸 UUID；值与台账会话 ID 机制级等值＝转录文件名，已实证）。
+// 渡口侧：体 metadata.session_id 缺失时回落读本头归因；beat 发送侧重放请求
+// 带本头（值=目标会话 ID），渡口记账行据此按会话归集。
+const HeaderClaudeCodeSessionID = "x-claude-code-session-id"
+
+// conflictLog 会话归因头体冲突的留痕口（var 而非直接调 logger：测试钉"留痕
+// 恰一行"不必截 stderr；生产路径即 logger.Printf 一行）。
+var conflictLog = func(format string, args ...any) { logger.Printf(format, args...) }
+
+// ExtractSessionID 会话归因提取（快照捕获与渡口记账归因两个消费点共用，一处
+// 实现）：请求体 JSON 的 metadata.session_id 第一优先；缺失时回落
+// X-Claude-Code-Session-Id 头。头值须过 UUID 格式校验（36 位 8-4-4-4-12 带连
+// 字符十六进制，大小写均可；不合格式＝缺失）；头体并存以体为准（值不同留一
+// 行日志）；都缺返回 ""（调用方据此走跳过计数——绝不伪造 ID）。
+func ExtractSessionID(body []byte, h http.Header) string {
+	sid := bodySessionID(body)
+	hv := headerSessionID(h)
+	if sid != "" {
+		if hv != "" && hv != sid {
+			conflictLog("会话归因头体冲突（以体为准）: body=%s header=%s", sid, hv)
+		}
+		return sid
+	}
+	return hv
+}
+
+// bodySessionID 体侧原样提取 metadata.session_id（不做格式校验——体是既有台账
+// 口径，历史上如何记就如何记；格式防御只针对头回落）。失败/缺失返回 ""。
+// 只做一层浅解析，不用全量 map[string]any：CC 请求体可到 MB 级，省一次全量
+// 反序列化。
+func bodySessionID(body []byte) string {
 	var req struct {
 		Metadata struct {
 			SessionID string `json:"session_id"`
@@ -231,4 +272,38 @@ func ExtractSessionID(body []byte) string {
 		return ""
 	}
 	return req.Metadata.SessionID
+}
+
+// headerSessionID 头回落值：无头或值不合格式＝""（视同缺失）。
+func headerSessionID(h http.Header) string {
+	if h == nil {
+		return ""
+	}
+	v := h.Get(HeaderClaudeCodeSessionID)
+	if v == "" || !isUUID36(v) {
+		return ""
+	}
+	return v
+}
+
+// isUUID36 裸 UUID 形校验：36 字节、8-4-4-4-12 连字符分段、十六进制（大小写
+// 均可）。不校验版本位——归因识别面而非安全面，形状对即可。
+func isUUID36(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < 36; i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }

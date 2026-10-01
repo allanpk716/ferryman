@@ -45,7 +45,7 @@ type SessionState struct {
 	LastWrite      float64 // UTC epoch 秒（文件时钟：mtime 口径）
 	Size           int
 	PeakCtx        int
-	ObservedActive bool    // daemon 启动后是否见过其活动（lookback=0 的摆渡闸）
+	ObservedActive bool    // daemon 启动后是否见过其活动（lookback=0 的摆渡闸）；2026-09-30 起另含"重启观察窗"：watcher 对 mtime 近 24h（=交接新鲜窗）的存量会话补置 true——daemon 死过不改变"它近期活跃"的事实
 	HandedOffAt    float64 // 最近一次成功摆渡时间（防重复入队）
 	// 内容时钟三字段（ADR-0013，防 CC 状态块幻影写入反复重摆渡）：
 	//   ContentTS        转录内最后带时间戳记录的 epoch（懒尾解析，0=未算）；

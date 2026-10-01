@@ -584,3 +584,30 @@ func TestHandoffMarkdownHeaderVerbatim(t *testing.T) {
 		t.Fatalf("meta 缺键 None 渲染缺失: %q", strings.SplitN(md2, "\n", 3)[1])
 	}
 }
+
+// TestChatOpenAIExtraBodyMerged 终局修复1:extra_body 透传在 openai 档同款
+// 并入（冲突以透传为准）——GLM 关 thinking 等供应商特异参数经配置注入。
+func TestChatOpenAIExtraBodyMerged(t *testing.T) {
+	c := newChatSrv(t, []string{chatBody(t, "ok")})
+	pr := Provider{Name: "zhipu", BaseURL: c.srv.URL, Model: "glm-5.3-flash",
+		ExtraBody: map[string]any{
+			"thinking":    map[string]any{"type": "disabled"},
+			"temperature": 0.9, // 覆盖默认 0.2——透传优先
+		}}
+	if _, _, err := Chat(pr, "s", "u", 10, 128); err != nil {
+		t.Fatal(err)
+	}
+	_, _, payloads := c.snap()
+	if len(payloads) != 1 {
+		t.Fatalf("应恰一次调用, got %d", len(payloads))
+	}
+	p := payloads[0]
+	th, ok := p["thinking"].(map[string]any)
+	if !ok || th["type"] != "disabled" {
+		t.Fatalf("thinking 透传缺失: %v", p["thinking"])
+	}
+	if p["temperature"] != 0.9 {
+		t.Fatalf("temperature = %v, want 0.9（透传覆盖默认）", p["temperature"])
+	}
+	// 零值（无 ExtraBody）路径既有测试已覆盖——此处只钉并入语义。
+}

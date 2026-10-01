@@ -186,6 +186,10 @@ func TestSendAppendReplayHappyPath(t *testing.T) {
 	if g := hdr.Get("X-Ferryman-Replay"); g != "same_model" {
 		t.Fatalf("重放标记头 = %q, want same_model（渡口据此不入快照）", g)
 	}
+	// 票01：会话归因头（值=目标会话 ID）——渡口记账行据此按会话归集。
+	if g := hdr.Get("X-Claude-Code-Session-Id"); g != "sess-1" {
+		t.Fatalf("会话归因头 = %q, want sess-1（渡口记账归因按会话归集）", g)
+	}
 	// 体：max_tokens=封顶；既有 messages 逐字段不变；末条=指令 user 消息。
 	var got struct {
 		MaxTokens int               `json:"max_tokens"`

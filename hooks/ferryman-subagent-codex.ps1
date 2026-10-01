@@ -1,7 +1,7 @@
 ﻿# Ferryman 子代理生命周期钩子（Codex SubagentStart/SubagentStop）—— fire-and-forget fail-open
 # 官方文档：subagent 钩子的 session_id = 父会话 id → 与 CC 同款纯计数（嵌套各计一次）。
 # 注意：codex exec 不派发钩子（上游 bug openai/codex#26452），仅 TUI 路径生效。
-# 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 7311）；
+# 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 15700）；
 #               FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
 if ($env:FERRYMAN_DISABLE -eq '1') { exit 0 }
 # 自举：拉起不等就绪（fire-and-forget）
@@ -12,7 +12,7 @@ try {
         [Console]::InputEncoding = [System.Text.Encoding]::UTF8
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     } catch {}
-    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 7311 }
+    $port = if ($env:FERRYMAN_PORT) { $env:FERRYMAN_PORT } else { 15700 }
     $tokenFile = if ($env:FERRYMAN_TOKEN_FILE) { $env:FERRYMAN_TOKEN_FILE }
                  else { "$env:USERPROFILE\ferryman\daemon.token" }
     $raw = [Console]::In.ReadToEnd()

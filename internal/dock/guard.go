@@ -4,6 +4,9 @@
 // base_url 与 model_map 在 daemon 生命周期内不变——准入状态是常量，逐请求
 // 重判只会白烧 CPU 并引入半途切换的不一致。拒绝＝退回纯透传（绝不半改写），
 // 与票05 泳道决策对齐：改写模式必须显式配 default，否则宁可全透传。
+// （票02 评审注记：上游表逐请求解析（UpstreamResolver）落地后，"生命周期内
+// 不变"只对固定模式成立——resolver 模式下每请求的 newUpstreamView 会重跑
+// 本判定，语义仍是"视图内一次判死"，不构成逐请求抖动。）
 //
 // 判定单源：doctor（installer）与 daemon 构造期都读本文件的
 // ResolveRewrite/DoubleRewriteRisk，绝不出现两套判据；本地中转地址判定单源

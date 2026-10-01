@@ -5,6 +5,7 @@
 package installer
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -318,13 +319,49 @@ func TestLauncher(t *testing.T) {
 	}
 }
 
-// ---- 附录#14：HttpBeatSender 功能退化声明（信息行不判 FAIL） ----
+// ---- 附录#14：心跳能力声明（信息行不判 FAIL；2026-09-29 修订文案） ----
 
 func TestHttpBeatNoticeContent(t *testing.T) {
-	if !strings.Contains(HttpBeatNotice, "心跳真实发送未实装") ||
-		!strings.Contains(HttpBeatNotice, "Q14") ||
-		!strings.Contains(HttpBeatNotice, "observe") {
+	if !strings.Contains(HttpBeatNotice, "心跳真发送已实装") ||
+		!strings.Contains(HttpBeatNotice, "Q14 已过") ||
+		!strings.Contains(HttpBeatNotice, "opt-in") {
 		t.Fatalf("声明文案不符: %s", HttpBeatNotice)
+	}
+}
+
+// ---- 2026-09-29 复盘件：dock_listening 半死形态检查 ----
+
+func TestCheckDockListeningPassAndFail(t *testing.T) {
+	// pass：真 listener 在听。
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	addr := ln.Addr().String()
+	if c := CheckDockListening(addr, realDialTCP); !c.OK {
+		t.Fatalf("在听应通过: %+v", c)
+	}
+	// fail：真拒绝（关闭口）——文案须点名半死与处置。
+	refusedAddr := func() string {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := l.Addr().String()
+		l.Close()
+		return a
+	}()
+	c := CheckDockListening(refusedAddr, realDialTCP)
+	if c.OK {
+		t.Fatal("无监听应失败")
+	}
+	if !strings.Contains(c.Msg, "半死形态") || !strings.Contains(c.Msg, "restart-daemon.ps1") {
+		t.Fatalf("失败文案应含半死与处置: %+v", c)
+	}
+	// nil 探针：不伪造。
+	if c := CheckDockListening(addr, nil); c.OK {
+		t.Fatal("探针未装配不应伪装通过")
 	}
 }
 
@@ -462,6 +499,10 @@ func greenDoctorDeps(t *testing.T, probe func() map[string]any) (doctorDeps, str
 	// 票06：MCP 注册在位（用户级 .claude.json 装态——mcp_registration 全绿前提）
 	InstallMCP(filepath.Join(home, ".claude.json"), filepath.Join(repo, "ferryman.exe"), false)
 	read()
+	// 服务商接管票05：三份配置落「接管后形态」+ orca home 注入——各测试自挂
+	// cfg.Dock（如 migratedDock，listen=15722）时三项 provider 体检须全绿；
+	// dock 不挂时三项按 not_checked 计入（不判失败，退出码不受影响）。
+	applyTakeoverGreenFixtures(t, home)
 	cfg := config.Default()
 	cfg.FerryProvider = "glm"
 	return doctorDeps{
@@ -470,6 +511,8 @@ func greenDoctorDeps(t *testing.T, probe func() map[string]any) (doctorDeps, str
 		CCSwitchDB:  db,
 		CodexHooks:  CodexHooksPath(home),
 		CodexConfig: CodexConfigPath(home),
+		OrcaCodexHome: filepath.Join(home, "AppData", "Roaming", "orca",
+			"codex-runtime-home", "home"),
 		LoadCfg:     func() (*config.Config, error) { return cfg, nil },
 		LoadProviders: func() (map[string]ferry.Provider, error) {
 			return map[string]ferry.Provider{"glm": {Name: "glm", BaseURL: "http://x", Model: "m"}}, nil
@@ -480,6 +523,79 @@ func greenDoctorDeps(t *testing.T, probe func() map[string]any) (doctorDeps, str
 		WatchdogTask: func() (TaskStatus, error) { return TaskStatus{Exists: true, NextRun: "2026/9/19 21:00:00"}, nil },
 		Out:          nil, // 调用方填
 	}, dataDir
+}
+
+// takeoverCodexConfig 接管后形态的 codex config 夹具（doctor 全绿前提）；
+// orca=true 时附 [hooks.state.*] 他人节（orca 镜像形蓝本）。
+func takeoverCodexConfig(orca bool) string {
+	s := `model = "glm-5.3"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "ferryman"
+base_url = "http://127.0.0.1:15722/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "FERRYMAN_MANAGED"
+
+[features]
+hooks = true
+
+[mcp_servers.serena]
+command = "uvx"
+args = ["--from", "git+https://example.invalid/serena", "serena"]
+`
+	if orca {
+		s += `
+[hooks.state.C--WorkSpace-agent-Ferryman]
+trusted = true
+`
+	}
+	return s
+}
+
+// applyTakeoverGreenFixtures 三份配置落接管后形态（票05 doctor 全绿前提）：
+// settings.json 并入 env.ANTHROPIC_BASE_URL（保留 InstallCC 装的钩子）、codex
+// 普通份换成完整接管表（hooks.json 保持 InstallCodex 产物——CheckCodex 判定
+// 不变）、orca home 建镜像 + auth.json（apikey 形态）。
+func applyTakeoverGreenFixtures(t *testing.T, home string) {
+	t.Helper()
+	sp := filepath.Join(home, ".claude", "settings.json")
+	rawSettings, err := os.ReadFile(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(rawSettings, &root); err != nil {
+		t.Fatal(err)
+	}
+	envMap, _ := root["env"].(map[string]any)
+	if envMap == nil {
+		envMap = map[string]any{}
+		root["env"] = envMap
+	}
+	envMap["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:15722"
+	writeJSONFile(t, sp, root)
+	if err := os.WriteFile(CodexConfigPath(home), []byte(takeoverCodexConfig(false)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"),
+		[]byte(`{"OPENAI_API_KEY": "sk-noop-placeholder"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orcaHome := filepath.Join(home, "AppData", "Roaming", "orca",
+		"codex-runtime-home", "home")
+	if err := os.MkdirAll(orcaHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orcaHome, "config.toml"),
+		[]byte(takeoverCodexConfig(true)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orcaHome, "auth.json"),
+		[]byte(`{"OPENAI_API_KEY": "sk-noop-placeholder"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRunDoctorGateHintNotFailAndNotice(t *testing.T) {
@@ -532,9 +648,10 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	_ = runDoctor(deps)
 	got := out.String()
 	// 票02 起：+2 = Run 键自启 + 看门计划任务两查；票06 起：+1 = MCP 注册在位；
-	// 升级链票06 起：+1 = 升级事务残留检查
-	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1,
-		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1)
+	// 升级链票06 起：+1 = 升级事务残留检查；服务商接管票05 起：+3 = CC 指向/
+	// codex 指向/orca codex 健康三项（[dock] 未配置形态按 not_checked 计入）。
+	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3,
+		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3)
 	if !strings.Contains(got, want) {
 		t.Fatalf("结论计数不符:\nwant: %s\ngot:\n%s", want, got)
 	}
@@ -746,13 +863,20 @@ func TestCheckUpdateResiduesSwapDomain(t *testing.T) {
 	}
 }
 
-// TestDoctorResultsUpdateResidueWiring 装配缝:全绿夹具末位 = update_residues
-// 且 pass;数据目录出现 journal 残留 → 该项 fail 行可见 + 退出码 1。
+// TestDoctorResultsUpdateResidueWiring 装配缝:全绿夹具下 update_residues pass
+// （其后由票05 的 provider 三项续接末位——顺序见 TestDoctorResultsThreeFieldsAndOrder）;
+// 数据目录出现 journal 残留 → 该项 fail 行可见 + 退出码 1。
 func TestDoctorResultsUpdateResidueWiring(t *testing.T) {
 	deps, dataDir := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
 	res := doctorResults(deps)
-	if last := res[len(res)-1]; last.Name != "update_residues" || last.Status != StatusPass {
-		t.Fatalf("末位应为 update_residues 且全绿夹具下 pass: %+v", last)
+	idx := -1
+	for i, r := range res {
+		if r.Name == "update_residues" {
+			idx = i
+		}
+	}
+	if idx < 0 || res[idx].Status != StatusPass {
+		t.Fatalf("update_residues 应在位且全绿夹具下 pass: %+v", res)
 	}
 	if err := os.WriteFile(filepath.Join(dataDir, "update-journal.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1046,7 +1170,7 @@ func TestRunDoctorDockHintsDoNotFail(t *testing.T) {
 // 守护/面板——测试一律临时口）。
 func notProdPort(t *testing.T, port int) {
 	t.Helper()
-	for _, p := range []int{15721, 15722, 15724, 7311, 15900} {
+	for _, p := range []int{15721, 15722, 15724, 7311, 15700, 15900} {
 		if port == p {
 			t.Fatalf("测试撞生产端口 %d——换口", port)
 		}
@@ -1103,6 +1227,8 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		"codex_hooks", "daemon_liveness", "autostart", "watchdog_task",
 		"mcp_registration", // 票06：追加在末位（既有项顺序零漂移）
 		"update_residues",  // 升级事务残留（规格 §C 第9条）：续接末位追加
+		// 服务商接管三项（票05）：续接末位（夹具 cfg.Dock 缺 → not_checked）
+		"provider_cc_dock", "provider_codex_dock", "provider_orca_codex",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("项数 = %d, want %d: %+v", len(got), len(want), got)
@@ -1114,8 +1240,11 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		if r.Detail == "" || !legal[r.Status] {
 			t.Fatalf("三要素不齐: %+v", r)
 		}
-		if r.Status != StatusPass {
-			t.Fatalf("全绿夹具应全 pass: %+v", r)
+		// 夹具 [dock] 未配置：provider 三项按 not_checked 如实标注（不伪造），
+		// 其余项全 pass。
+		notCheckedOK := i >= len(want)-3
+		if r.Status != StatusPass && !(notCheckedOK && r.Status == StatusNotChecked) {
+			t.Fatalf("全绿夹具应 pass（provider 三项可 not_checked）: %+v", r)
 		}
 	}
 }
@@ -1268,5 +1397,100 @@ func TestDoctorSameModelHeatTTLMissing(t *testing.T) {
 	// same_model 关:零新增行(存量用户 doctor 输出零漂移)。
 	if r := find(doctorResults(mk(false, 0))); r != nil {
 		t.Fatalf("same_model 关闭不应出判热 TTL 行: %+v", r)
+	}
+}
+
+// ---- 服务商接管三项体检（票05：provider_cc_dock / provider_codex_dock /
+// provider_orca_codex——判定单源 internal/provider，此处只验接线与计数） ----
+
+// providerCheckByName doctorResults 结果按名取项。
+func providerCheckByName(t *testing.T, res []CheckResult, name string) CheckResult {
+	t.Helper()
+	for _, r := range res {
+		if r.Name == name {
+			return r
+		}
+	}
+	t.Fatalf("缺检查项 %s", name)
+	return CheckResult{}
+}
+
+// dock 已挂（migratedDock，listen=15722）+ 三份配置接管后形态 → 三项全 pass、
+// 总数 17+3、全绿退出 0。
+func TestDoctorProviderTakeoverChecksPass(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	cfg, _ := deps.LoadCfg()
+	cfg.Dock = migratedDock()
+	res := doctorResults(deps)
+	// 计数：基座 17（cc_hooks/launcher/ccswitch/ferry_provider + 7 脚本 +
+	// codex_hooks/daemon/autostart/watchdog/mcp/update_residues）
+	// + dock 组 6（dock_rewrite/dock_upstream/三条未激活缺钥提示/dock_listening
+	//   not_checked——migratedDock 表形态）
+	// + provider 三项 3 = 26。
+	if len(res) != 26 {
+		names := make([]string, 0, len(res))
+		for _, r := range res {
+			names = append(names, r.Name+":"+string(r.Status))
+		}
+		t.Fatalf("应 26 项(17+6+3), got %d: %v", len(res), names)
+	}
+	for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
+		if r := providerCheckByName(t, res, n); r.Status != StatusPass {
+			t.Fatalf("%s 应 pass: %s", n, r.Detail)
+		}
+	}
+	var out strings.Builder
+	deps.Out = &out
+	if code := runDoctor(deps); code != 0 {
+		t.Fatalf("接管形态全绿应退出 0:\n%s", out.String())
+	}
+}
+
+// CC 指向漂移（模拟 cc-switch 会话同步复开/外部改写）→ provider_cc_dock
+// fail、其余两项不受牵连、退出 1。
+func TestDoctorProviderCCDriftFails(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	cfg, _ := deps.LoadCfg()
+	cfg.Dock = migratedDock()
+	sp := filepath.Join(deps.Home, ".claude", "settings.json")
+	rawSettings, err := os.ReadFile(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(rawSettings, &root); err != nil {
+		t.Fatal(err)
+	}
+	root["env"].(map[string]any)["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:15721"
+	writeJSONFile(t, sp, root)
+	res := doctorResults(deps)
+	if r := providerCheckByName(t, res, "provider_cc_dock"); r.Status != StatusFail ||
+		!strings.Contains(r.Detail, "15721") {
+		t.Fatalf("CC 漂移应 fail 并点名现值: %+v", r)
+	}
+	if r := providerCheckByName(t, res, "provider_codex_dock"); r.Status != StatusPass {
+		t.Fatalf("codex 两项不受 CC 漂移牵连: %+v", r)
+	}
+	var out strings.Builder
+	deps.Out = &out
+	if code := runDoctor(deps); code != 1 {
+		t.Fatalf("漂移应退出 1:\n%s", out.String())
+	}
+}
+
+// [dock] 未配置 → 三项显式 not_checked（如实标注不伪造；greenDoctorDeps 不挂
+// dock 的存量形态，退出码不受影响）。
+func TestDoctorProviderChecksNotCheckedWithoutDock(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	res := doctorResults(deps)
+	for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
+		if r := providerCheckByName(t, res, n); r.Status != StatusNotChecked {
+			t.Fatalf("%s 应 not_checked（dock 未配置）: %+v", n, r)
+		}
+	}
+	var out strings.Builder
+	deps.Out = &out
+	if code := runDoctor(deps); code != 0 {
+		t.Fatalf("not_checked 不判失败，应退出 0:\n%s", out.String())
 	}
 }

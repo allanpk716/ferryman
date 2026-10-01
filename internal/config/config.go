@@ -104,6 +104,11 @@ const DefaultDockBalanceURL = "https://open.bigmodel.cn/api/user/balance"
 // DefaultDockDrainTimeoutS 票02：优雅排水上限缺省（秒，spec 错误契约热修 1）。
 const DefaultDockDrainTimeoutS = 180.0
 
+// DefaultDockBindRetryS 渡口绑定重试上限缺省（秒）。对齐停旧预算 240s：升级/
+// 重启竞态里旧守护排水占口最长 drain_timeout_s=180s，新守护须等得起才能接上
+// （2026-09-29 复盘：抢跑进"无渡口"半死形态）。0 = 关重试（旧单发行为）。
+const DefaultDockBindRetryS = 240.0
+
 // DockCfg 渡口（本机 API 中转，票01）配置。注意语义是 opt-in：Config.Dock
 // 为 nil 指针（[dock] 节缺失）＝渡口完全不启动——不绑端口、零行为变化
 // （评审 F11 裁定）；节存在才构造本结构，缺字段回落默认值。
@@ -126,6 +131,11 @@ type DockCfg struct {
 	// 它造 dock Server.Shutdown 的排水 ctx；须 > 0（0/负＝即时掐流，即旧
 	// Close 语义，配置层直接拒）。
 	DrainTimeoutS float64
+	// BindRetryS 渡口绑定重试上限（秒，缺省 240；0=关重试）。绑定失败（典型：
+	// 升级/重启竞态里旧守护排水仍占渡口口）按 2s 间隔重试至上限，耗尽才降级
+	// "无渡口"——控制口 7311 先于渡口绑定，重试期间看门探活看到的仍是健康
+	// 控制面（2026-09-29 复盘的守护侧根修）。负值配置层拒。
+	BindRetryS float64
 }
 
 // Config 全量配置（字段=Python dataclass 1:1）。
@@ -140,6 +150,10 @@ type Config struct {
 	QuestionWatch QuestionWatchCfg
 	WaitWindow    WaitWindowCfg // 票04：等待窗心跳三态（默认 off，缺节即 off）
 	FerryProvider string        // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	// FerryChain 票02：[ferry] chain 顺位链名字表（Go 侧先行键，Python 版无）。
+	// 空=未配置（provider 单键兜底等价单元素链，取用经 FerryChainNames）；
+	// 链非空时解析层逐名校验供应商表，缺名 → 配置错误上抛（坏 TOML 同款）。
+	FerryChain    []string      // 票02
 	SameModel     SameModelCfg  // [ferry.same_model]（票01，ADR-0015：默认 off）
 	Tuning        TuningCfg     // [tuning]（票01，D10：默认 recommend）
 	Dock          *DockCfg      // nil=[dock] 节缺失＝渡口不启动（F11 opt-in）
@@ -161,7 +175,7 @@ func Default() *Config {
 			CodexExtraDirs: []string{},
 			HarvestUsage:   true,
 		},
-		Server: ServerCfg{Port: 7311},
+		Server: ServerCfg{Port: 15700},
 		Notify: NotifyCfg{Enabled: false, Pushover: true, Toast: true},
 		Heartbeat: HeartbeatCfg{
 			Enabled: false,
@@ -203,6 +217,21 @@ func (c *Config) DataDir() string {
 // ThresholdFor 按 Agent 分设留口：目前共用全局，Codex gate 本就 off。
 func (c *Config) ThresholdFor(_ string) ThresholdCfg {
 	return c.Thresholds
+}
+
+// FerryChainNames 摆渡顺位链名字表（票02 数据结构层；票03 执行器消费）：
+// chain 显式非空优先（并存即以 chain 为准，Validate 已留一行警告）；否则
+// provider 单键等价单元素链（向后兼容）；两者皆无 = nil（摆渡降级骨架，
+// 语义与现状 provider="" 一致）。空链（chain=[]）≡ 未配置——回落 provider，
+// 不单独成态。
+func (c *Config) FerryChainNames() []string {
+	if len(c.FerryChain) > 0 {
+		return c.FerryChain
+	}
+	if c.FerryProvider != "" {
+		return []string{c.FerryProvider}
+	}
+	return nil
 }
 
 // Load 读配置并校验。路径优先级：显式参数 > 环境变量 FERRYMAN_CONFIG >
@@ -384,6 +413,37 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			return err
 		}
 		cfg.FerryProvider = pyStr(get(f, "provider", cfg.FerryProvider))
+		// 票02：chain 顺位链（Go 侧先行键）。元素 pyStr（watch.codex_extra_dirs
+		// 同款容忍）；空链 ≡ 未配置（FerryChainNames 回落 provider 单元素链）。
+		// 链非空时逐名校验供应商表（[providers.*] 与 [ferry] 同文件，data 直取）：
+		// 缺名 → 配置错误上抛（坏 TOML 同款语义：Load 失败 → serve 捕获降级骨架）。
+		if rawChain, ok := f["chain"]; ok {
+			arr, ok := rawChain.([]any)
+			if !ok {
+				return errors.New("config: ferry.chain 不是数组")
+			}
+			chain := make([]string, 0, len(arr))
+			for _, v := range arr {
+				chain = append(chain, pyStr(v))
+			}
+			if len(chain) > 0 {
+				defined := map[string]struct{}{}
+				if rawPs, ok := data["providers"]; ok {
+					if ps, ok := rawPs.(map[string]any); ok {
+						for k := range ps {
+							defined[k] = struct{}{}
+						}
+					}
+				}
+				for i, n := range chain {
+					if _, ok := defined[n]; !ok {
+						return fmt.Errorf("config: ferry.chain[%d] 引用未定义的 provider %q（[providers.%s] 不存在）",
+							i, n, n)
+					}
+				}
+			}
+			cfg.FerryChain = chain
+		}
 		// [ferry.same_model]（票01，ADR-0015）：子节存在才整节重建，缺字段
 		// 回落默认（off/种子 20min/空表）；解析集中在 parseSameModelSection。
 		if rawSM, ok := f["same_model"]; ok {
@@ -450,6 +510,14 @@ func parseDockSection(dk map[string]any) (*DockCfg, error) {
 	if dts <= 0 {
 		return nil, fmt.Errorf("config: dock.drain_timeout_s 须 > 0（当前 %gs）", dts)
 	}
+	// 绑定重试上限（缺省 240；0=关重试；负值拒——与 drain 同款键纪律）。
+	brs, err := pyFloat(get(dk, "bind_retry_s", DefaultDockBindRetryS))
+	if err != nil {
+		return nil, err
+	}
+	if brs < 0 {
+		return nil, fmt.Errorf("config: dock.bind_retry_s 须 >= 0（当前 %gs）", brs)
+	}
 	dcfg := &DockCfg{
 		UpstreamBaseURL: pyStr(get(dk, "upstream_base_url", "http://127.0.0.1:15721")),
 		Listen:          pyStr(get(dk, "listen", "127.0.0.1:15722")),
@@ -460,6 +528,7 @@ func parseDockSection(dk map[string]any) (*DockCfg, error) {
 		BalanceURL:    pyStr(get(dk, "balance_url", DefaultDockBalanceURL)),
 		Active:        pyStr(get(dk, "active", "")),
 		DrainTimeoutS: dts,
+		BindRetryS:    brs,
 	}
 	if rawMM, ok := dk["model_map"]; ok {
 		mm, ok := rawMM.(map[string]any)
@@ -509,8 +578,16 @@ func parseDockUpstreamsTable(raw any) (map[string]DockUpstream, error) {
 		}
 		e := DockUpstream{
 			BaseURL:    pyStr(get(et, "base_url", "")),
-			APIKey:     pyStr(get(et, "api_key", "")),                 // 空＝未激活预置，解析不受影响
-			BalanceURL: pyStr(get(et, "balance_url", "")),             // 空＝不配不显示（D11）
+			APIKey:     pyStr(get(et, "api_key", "")),     // 空＝未激活预置，解析不受影响
+			BalanceURL: pyStr(get(et, "balance_url", "")), // 空＝不配不显示（D11）
+			Codex:      pyStr(get(et, "codex", "")),       // 票02：否决位；空＝按 dialect 推导
+		}
+		// 票02（供应商接管）：dialect 解析层归一——缺省/空一律 anthropic（＝既有
+		// 行为零变化），非法值不在解析层拦（枚举校验归 Validate，与 tuning.mode
+		// 同分工）。
+		e.Dialect = pyStr(get(et, "dialect", DialectAnthropic))
+		if e.Dialect == "" {
+			e.Dialect = DialectAnthropic
 		}
 		if rawMM, ok := et["model_map"]; ok {
 			mm, ok := rawMM.(map[string]any)
@@ -625,6 +702,13 @@ func Validate(c *Config, relaxMinGap bool) error {
 	// 单源 validateDockUpstreams 与首启迁移共用）。
 	if c.Dock != nil {
 		problems = append(problems, validateDockUpstreams(c.Dock)...)
+	}
+	// 票02：[ferry] chain 与 provider 并存 → 以 chain 为准，留一行警告。
+	// provider 单键只为旧配置兼容保留；dock 换源等仍写 provider 键的路径，
+	// 用户据此知道为何未生效。空链不告警（≡ 未配置，provider 照常生效）。
+	if len(c.FerryChain) > 0 && c.FerryProvider != "" {
+		fmt.Printf("[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = %q 被忽略）\n",
+			c.FerryProvider)
 	}
 	if len(problems) > 0 {
 		return errors.New("配置校验失败，拒绝启动：\n  - " + strings.Join(problems, "\n  - "))

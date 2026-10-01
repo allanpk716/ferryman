@@ -23,6 +23,12 @@
 //     条目装进"开关显式开"的探针交 dock.ResolveRewrite 单源裁决；新增渡口上游
 //     检查组 CheckDockUpstreams（active 可解析/非本地条目 default/缺钥逐条提示/
 //     deepseek 官方边界声明）。
+//   - 服务商接管票05（2026-09-30 夜链）：新三项 provider_cc_dock /
+//     provider_codex_dock / provider_orca_codex——CC 指向渡口、codex 两份指向
+//     渡口且 wire_api=responses 且 hooks 旗标在位、orca codex 健康（配置存在/
+//     指向渡口/认证形态合法）。判定单源 internal/provider（与接管写入器同一套
+//     解析）；[dock] 未配置 → 三项显式 not_checked（清单 24→27 的计数同步见
+//     doctor_test 的结论行公式）。
 package installer
 
 import (
@@ -31,6 +37,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,6 +50,7 @@ import (
 	"ferryman/internal/dock"
 	"ferryman/internal/ferry"
 	"ferryman/internal/prices"
+	"ferryman/internal/provider"
 	"ferryman/internal/update"
 )
 
@@ -81,10 +89,10 @@ func (c Check) named(name string) CheckResult {
 	return CheckResult{Name: name, Status: st, Detail: c.Msg}
 }
 
-// HttpBeatNotice HttpBeatSender 功能退化声明（评审附录#14）：心跳真实发送
-// 未实装（Q14 未授权），enforce 模式自动回落 observe 演练。信息行，不计入
-// 检查项、不判 FAIL。
-const HttpBeatNotice = "[提示] 心跳真实发送未实装（Q14 未授权），enforce 模式自动回落 observe 演练"
+// HttpBeatNotice 心跳能力声明（2026-09-29 修订文案：旧文"未实装/Q14 未授权"
+// 已与现实不符——Q14 早已通过、HttpBeatSender 已实装接线；实际发跳由
+// [heartbeat].enabled 与等待窗 opt-in 控制）。信息行，不计入检查项、不判 FAIL。
+const HttpBeatNotice = "[提示] 心跳真发送已实装（Q14 已过）；实际发跳由 [heartbeat].enabled 与等待窗 opt-in 控制"
 
 // 条目 JSON 里 -File "<path>" 的两种形（json 转义串 / 原文；doctor.py 正则逐字）。
 var (
@@ -338,6 +346,35 @@ func CheckDaemon(probe func() map[string]any, pidFile string) Check {
 		alert = " · ⚠ 健康告警: 疑似钩子失效"
 	}
 	return Check{true, "daemon 活着" + extra + alert}
+}
+
+// realDialTCP 渡口监听真探针：TCP 拨号，连上即 nil（watchdog.probeTCPPort 同
+// 语义；渡口是流式端点，可连＝在听）。
+func realDialTCP(addr string, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// dockListenTimeout CheckDockListening 拨号超时。
+const dockListenTimeout = 2 * time.Second
+
+// CheckDockListening 半死形态权威检查（2026-09-29 复盘件）：daemon 活着且
+// 配置了渡口 → 渡口必须在听。典型成因：升级/重启排水竞态里新守护渡口绑定
+// 失败降级"无渡口"（控制口活/渡口死，看门探活看不见）；dial 未装配时由
+// 调用方落 not_checked（本函数不伪造）。
+func CheckDockListening(listen string, dial func(addr string, timeout time.Duration) error) Check {
+	if dial == nil {
+		return Check{false, "渡口探针未装配"}
+	}
+	err := dial(listen, dockListenTimeout)
+	if err == nil {
+		return Check{true, fmt.Sprintf("渡口在听 %s", listen)}
+	}
+	return Check{false, fmt.Sprintf("半死形态：daemon 活着但渡口 %s 无监听（%v）——"+
+		"处置: restart-daemon.ps1（docs/20260929_守护重启事故复盘.md）", listen, err)}
 }
 
 // CheckFerryProvider 摆渡 provider 已配置且在 [providers.*] 有定义（T39 去内置
@@ -646,6 +683,9 @@ type doctorDeps struct {
 	LoadPrices func() map[string]prices.PriceBook
 	ArmVerdict config.ArmVerdictResolver
 	Probe      func() map[string]any
+	// DialTCP 渡口监听探针（2026-09-29 复盘件 dock_listening 检查用）；
+	// nil = 未装配 → 该项显式 not_checked（如实标注不伪造，LoadPrices 同款）。
+	DialTCP func(addr string, timeout time.Duration) error
 	// 票02：常驻保障两查（Run 键三态 + 看门任务在位/缺失）。
 	Autostart    func() (autostartStatus, error)
 	WatchdogTask func() (TaskStatus, error)
@@ -653,7 +693,11 @@ type doctorDeps struct {
 	// 参数传入（internal 包不 import cmd——显式传参不做全局单例）；空串/dev
 	// 都按「非 release 构建」呈现。
 	Version string
-	Out     io.Writer
+	// OrcaCodexHome orca 生态 CODEX_HOME（服务商接管体检用，票05）；空 = 按
+	// <Home>/AppData/Roaming/orca/codex-runtime-home/home 解析（与
+	// daemon.CodexWatchDirs 的 orca 目录解析同位）。测试注入临时目录。
+	OrcaCodexHome string
+	Out           io.Writer
 }
 
 // HomeDir / RepoRoot 目标解析导出面（票05：agent 面 MCP doctor 经此取 HOME/
@@ -691,6 +735,8 @@ func RunDoctor(version string) int {
 		// 票04 收口：实跳臂结论真源（无状态文件→条目未启用,如实体检）
 		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
 		Probe:      realStatsProbe(filepath.Join(home, "ferryman"), port),
+		// 2026-09-29 复盘件：半死形态检查真探针（CLI 面与 agent 面同源）
+		DialTCP: realDialTCP,
 		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
 		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
 		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
@@ -767,6 +813,17 @@ func doctorResults(d doctorDeps) []CheckResult {
 			// dock_upstream_rewrite_hint / dock_upstream_key:<条目名> /
 			// dock_deepseek_boundary——主判紧随 dock_rewrite）。
 			out = append(out, CheckDockUpstreams(cfg.Dock)...)
+			// 2026-09-29 复盘件：半死形态权威检查——daemon 活着且配置了渡口 →
+			// 渡口必须在听（daemon 未跑时渡口不在属预期，不查，由 daemon_liveness
+			// 自报；探针未装配 → not_checked 如实标注）。放 dock 组末位。
+			if d.Probe() != nil {
+				if d.DialTCP == nil {
+					out = append(out, CheckResult{Name: "dock_listening", Status: StatusNotChecked,
+						Detail: "渡口监听未检查（探针未装配——如实标注不伪造）"})
+				} else {
+					out = append(out, CheckDockListening(cfg.Dock.Listen, d.DialTCP).named("dock_listening"))
+				}
+			}
 		}
 	}
 
@@ -805,7 +862,56 @@ func doctorResults(d doctorDeps) []CheckResult {
 		exeDir = filepath.Dir(targetExe)
 	}
 	out = append(out, CheckUpdateResidues(dataDir, exeDir).named("update_residues"))
+	// 服务商接管三项体检（票05，spec Implementation Decisions 7）：
+	// provider_cc_dock / provider_codex_dock / provider_orca_codex——判定单源
+	// internal/provider（与写入器同一套解析与目标地址派生，绝不两套判据）。
+	// [dock] 未配置/配置加载失败 → 三项显式 not_checked（接管目标不可判——
+	// 如实标注不伪造）。续接末位：既有检查项顺序零漂移。
+	out = append(out, providerCheckResults(cfg, err, d)...)
 	return out
+}
+
+// providerCheckResults 服务商接管三项（票05）：dock 未配置 → 三行 not_checked；
+// 否则按 cfg.Dock.Listen 派生渡口目标（CC=http 根、codex=http+/v1，单源
+// provider.DockURLFromListen / DockCodexURLFromListen）交 provider 探针判定。
+func providerCheckResults(cfg *config.Config, cfgErr error, d doctorDeps) []CheckResult {
+	notChecked := func() []CheckResult {
+		rows := make([]CheckResult, 0, 3)
+		for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
+			rows = append(rows, CheckResult{Name: n, Status: StatusNotChecked,
+				Detail: "服务商接管体检未检查（[dock] 未配置——接管目标不可判，如实标注不伪造）"})
+		}
+		return rows
+	}
+	if cfgErr != nil || cfg == nil || cfg.Dock == nil {
+		return notChecked()
+	}
+	orcaHome := d.OrcaCodexHome
+	if orcaHome == "" {
+		orcaHome = filepath.Join(d.Home, "AppData", "Roaming", "orca",
+			"codex-runtime-home", "home")
+	}
+	orcaCfg := filepath.Join(orcaHome, "config.toml")
+	return []CheckResult{
+		providerVerdict("provider_cc_dock", provider.CheckCCPointsDock(
+			filepath.Join(d.Home, ".claude", "settings.json"),
+			provider.DockURLFromListen(cfg.Dock.Listen))),
+		providerVerdict("provider_codex_dock", provider.CheckCodexPointsDock(
+			CodexConfigPath(d.Home), orcaCfg,
+			provider.DockCodexURLFromListen(cfg.Dock.Listen))),
+		providerVerdict("provider_orca_codex", provider.CheckOrcaCodexHealth(
+			orcaCfg, provider.DockCodexURLFromListen(cfg.Dock.Listen))),
+	}
+}
+
+// providerVerdict provider.Verdict → CheckResult 换装（与 Check.named 同款：
+// OK→pass、!OK→fail；Detail 原样透传——判定在 provider 单源，本包不重复）。
+func providerVerdict(name string, v provider.Verdict) CheckResult {
+	st := StatusFail
+	if v.OK {
+		st = StatusPass
+	}
+	return CheckResult{Name: name, Status: st, Detail: v.Detail}
 }
 
 // DoctorStructured 票05：结构化体检导出入口——agent 面 MCP doctor 工具进程内
@@ -838,6 +944,8 @@ func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, res
 		// 票04 收口：实跳臂结论真源（agent 面与 CLI 面同源）
 		ArmVerdict: ferry.ArmVerdictResolverFor(ferry.DefaultArmVerdictPath()),
 		Probe:      realStatsProbe(cfg.DataDir(), cfg.Server.Port),
+		// 2026-09-29 复盘件：半死形态检查真探针（渡口 TCP 拨号）
+		DialTCP: realDialTCP,
 	}
 	if residency {
 		d.Autostart = func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) }

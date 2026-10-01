@@ -17,3 +17,6 @@ ferryman.exe.old-*
 # widget 子项目（ADR-0014：独立构建面）
 widget/src-tauri/target/
 widget/node_modules/
+
+# 真流量重录工具的原始捕获(含真钥,绝不入库;票04 评审修正)
+.scratch/recorded/

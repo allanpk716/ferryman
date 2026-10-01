@@ -80,7 +80,7 @@ func TestMCPSubprocessFullChain(t *testing.T) {
 		}
 		port = ln.Addr().(*net.TCPAddr).Port
 		ln.Close()
-		if port != 15721 && port != 15722 && port != 15724 && port != 7311 && port != 15900 {
+		if port != 15721 && port != 15722 && port != 15724 && port != 7311 && port != 15700 && port != 15900 {
 			break
 		}
 		port = 0
