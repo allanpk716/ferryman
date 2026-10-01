@@ -211,8 +211,9 @@ func (w *Worker) do(item map[string]any) {
 			// 终审#2：失败路径只记一行 failed，且在骨架保存之后——骨架产物
 			// 不另记行（append-only 从零起账，双行无法事后修复）。defer 承载
 			// Python finally：骨架保存炸（盘满）也照样记账，异常继续上抛由
-			// runOne 护栏兜。
-			defer w.BookHandoff(item, agent, sid, map[string]any{}, "failed")
+			// runOne 护栏兜。err=失败原因（截断 120，与告警文案同上限）。
+			defer w.BookHandoff(item, agent, sid,
+				map[string]any{"err": runeCapN(e.Error(), 120)}, "failed")
 			w.saveSkeleton(path, agent, sid, pyStr(item["cwd"]))
 		}()
 		return
@@ -307,8 +308,9 @@ func usageOf(meta map[string]any) map[string]any {
 }
 
 // bookChainAttempt 票03：链上单级尝试一行 handoff 记账（provider=该级、
-// lane=third_party、outcome、wall_s、token 列、顺位序号 chain_pos——降级
-// 轨迹可从账本重放）。记账永不弄断摆渡（bookHandoffImpl 同款护栏）。
+// lane=third_party、outcome、wall_s、token 列、顺位序号 chain_pos、失败行
+// err=该级失败原因（截断 120，告警文案同上限）——降级轨迹含死因可从账本
+// 重放）。记账永不弄断摆渡（bookHandoffImpl 同款护栏）。
 func (w *Worker) bookChainAttempt(item map[string]any, agent, sid string,
 	a ferry.ChainAttempt, books map[string]prices.PriceBook) {
 	if w.Accounts == nil {
@@ -319,7 +321,7 @@ func (w *Worker) bookChainAttempt(item map[string]any, agent, sid string,
 			fmt.Printf("[account] handoff 记账失败（忽略，摆渡不受影响）: %v\n", r)
 		}
 	}()
-	_, err := w.Accounts.Record("handoff", -1, accounts.Fields{
+	ff := accounts.Fields{
 		"agent":             agent,
 		"session_id":        sid,
 		"lineage_id":        pathsx.NormPath(pyStr(item["transcript_path"])),
@@ -333,7 +335,11 @@ func (w *Worker) bookChainAttempt(item map[string]any, agent, sid string,
 		"wall_s":            a.WallS,
 		"lane":              ferry.HandoffLaneThirdParty,
 		"chain_pos":         a.Pos,
-	})
+	}
+	if a.Outcome == ferry.ChainOutcomeFailed && a.Err != "" {
+		ff["err"] = runeCapN(a.Err, 120)
+	}
+	_, err := w.Accounts.Record("handoff", -1, ff)
 	if err != nil {
 		fmt.Printf("[account] handoff 记账失败（忽略，摆渡不受影响）: %v\n", err)
 	}
@@ -457,11 +463,13 @@ func (w *Worker) bookHandoffImpl(item map[string]any, agent, sid string,
 }
 
 // bookHandoffErr 记账主体（错误通道；价格表坏/落盘败在此上抛为警告文案）。
+// 失败行的 meta 携带 err（截断后的失败原因，do/doChain 调用方塞入）→ 行带
+// err 字段；成功行零此键。
 func (w *Worker) bookHandoffErr(item map[string]any, agent, sid string,
 	meta map[string]any, outcome string) error {
 	books := prices.LoadPrices("") // Python load_prices()：~/ferryman/config.toml
 	provider := w.Cfg.FerryProvider
-	_, err := w.Accounts.Record("handoff", -1, accounts.Fields{
+	ff := accounts.Fields{
 		"agent":             agent,
 		"session_id":        sid,
 		"lineage_id":        pathsx.NormPath(pyStr(item["transcript_path"])),
@@ -473,7 +481,11 @@ func (w *Worker) bookHandoffErr(item map[string]any, agent, sid string,
 		"completion_tokens": pyIntOr(usageKey(usageOf(meta), "completion_tokens"), 0), // 同上
 		"outcome":           outcome,
 		"wall_s":            pyFloatOr(meta["wall_s"], 0.0),
-	})
+	}
+	if ev := metaStr(meta, "err"); ev != "" {
+		ff["err"] = ev
+	}
+	_, err := w.Accounts.Record("handoff", -1, ff)
 	return err
 }
 

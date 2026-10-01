@@ -23,6 +23,17 @@ const (
 	SameModelSkipNotEnabled    = "not_enabled"    // 白名单预置但实跳臂结论未回写/未启用(D6)
 )
 
+// 同模型失败原因(独立编码,handoff 科目 failed 行的 err 字段值)。与跳过原因
+// 相对:跳过=门序判定「为何没尝试」,失败=「尝试了为何死」,两个概念两个名字。
+// 传输/协议层死因沿用 beat 包错误类别字面量(snapshot_missing 一族,
+// httpsender.go);此处只补执行器侧三码。2026-10-01 34 连败事故钉子:failed
+// 行无因可查,灰度观察三天才定位到根因(快照库恒空)。
+const (
+	SameModelFailStopToolUse = "stop_tool_use" // 发成功但 stop_reason=tool_use(追加指令没钉住生成)
+	SameModelFailMDStructure = "md_structure"  // 输出不合交接 MD 结构
+	SameModelFailUnknown     = "unknown"       // 防御:OK=false 且错误类别缺失
+)
+
 // TTLObs 该上游的 TTL 观测(闭式预判的输入)。TTLS = 实测 TTL(秒);≤0 =
 // 未实测/观测不足(预测器据此保守判冷)。当前单源 = [heartbeat].ttl_s
 // (实测值);按上游分列待计算器票扩展,输入形状已按每上游预留。

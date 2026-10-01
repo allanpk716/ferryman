@@ -427,6 +427,8 @@ func TestSkeletonSavePanicStillBooksFailed(t *testing.T) {
 	})
 	if rows := env.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: "sk-panic-1"}); rows[0]["outcome"] != "failed" {
 		t.Fatalf("outcome = %v, want failed", rows[0]["outcome"])
+	} else if rows[0]["err"] != "provider down" {
+		t.Fatalf("失败行 err = %v, want provider down", rows[0]["err"])
 	}
 	col.waitContains(t, "[ferry] 任务异常", 10*time.Second) // 异常上抛被 runOne 兜
 	// 工人未死：修好 store，下一单走骨架照常
@@ -648,6 +650,13 @@ func TestWorkerChainSlidesBooksPerAttemptAndSavesFresh(t *testing.T) {
 	if r1["provider"] != "ok" || r1["outcome"] != "fresh" || r1["chain_pos"] != float64(1) {
 		t.Fatalf("attempt[1] 行 = %v, want ok/fresh/1", r1)
 	}
+	// 失败行带 err=该级死因（截断文案）；fresh 行零此键（成功无死因）。
+	if ev, _ := r0["err"].(string); ev == "" {
+		t.Fatalf("failed 行缺 err(该级死因): %v", r0)
+	}
+	if _, exists := r1["err"]; exists {
+		t.Fatalf("fresh 行不得带 err: %v", r1)
+	}
 	if r1["lane"] != ferry.HandoffLaneThirdParty {
 		t.Fatalf("attempt[1].lane = %v, want third_party", r1["lane"])
 	}
@@ -704,12 +713,17 @@ func TestWorkerChainDegradeAlertPerSlideSkeletonOnce(t *testing.T) {
 			len(env.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: "chain-dead-2"}))
 		return skeletons == 2 && rows == 4
 	})
-	// 降级轨迹可从账本重放：每任务两行 failed、chain_pos 0/1、provider 对位
+	// 降级轨迹可从账本重放：每任务两行 failed、chain_pos 0/1、provider 对位、死因在行
 	for _, sid := range []string{"chain-dead-1", "chain-dead-2"} {
 		rows := sortRowsByChainPos(env.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: sid}))
 		if len(rows) != 2 || rows[0]["provider"] != "lvl1" || rows[1]["provider"] != "lvl2" ||
 			rows[0]["outcome"] != "failed" || rows[1]["outcome"] != "failed" {
 			t.Fatalf("%s 降级轨迹不可重放: %v", sid, rows)
+		}
+		for i, r := range rows {
+			if ev, _ := r["err"].(string); ev == "" {
+				t.Fatalf("%s attempt[%d] failed 行缺 err(死因): %v", sid, i, r)
+			}
 		}
 	}
 	// 骨架交接对闸门有效（ValidHandoff 收 skeleton 档：§6.10-5 status∈{fresh,skeleton}）

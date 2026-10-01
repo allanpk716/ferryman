@@ -1530,22 +1530,43 @@ func (w *Watcher) runSameModel(task smExecTask, upstream string) bool {
 				w.Store.SaveHandoff(task.sid, task.agent, task.cwd, facts.Title,
 					facts.LastTS, "fresh", md)
 			}
-			w.bookSameModelHandoff(task, upstream, res, "fresh", wall)
+			w.bookSameModelHandoff(task, upstream, res, "fresh", wall, "")
 			fmt.Printf("[samemodel] %s/%s same_model %ss -> handoff\n", task.agent,
 				runeCap8(task.sid), config.PyFloatStr(mathx.Round(wall, 1)))
 			return true
 		}
 		// 输出不合交接 MD 结构:落下方统一 failed 记账,交还既有调度
 	}
-	w.bookSameModelHandoff(task, upstream, res, "failed", wall)
+	cause := smFailCause(res)
+	w.bookSameModelHandoff(task, upstream, res, "failed", wall, cause)
+	fmt.Printf("[samemodel] %s/%s 失败（%s，交还既有调度）\n", task.agent,
+		runeCap8(task.sid), cause)
 	return false
+}
+
+// smFailCause 同模型档失败原因(稳定字面量;跳过遥测的 reason=「为何没尝试」,
+// 本值=「尝试了为何死」)。传输/协议层直接取 beat 错误类别;发成功但产物不合格
+// 的两个死法用执行器侧编码。绝不落错误消息原文——只记类别(隐私铁律)。
+func smFailCause(res beat.AppendReplayResult) string {
+	switch {
+	case !res.OK:
+		if res.Err != "" {
+			return res.Err
+		}
+		return ferry.SameModelFailUnknown
+	case res.StopReason == "tool_use":
+		return ferry.SameModelFailStopToolUse
+	default:
+		return ferry.SameModelFailMDStructure
+	}
 }
 
 // bookSameModelHandoff 同模型档 handoff 科目记账(决定六:lane=same_model,
 // 与第三方/骨架分档核算)。prompt=未命中前缀+缓存读(上游实收全量输入),
-// completion=输出。记账永不弄断该档(bookHandoffImpl 同款护栏)。
+// completion=输出;失败行带 err=失败原因字面量(成功行零此键)。记账永不弄断
+// 该档(bookHandoffImpl 同款护栏)。
 func (w *Watcher) bookSameModelHandoff(task smExecTask, upstream string,
-	res beat.AppendReplayResult, outcome string, wallS float64) {
+	res beat.AppendReplayResult, outcome string, wallS float64, cause string) {
 	if w.Accounts == nil {
 		return
 	}
@@ -1560,7 +1581,7 @@ func (w *Watcher) bookSameModelHandoff(task smExecTask, upstream string,
 			priceVer = prices.PriceTag(upstream, *pv)
 		}
 	}
-	_, err := w.Accounts.Record("handoff", -1, accounts.Fields{
+	ff := accounts.Fields{
 		"agent":             task.agent,
 		"session_id":        task.sid,
 		"lineage_id":        pathsx.NormPath(task.path),
@@ -1573,7 +1594,11 @@ func (w *Watcher) bookSameModelHandoff(task smExecTask, upstream string,
 		"outcome":           outcome,
 		"wall_s":            mathx.Round(wallS, 1),
 		"lane":              ferry.HandoffLaneSameModel,
-	})
+	}
+	if cause != "" {
+		ff["err"] = cause
+	}
+	_, err := w.Accounts.Record("handoff", -1, ff)
 	if err != nil {
 		fmt.Printf("[account] handoff 记账失败(忽略,同模型档不受影响): %v\n", err)
 	}

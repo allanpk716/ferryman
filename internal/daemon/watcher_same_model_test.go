@@ -587,10 +587,13 @@ func TestSameModelToolUseZeroRetryFallsToExistingChainThenSkeleton(t *testing.T)
 	if got := len(enqueued); got != 0 {
 		t.Fatalf("失败当场不得入队(交还既有调度,不提前第三方时机), got %d", got)
 	}
-	// 失败行:lane=same_model、outcome=failed。
+	// 失败行:lane=same_model、outcome=failed、err=执行器侧失败字面量。
 	row := smHandoffRow(t, acc, "sm-tu1")
 	if row["lane"] != ferry.HandoffLaneSameModel || row["outcome"] != "failed" {
 		t.Fatalf("失败行 = %v", row)
+	}
+	if row["err"] != ferry.SameModelFailStopToolUse {
+		t.Fatalf("失败行 err = %v, want %s", row["err"], ferry.SameModelFailStopToolUse)
 	}
 	// 无 fresh 产物;派发章被清(既有 25 分钟档重武装)。
 	if e := smEntryWithStatus(t, stt, "C:/smfail", "fresh"); e != nil {
@@ -655,12 +658,60 @@ func TestSameModelBadFormatFallsBack(t *testing.T) {
 	if row["lane"] != ferry.HandoffLaneSameModel || row["outcome"] != "failed" {
 		t.Fatalf("格式不符应记 failed 行: %v", row)
 	}
+	if row["err"] != ferry.SameModelFailMDStructure {
+		t.Fatalf("失败行 err = %v, want %s", row["err"], ferry.SameModelFailMDStructure)
+	}
 	if e := smEntryWithStatus(t, stt, "C:/smbf", "fresh"); e != nil {
 		t.Fatal("格式不符不得落 fresh 产物")
 	}
 	if qwRead(led, st).handedOff != 0 {
 		t.Fatal("格式不符应清章交还既有调度")
 	}
+}
+
+// TestSameModelTransportFailBooksErr：传输/协议层失败（OK=false，Err=beat 错误
+// 类别）→ 失败行带 err=<类别> ＋ 控制台一行失败日志（2026-10-01 34 连败事故
+// 钉子：34 次 snapshot_missing 因「行无 err 字段＋失败不打日志」两处观测盲区
+// 三天无人能查因）。
+func TestSameModelTransportFailBooksErr(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	led := ledger.New()
+	tmp := t.TempDir()
+	stt, err := store.New(filepath.Join(tmp, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := accounts.New(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := startStdoutCapture(t)
+	w := newTestWatcherW(smGateCfg(), led, acc, nil, nil, nil)
+	w.Store = stt
+	w.smSyncExec = true
+	w.ArmVerdict = func(string) (bool, bool) { return true, true }
+	w.ReqClock.Note("sm-tf1", *now-100)
+	fake := &smFakeSender{results: []beat.AppendReplayResult{{
+		Sent: true, OK: false, Err: "snapshot_missing",
+	}}}
+	w.sameModelSendFn = fake.SendAppendReplay
+	st, _ := smSession(t, led, tmp, "sm-tf1", "C:/smtf", *now)
+	w.maybeSameModel(st)
+
+	if fake.count() != 1 {
+		t.Fatalf("单发, got %d 发", fake.count())
+	}
+	row := smHandoffRow(t, acc, "sm-tf1")
+	if row["lane"] != ferry.HandoffLaneSameModel || row["outcome"] != "failed" {
+		t.Fatalf("失败行 = %v", row)
+	}
+	if row["err"] != "snapshot_missing" {
+		t.Fatalf("失败行 err = %v, want snapshot_missing", row["err"])
+	}
+	if qwRead(led, st).handedOff != 0 {
+		t.Fatal("失败应清派发章(25 分钟档重武装)")
+	}
+	col.waitContains(t, "失败（snapshot_missing，交还既有调度）", 5*time.Second)
 }
 
 func TestSameModelInFlightGuardSkipsDispatch(t *testing.T) {
