@@ -438,10 +438,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	}
 
+	// 票01 头回落：会话归因一次提取、两个消费点（快照捕获/记账归因）共用——
+	// 体 metadata.session_id 第一优先，缺失回落 X-Claude-Code-Session-Id 头
+	//（UUID 格式校验、头体冲突以体为准留痕，语义见 ExtractSessionID）。
+	var sessionID string
+	if capture || record {
+		sessionID = ExtractSessionID(body, r.Header)
+	}
+
 	if capture {
 		// 快照＝CC 原始请求（改写前）：beat 重放原始请求经渡口再走同一改写。
-		// 空 session_id（缺失/非 JSON）＝Capture 内部跳过计数，不入库。
-		s.store.Capture(ExtractSessionID(body), body, r.Header)
+		// 空 session_id（缺失且头回落也无/坏）＝Capture 内部跳过计数，不入库。
+		s.store.Capture(sessionID, body, r.Header)
 		// 形态漂移观察同点喂原始头体（nil 安全：纯透传不观察）
 		s.drift.Observe(r.Header.Get("Anthropic-Beta"), body)
 	}
@@ -470,7 +478,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var meta *reqMeta
 	if record {
 		meta = &reqMeta{start: time.Now()}
-		meta.session = ExtractSessionID(body)
+		meta.session = sessionID
 		if view.rewriteOn {
 			meta.mode = modeRewrite
 			if rewriteDone {

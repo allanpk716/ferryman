@@ -244,11 +244,85 @@ func TestExtractSessionID(t *testing.T) {
 		{"空体", ``, ""},
 	}
 	for _, c := range cases {
-		if got := ExtractSessionID([]byte(c.body)); got != c.want {
+		if got := ExtractSessionID([]byte(c.body), nil); got != c.want {
 			t.Errorf("%s: ExtractSessionID = %q, want %q", c.name, got, c.want)
 		}
 	}
-	if got := ExtractSessionID(bytes.Repeat([]byte("x"), 1<<20)); got != "" {
+	if got := ExtractSessionID(bytes.Repeat([]byte("x"), 1<<20), nil); got != "" {
 		t.Errorf("大非 JSON 体应返回空, got %q", got)
+	}
+}
+
+// uuidFixture 合法裸 UUID（36 位 8-4-4-4-12 连字符形，claude-cli 地面真值形状）。
+const uuidFixture = "123e4567-e89b-12d3-a456-426614174000"
+
+// TestExtractSessionIDHeaderFallbackMatrix 票01 头回落归因矩阵：
+// 体有（第一优先）/体无头有（合法 UUID 回落）/都无（空语义不伪造）/
+// 头格式坏（＝缺失）/头体冲突（以体为准）/大写 UUID 合法/非 JSON 体头回落。
+func TestExtractSessionIDHeaderFallbackMatrix(t *testing.T) {
+	cases := []struct {
+		name   string
+		body   string
+		header string // ""＝不带头
+		want   string
+	}{
+		{"体有", `{"metadata":{"session_id":"body-sid"}}`, "", "body-sid"},
+		{"体无头有合法UUID", `{"model":"m"}`, uuidFixture, uuidFixture},
+		{"都无维持空语义", `{"model":"m"}`, "", ""},
+		{"头格式坏非UUID形", `{"model":"m"}`, "not-a-uuid", ""},
+		{"头格式坏长度对非hex", `{"model":"m"}`, "123e4567-e89b-12d3-a456-42661417400g", ""},
+		{"头格式坏缺连字符", `{"model":"m"}`, "123e4567e89b12d3a456426614174000", ""},
+		{"头体冲突以体为准", `{"metadata":{"session_id":"body-sid"}}`, uuidFixture, "body-sid"},
+		{"头体同值不冲突", `{"metadata":{"session_id":"` + uuidFixture + `"}}`, uuidFixture, uuidFixture},
+		{"头大写UUID合法", `{"model":"m"}`, "123E4567-E89B-12D3-A456-42661417400F", "123E4567-E89B-12D3-A456-42661417400F"},
+		{"非JSON体头回落", `not-json`, uuidFixture, uuidFixture},
+		{"metadata空头回落", `{"metadata":{}}`, uuidFixture, uuidFixture},
+		{"体空串头回落", `{"metadata":{"session_id":""}}`, uuidFixture, uuidFixture},
+	}
+	for _, c := range cases {
+		var h http.Header
+		if c.header != "" {
+			h = hdr("X-Claude-Code-Session-Id", c.header)
+		}
+		if got := ExtractSessionID([]byte(c.body), h); got != c.want {
+			t.Errorf("%s: ExtractSessionID = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestExtractSessionIDConflictLogsBodyWins 头体冲突留痕：冲突恰留一行日志，
+// 同值/仅体/仅头不留痕（留痕口经 conflictLog 钩子钉住，不截 stderr）。
+func TestExtractSessionIDConflictLogsBodyWins(t *testing.T) {
+	var logged int
+	old := conflictLog
+	conflictLog = func(_ string, _ ...any) { logged++ }
+	t.Cleanup(func() { conflictLog = old })
+
+	// 冲突（体/头都非空且不同）：留一行
+	ExtractSessionID([]byte(`{"metadata":{"session_id":"body-sid"}}`),
+		hdr("X-Claude-Code-Session-Id", uuidFixture))
+	if logged != 1 {
+		t.Fatalf("冲突留痕 = %d 行, want 1", logged)
+	}
+
+	// 头格式坏不构成冲突（头视同缺失）：不留痕
+	ExtractSessionID([]byte(`{"metadata":{"session_id":"body-sid"}}`),
+		hdr("X-Claude-Code-Session-Id", "bad"))
+	if logged != 1 {
+		t.Fatalf("坏头不应留痕, logged = %d", logged)
+	}
+
+	// 同值：不留痕
+	ExtractSessionID([]byte(`{"metadata":{"session_id":"`+uuidFixture+`"}}`),
+		hdr("X-Claude-Code-Session-Id", uuidFixture))
+	if logged != 1 {
+		t.Fatalf("头体同值不留痕, logged = %d", logged)
+	}
+
+	// 仅体/仅头：不留痕
+	ExtractSessionID([]byte(`{"metadata":{"session_id":"only-body"}}`), nil)
+	ExtractSessionID([]byte(`{"model":"m"}`), hdr("X-Claude-Code-Session-Id", uuidFixture))
+	if logged != 1 {
+		t.Fatalf("单侧来源不留痕, logged = %d", logged)
 	}
 }

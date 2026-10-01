@@ -107,6 +107,9 @@ func (s *HttpBeatSender) Send(plan BeatPlan) BeatResult {
 		return BeatResult{Sent: true, OK: false, Err: errConn} // URL 坏＝本地装配错，按传输错收口
 	}
 	beatHeaders(req.Header, snap.Headers)
+	// 票01 会话归因头：值=目标会话 ID，渡口记账行据此按会话归集
+	//（claude-cli 2.1.273 体 metadata 无 session_id，头是唯一归因面）。
+	req.Header.Set(dock.HeaderClaudeCodeSessionID, plan.SessionID)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return BeatResult{Sent: true, OK: false, Err: transportErrCategory(err)}

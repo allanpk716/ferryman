@@ -150,6 +150,10 @@ type Config struct {
 	QuestionWatch QuestionWatchCfg
 	WaitWindow    WaitWindowCfg // 票04：等待窗心跳三态（默认 off，缺节即 off）
 	FerryProvider string        // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	// FerryChain 票02：[ferry] chain 顺位链名字表（Go 侧先行键，Python 版无）。
+	// 空=未配置（provider 单键兜底等价单元素链，取用经 FerryChainNames）；
+	// 链非空时解析层逐名校验供应商表，缺名 → 配置错误上抛（坏 TOML 同款）。
+	FerryChain    []string      // 票02
 	SameModel     SameModelCfg  // [ferry.same_model]（票01，ADR-0015：默认 off）
 	Tuning        TuningCfg     // [tuning]（票01，D10：默认 recommend）
 	Dock          *DockCfg      // nil=[dock] 节缺失＝渡口不启动（F11 opt-in）
@@ -213,6 +217,21 @@ func (c *Config) DataDir() string {
 // ThresholdFor 按 Agent 分设留口：目前共用全局，Codex gate 本就 off。
 func (c *Config) ThresholdFor(_ string) ThresholdCfg {
 	return c.Thresholds
+}
+
+// FerryChainNames 摆渡顺位链名字表（票02 数据结构层；票03 执行器消费）：
+// chain 显式非空优先（并存即以 chain 为准，Validate 已留一行警告）；否则
+// provider 单键等价单元素链（向后兼容）；两者皆无 = nil（摆渡降级骨架，
+// 语义与现状 provider="" 一致）。空链（chain=[]）≡ 未配置——回落 provider，
+// 不单独成态。
+func (c *Config) FerryChainNames() []string {
+	if len(c.FerryChain) > 0 {
+		return c.FerryChain
+	}
+	if c.FerryProvider != "" {
+		return []string{c.FerryProvider}
+	}
+	return nil
 }
 
 // Load 读配置并校验。路径优先级：显式参数 > 环境变量 FERRYMAN_CONFIG >
@@ -394,6 +413,37 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			return err
 		}
 		cfg.FerryProvider = pyStr(get(f, "provider", cfg.FerryProvider))
+		// 票02：chain 顺位链（Go 侧先行键）。元素 pyStr（watch.codex_extra_dirs
+		// 同款容忍）；空链 ≡ 未配置（FerryChainNames 回落 provider 单元素链）。
+		// 链非空时逐名校验供应商表（[providers.*] 与 [ferry] 同文件，data 直取）：
+		// 缺名 → 配置错误上抛（坏 TOML 同款语义：Load 失败 → serve 捕获降级骨架）。
+		if rawChain, ok := f["chain"]; ok {
+			arr, ok := rawChain.([]any)
+			if !ok {
+				return errors.New("config: ferry.chain 不是数组")
+			}
+			chain := make([]string, 0, len(arr))
+			for _, v := range arr {
+				chain = append(chain, pyStr(v))
+			}
+			if len(chain) > 0 {
+				defined := map[string]struct{}{}
+				if rawPs, ok := data["providers"]; ok {
+					if ps, ok := rawPs.(map[string]any); ok {
+						for k := range ps {
+							defined[k] = struct{}{}
+						}
+					}
+				}
+				for i, n := range chain {
+					if _, ok := defined[n]; !ok {
+						return fmt.Errorf("config: ferry.chain[%d] 引用未定义的 provider %q（[providers.%s] 不存在）",
+							i, n, n)
+					}
+				}
+			}
+			cfg.FerryChain = chain
+		}
 		// [ferry.same_model]（票01，ADR-0015）：子节存在才整节重建，缺字段
 		// 回落默认（off/种子 20min/空表）；解析集中在 parseSameModelSection。
 		if rawSM, ok := f["same_model"]; ok {
@@ -652,6 +702,13 @@ func Validate(c *Config, relaxMinGap bool) error {
 	// 单源 validateDockUpstreams 与首启迁移共用）。
 	if c.Dock != nil {
 		problems = append(problems, validateDockUpstreams(c.Dock)...)
+	}
+	// 票02：[ferry] chain 与 provider 并存 → 以 chain 为准，留一行警告。
+	// provider 单键只为旧配置兼容保留；dock 换源等仍写 provider 键的路径，
+	// 用户据此知道为何未生效。空链不告警（≡ 未配置，provider 照常生效）。
+	if len(c.FerryChain) > 0 && c.FerryProvider != "" {
+		fmt.Printf("[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = %q 被忽略）\n",
+			c.FerryProvider)
 	}
 	if len(problems) > 0 {
 		return errors.New("配置校验失败，拒绝启动：\n  - " + strings.Join(problems, "\n  - "))

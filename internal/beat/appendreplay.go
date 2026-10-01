@@ -99,6 +99,9 @@ func (s *HttpBeatSender) SendAppendReplay(p AppendReplayPlan) AppendReplayResult
 	}
 	beatHeaders(req.Header, snap.Headers)
 	req.Header.Set(dock.HeaderFerrymanReplay, "same_model") // 渡口识别：不入快照
+	// 票01 会话归因头：值=目标会话 ID，渡口记账行据此按会话归集（重放不入
+	// 快照，记账不受影响——dock 科目照记）。
+	req.Header.Set(dock.HeaderClaudeCodeSessionID, p.SessionID)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return AppendReplayResult{Sent: true, OK: false, Err: transportErrCategory(err)}
