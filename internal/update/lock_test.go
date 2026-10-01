@@ -116,6 +116,62 @@ func TestLockBusyHolderViaRelayCopy(t *testing.T) {
 	}
 }
 
+// TestLockBusyHolderViaOldBackupFamily 备份族判据(票01 三族定案):两步换装
+// 第①步把目标改名为 ferryman.exe.old-<版本>(backupPath 备份位)后,Windows
+// 运行映像路径随文件改名更新——活监督者的映像即 .old-* 形态,现行判据不含
+// 它,并发第二个 update 会误判锁陈旧接管成双监督者齐跑。备份族=同目录
+// ferryman.exe.old-* 全体,含 staleAsidePath 的 .stale-<日期>-<pid> 挪窝变体;
+// 异目录同名前缀/同目录前缀不严格匹配不得误认。
+func TestLockBusyHolderViaOldBackupFamily(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ferryman.exe")
+
+	// 持有者 PID 活且映像=目标同目录 ferryman.exe.old-v0.5.1 → 进行中
+	backupImg := filepath.Join(dir, "ferryman.exe.old-v0.5.1")
+	probes := fakeProbes{alive: map[int]bool{6060: true}, images: map[int]string{6060: backupImg}}
+	writeLock(t, dir, lockInfo{PID: 6060, Image: backupImg, Generation: 9})
+	_, err := acquireUpdateLock(dir, target, probes.aliveFn, probes.imageFn, quietLogf)
+	if !errors.Is(err, ErrUpdateInProgress) {
+		t.Fatalf("备份名映像(改名后活监督者)应判进行中, got %v", err)
+	}
+	if got := readLockFor(t, dir); got.PID != 6060 || got.Generation != 9 {
+		t.Fatalf("锁文件应原样保留持有者的, got %+v", got)
+	}
+
+	// .stale- 挪窝变体(staleAsidePath:备份位被占先挪窝)→ 同判进行中
+	staleImg := backupImg + ".stale-20261001-120000-6060"
+	probes = fakeProbes{alive: map[int]bool{6061: true}, images: map[int]string{6061: staleImg}}
+	writeLock(t, dir, lockInfo{PID: 6061, Image: staleImg, Generation: 10})
+	_, err = acquireUpdateLock(dir, target, probes.aliveFn, probes.imageFn, quietLogf)
+	if !errors.Is(err, ErrUpdateInProgress) {
+		t.Fatalf(".stale- 变体映像应判进行中, got %v", err)
+	}
+
+	// 负例:前缀族但异目录 → 不认,判陈旧接管
+	otherDir := filepath.Join(dir, "other")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	foreignImg := filepath.Join(otherDir, "ferryman.exe.old-v0.5.1")
+	probes = fakeProbes{alive: map[int]bool{6062: true}, images: map[int]string{6062: foreignImg}}
+	writeLock(t, dir, lockInfo{PID: 6062, Image: foreignImg, Generation: 11})
+	lk, err := acquireUpdateLock(dir, target, probes.aliveFn, probes.imageFn, quietLogf)
+	if err != nil {
+		t.Fatalf("异目录同名前缀映像应判陈旧接管, got %v", err)
+	}
+	lk.release()
+
+	// 负例:同目录但前缀不严格匹配(ferryman2.exe.old-)→ 不认
+	decoyImg := filepath.Join(dir, "ferryman2.exe.old-v0.5.1")
+	probes = fakeProbes{alive: map[int]bool{6063: true}, images: map[int]string{6063: decoyImg}}
+	writeLock(t, dir, lockInfo{PID: 6063, Image: decoyImg, Generation: 12})
+	lk, err = acquireUpdateLock(dir, target, probes.aliveFn, probes.imageFn, quietLogf)
+	if err != nil {
+		t.Fatalf("前缀不严格匹配应判陈旧接管, got %v", err)
+	}
+	lk.release()
+}
+
 // TestLockTakeoverStale 陈旧两态接管:PID 死 / PID 活但映像≠换装目标
 // (seam B:不匹配=不活)→ 接管,generation 递增。
 func TestLockTakeoverStale(t *testing.T) {
@@ -217,6 +273,14 @@ func TestLockHeldByLiveSupervisor(t *testing.T) {
 		images: map[int]string{4242: target + ".supervisor-copy"}}
 	if pid, held := LockHeldByLiveSupervisor(dir, target, relay.aliveFn, relay.imageFn); !held || pid != 4242 {
 		t.Fatalf("副本映像持有者应判持有, got pid=%d held=%v", pid, held)
+	}
+
+	// 映像 == 同目录 .old-* 备份族(改名后监督者,含 .stale- 变体)→ (4242,true)
+	// (票01 三族定案同步暴露给守护层让路面——与 holderAlive 同源,只钉不改)
+	backup := fakeProbes{alive: map[int]bool{4242: true},
+		images: map[int]string{4242: filepath.Join(dir, "ferryman.exe.old-v0.5.1")}}
+	if pid, held := LockHeldByLiveSupervisor(dir, target, backup.aliveFn, backup.imageFn); !held || pid != 4242 {
+		t.Fatalf("备份族映像持有者应判持有, got pid=%d held=%v", pid, held)
 	}
 }
 

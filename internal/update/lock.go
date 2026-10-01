@@ -2,9 +2,12 @@ package update
 
 // update.lock(票05,规格 §C 第1条):<DataDir>/update.lock,O_CREATE|O_EXCL
 // 原子创建;内容 PID+进程映像路径+generation。存活判定(seam B)= PID 活
-// **且**映像路径 ∈ {换装目标 exe, 自中继副本(换装目标+".supervisor-copy")}
+// **且**映像路径 ∈ 三族:{换装目标 exe, 自中继副本(换装目标+".supervisor-copy",
+// 过渡保留), 换装目标同目录 ferryman.exe.old-* 备份族(含 .stale- 变体)}
 // ——副本纳入是票04 盲区修:监督者 --self-relay 交棒后持锁者映像恒为副本,
-// 修前恒判陈旧 → 并发第二次 update 误接管双监督者。持有者活 →
+// 修前恒判陈旧 → 并发第二次 update 误接管双监督者。备份族纳入是票01 三族
+// 定案:两步换装第①步把目标改名为备份名后,Windows 运行映像路径随改名更新,
+// 活监督者映像即 .old-* 形态,修前误判陈旧接管。持有者活 →
 // ErrUpdateInProgress 退出;陈旧(死 PID/映像不符/内容坏)→ 原子接管:
 // remove 后 O_EXCL 重赛,generation 递增——并发接管者只有一方能在重赛中赢。
 
@@ -15,6 +18,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -113,9 +117,14 @@ func readLockInfo(path string) (lockInfo, error) {
 	return info, nil
 }
 
-// holderAlive 存活判定(seam B):PID 活**且**映像路径 ∈ {换装目标, 自中继
-// 副本(relayCopyPath)}。副本纳入是票04 盲区修(理由见文件头)。PID 活但
-// 映像查不出(权限面)→ 保守按活——宁误报进行中,不误双跑。
+// holderAlive 存活判定(seam B):PID 活**且**映像路径 ∈ 三族——
+//   ① 换装目标本体;
+//   ② 自中继副本(relayCopyPath,票04 盲区修)。过渡保留:副本机制次版
+//      (v0.5.3,票02 删副本)实施时本分支一并删除;
+//   ③ 换装目标同目录 ferryman.exe.old-* 备份族(票01 三族定案:两步换装
+//      第①步把目标改名为备份名后,Windows 运行映像路径随改名更新,活监督者
+//      映像即此形态;含 staleAsidePath 的 .stale-<日期>-<pid> 挪窝变体)。
+// PID 活但映像查不出(权限面)→ 保守按活——宁误报进行中,不误双跑。
 func holderAlive(info lockInfo, targetExe string,
 	alive func(int) bool, image func(int) (string, error)) bool {
 	if info.PID <= 0 || !alive(info.PID) {
@@ -125,7 +134,21 @@ func holderAlive(info lockInfo, targetExe string,
 	if err != nil {
 		return true
 	}
-	return samePath(img, targetExe) || samePath(img, relayCopyPath(targetExe))
+	return samePath(img, targetExe) ||
+		samePath(img, relayCopyPath(targetExe)) || // ②过渡:v0.5.3 随副本机制删
+		isOldBackupImage(img, targetExe)
+}
+
+// isOldBackupImage ③族判据(匹配语义钉死):映像与换装目标**同目录**且文件名
+// 前缀为 ferryman.exe.old-(oldPrefixBase,swap.go backupPath 的备份名生成域,
+// staleAsidePath 的挪窝名也留在该前缀域内)即认;不校验版本段与 .stale-* 后缀
+// 形态——版本经 sanitizeFileToken 白名单化,判活从严只会漏认=误接管双跑,
+// 故从宽。异目录/异前缀一律不认(负例见 lock_test.go 备份族测试)。
+func isOldBackupImage(img, targetExe string) bool {
+	if !samePath(filepath.Dir(normSlash(targetExe)), filepath.Dir(normSlash(img))) {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(filepath.Base(normSlash(img))), oldPrefixBase)
 }
 
 // LockHeldByLiveSupervisor 只读判定 <dir>/update.lock 是否被活监督者持有
