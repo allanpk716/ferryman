@@ -141,7 +141,8 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		providers = map[string]ferry.Provider{}
 	}
 	worker := NewWorker(cfg, st, acc, providers, FerrySession)
-	worker.Ledger = led // ADR-0013：摆渡产出回写处置边界（HandledContentTS）
+	worker.Ledger = led                               // ADR-0013：摆渡产出回写处置边界（HandledContentTS）
+	wireFerryChain(cfg.FerryChain, providers, worker) // 票03：显式链才开（见函数注释）
 	startedAt := clock.Now()
 	qwatchStats := beat.NewQWatchStats() // 票04：daemon/watcher 共享计数器
 	enqueue := func(s *ledger.SessionState) bool {
@@ -341,6 +342,26 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 // DockSnapshot 渡口快照只读句柄（未启用返回 nil）。票03 HttpBeatSender 经
 // 此取会话主快照（最大体）做心跳前缀源——daemon 其余代码不碰快照内部。
 func (d *Daemon) DockSnapshot() *dock.SnapshotStore { return d.DockSnap }
+
+// wireFerryChain 票03：显式顺位链装配——chainNames 非空（[ferry] chain 显式
+// 配置）才解析装上链执行器；provider 单键不开链（等价单元素链的既有单级
+// 路径行为零变化——结构校验/记账粒度对单 provider 配置保持原样）。解析失败
+// （config.Load 已对同文件校验，正常不可达；providers 坏 TOML 降级空表后
+// 可达）→ 警告不开链，回落 provider 既有路径（骨架兜底不变量优先）。返回
+// 是否已开链（装配缝，测试直调）。
+func wireFerryChain(chainNames []string, providers map[string]ferry.Provider, worker *Worker) bool {
+	if len(chainNames) == 0 {
+		return false
+	}
+	chain, err := ferry.ResolveChain(chainNames, providers)
+	if err != nil {
+		fmt.Printf("[ferry] ⚠ 摆渡链解析失败，链未启用（回落 provider 既有路径）: %v\n", err)
+		return false
+	}
+	worker.Chain = chain
+	worker.ChainFerry = ferry.ChainSession
+	return true
+}
 
 // newBeatSender 票03 serve 注入点：渡口开（配了 [dock] 且快照句柄在——含
 // 渡口构造/绑定失败降级为 nil 的情形）→ HttpBeatSender（发往渡口入站口）；
