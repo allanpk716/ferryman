@@ -3,15 +3,15 @@ package main
 // txn.go — 彩排事务跑法（编排侧）：把一次升级事务交给「影子 exe 自己」以
 // supervisor 子命令形态执行。为什么监督者必须是 <Root>/ferryman.exe 本尊：
 //
-//   - 守护层锁让路判「锁持有者映像 ∈ {自己, 自己.supervisor-copy}」——监督者
-//     与换装目标同路径（生产 `ferryman update` 的真实形态），蜂群注入才能被
-//     让路挡下（换任何别的映像路径都会让该判定失真）；
-//   - 自中继（自身映像==换装目标）会真实发生：监督者转交 .supervisor-copy
-//     副本接手，副本经「update --supervise --self-relay …」argv + 环境变量
-//     重建装配（relayArgs 只透传版本意图/force/wait-quiet，端口/端点/时限
-//     走 REHEARSAL_SUP_* 环境）。
+//   - 守护层锁让路判「锁持有者映像 ∈ {目标本体, 目标.supervisor-copy(过渡),
+//     同目录 .old-* 备份族}」——监督者与换装目标同路径（生产 `ferryman update`
+//     的真实形态；自中继副本机制已删，监督者直接跑两步换装，自身映像在让位
+//     后即 .old-* 形态），蜂群注入才能被让路挡下（换任何别的映像路径都会让
+//     该判定失真）；
+//   - supervisor 子命令的全部装配经旗标注入（--data-dir/--port/--api-base/
+//     --start-cmd/--spec/--result-out 等，零生产缺省生效）。
 //
-// 事务结果由副本原子写 result-out JSON，编排进程轮询读取。
+// 事务结果由监督者原子写 result-out JSON，编排进程轮询读取。
 
 import (
 	"encoding/json"
@@ -39,7 +39,6 @@ type txOpts struct {
 // txResult 监督者事务结论（影子 exe 写盘的 JSON 形态）。
 type txResult struct {
 	Success     bool     `json:"success"`
-	Relayed     bool     `json:"relayed"`
 	From        string   `json:"from"`
 	To          string   `json:"to"`
 	RolledBack  bool     `json:"rolled_back"`
@@ -89,20 +88,9 @@ func (e *shadowEnv) runTransaction(o txOpts) txOutcome {
 	if o.Force {
 		args = append(args, "--force")
 	}
-	// 环境带 REHEARSAL_SUP_*（副本接力重建装配用）；USERPROFILE 重定向同守护。
-	env := append(e.daemonEnv(),
-		"REHEARSAL_SUP_DATA_DIR="+e.DataDir,
-		"REHEARSAL_SUP_PORT="+strconv.Itoa(e.Ports.Mgmt),
-		"REHEARSAL_SUP_API_BASE=http://"+e.rel.addr,
-		"REHEARSAL_SUP_DL_BASE=http://"+e.rel.addr,
-		"REHEARSAL_SUP_START_CMD="+e.CmdPath,
-		"REHEARSAL_SUP_RESULT_OUT="+resultPath,
-		"REHEARSAL_SUP_POLL_TIMEOUT_S="+strconv.Itoa(o.PollTimeoutS),
-		"REHEARSAL_SUP_PORT_WAIT_S="+strconv.Itoa(o.PortWaitS),
-		"REHEARSAL_SUP_POLL_INTERVAL_MS="+strconv.Itoa(o.PollIntervalMs),
-		"REHEARSAL_SUP_PROBE_DELAY_MS="+strconv.Itoa(o.ProbeDelayMs),
-		"REHEARSAL_SUP_PROBE_TIMEOUT_MS="+strconv.Itoa(o.ProbeTimeoutMs),
-	)
+	// 监督者装配全走旗标（上表）；env 只做 USERPROFILE 重定向同守护（旧
+	// REHEARSAL_SUP_* 环境通道随自中继副本机制删除，无消费方）。
+	env := e.daemonEnv()
 	logf, lerr := os.Create(filepath.Join(e.Root, "sup-"+o.Name+".log"))
 	if lerr != nil {
 		out.VerifyErr = lerr
@@ -116,7 +104,7 @@ func (e *shadowEnv) runTransaction(o txOpts) txOutcome {
 		out.End = time.Now()
 		return out
 	}
-	go func() { _ = cmd.Wait(); logf.Close() }() // 监督者本尊转交副本后即退
+	go func() { _ = cmd.Wait(); logf.Close() }() // 监督者同步跑完全程（v0.5.2 起无副本转交）
 
 	deadline := out.Start.Add(o.TxTimeout)
 	for time.Now().Before(deadline) {

@@ -2,7 +2,7 @@ package main
 
 // rehearsal_test.go — 彩排台测试（票05）。两层：
 //  1. 快速单测：生产端口护栏、点火脚本可被换装目标解析器消费、拒连窗计算、
-//     拨号拒绝分类、接力旗标重排——这些是装配正确性的地基，先红后绿。
+//     拨号拒绝分类——这些是装配正确性的地基，先红后绿。
 //  2. TestRehearsalQuick：全量彩排冒烟（quick 形态：静默路径 3 次事务），
 //     真构建两版 exe、真跑监督者事务、真注五项故障。跑前须先实现全部装配。
 //
@@ -111,23 +111,6 @@ func TestIsDialRefused(t *testing.T) {
 	}
 	if isDialRefused(fmt.Errorf("net/http: timeout awaiting response headers")) {
 		t.Fatalf("超时类应判截断类")
-	}
-}
-
-// TestOrderRelayFlags 自中继副本的 argv 形态（update --supervise --self-relay
-// <spec> --force --wait-quiet=N）：Go flag 在首个位置参数后停摆，重排旗标前置
-// 后任何顺序可解析（cmd/ferryman 同款坑）。
-func TestOrderRelayFlags(t *testing.T) {
-	got := orderRelayFlags([]string{"v0.9.1", "--force"})
-	if len(got) != 2 || got[0] != "--force" || got[1] != "v0.9.1" {
-		t.Fatalf("重排结果 %v", got)
-	}
-	got = orderRelayFlags([]string{"--supervise", "--self-relay", "v0.9.2", "--force", "--wait-quiet=30"})
-	if got[0] != "--supervise" || got[1] != "--self-relay" || got[2] != "--force" || got[3] != "--wait-quiet=30" || got[4] != "v0.9.2" {
-		t.Fatalf("重排结果 %v", got)
-	}
-	if len(orderRelayFlags(nil)) != 0 {
-		t.Fatalf("空参应原样")
 	}
 }
 

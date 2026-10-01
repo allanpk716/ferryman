@@ -726,125 +726,15 @@ func spawnDeadProcess(t *testing.T) int {
 
 // ---- 自中继(v0.1.0 首发实测补):监督者自身 == 换装目标时交棒副本 ----
 
-// TestSelfRelayHandover 自身映像 == 换装目标 → 复制自身为 .supervisor-copy、
-// detached 拉起副本接手、本进程 Relayed 返回;不动锁/journal、不进下载。
-func TestSelfRelayHandover(t *testing.T) {
-	w, sup := newUpdateWorld(t, nil, nil)
-	var spawnExe string
-	var spawnArgs []string
-	sup.selfExe = func() (string, error) { return w.exePath, nil } // 自身即目标
-	sup.spawnRelay = func(exe string, args []string) error {
-		spawnExe, spawnArgs = exe, args
-		return nil
-	}
+// ---- 自中继副本机制已删除(v0.5.2 票02) ----
+// 自身映像==换装目标 → 直接两步换装的零副本端到端钉(TestSelfImageTargetSwapsDirectly)
+// 在 swap_locked_windows_test.go——以节映射复刻「监督者自己就是目标的运行映像
+// 持有者」。此处保留清扫域钉:supervisor-copy* 模式在 cleanSwapResidues 域内
+// 保留(收 ≤v0.5.1 旧茬残留,spec F7:首跳后一过性红由下次 update 清扫自愈;
+// 模式与 lock.go 家族②同于 v0.5.3 一并退役)。
 
-	res := sup.Run()
-	if !res.Relayed || res.Err != nil {
-		t.Fatalf("应自中继交棒: relayed=%v err=%v", res.Relayed, res.Err)
-	}
-	copyPath := w.exePath + ".supervisor-copy"
-	got, err := os.ReadFile(copyPath)
-	if err != nil {
-		t.Fatalf("副本应落盘: %v", err)
-	}
-	if string(got) != string(w.oldBytes) {
-		t.Fatal("副本内容应与自身逐字节一致")
-	}
-	if spawnExe != copyPath {
-		t.Fatalf("拉起对象 = %q, want 副本 %q", spawnExe, copyPath)
-	}
-	wantArgs := []string{"update", "--supervise", "--self-relay"}
-	if fmt.Sprint(spawnArgs) != fmt.Sprint(wantArgs) {
-		t.Fatalf("副本参数 = %v, want %v", spawnArgs, wantArgs)
-	}
-	if _, err := os.Stat(filepath.Join(w.dataDir, "update.lock")); err == nil {
-		t.Fatal("交棒不应持锁(锁归副本)")
-	}
-	if _, err := os.Stat(filepath.Join(w.dataDir, journalName)); err == nil {
-		t.Fatal("交棒不应写 journal")
-	}
-}
-
-// TestSelfRelayHandoverCarriesIntent 显式版本与 prerelease 意图随副本透传。
-func TestSelfRelayHandoverCarriesIntent(t *testing.T) {
-	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
-		c.Spec, c.Prerelease = "v0.3.0", true
-	})
-	var spawnArgs []string
-	sup.selfExe = func() (string, error) { return w.exePath, nil }
-	sup.spawnRelay = func(_ string, args []string) error { spawnArgs = args; return nil }
-
-	if res := sup.Run(); !res.Relayed {
-		t.Fatalf("应交棒: %+v", res)
-	}
-	want := []string{"update", "--supervise", "--self-relay", "v0.3.0", "--prerelease"}
-	if fmt.Sprint(spawnArgs) != fmt.Sprint(want) {
-		t.Fatalf("副本参数 = %v, want %v", spawnArgs, want)
-	}
-}
-
-// TestRelaySelfDelete 副本收尾自删 seam（2026-09-30 副本残留案）：SelfRelay
-// 副本以自身映像路径发起延迟删除；非副本不删；selfDelete 缺位不炸；selfExe
-// 失败静默跳过（残留交 cleanSwapResidues 下次扫走）。
-func TestRelaySelfDelete(t *testing.T) {
-	_, sup := newUpdateWorld(t, nil, nil)
-	var delPath string
-	sup.cfg.SelfRelay = true
-	sup.selfExe = func() (string, error) { return `C:\x\ferryman.exe.supervisor-copy`, nil }
-	sup.selfDelete = func(p string) error { delPath = p; return nil }
-	sup.relaySelfDelete()
-	if delPath != `C:\x\ferryman.exe.supervisor-copy` {
-		t.Fatalf("应以自身映像路径发起延迟删除, got %q", delPath)
-	}
-
-	delPath = ""
-	sup.cfg.SelfRelay = false // 非副本（原监督者）不删
-	sup.relaySelfDelete()
-	if delPath != "" {
-		t.Fatal("非副本不得发起自删")
-	}
-
-	sup.cfg.SelfRelay = true
-	sup.selfDelete = nil // seam 缺位（裸构造）不炸
-	sup.relaySelfDelete()
-
-	sup.selfExe = func() (string, error) { return "", fmt.Errorf("无映像") }
-	sup.selfDelete = func(p string) error { delPath = p; return nil }
-	sup.relaySelfDelete()
-	if delPath != "" {
-		t.Fatal("selfExe 失败应静默跳过")
-	}
-}
-
-// TestSelfRelaySkippedWhenDifferentTarget 自身 != 换装目标 → 不交棒,全流程
-// 照常(成功升级)。
-func TestSelfRelaySkippedWhenDifferentTarget(t *testing.T) {
-	_, sup := newUpdateWorld(t, nil, nil)
-	other := filepath.Join(t.TempDir(), "not-the-target.exe")
-	sup.selfExe = func() (string, error) { return other, nil }
-	res := sup.Run()
-	if res.Relayed || !res.Success {
-		t.Fatalf("不同映像不应交棒且应正常升级: relayed=%v success=%v err=%v",
-			res.Relayed, res.Success, res.Err)
-	}
-}
-
-// TestSelfRelayMarkerSkips 副本携 --self-relay 标记:即便自身 == 目标也不再
-// 自中继(防无限交棒),直接干活。
-func TestSelfRelayMarkerSkips(t *testing.T) {
-	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
-		c.SelfRelay = true
-	})
-	sup.selfExe = func() (string, error) { return w.exePath, nil } // 副本形态:自身即目标
-	res := sup.Run()
-	if res.Relayed || !res.Success {
-		t.Fatalf("标记后不应再交棒且应正常升级: relayed=%v success=%v err=%v",
-			res.Relayed, res.Success, res.Err)
-	}
-}
-
-// TestSelfRelayCopyInResidueDomain 自中继副本在清扫域内(副本删不掉自己,
-// 靠下次清扫收走)。
+// TestSelfRelayCopyInResidueDomain 自中继副本在清扫域内(≤v0.5.1 旧茬残留
+// 靠下次清扫收走;副本机制本体已删,此钉守清扫模式不被提前拆)。
 func TestSelfRelayCopyInResidueDomain(t *testing.T) {
 	dir := t.TempDir()
 	copyPath := filepath.Join(dir, "ferryman.exe.supervisor-copy")
@@ -1293,40 +1183,5 @@ func TestDefaultQuietAskNonInteractive(t *testing.T) {
 	forceNonInteractive(t)
 	if got := defaultQuietAsk("提示", []string{"1) 继续等", "2) 现在切换", "3) 放弃"}); got != "" {
 		t.Fatalf("非交互应返回空(告警硬切): %q", got)
-	}
-}
-
-// TestSelfRelayHandoverCarriesQuietIntent 静默门意图随副本透传:--force 与
-// 非缺省 --wait-quiet 转旗标(等待哨兵负值回落旗标 0=不等),副本重跑门时
-// 不丢用户意图。
-func TestSelfRelayHandoverCarriesQuietIntent(t *testing.T) {
-	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
-		c.Force = true
-		c.WaitQuiet = -time.Second
-	})
-	var spawnArgs []string
-	sup.selfExe = func() (string, error) { return w.exePath, nil }
-	sup.spawnRelay = func(_ string, args []string) error { spawnArgs = args; return nil }
-	if res := sup.Run(); !res.Relayed {
-		t.Fatalf("应交棒: %+v", res)
-	}
-	want := []string{"update", "--supervise", "--self-relay", "--force", "--wait-quiet=0"}
-	if fmt.Sprint(spawnArgs) != fmt.Sprint(want) {
-		t.Fatalf("副本参数 = %v, want %v", spawnArgs, want)
-	}
-
-	// 显式非缺省预算:90s 原样透传
-	var args2 []string
-	w2, sup2 := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
-		c.WaitQuiet = 90 * time.Second
-	})
-	sup2.selfExe = func() (string, error) { return w2.exePath, nil }
-	sup2.spawnRelay = func(_ string, a []string) error { args2 = a; return nil }
-	if res := sup2.Run(); !res.Relayed {
-		t.Fatalf("应交棒: %+v", res)
-	}
-	want2 := []string{"update", "--supervise", "--self-relay", "--wait-quiet=90"}
-	if fmt.Sprint(args2) != fmt.Sprint(want2) {
-		t.Fatalf("副本参数 = %v, want %v", args2, want2)
 	}
 }

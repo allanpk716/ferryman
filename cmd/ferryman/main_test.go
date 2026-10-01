@@ -136,13 +136,13 @@ func TestCmdUpdate(t *testing.T) {
 	defer func() { runUpdateExecute = orig }()
 
 	var gotSpec string
-	var gotPre, gotRelay bool
+	var gotPre bool
 	var gotWQ int
 	var gotForce bool
 	var calls int
-	runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, force bool, _ io.Writer) int {
+	runUpdateExecute = func(spec string, pre bool, waitQuiet int, force bool, _ io.Writer) int {
 		calls++
-		gotSpec, gotPre, gotRelay = spec, pre, selfRelay
+		gotSpec, gotPre = spec, pre
 		gotWQ, gotForce = waitQuiet, force
 		return 0
 	}
@@ -169,13 +169,14 @@ func TestCmdUpdate(t *testing.T) {
 		t.Fatalf("--supervise 应同无参走执行路径: calls=%d spec=%q", calls, gotSpec)
 	}
 
-	// --self-relay 内部旗标（自中继副本）：透传给执行路径（副本不再自中继）
+	// --self-relay 已废弃（自中继副本机制 v0.5.2/票02 删除）：解析但忽略
+	// （次版删旗标）——旗标在场不报错,执行路径照常走,值不再透传任何面。
 	calls = 0
 	if code := cmdUpdate([]string{"--supervise", "--self-relay"}, &buf); code != 0 {
-		t.Fatalf("--self-relay 退出码 = %d, want 0（stub）", code)
+		t.Fatalf("--self-relay 退出码 = %d, want 0（解析但忽略）", code)
 	}
-	if calls != 1 || !gotRelay {
-		t.Fatalf("--self-relay 应透传执行路径: calls=%d relay=%v", calls, gotRelay)
+	if calls != 1 {
+		t.Fatalf("--self-relay 应照常走执行路径（解析但忽略）: calls=%d", calls)
 	}
 
 	buf.Reset()
@@ -196,7 +197,7 @@ func TestCmdUpdateQuietGateFlags(t *testing.T) {
 	var gotSpec string
 	var gotWQ int
 	var gotForce bool
-	runUpdateExecute = func(spec string, pre, selfRelay bool, waitQuiet int, force bool, _ io.Writer) int {
+	runUpdateExecute = func(spec string, pre bool, waitQuiet int, force bool, _ io.Writer) int {
 		gotSpec, gotWQ, gotForce = spec, waitQuiet, force
 		return 0
 	}

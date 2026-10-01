@@ -281,6 +281,13 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// 演练＋告警一次"降级路径原样保留。
 	watcher := NewWatcher(cfg, led, st, enqueue, startedAt, acc, d,
 		newBeatSender(cfg, d.DockSnap), qwatchStats)
+	// 票03（D6）：判热钟换持久形——快照落 dataDir(reqclock.json)，构造时回种
+	// （缺/坏=空钟 fail-safe），重启后判热门按真实钟值判，重启观察窗不再把
+	// 缓存仍活的会话整批误判冷。装配在此处替换而非下沉 NewWatcher：测试直构
+	// 形态（NewWatcher 全部测试）保持纯内存零落盘——cfg.DataDir() 缺省解析到
+	// 生产家目录，不可让测试写生产数据目录。
+	watcher.ReqClock = beat.NewPersistentLastRequestClock(
+		filepath.Join(dataDir, "reqclock.json"))
 	// （srv.Serve 已提前至 pid 落盘后——见上；此处不再重复起服务。）
 	go watcher.Run(ctx)
 	go worker.Run(ctx)

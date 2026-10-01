@@ -198,7 +198,7 @@ func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 		qwatchHitSeen: map[winKey]float64{},
 		waitLane:      map[winKey]*waitLaneRec{},
 		lanePins:      map[winKey]bool{},
-		ReqClock:      beat.NewLastRequestClock(), // 票02:判热时钟(数据源钉死)
+		ReqClock:      beat.NewLastRequestClock(), // 票02:判热时钟(内存形;生产由 serveConfig 换持久形回种,票03)
 		smSeen:        map[winKey]float64{},       // 票02:同模型触发版本章
 		TuningStore:   tuning.NewStore(cfg.DataDir()), // 票08:生效值出口库(票07 遗留接线)
 		// 票04 收口:实跳臂结论缝接真源(arm_verdict.jsonl last-wins;

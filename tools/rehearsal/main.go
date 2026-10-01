@@ -7,13 +7,13 @@
 //	go test ./tools/rehearsal/           # 同 -quick（见 rehearsal_test.go）
 //
 // 本 exe 同时充当影子世界里的 ferryman 本尊（同一构建两次 ldflags 注版本，
-// 既是换装目标也是监督者载体——生产 `ferryman update` 的同映像形态，锁让路/
-// 自中继路径才能真实发生），子命令面：
+// 既是换装目标也是监督者载体——生产 `ferryman update` 的同映像形态：自身
+// 映像==换装目标时直接两步换装，v0.5.2 票02 删自中继副本后不再交棒副本），
+// 子命令面：
 //
-//	serve                # 影子守护（daemon.ServeContext；版本烤进 main.version）
-//	supervisor …         # 升级监督者（update.NewSupervisor 装配全注入）
-//	update --supervise … # 自中继副本接力形态（relayArgs 的 argv 契约 + 环境重建装配）
-//	sleeper …            # 占位进程（F4 备份位被占的运行映像；带探活口）
+//	serve        # 影子守护（daemon.ServeContext；版本烤进 main.version）
+//	supervisor … # 升级监督者（update.NewSupervisor 装配全注入；恒同步跑完）
+//	sleeper …    # 占位进程（F4 备份位被占的运行映像；带探活口）
 //
 // 零生产面：一切端口高位随机（黑名单护栏见 util.go），目录全临时，
 // USERPROFILE/FERRYMAN_CONFIG 重定向隔离（见 env.go 文件头）。
@@ -28,7 +28,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -51,8 +50,6 @@ func main() {
 		os.Exit(runServe())
 	case "supervisor":
 		os.Exit(runSupervisor(args[1:]))
-	case "update":
-		os.Exit(runRelay(args[1:]))
 	case "sleeper":
 		os.Exit(runSleeper(args[1:]))
 	}
@@ -64,7 +61,6 @@ func usageMain() {
   rehearsal -all|-quick [-deadline-min N] [-scenario 名] [-fault 名]   # 编排彩排
   rehearsal serve                                                      # 影子守护（内部）
   rehearsal supervisor …                                               # 监督者（内部）
-  rehearsal update --supervise …                                       # 自中继副本（内部）
   rehearsal sleeper …                                                  # 占位进程（内部）
 阶段名: quiet|force|longstream|launch-die|swarm|stale-lock|backup-occupied|drain-kill
 `)
@@ -124,12 +120,10 @@ func runOrchestrate(args []string) int {
 
 // ---- 监督者形态（supervisor 子命令） ----
 
-// supEnvPrefix 副本接力重建装配的环境面前缀（编排进程 → 监督者 → 副本）。
-const supEnvPrefix = "REHEARSAL_SUP_"
-
 // runSupervisor 监督者形态：装配全注入地跑一次升级事务。自身映像==换装目标
-// （生产同形态）→ selfRelayIfNeeded 会转交 .supervisor-copy 副本接手，本进程
-// 交棒退出，结果由副本写 result-out；接力所需装配先导出到环境。
+// （生产同形态）→ v0.5.2（票02）删自中继副本后不再交棒 .supervisor-copy 副本：
+// 直接两步换装（改名让位对运行映像放行），本进程同步跑完全程并亲自写
+// result-out。
 func runSupervisor(args []string) int {
 	fs := flag.NewFlagSet("supervisor", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "影子 DataDir")
@@ -153,23 +147,6 @@ func runSupervisor(args []string) int {
 		fmt.Fprintln(os.Stderr, "supervisor 形态要求完整装配（且必须 ldflags 版本构建）")
 		return 2
 	}
-	// 环境导出：副本接力（update --supervise --self-relay）的 argv 只透传
-	// 版本意图/force/wait-quiet，其余装配全靠继承的环境重建。
-	for k, v := range map[string]string{
-		"DATA_DIR":         *dataDir,
-		"PORT":             strconv.Itoa(*port),
-		"API_BASE":         *apiBase,
-		"DL_BASE":          *dlBase,
-		"START_CMD":        *startCmd,
-		"RESULT_OUT":       *resultOut,
-		"POLL_TIMEOUT_S":   strconv.Itoa(*pollTimeoutS),
-		"PORT_WAIT_S":      strconv.Itoa(*portWaitS),
-		"POLL_INTERVAL_MS": strconv.Itoa(*pollIntervalMs),
-		"PROBE_DELAY_MS":   strconv.Itoa(*probeDelayMs),
-		"PROBE_TIMEOUT_MS": strconv.Itoa(*probeTimeoutMs),
-	} {
-		_ = os.Setenv(supEnvPrefix+k, v)
-	}
 
 	res, alerts := runSupervisorCore(update.Config{
 		DataDir:      *dataDir,
@@ -186,59 +163,7 @@ func runSupervisor(args []string) int {
 		ProbeDelay:   milliDur(*probeDelayMs),
 		ProbeTimeout: milliDur(*probeTimeoutMs),
 	})
-	if res.Relayed {
-		// 已转交副本接手：结果由副本写 result-out，本进程使命结束。
-		return 0
-	}
 	writeTxResult(*resultOut, res, alerts)
-	return txExitCode(res)
-}
-
-// runRelay 自中继副本形态（argv 契约=Supervisor.relayArgs）：
-// update --supervise --self-relay [spec] [--force] [--wait-quiet=N]。
-// 装配经 REHEARSAL_SUP_* 环境重建（Go flag 在首个位置参数后停摆，先重排）。
-func runRelay(args []string) int {
-	fs := flag.NewFlagSet("update", flag.ExitOnError)
-	_ = fs.Bool("supervise", false, "") // 形态旗标（恒真，仅占位）
-	selfRelay := fs.Bool("self-relay", false, "")
-	force := fs.Bool("force", false, "")
-	waitQuiet := fs.Int("wait-quiet", 60, "")
-	spec := ""
-	if err := fs.Parse(orderRelayFlags(args)); err != nil {
-		return 2
-	}
-	if fs.NArg() > 0 {
-		spec = fs.Arg(0)
-	}
-	dataDir := os.Getenv(supEnvPrefix + "DATA_DIR")
-	port, perr := strconv.Atoi(os.Getenv(supEnvPrefix + "PORT"))
-	resultOut := os.Getenv(supEnvPrefix + "RESULT_OUT")
-	if !*selfRelay || dataDir == "" || resultOut == "" || perr != nil {
-		fmt.Fprintln(os.Stderr, "副本形态环境不完整（REHEARSAL_SUP_*）")
-		return 2
-	}
-	pt, _ := strconv.Atoi(os.Getenv(supEnvPrefix + "POLL_TIMEOUT_S"))
-	pw, _ := strconv.Atoi(os.Getenv(supEnvPrefix + "PORT_WAIT_S"))
-	pi, _ := strconv.Atoi(os.Getenv(supEnvPrefix + "POLL_INTERVAL_MS"))
-	pd, _ := strconv.Atoi(os.Getenv(supEnvPrefix + "PROBE_DELAY_MS"))
-	pto, _ := strconv.Atoi(os.Getenv(supEnvPrefix + "PROBE_TIMEOUT_MS"))
-	res, alerts := runSupervisorCore(update.Config{
-		DataDir:      dataDir,
-		Port:         port,
-		Endpoints:    update.Endpoints{APIBase: os.Getenv(supEnvPrefix + "API_BASE"), DLBase: os.Getenv(supEnvPrefix + "DL_BASE"), HTTP: loopbackClient()},
-		Current:      version,
-		Spec:         spec,
-		StartCmd:     os.Getenv(supEnvPrefix + "START_CMD"),
-		SelfRelay:    true, // 本进程已是副本，不再自中继
-		WaitQuiet:    waitQuietFlag(*waitQuiet),
-		Force:        *force,
-		PollTimeout:  secondsDur(pt),
-		PortWait:     secondsDur(pw),
-		PollInterval: milliDur(pi),
-		ProbeDelay:   milliDur(pd),
-		ProbeTimeout: milliDur(pto),
-	})
-	writeTxResult(resultOut, res, alerts)
 	return txExitCode(res)
 }
 
@@ -264,7 +189,7 @@ func writeTxResult(path string, res update.Result, alerts []string) {
 		return
 	}
 	b, err := json.Marshal(txResult{
-		Success: res.Success, Relayed: res.Relayed, From: res.From, To: res.To,
+		Success: res.Success, From: res.From, To: res.To,
 		RolledBack: res.RolledBack, RollbackErr: res.RollbackErr,
 		Err: errString(res.Err), Alerts: alerts,
 	})
@@ -286,20 +211,6 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-// orderRelayFlags 旗标前置重排：Go flag 在首个位置参数后停止解析（cmd/
-// ferryman 同款坑），重排后 spec 在前/在后都行。
-func orderRelayFlags(args []string) []string {
-	var flags, pos []string
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			flags = append(flags, a)
-		} else {
-			pos = append(pos, a)
-		}
-	}
-	return append(flags, pos...)
 }
 
 // loopbackClient 桩端点客户端：显式不走环境代理（ProxyFromEnvironment 可能
