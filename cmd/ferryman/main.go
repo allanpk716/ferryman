@@ -122,6 +122,12 @@ const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交�
   ferryman backtest [--config 路径] [--projects glob]… [--exclude glob]…
                   [--json] [--out 路径]   # 等待窗扫参（离线只读）：账本 window
                                   # 行反事实重放 → docs 实验报告 + ttl_s 校准建议
+  ferryman eval-ferry --provider <名> --n <样本数> --out <目录>
+                  [--handoffs 目录] [--config 路径] [--timeout 秒]
+                                  # 盲评生成（票04）：最近 N 份交接的骨架素材经
+                                  #   指定供应商生成叙事，一样本一文件对（骨架/
+                                  #   叙事并排，文件名含时间戳与会话短 ID）落
+                                  #   --out，供人工盲评对照
   ferryman cutover backup [--data 目录] [--dest 目录]
   ferryman cutover rollback-write [--repo 目录] [--data 目录]
   ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
@@ -210,6 +216,8 @@ func run(args []string) int {
 		return cmdMCP(args[1:])
 	case "backtest":
 		return cmdBacktest(args[1:], os.Stdout, os.Stderr)
+	case "eval-ferry":
+		return cmdEvalFerry(args[1:], os.Stdout, os.Stderr)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
