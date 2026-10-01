@@ -7,7 +7,7 @@
 依赖票01 的锁判据先定案（删除副本后锁的唯一保护就是票01 的三族判据）。
 
 ## 验收标准
-- [ ] supervisor.go 删 selfRelayIfNeeded / relayCopyPath / relaySelfDelete / relayArgs 与 Run() 0.5 自中继步
+- [ ] supervisor.go 删 selfRelayIfNeeded / relaySelfDelete / relayArgs 与 Run() 0.5 自中继步；**保留 relayCopyPath**（lock.go 家族②过渡判据引用它；家族②与 relayCopyPath 都在 v0.5.3 一并删除——票01 代码注释与 lock_test 回归钉已注此生命周期，不得提前拆）
 - [ ] proc_windows.go 删 selfDeleteImpl 与 spawnRelayImpl；proc_other.go 非 Windows 面同步（若有对应物）
 - [ ] Result.Relayed 字段与 cmd/ferryman/main.go 的 Relayed 分支收口（`ferryman update` 同步跑完，行为变化按 spec 声明）
 - [ ] --self-relay 旗标保留"解析但忽略"，注释注明次版删除
