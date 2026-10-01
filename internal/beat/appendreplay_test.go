@@ -18,9 +18,11 @@ package beat
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"ferryman/internal/config"
 	"ferryman/internal/dock"
 )
 
@@ -315,5 +317,74 @@ func TestSendAppendReplayErrorPaths(t *testing.T) {
 				t.Fatalf("上游收到 %d 次, want 1（零重试）", n)
 			}
 		})
+	}
+}
+
+// TestSendAppendReplayThroughRewriteDock 2026-10-01 第二缺口端到端钉子（生产
+// 同形链：发送器→渡口改写→上游）。追加重放经渡口出站时必须已过改写——model
+// 映射、标记头剥离、真钥替换都在位；上游缓存的改写后前缀/模型命名空间才咬合
+// （缓存命中的经济前提）。旧形态下重放跳过改写发原始字节，生产实证重放 dock
+// 行 model_out=claude-opus-5（真流量=GLM）、缓存命中 128/0 全价重付。
+func TestSendAppendReplayThroughRewriteDock(t *testing.T) {
+	u := newSSEUpstream(t, writeHandoffSSE)
+	entry := &config.DockUpstream{
+		BaseURL:  u.srv.URL, // httptest 随机口不在本地中转端口名单，守卫放行
+		APIKey:   "sk-test-append-dock",
+		ModelMap: map[string]string{"default": "glm-5.3"},
+	}
+	dockSrv, err := dock.NewWithOptions("127.0.0.1:15722", u.srv.URL, dock.Options{Upstream: entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(dockSrv)
+	t.Cleanup(front.Close)
+
+	// 快照体＝渡口捕获的 CC 原始形（model 带 [1M] 别名，交渡口改写剥后映射）。
+	store := dock.NewSnapshotStore()
+	store.Capture("sess-dock", []byte(`{"model":"claude-opus-5[1M]","max_tokens":32000,"stream":true,`+
+		`"metadata":{"session_id":"sess-dock"},`+
+		`"messages":[{"role":"user","content":"q"},{"role":"assistant","content":"a"}]}`),
+		snapHdrFixture())
+	s := NewHttpBeatSender(front.URL, store)
+	r := s.SendAppendReplay(AppendReplayPlan{SessionID: "sess-dock", Instruction: "写交接", MaxTokens: 4096})
+	if !r.Sent || !r.OK || r.Err != "" {
+		t.Fatalf("SendAppendReplay = %+v, want Sent=true OK=true（渡口中继不破坏 SSE 解析）", r)
+	}
+
+	hdr, body, path := u.last()
+	if path != "/v1/messages" {
+		t.Fatalf("上游路径 = %q, want /v1/messages", path)
+	}
+	var got struct {
+		Model     string             `json:"model"`
+		MaxTokens int                `json:"max_tokens"`
+		Messages  []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("上游体非 JSON: %v", err)
+	}
+	// 核断言：出站 model 已映射（旧形态这里留 claude-opus-5[1M]＝缓存命名空间
+	// 错位的直接观测）。
+	if got.Model != "glm-5.3" {
+		t.Fatalf("上游收到 model = %q, want glm-5.3（重放须过渡口改写）", got.Model)
+	}
+	if got.MaxTokens != 4096 {
+		t.Fatalf("max_tokens = %d, want 4096（封顶经改写保留）", got.MaxTokens)
+	}
+	if len(got.Messages) != 3 {
+		t.Fatalf("messages = %d 条, want 2+1", len(got.Messages))
+	}
+	if !strings.Contains(string(got.Messages[2]), `"写交接"`) {
+		t.Fatalf("末条消息须为追加指令: %s", got.Messages[2])
+	}
+	// 头：渡口出站卫生——标记头剥离、真钥替换（占位令牌不达上游）。
+	if g := hdr.Get("X-Ferryman-Replay"); g != "" {
+		t.Fatalf("标记头泄漏上游: %q", g)
+	}
+	if g := hdr.Get("Authorization"); g != "Bearer sk-test-append-dock" {
+		t.Fatalf("出站真钥 = %q, want 渡口条目钥", g)
+	}
+	if g := hdr.Get("X-Api-Key"); g != "" {
+		t.Fatalf("占位 x-api-key 未剥: %q", g)
 	}
 }

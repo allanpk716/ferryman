@@ -447,3 +447,93 @@ func TestDriftAlertsWiredThroughOptions(t *testing.T) {
 		t.Fatalf("应告警一次且点名: %v", alerts)
 	}
 }
+
+// TestRewriteReplayMarkedRequestGoesThroughRewrite 2026-10-01 第二缺口钉子：
+// 自产重放（x-ferryman-replay 标记头）与真流量同经改写——同源体出站字节相同
+// （上游缓存的改写后前缀/模型命名空间咬合的机制根基）。旧条件把 replay 排除
+// 在改写外：重放发原始字节（model 仍 claude-*、图片未降级），生产实证两笔
+// 重放缓存命中 128/0、input 全价重付 19.9 万/20.5 万。同钉既有不变式：重放
+// 不入快照、标记头出站剥离、dock 行 mode/model_out 如实记改写后视图。
+func TestRewriteReplayMarkedRequestGoesThroughRewrite(t *testing.T) {
+	var up upstreamEcho
+	backend := httptest.NewServer(http.HandlerFunc(up.handler))
+	defer backend.Close()
+	acc, err := accounts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewWithOptions("127.0.0.1:15722", backend.URL,
+		Options{Upstream: rewriteDockUpstream(backend.URL), Accounts: acc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := frontOf(t, srv)
+
+	// 同源体：真流量先发一遍（快照入账、上游前缀落缓存），再带标记头重放同体。
+	// model 取别名 claude-sonnet-5（映射 glm-5.3-air 在 TextOnly 名单）＋image
+	// 块——改写件全数生效（映射＋剥 [1M] 不涉及＋图片降级）都在断言面。
+	original := []byte(`{"model":"claude-sonnet-5","max_tokens":1024,` +
+		`"metadata":{"session_id":"sess-rw-replay"},` +
+		`"messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"看图"},` +
+		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}`)
+	resp, err := http.DefaultClient.Do(ccRequest(t, front+"/v1/messages", original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	_, _, realBody := up.snapshot()
+	if bytes.Equal(realBody, original) {
+		t.Fatal("前置失败：真流量未被改写（夹具/守卫问题，非本钉子对象）")
+	}
+
+	req := ccRequest(t, front+"/v1/messages", original)
+	req.Header.Set(HeaderFerrymanReplay, "same_model") // HttpBeatSender 追加重放同款标记
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	hdr, _, replayBody := up.snapshot()
+
+	// 核断言：同源同改写＝出站字节相同（重放前缀与上游已缓存的真流量前缀
+	// 逐字节一致，缓存命中的机制前提）。
+	if !bytes.Equal(replayBody, realBody) {
+		t.Fatalf("重放出站体与真流量改写体不一致:\n got: %s\nwant: %s", replayBody, realBody)
+	}
+	// 改写件确实生效：model 映射＋图片降级（TextOnly 档）。
+	if !strings.Contains(string(replayBody), `"model":"glm-5.3-air"`) {
+		t.Fatalf("重放出站 model 未映射: %s", replayBody)
+	}
+	if !strings.Contains(string(replayBody), imagePlaceholderText) {
+		t.Fatalf("重放出站图片未降级（TextOnly 档）: %s", replayBody)
+	}
+	// 标记头出站剥离（不泄漏上游）＋真钥替换在位。
+	if hdr.Get("X-Ferryman-Replay") != "" {
+		t.Fatalf("标记头泄漏上游: %v", hdr)
+	}
+	if hdr.Get("Authorization") != "Bearer sk-real-key" {
+		t.Fatalf("出站真钥 = %q", hdr.Get("Authorization"))
+	}
+
+	// 快照不变式：重放不入库——主快照仍是真流量那份原始体。
+	main, ok := srv.Snapshots().Main("sess-rw-replay")
+	if !ok {
+		t.Fatal("快照未捕获 sess-rw-replay")
+	}
+	if !bytes.Equal(main.Body, original) {
+		t.Fatalf("快照体被重放污染: %s", main.Body)
+	}
+
+	// dock 行：两行都如实记改写视图（旧 bug 形态＝重放行 model_out 留在
+	// 原名 claude-*，正是生产定位此缺口的观测证据）。
+	rows := waitDockRows(t, acc, 2)
+	for i, row := range rows {
+		if row["mode"] != "rewrite" || row["model_out"] != "glm-5.3-air" {
+			t.Fatalf("第 %d 行 mode/model_out = %v/%v, want rewrite/glm-5.3-air", i, row["mode"], row["model_out"])
+		}
+		if row["session_id"] != "sess-rw-replay" {
+			t.Fatalf("第 %d 行归因 = %v", i, row["session_id"])
+		}
+	}
+}

@@ -418,14 +418,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// 票03：自产重放（追加重放带 x-ferryman-replay 标记头）不入快照、不喂
 	// 漂移——追加体会顶替主快照（见 replayguard.go）；dock 科目照记（record
-	// 以 messagesPost 计，重放也有传输流水）。
+	// 以 messagesPost 计，重放也有传输流水）。改写照走：重放与真流量同经
+	// Rewrite，上游缓存的改写后前缀才咬合得上（2026-10-01 第二缺口：旧条件
+	// 把 replay 排除在改写外，两笔重放缓存命中 128/0、input 全价重付 19.9 万/
+	// 20.5 万，同模型档的缓存价差被整个架空）。
 	messagesPost := ShouldCapture(r.Method, r.URL.Path)
 	replay := isReplayRequest(r.Header)
 	countTok := isCountTokens(r.Method, r.URL.Path)
 	capture := messagesPost && !replay
 	record := s.acc != nil && (messagesPost || countTok)
 
-	needBody := capture || record || (view.rewriteOn && countTok)
+	needBody := capture || record || (view.rewriteOn && (messagesPost || countTok))
 	var body []byte
 	if needBody {
 		b, err := io.ReadAll(r.Body)
@@ -455,12 +458,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 改写独立于记账：不接账本时改写照常生效（view.rewriteOn 才有此分支）。
-	// count_tokens 仅同映射 model（不做图片降级，其余键不动）。
+	// messages POST 全量改写，真流量与自产重放同经 Rewrite——同源体出站字节
+	// 相同，上游缓存前缀/模型命名空间才对得上（快照存原始体的不变式依赖此
+	// 处兑现）。count_tokens 仅同映射 model（不做图片降级，其余键不动）。
 	// rewritten/rewriteDone 为请求局部值（并发请求不共享任何状态）。
 	var rewritten Rewritten
 	rewriteDone := false
-	if view.rewriteOn && (capture || countTok) {
-		if capture {
+	if view.rewriteOn && (messagesPost || countTok) {
+		if messagesPost {
 			rw, err := Rewrite(body, view.rwCfg)
 			if err != nil {
 				// 非法体：原体透传交上游校验应答（不替上游造 400）
