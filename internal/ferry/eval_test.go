@@ -4,7 +4,7 @@
 //   - 样本选取=最近 N 份交接按时间倒序;不足 N 如实全取(total 如实上抛);
 //   - 假上游(httptest)下一样本一文件对:骨架/叙事并排,文件名含时间戳与
 //     会话短 ID,内容含素材与叙事两段,产物注明「全文模式」与样本不足注;
-//   - 无可用样本/供应商缺名/供应商表缺名/anthropic 协议 → 报错清晰不空跑;
+//   - 无可用样本/供应商缺名/供应商表缺名 → 报错清晰不空跑;
 //   - 单样本生成失败不炸整批:失败记账、跳过文件对,成功样本照常产出。
 package ferry
 
@@ -204,13 +204,37 @@ func TestRunEvalFerryUnknownProvider(t *testing.T) {
 	}
 }
 
-func TestRunEvalFerryAnthropicUnsupported(t *testing.T) {
-	_, err := RunEvalFerry(EvalOptions{ProviderName: "fake",
-		Providers: map[string]Provider{"fake": {Name: "fake", BaseURL: "http://x",
-			Model: "m", Protocol: ProtocolAnthropic}},
-		N: 1, HandoffDir: t.TempDir(), OutDir: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "暂不支持 anthropic") {
-		t.Fatalf("anthropic 协议应明确报错等票03: %v", err)
+func TestRunEvalFerryAnthropicDispatches(t *testing.T) {
+	// 终局修复2：anthropic 档经 chainCall 分派走票03 适配器，盲评门可用。
+	srv := newAnthSrv(t, anthBodyFor([]map[string]any{
+		textBlock("k3 的叙事"), thinkingBlock("内部思考不进产物"),
+	}, 120, 80))
+	handoffs := t.TempDir()
+	writeHandoff(t, handoffs, "20261001_074613", "aaa111", "素材甲")
+	res, err := RunEvalFerry(EvalOptions{ProviderName: "kimi-k3",
+		Providers: map[string]Provider{"kimi-k3": {Name: "kimi-k3",
+			BaseURL: srv.srv.URL, Model: "k3", APIKey: "sk-k",
+			Protocol: ProtocolAnthropic}},
+		N: 1, HandoffDir: handoffs, OutDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Pairs) != 1 {
+		t.Fatalf("anthropic 档应产出文件对, got %d 对, failures=%v", len(res.Pairs), res.Failures)
+	}
+	nr, rerr := os.ReadFile(res.Pairs[0].NarrativePath)
+	if rerr != nil || !strings.Contains(string(nr), "k3 的叙事") {
+		t.Fatalf("叙事件应含适配器 text 块输出: err=%v", rerr)
+	}
+	if strings.Contains(string(nr), "内部思考不进产物") {
+		t.Fatal("thinking 块不得混入叙事产物")
+	}
+	paths, apiKeys, _, _, _ := srv.snap()
+	if len(paths) != 1 || paths[0] != "/v1/messages" {
+		t.Fatalf("anthropic 请求路径 = %v, want [/v1/messages]", paths)
+	}
+	if len(apiKeys) != 1 || apiKeys[0] != "sk-k" {
+		t.Fatalf("x-api-key = %v", apiKeys)
 	}
 }
 

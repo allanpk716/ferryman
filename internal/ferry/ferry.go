@@ -199,6 +199,11 @@ func chatOpenAI(client *http.Client, pr Provider, system, user string,
 		"max_tokens":  maxTokens,
 		"stream":      false,
 	}
+	for k, v := range pr.ExtraBody { // extra_body 透传（票02 键，终局修复1）：openai
+		// 档与 anthropic 档同款并入、冲突以透传为准——GLM 关 thinking 等供应商
+		// 特异参数经配置注入，不硬编码（ferry.py 平移在链化役扩此缝）。
+		payload[k] = v
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", nil, err

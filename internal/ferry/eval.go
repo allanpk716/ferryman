@@ -10,11 +10,12 @@
 // MD 不适用;交接 MD 本身=头部+注入层+模型叙事,不含骨架段。按票面兜底
 // 条款,素材退化为交接 MD 全文,产物头注明「全文模式」。
 //
-// 供应商走票02 供应商表(LoadProviders/Provider);openai 兼容协议走既有
-// Chat 单发(SystemPrompt 原文为 system,素材为 user,max_tokens 同生产 L1
-// 口径=PromptReserve);anthropic 协议明确报错等票03 适配器接线,不静默。
+// 供应商走票02 供应商表(LoadProviders/Provider);经 chainCall(0, pr) 按
+// Provider.Protocol 分派——openai 兼容走既有 Chat、anthropic 走票03 适配器
+// (SystemPrompt 原文为 system,素材为 user,max_tokens 同生产 L1 口径=
+// PromptReserve),与生产链同形（终局修复2：盲评门对 anthropic 档可用）。
 //
-// 报错契约:供应商缺名/表缺名/anthropic/无可用样本 → 硬错误(不静默空跑、
+// 报错契约:供应商缺名/表缺名/无可用样本 → 硬错误(不静默空跑、
 // 不发上游调用);单样本生成失败 → 记账跳过不炸整批,由调用方按结果分流。
 package ferry
 
@@ -138,9 +139,10 @@ func PickRecentHandoffs(dir string, n int) ([]EvalSample, int, error) {
 	return taken, len(all), nil
 }
 
-// RunEvalFerry 盲评生成主流程:供应商解析 → 样本选取 → 逐样本 Chat 生成
-// 叙事并落文件对。硬错误(供应商缺名/表缺名/anthropic/无样本)→ error 且
-// 不发任何上游调用;单样本失败 → 记账进 Failures,整批继续。
+// RunEvalFerry 盲评生成主流程:供应商解析 → 样本选取 → 逐样本按协议分派生成
+// 叙事并落文件对（终局修复2：经 chainCall 分派，anthropic 档走适配器，与
+// 生产链同形——含本地级拨号限时语义）。硬错误(供应商缺名/表缺名/无样本)
+// → error 且不发任何上游调用;单样本失败 → 记账进 Failures,整批继续。
 func RunEvalFerry(opts EvalOptions) (*EvalResult, error) {
 	if strings.TrimSpace(opts.ProviderName) == "" {
 		return nil, fmt.Errorf("缺少供应商名(--provider 必填,[providers.*] 键)")
@@ -156,9 +158,6 @@ func RunEvalFerry(opts EvalOptions) (*EvalResult, error) {
 		}
 		sort.Strings(names)
 		return nil, fmt.Errorf("供应商 %q 不在供应商表中(可用: %s)", opts.ProviderName, strings.Join(names, ", "))
-	}
-	if pr.Protocol == ProtocolAnthropic {
-		return nil, fmt.Errorf("供应商 %q 为 anthropic 协议——暂不支持 anthropic 协议直连,等票 03 适配器接线", opts.ProviderName)
 	}
 
 	samples, total, err := PickRecentHandoffs(opts.HandoffDir, opts.N)
@@ -177,6 +176,7 @@ func RunEvalFerry(opts EvalOptions) (*EvalResult, error) {
 	if maxTokens <= 0 {
 		maxTokens = PromptReserve
 	}
+	call := chainCall(0, pr) // 协议分派+拨号语义与生产链同形（终局修复2）
 
 	res := &EvalResult{Requested: opts.N, Total: total, Taken: len(samples),
 		Truncated: total < opts.N}
@@ -185,7 +185,7 @@ func RunEvalFerry(opts EvalOptions) (*EvalResult, error) {
 		truncNote = fmt.Sprintf("- 注: 样本不足——请求 %d 份,实取 %d 份（已如实全取）", opts.N, len(samples))
 	}
 	for _, s := range samples {
-		narrative, _, cerr := Chat(pr, SystemPrompt, s.Material, timeoutS, maxTokens)
+		narrative, _, cerr := call(pr, SystemPrompt, s.Material, timeoutS, maxTokens)
 		if cerr != nil {
 			res.Failures = append(res.Failures, EvalFailure{Sample: s, Err: cerr.Error()})
 			continue
