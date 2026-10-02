@@ -16,6 +16,7 @@
 internal/update/lock.go
 internal/update/supervisor.go
 internal/update/lock_test.go
+internal/update/supervisor_test.go(仅首行注释)
 internal/update/swap_residues.go(如清扫模式在此;核实实际文件后以目录 internal/update/ 为准)
 cmd/ferryman/main.go
 
