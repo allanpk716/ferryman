@@ -55,7 +55,8 @@ type Targets struct {
 	//（%APPDATA%/orca/codex-runtime-home/home/config.toml）。
 	OrcaCodexConfig string
 	// PiModels ~/.pi/agent/models.json（票10 第四目标之一；与 PiSettings 须
-	// 成对派生——两路径皆空＝pi 目标不入案，单空＝调用方装配错误）。
+	// 成对派生——两路径皆空＝pi 目标不入案；单空＝该目标视为缺配置跳过
+	// 并回显（providerTargetsFromHome 恒成对派生，单空实际不可达）。）。
 	PiModels string
 	// PiSettings ~/.pi/agent/settings.json（与 PiModels 成对）。
 	PiSettings string
