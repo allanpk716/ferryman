@@ -1,9 +1,9 @@
 # ADR 索引
 
 > 架构决策记录（ADR）总索引。一句话主旨从各篇标题/首段提炼，细节以文件原文为准。
-> 撞号说明：0016 与 0018 各有两篇（历史编号重复），文件名不改，以文件名后缀区分；本表用别名注记消歧（见下节）。0019 预留给「全 Go vs Rust 对比」（cc-switch 替换 spec D2），由后续票补。
+> 撞号说明：0016 与 0018 各有两篇（历史编号重复），文件名不改，以文件名后缀区分；本表用别名注记消歧（见下节）。
 
-## 索引（0001–0018，共 20 篇）
+## 索引（0001–0019，共 21 篇）
 
 | 编号 | 文件 | 别名 | 一句话主旨 |
 |---|---|---|---|
@@ -27,6 +27,7 @@
 | 0017 | [0017-dock-error-contract.md](0017-dock-error-contract.md) | — | 渡口错误契约：响应侧零改写透传；自产错误按流状态分流投递 CC 认识的标准形状 |
 | 0018 | [0018-quiet-gate-over-edge-proxy.md](0018-quiet-gate-over-edge-proxy.md) | 0018-gate | 升级停顿对策＝静默门（空载准入停旧）；「任何时刻不拒连」的常驻代理延后（触发式） |
 | 0018 | [0018-settings-window-resident.md](0018-settings-window-resident.md) | 0018-settings | 设置窗常驻隐藏：运行时建 WebviewWindow 在真机是渲染树永不建成的僵尸——窗口声明式常驻、关闭即隐藏 |
+| 0019 | [0019-takeover-ccswitch-go-translation.md](0019-takeover-ccswitch-go-translation.md) | — | 接管 cc-switch＝渡口当总门：翻译层并入 Go 渡口、不转 Rust，pi 走 anthropic-messages 复用 CC 车道，provider 族为统一配置面 |
 
 ## 撞号消歧与引用注意
 
