@@ -159,6 +159,10 @@ serve 与面板:
 
 --events 缺省 = 全集（UserPromptSubmit,SessionStart,SubagentStart,SubagentStop）；
 切换日按用户指令只装三类（闸门 UserPromptSubmit 暂不装，C12）。
+
+退出码契约: 0 = 成功（backtest 数据空态亦为 0——引擎未产出时报告照落、输出明示空态原因）；
+1 = 失败（真错误：config/账本读不到、报告写盘失败等）；
+2 = 用法错（未知子命令/未知旗标/多余位置参数）。
 `
 
 // doctorUsage / ccswitchUsage 零参数命令的用法面（help 安全契约，本票）：两命令
