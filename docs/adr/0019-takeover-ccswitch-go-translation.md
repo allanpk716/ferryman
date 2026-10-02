@@ -2,7 +2,7 @@
 
 状态:已接受(2026-10-02;cc-switch 替换 spec 定案,决策 D1/D2/D4,底稿 `.scratch/ccswitch-replacement/spec.md`)。
 
-**背景**:cc-switch 是 Tauri 2 桌面应用,Rust 核心约 4.5 万行,双形态并存——本地代理(15721)为 codex 做协议翻译转发,配置切换器(SQLite)改写各家 CLI 配置;代价是每次开机/切档会擦掉 codex 的钩子与旗标(用户须人工三件核查),且 codex/pi 流量不经渡口,费用记账、上游热切换与体检覆盖不到。对面一侧,渡口(15722)经 9-30 服务商接管战役(收官记录 `docs/20260930_服务商接管战役收官记录.md`)已有成套 Go 资产:codex 翻译车道(`internal/dock/codexlane.go` 等,请求向/SSE 响应向/缓存注入全链,约 70 表驱动用例)、provider 外科写入器(apply/`--restore`/同戳成组备份)、doctor 生效链体检、`/provider_switch` 热切换(COW 原子换绑、在途不断流)。翻译这一最难啃的环节已经在 Go 里且在生产跑着——问题只剩"要不要再引一门语言"。
+**背景**:cc-switch 是 Tauri 2 桌面应用,Rust 核心约 22 万行(实测 281 个 .rs 共 22.2 万行,其中 proxy 子树 7.7 万行),双形态并存——本地代理(15721)为 codex 做协议翻译转发,配置切换器(SQLite)改写各家 CLI 配置;代价是每次开机/切档会擦掉 codex 的钩子与旗标(用户须人工三件核查),且 codex/pi 流量不经渡口,费用记账、上游热切换与体检覆盖不到。对面一侧,渡口(15722)经 9-30 服务商接管战役(收官记录 `docs/20260930_服务商接管战役收官记录.md`)已有成套 Go 资产:codex 翻译车道(`internal/dock/codexlane.go` 等,请求向/SSE 响应向/缓存注入全链,约 70 表驱动用例)、provider 外科写入器(apply/`--restore`/同戳成组备份)、doctor 生效链体检、`/provider_switch` 热切换(COW 原子换绑、在途不断流)。翻译这一最难啃的环节已经在 Go 里且在生产跑着——问题只剩"要不要再引一门语言"。
 
 ## 决策
 
