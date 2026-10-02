@@ -48,7 +48,7 @@ import (
 	"ferryman/internal/provider"
 )
 
-const providerUsage = `用法:
+const providerUsage string = `用法:
   ferryman provider list [--config 路径]          # 供应商表：active 标注/dialect/
                                                 #   codex 可用性/模型位/密钥脱敏
   ferryman provider switch <名> [--cc-only] [--config 路径]
@@ -70,13 +70,17 @@ const providerUsage = `用法:
                                                 #   （--restore 按接管前备份还原）
 `
 
-// cmdProvider 子命令分发（缺省/未知 = 用法退出 2）。
+// cmdProvider 子命令分发（缺省/未知 = 用法退出 2；-h/--help = 帮助面打印
+// usage 退 0，本票）。
 func cmdProvider(args []string, w io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, providerUsage)
 		return 2
 	}
 	switch args[0] {
+	case "-h", "--help":
+		fmt.Fprint(w, providerUsage)
+		return 0
 	case "list":
 		return cmdProviderList(args[1:], w)
 	case "switch":

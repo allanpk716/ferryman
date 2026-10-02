@@ -54,13 +54,17 @@ const (
 	upstreamHealthInterval  = 300 * time.Millisecond
 )
 
-// cmdUpstream 子命令分发（缺省/未知 = 用法退出 2）。
+// cmdUpstream 子命令分发（缺省/未知 = 用法退出 2；-h/--help = 帮助面打印
+// usage 退 0，本票）。
 func cmdUpstream(args []string, w io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, upstreamUsage)
 		return 2
 	}
 	switch args[0] {
+	case "-h", "--help":
+		fmt.Fprint(w, upstreamUsage)
+		return 0
 	case "list":
 		return cmdUpstreamList(args[1:], w)
 	case "use":
@@ -70,7 +74,7 @@ func cmdUpstream(args []string, w io.Writer) int {
 	return 2
 }
 
-const upstreamUsage = `用法:
+const upstreamUsage string = `用法:
   ferryman upstream list [--config 路径]      # 渡口上游表：active 标注/base_url/
                                             #   model_map 概要/可用状态/密钥脱敏
   ferryman upstream use <名> [--config 路径]  # 切换 active 并自动重启守护

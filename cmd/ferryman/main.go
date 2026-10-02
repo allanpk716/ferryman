@@ -100,75 +100,71 @@ const (
 // 本地开发构建（ferryman version 时带「非 release 构建」提示）。
 var version = "dev"
 
-const usage = `ferryman — 摆渡人：会话闲置缓存失效后的自动交接守护（守望→摆渡→闸门→归还）
+const usage string = `ferryman — 摆渡人：会话闲置缓存失效后的自动交接守护（守望→摆渡→闸门→归还）
 
 用法:
+
+serve 与面板:
   ferryman                # 无参 = serve：守护(127.0.0.1:15700) + 面板(15900) + 托盘
   ferryman serve [--port N] [--no-tray] [--smoke]
+  ferryman --demo|--data 目录 [--port N] [--no-tray] [--no-browser]   # 只起面板
+  ferryman --install-shortcuts    # 建桌面+开始菜单快捷方式后退出
+
+体检:
   ferryman doctor         # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
-  ferryman version        # 打印版本号（dev = 非 release 构建）
+  ferryman version        # 版本号（dev = 非 release 构建）
+
+安装（钩子/配置注入与常驻保障）:
   ferryman install-cc [--events 事件1,事件2,…]
-  ferryman install-ccswitch
+  ferryman install-ccswitch      # cc-switch 供应商快照注入（不接受参数）
   ferryman install-codex [--events 事件1,事件2,…]
-  ferryman install-mcp [--force]    # agent 面 MCP server 注册进 CC 用户级配置
-                                   # （幂等；外部/不兼容同名条目默认拒绝，--force 覆盖）
-  ferryman autostart install|uninstall|status  # 登录自启 Run 键（票02 常驻保障）
-  ferryman watchdog             # 看门单次探活：无监听拉起 daemon（票02，schtasks 每 5 分钟调它）
-  ferryman watchdog install|uninstall|status   # 看门计划任务三操作
+  ferryman install-mcp [--force]  # agent 面 MCP 注册进 CC 用户级配置（幂等）
+  ferryman autostart install|uninstall|status    # 登录自启 Run 键（缺省 status）
+  ferryman watchdog [install|uninstall|status]   # 无参 = 单次探活拉起 daemon
+
+账本:
   ferryman account report [--since 日] [--until 日] [--project 名] [--session id]
                       [--kind 类型] [--provider 键] [--json]
-  ferryman mcp [--config 路径]      # stdio MCP server（agent 面只读工具，票04；
-                                  # CC 等 MCP 客户端把本命令注册为 server 用）
   ferryman backtest [--config 路径] [--projects glob]… [--exclude glob]…
-                  [--json] [--out 路径]   # 等待窗扫参（离线只读）：账本 window
-                                  # 行反事实重放 → docs 实验报告 + ttl_s 校准建议
-  ferryman eval-ferry --provider <名> --n <样本数> --out <目录>
-                  [--handoffs 目录] [--config 路径] [--timeout 秒]
-                                  # 盲评生成（票04）：最近 N 份交接的骨架素材经
-                                  #   指定供应商生成叙事，一样本一文件对（骨架/
-                                  #   叙事并排，文件名含时间戳与会话短 ID）落
-                                  #   --out，供人工盲评对照
-  ferryman cutover backup [--data 目录] [--dest 目录]
-  ferryman cutover rollback-write [--repo 目录] [--data 目录]
-  ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
-  ferryman cutover smoke [--config 沙箱配置]
-  ferryman upstream list [--config 路径]       # 渡口上游表：active 标注/base_url/
-                                             #   model_map 概要/可用状态/密钥脱敏
-  ferryman upstream use <名> [--config 路径]   # 切换 active 并自动重启守护
-                                             #   （在途请求中断；守护未起来时如实
-                                             #   报告，不自动回滚/重试）
-  ferryman provider list|switch|add|remove|import-ccswitch|apply
-                                             # 供应商操作面（票06）：热切换走守护
-                                             #   管理口不重启；ferryman provider
-                                             #   不带子命令看用法
-  ferryman tuning status [--config 路径] [--json]  # 调参面板：建议摘要与状态+
-                                                #   当前公式输入校准（只读）
-  ferryman tuning sweep [--config 路径] [--projects glob]… [--exclude glob]…
-                      [--ttl-min 分,分,…]      # 同模型阈值扫参（票06）：报告落
-                                                #   状态目录+产出建议，三态分流
-                                                #   （manual 只报告/recommend 提醒/
-                                                #   auto 护栏内自动应用）
-  ferryman tuning apply <id> [--config 路径]    # 接受建议（人工应用；唯一写路径）
-  ferryman tuning reject <id> [--reason 文本] [--config 路径]  # 拒绝建议
-  ferryman tuning rollback <上游> [--config 路径]  # 一键回滚该上游最近一次生效
-                                                #   （恢复生效前公式输入快照）
+                  [--json] [--out 路径]   # 等待窗扫参（离线只读：反事实重放）
 
-面板（时间线查看器，viewer 原样）:
-  ferryman --demo [--port N] [--no-tray] [--no-browser]
-  ferryman --install-shortcuts    # 建桌面+开始菜单快捷方式后退出
-  ferryman --data 目录 [--port N] [--no-tray] [--no-browser]
+渡口与供应商:
+  ferryman upstream list [--config 路径]         # 上游表：active/脱敏/可用状态
+  ferryman upstream use <名> [--config 路径]     # 切换 active 并自动重启守护
+  ferryman provider list|switch|add|remove|import-ccswitch|apply
+                                                # 供应商操作面（热切换不重启）
+  ferryman eval-ferry --provider <名> --n <样本数> --out <目录> [--handoffs 目录]
+                  [--config 路径] [--timeout 秒]  # 盲评生成（骨架/叙事并排对）
+
+调参:
+  ferryman tuning status|sweep|apply|reject|rollback [flags]
+                                                # 只读面板/扫参建议/人工接受/拒绝/
+                                                #   一键回滚（-h 看细账）
+
+换装:
+  ferryman update [--check] [vX.Y.Z] [--prerelease]
+                  # 无 --check = 执行升级（监督者：静默门/下载/校验/换装/重启/
+                  #   回滚；--wait-quiet=<秒> 等流量空闲预算（0=不等，缺省 60s）；
+                  #   --force 跳门硬切；--check 只报告不动手；显式版本支持降级）
+
+工具:
+  ferryman mcp [--config 路径]       # stdio MCP server（agent 面只读工具）
+  ferryman help                      # 本用法（-h/--help 同）
 
 --events 缺省 = 全集（UserPromptSubmit,SessionStart,SubagentStart,SubagentStop）；
 切换日按用户指令只装三类（闸门 UserPromptSubmit 暂不装，C12）。
+`
 
-cutover 族（票23 切换工具，不执行生产切换）:
-  backup         数据全量备份（accounts/*.jsonl+handoffs/*.md+index.json+
-                 config.toml+daemon.token → 带时间戳目录；只读复制）
-  rollback-write 生成回退工件 <data>/rollback-to-python.cmd（幂等；切换日跑）
-  rollback-drill 临时环境演练回退机制（临时 worktree+临时启动器副本，
-                 绝不碰真实 start-daemon.cmd；tag 未打自动降级路径探测）
-  smoke          沙箱冒烟四链路（独立端口+独立数据目录，直打 API；
-                 ①observe 警告 ②摆渡 fresh+账本行 ③归还 ④enforce block 契约）
+// doctorUsage / ccswitchUsage 零参数命令的用法面（help 安全契约，本票）：两命令
+// 不收任何参数——任何非空参数（含 -h）都是用法错退 2，绝不执行体检/快照注入
+// （旧缺陷：install-ccswitch -h 参数整体丢弃照跑、真写宿主配置，即此钉死）。
+const doctorUsage string = `用法:
+  ferryman doctor         # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
+                          #   （不接受任何参数）
+`
+
+const ccswitchUsage string = `用法:
+  ferryman install-ccswitch   # cc-switch 供应商快照注入（不接受任何参数）
 `
 
 func main() {
@@ -185,7 +181,7 @@ func run(args []string) int {
 	case "serve":
 		return cmdServe(args[1:])
 	case "doctor":
-		return installer.RunDoctor(version) // 版本经装配参数进（票02，规格 §A）
+		return cmdDoctor(args[1:]) // 零参数契约（help 安全契约，本票）
 	case "version":
 		return cmdVersion(args[1:], os.Stdout)
 	case "update":
@@ -193,7 +189,7 @@ func run(args []string) int {
 	case "install-cc":
 		return cmdInstallCC(args[1:])
 	case "install-ccswitch":
-		return cmdInstallCCSwitch()
+		return cmdInstallCCSwitch(args[1:]) // 零参数契约（help 安全契约，本票）
 	case "install-codex":
 		return cmdInstallCodex(args[1:])
 	case "install-mcp":
@@ -511,6 +507,25 @@ func parseEvents(s string) []string {
 	return out
 }
 
+// runDoctorEntry / injectCCSwitchEntry doctor 与 install-ccswitch 的 var 注入缝
+// （参照 runUpdateExecute 先例）：真身分别跑真机体检/写宿主配置——单测钉
+// "参数拒绝先于执行"时注桩计数，测试里绝不真跑。
+var (
+	runDoctorEntry      = installer.RunDoctor
+	injectCCSwitchEntry = installer.InjectCCSwitch
+)
+
+// cmdDoctor doctor 入口（help 安全契约，本票①）：零参数契约——任何非空参数
+// （含 -h）打印用法退 2，绝不执行体检（真跑触真机配置，误触发代价高）。体检
+// 本体经 runDoctorEntry 缝装配；版本经装配参数进（票02，规格 §A）。
+func cmdDoctor(args []string) int {
+	if len(args) > 0 {
+		fmt.Fprintf(os.Stderr, "未知参数 %q——ferryman doctor 不接受任何参数\n%s", args[0], doctorUsage)
+		return 2
+	}
+	return runDoctorEntry(version)
+}
+
 func cmdInstallCC(args []string) int {
 	fs := flag.NewFlagSet("install-cc", flag.ExitOnError)
 	events := fs.String("events", "", "逗号分隔事件子集（缺省全集；切换日三类："+
@@ -521,8 +536,15 @@ func cmdInstallCC(args []string) int {
 	return installer.InstallCC("", "", "", "", parseEvents(*events))
 }
 
-func cmdInstallCCSwitch() int {
-	n := installer.InjectCCSwitch("", "", nil)
+// cmdInstallCCSwitch install-ccswitch 入口（help 安全契约，本票①）：与 doctor
+// 同款零参数契约——参数拒绝先于快照注入（旧缺陷：参数整体丢弃照跑，
+// install-ccswitch -h 会真写宿主配置）。注入本体经 injectCCSwitchEntry 缝装配。
+func cmdInstallCCSwitch(args []string) int {
+	if len(args) > 0 {
+		fmt.Fprintf(os.Stderr, "未知参数 %q——ferryman install-ccswitch 不接受任何参数\n%s", args[0], ccswitchUsage)
+		return 2
+	}
+	n := injectCCSwitchEntry("", "", nil)
 	if n >= 0 {
 		return 0
 	}
@@ -555,12 +577,31 @@ func cmdInstallMCP(args []string) int {
 
 // ---- 常驻保障（票02）：自启 Run 键 + 看门 ----
 
+// autostartUsage / watchdogUsage 帮助面与用法错共用一份常量（本票：-h/--help
+// 打印 usage 退 0，未知子命令打印 usage 退 2）。
+const autostartUsage string = `用法:
+  ferryman autostart             # 登录自启状态（缺省 = status，只读）
+  ferryman autostart status      # 同上
+  ferryman autostart install     # 注册登录自启 Run 键（票02 常驻保障）
+  ferryman autostart uninstall   # 注销登录自启
+`
+
+const watchdogUsage string = `用法:
+  ferryman watchdog              # 单次探活：无监听拉起 daemon（缺省；schtasks 每 5 分钟调它）
+  ferryman watchdog install      # 注册看门计划任务
+  ferryman watchdog uninstall    # 注销看门计划任务
+  ferryman watchdog status       # 看门计划任务状态
+`
+
 // cmdAutostart Run 键自启三操作（缺省 = status——只读最安全）。
 func cmdAutostart(args []string) int {
 	if len(args) == 0 {
 		return installer.AutostartStatus()
 	}
 	switch args[0] {
+	case "-h", "--help": // 帮助面（本票）：打印 usage 退 0，绝不触真动作
+		fmt.Print(autostartUsage)
+		return 0
 	case "install":
 		return installer.AutostartInstall()
 	case "uninstall":
@@ -568,7 +609,7 @@ func cmdAutostart(args []string) int {
 	case "status":
 		return installer.AutostartStatus()
 	}
-	fmt.Fprintf(os.Stderr, "未知 autostart 子命令: %q（install|uninstall|status）\n", args[0])
+	fmt.Fprintf(os.Stderr, "未知 autostart 子命令: %q\n%s", args[0], autostartUsage)
 	return 2
 }
 
@@ -579,6 +620,9 @@ func cmdWatchdog(args []string) int {
 		return installer.RunWatchdogCLI()
 	}
 	switch args[0] {
+	case "-h", "--help": // 帮助面（本票）：打印 usage 退 0，绝不触真探活
+		fmt.Print(watchdogUsage)
+		return 0
 	case "install":
 		return installer.WatchdogTaskInstall()
 	case "uninstall":
@@ -586,14 +630,24 @@ func cmdWatchdog(args []string) int {
 	case "status":
 		return installer.WatchdogTaskStatus()
 	}
-	fmt.Fprintf(os.Stderr, "未知 watchdog 子命令: %q（install|uninstall|status；无参 = 单次探活）\n", args[0])
+	fmt.Fprintf(os.Stderr, "未知 watchdog 子命令: %q\n%s", args[0], watchdogUsage)
 	return 2
 }
 
+// accountUsage account 族用法（-h/--help 与用法错共用；report 子命令的旗标
+// 细账走 flag 包缺省 -h 面，exit 0）。
+const accountUsage string = `用法:
+  ferryman account report [--since 日] [--until 日] [--project 名] [--session id]
+                      [--kind 类型] [--provider 键] [--json]
+`
+
 func cmdAccount(args []string) int {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") { // 帮助面（本票）
+		fmt.Print(accountUsage)
+		return 0
+	}
 	if len(args) == 0 || args[0] != "report" {
-		fmt.Fprintln(os.Stderr, "用法: ferryman account report [--since 日] [--until 日]"+
-			" [--project 名] [--session id] [--kind 类型] [--provider 键] [--json]")
+		fmt.Fprint(os.Stderr, accountUsage)
 		return 2
 	}
 	fs := flag.NewFlagSet("account report", flag.ExitOnError)
@@ -795,14 +849,35 @@ func cmdMCP(args []string) int {
 
 // ---- cutover 族（票23：切换工具，不执行生产切换） ----
 
+// cutoverUsage cutover 族用法（-h/--help 与用法错共用；细账自顶层 usage 移此
+// ——顶层分组化瘦身，本票）。
+const cutoverUsage string = `用法:
+  （cutover 族：切换工具，不执行生产切换）
+  ferryman cutover backup [--data 目录] [--dest 目录]
+  ferryman cutover rollback-write [--repo 目录] [--data 目录]
+  ferryman cutover rollback-drill [--repo 目录] [--dir 临时目录]
+  ferryman cutover smoke [--config 沙箱配置]
+
+backup          数据全量备份（accounts/*.jsonl+handoffs/*.md+index.json+
+                config.toml+daemon.token → 带时间戳目录；只读复制）
+rollback-write  生成回退工件 <data>/rollback-to-python.cmd（幂等；切换日跑）
+rollback-drill  临时环境演练回退机制（临时 worktree+临时启动器副本，
+                绝不碰真实 start-daemon.cmd；tag 未打自动降级路径探测）
+smoke           沙箱冒烟四链路（独立端口+独立数据目录，直打 API；
+                ①observe 警告 ②摆渡 fresh+账本行 ③归还 ④enforce block 契约）
+`
+
 // cmdCutover cutover 子命令分发：backup / rollback-write / rollback-drill /
-// smoke（各面语义见 usage 与 internal/cutover）。
+// smoke（各面语义见 cutoverUsage 与 internal/cutover）。
 func cmdCutover(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "用法: ferryman cutover <backup|rollback-write|rollback-drill|smoke> [flags]")
+		fmt.Fprint(os.Stderr, cutoverUsage)
 		return 2
 	}
 	switch args[0] {
+	case "-h", "--help": // 帮助面（本票）：打印 usage 退 0
+		fmt.Print(cutoverUsage)
+		return 0
 	case "backup":
 		return cmdCutoverBackup(args[1:])
 	case "rollback-write":
@@ -812,7 +887,7 @@ func cmdCutover(args []string) int {
 	case "smoke":
 		return cmdCutoverSmoke(args[1:])
 	}
-	fmt.Fprintf(os.Stderr, "未知 cutover 子命令: %q\n", args[0])
+	fmt.Fprintf(os.Stderr, "未知 cutover 子命令: %q\n%s", args[0], cutoverUsage)
 	return 2
 }
 
@@ -913,13 +988,27 @@ func exePathOrFallback() string {
 // status 只读；sweep 扫参产出（票06 接线）；apply/reject/rollback 为人工写
 // 路径——写操作唯一路径在 CLI（ADR-0015 决定五，D11），托盘/面板永不承担。
 
+// tuningUsage tuning 族用法（-h/--help 与用法错共用，本票；status/sweep 的
+// 旗标细账走各自 FlagSet 的 flag 包缺省 -h 面，exit 0）。
+const tuningUsage string = `用法:
+  ferryman tuning status [--config 路径] [--json]   # 调参面板：建议与生效值（只读）
+  ferryman tuning sweep [--config 路径] [--projects glob]… [--exclude glob]…
+                    [--ttl-min 分,分,…]             # 同模型阈值扫参，三态分流
+  ferryman tuning apply <id> [--config 路径]        # 接受建议（唯一人工写路径）
+  ferryman tuning reject <id> [--reason 文本] [--config 路径]   # 拒绝建议
+  ferryman tuning rollback <上游> [--config 路径]    # 一键回滚该上游最近一次生效
+`
+
 // cmdTuning 调参子命令分发。
 func cmdTuning(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "用法: ferryman tuning <status|sweep|apply|reject|rollback> [flags]")
+		fmt.Fprint(stderr, tuningUsage)
 		return 2
 	}
 	switch args[0] {
+	case "-h", "--help": // 帮助面（本票）：打印 usage 退 0
+		fmt.Fprint(stdout, tuningUsage)
+		return 0
 	case "status":
 		return cmdTuningStatus(args[1:], stdout, stderr)
 	case "sweep":
@@ -931,7 +1020,7 @@ func cmdTuning(args []string, stdout, stderr io.Writer) int {
 	case "rollback":
 		return cmdTuningRollback(args[1:], stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "未知 tuning 子命令: %q（status|sweep|apply|reject|rollback）\n", args[0])
+	fmt.Fprintf(stderr, "未知 tuning 子命令: %q\n%s", args[0], tuningUsage)
 	return 2
 }
 
