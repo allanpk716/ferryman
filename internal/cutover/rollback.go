@@ -180,7 +180,7 @@ echo [rollback] done: launcher start line now points to %PY%
 echo [rollback] next: stop the Go daemon (tray Exit / close the start-daemon window),
 echo [rollback] then run "%DATA%\start-daemon.cmd" to bring the Python daemon back,
 echo [rollback] and walk the runbook checklist to verify recovery.
-echo [rollback] hooks need no change: ferryman-*.ps1 probe 127.0.0.1:7311 - whoever listens, wins.
+echo [rollback] hooks need no change: ferryman-*.ps1 probe 127.0.0.1:15700 - whoever listens, wins.
 exit /b 0
 
 :fail_data
