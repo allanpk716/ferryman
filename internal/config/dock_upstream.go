@@ -38,18 +38,32 @@ const (
 	CodexNative = "native"
 )
 
+// pi 可用性三态（PiAvailability 的裁决值；票09）。pi 说 anthropic-messages
+// 线协议、复用渡口 CC 车道（spec 决定 2/D4：不建 chat completions 入站），
+// 故按 dialect 推导的方向与 codex 相反：anthropic＝可用、openai_responses＝不可用。
+const (
+	// PiUnsupported 显式否决：该条目不可作 pi 上游（仅此一个显式值；switch/
+	// apply 的拒绝/放行行为面在票12，本票只做解析校验与展示）。
+	PiUnsupported = "unsupported"
+	// PiAvailable anthropic 方言→pi 可用（与 CC 同线协议）。
+	PiAvailable = "available"
+	// PiUnavailable openai_responses 方言→pi 无入站车道（chat completions
+	// 入站不建）。
+	PiUnavailable = "unavailable"
+)
+
 // DockUpstream 渡口上游条目（[dock.upstreams.<名>]）。字段：
 // base_url（必填）/ api_key（可为空＝未激活预置，空 key 不影响解析，只在
 // CLI/doctor 层提示）/ model_map（非本地条目必含非空 default，可选 opus/
-// sonnet/haiku 档位键与 codex 主模型键；本地条目属守卫透传域，可无）/
+// sonnet/haiku 档位键与 codex/pi 主模型键；本地条目属守卫透传域，可无）/
 // text_only（可选，命中映射后模型名则 image 块降级文本占位）/ balance_url
 // （可选，不配不显示——D11）/ dialect（可选，缺省 anthropic）/ codex（可选，
-// 仅 "unsupported" 否决位）。text_only 语义沿用票06 的名单制（映射后目标
-// 模型名列表）。
+// 仅 "unsupported" 否决位）/ pi（可选，仅 "unsupported" 否决位）。
+// text_only 语义沿用票06 的名单制（映射后目标模型名列表）。
 type DockUpstream struct {
 	BaseURL    string
 	APIKey     string            // 真钥：只进出站 Authorization，永不入日志/账本/错误（T39）
-	ModelMap   map[string]string // 别名→上游原生模型名；default 键＝未知名兜底；codex 键＝codex 车道主模型
+	ModelMap   map[string]string // 别名→上游原生模型名；default 键＝未知名兜底；codex/pi 键＝对应车道主模型
 	TextOnly   []string          // text-only 模型名单（按映射后模型名匹配）
 	BalanceURL string            // 余额端点；空＝该条目不显示余额行
 	// Dialect 线协议方言（票02）：解析层归一（缺省/空 → anthropic＝旧行为）；
@@ -58,6 +72,10 @@ type DockUpstream struct {
 	// Codex 显式否决位（票02）：仅认 "unsupported"（其余值 Validate 拒）；
 	// 空＝按 dialect 推导（见 CodexAvailability）。
 	Codex string
+	// Pi pi 显式否决位（票09）：对标 Codex 同款——仅认 "unsupported"（其余
+	// 值 Validate 拒）；空＝按 dialect 推导（见 PiAvailability，推导方向与
+	// codex 相反：anthropic＝可用）。
+	Pi string
 }
 
 // CodexAvailability codex 可用性裁决（票02，spec 决定 1）：显式否决位优先；
@@ -77,6 +95,25 @@ func (u *DockUpstream) CodexAvailability() string {
 // CodexModel codex 主模型位（model_map 的 "codex" 键）；缺键＝空（不凭空
 // 造默认——codex 车道改写规则属后续票，本票只供读）。
 func (u *DockUpstream) CodexModel() string { return u.ModelMap["codex"] }
+
+// PiAvailability pi 可用性裁决（票09，spec 决定 5）：对标 CodexAvailability
+// 的"显式否决位+按 dialect 推导"，推导方向相反——anthropic→可用（pi 说
+// anthropic-messages，复用渡口 CC 车道）、openai_responses→不可用（chat
+// completions 入站不建）。零值结构体（旧形态）＝可用；无新键的既有条目仅
+// 增展示面，行为零变化（switch/apply 行为在票12）。
+func (u *DockUpstream) PiAvailability() string {
+	if u.Pi == PiUnsupported {
+		return PiUnsupported
+	}
+	if u.Dialect == DialectOpenAIResponses {
+		return PiUnavailable
+	}
+	return PiAvailable
+}
+
+// PiModel pi 主模型位（model_map 的 "pi" 键）；缺键＝空（不凭空造默认——
+// 写入器 models 列表派生与空值拒写属票12 行为面，本票只供读与展示）。
+func (u *DockUpstream) PiModel() string { return u.ModelMap["pi"] }
 
 // ActiveUpstream 渡口上游解析单源（serve 装配与 /stats 余额查询都走这里）：
 //   - upstreams 表非空：返回 active 指向的条目（拷贝，改返回值不污染配置）；
@@ -172,6 +209,11 @@ func validateDockUpstreams(d *DockCfg) []string {
 		if up.Codex != "" && up.Codex != CodexUnsupported {
 			probs = append(probs, "[dock.upstreams."+name+"] codex 非法: "+
 				up.Codex+"（仅可选 \"unsupported\" 否决位；可用性按 dialect 推导）")
+		}
+		// 票09：pi 否决位枚举校验（同 codex 纪律——仅认显式否决，推导值不落盘）。
+		if up.Pi != "" && up.Pi != PiUnsupported {
+			probs = append(probs, "[dock.upstreams."+name+"] pi 非法: "+
+				up.Pi+"（仅可选 \"unsupported\" 否决位；可用性按 dialect 推导）")
 		}
 	}
 	return probs

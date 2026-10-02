@@ -167,6 +167,7 @@ func providerList(cfgPath string, w io.Writer) int {
 		fmt.Fprintf(w, "    base_url: %s\n", up.BaseURL)
 		fmt.Fprintf(w, "    dialect: %s\n", up.Dialect)
 		fmt.Fprintf(w, "    codex: %s\n", providerCodexLine(up))
+		fmt.Fprintf(w, "    pi: %s\n", providerPiLine(up))
 		fmt.Fprintf(w, "    model_map: %s\n", renderModelMapBrief(up.ModelMap))
 		fmt.Fprintf(w, "    api_key: %s\n", renderKeyStatus(up.APIKey, up.BaseURL))
 		if up.BalanceURL != "" { // 不配不显示（D11）
@@ -190,6 +191,22 @@ func providerCodexLine(up config.DockUpstream) string {
 		return "原生透传（openai_responses）· " + modelPart
 	}
 	return "需翻译（anthropic 方言 → 渡口翻译车道）· " + modelPart
+}
+
+// providerPiLine pi 可用性行（票09，与 codex 行并列的三态人话 + pi 主模型位
+// 概要；本票只做展示——switch/apply 对 pi 的拒绝/放行语义在票12 落地）。
+func providerPiLine(up config.DockUpstream) string {
+	if up.PiAvailability() == config.PiUnsupported {
+		return fmt.Sprintf("不支持（pi = %q）", config.PiUnsupported)
+	}
+	modelPart := "pi 主模型位未配"
+	if m := up.PiModel(); m != "" {
+		modelPart = "pi 主模型 " + m
+	}
+	if up.PiAvailability() == config.PiUnavailable {
+		return "不可用（openai_responses 方言，pi 无入站车道）· " + modelPart
+	}
+	return "可用（anthropic 方言，pi 复用 CC 车道）· " + modelPart
 }
 
 // ---- switch ----

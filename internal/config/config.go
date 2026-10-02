@@ -581,6 +581,7 @@ func parseDockUpstreamsTable(raw any) (map[string]DockUpstream, error) {
 			APIKey:     pyStr(get(et, "api_key", "")),     // 空＝未激活预置，解析不受影响
 			BalanceURL: pyStr(get(et, "balance_url", "")), // 空＝不配不显示（D11）
 			Codex:      pyStr(get(et, "codex", "")),       // 票02：否决位；空＝按 dialect 推导
+			Pi:         pyStr(get(et, "pi", "")),          // 票09：pi 否决位；空＝按 dialect 推导
 		}
 		// 票02（供应商接管）：dialect 解析层归一——缺省/空一律 anthropic（＝既有
 		// 行为零变化），非法值不在解析层拦（枚举校验归 Validate，与 tuning.mode

@@ -143,6 +143,53 @@ func TestProviderListNoDock(t *testing.T) {
 	}
 }
 
+// TestProviderListShowsPiAvailability 票09：list 行补 pi 三态可用性显示
+// （可用/不可用/不支持），与 codex 行并列；pi 主模型位概要随行。
+func TestProviderListShowsPiAvailability(t *testing.T) {
+	f := writeProviderCfg(t, `
+[server]
+port = 7399
+
+[dock]
+listen = "127.0.0.1:15722"
+active = "glm"
+
+[dock.upstreams.glm]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+model_map = { default = "glm-5.3", pi = "glm-5.3" }
+
+[dock.upstreams.native]
+base_url = "https://n.example/v1"
+dialect = "openai_responses"
+model_map = { default = "gpt-x" }
+
+[dock.upstreams.vetoed]
+base_url = "https://v.example/anthropic"
+pi = "unsupported"
+model_map = { default = "m-v" }
+
+[ferry]
+provider = "deepseek"
+`)
+	var buf bytes.Buffer
+	if code := providerList(f, &buf); code != 0 {
+		t.Fatalf("list 退出码 = %d\n%s", code, buf.String())
+	}
+	out := buf.String()
+	for _, want := range []string{
+		// anthropic 方言推导可用＋pi 主模型位概要
+		"可用（anthropic 方言，pi 复用 CC 车道）· pi 主模型 glm-5.3",
+		// openai_responses 方言推导不可用＋模型位缺省
+		"不可用（openai_responses 方言，pi 无入站车道）· pi 主模型位未配",
+		// 显式否决位回显
+		"pi = \"unsupported\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("list pi 行缺 %q:\n%s", want, out)
+		}
+	}
+}
+
 // ---- switch：拒绝路径 ----
 
 func TestProviderSwitchUnknownEntryRejected(t *testing.T) {
