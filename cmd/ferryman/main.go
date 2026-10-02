@@ -5,6 +5,8 @@
 //	ferryman                     # 无参 = serve：守护(15700) + 面板(15900) + 托盘
 //	ferryman serve               # 同上（点火脚本 start-daemon.cmd 调它）
 //	ferryman doctor              # 一键体检
+//	ferryman status              # 守护探活：守护/版本、渡口、台账摘要（只读）
+//	ferryman stop [--wait 秒]    # 优雅停守护（/shutdown+排水等待，绝不硬杀）
 //	ferryman version             # 版本号（dev = 非 release 构建）
 //	ferryman update [--check] [vX.Y.Z] [--prerelease]          # 无 --check = 执行
 //	                                   # 升级（监督者：静默门/下载/校验/换装/重启/
@@ -114,6 +116,10 @@ serve 与面板:
   ferryman doctor         # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
   ferryman version        # 版本号（dev = 非 release 构建）
 
+守护:
+  ferryman status              # 探活：守护/版本、渡口监听、台账摘要（只读，不在线也如实报告）
+  ferryman stop [--wait 秒]    # 优雅停：POST /shutdown+等让位（缺省预算 240s，绝不硬杀）
+
 安装（钩子/配置注入与常驻保障）:
   ferryman install-cc [--events 事件1,事件2,…]
   ferryman install-ccswitch      # cc-switch 供应商快照注入（不接受参数）
@@ -182,6 +188,10 @@ func run(args []string) int {
 		return cmdServe(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:]) // 零参数契约（help 安全契约，本票）
+	case "status":
+		return cmdStatus(args[1:])
+	case "stop":
+		return cmdStop(args[1:])
 	case "version":
 		return cmdVersion(args[1:], os.Stdout)
 	case "update":
