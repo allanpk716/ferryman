@@ -3,9 +3,9 @@
 // 命名沿用本机既有 bak-ferryman 惯例（与 installer.InstallCC/InstallCodex 的
 // 备份同族）：<base>.bak-ferryman-<YYYYMMDD-HHMMSS>，戳格式按票05 背景材料
 // （YYYYMMDD-HHMMSS 连字符形）。一次 Apply 的多份备份共用同一时间戳——成组
-// （三份同时间戳前缀）；Restore 取三处目录里最新的那组逐一还原，组内缺成员
-// （如 orca 份 apply 时不在位）如实跳过该份。orca 份现状无备份，由 Apply 的
-// 逐一备份补齐（票05）。
+// （同时间戳前缀；票10 起含 pi 两文件）；Restore 取各目录里最新的那组逐一
+// 还原，组内缺成员（如 orca 份 apply 时不在位、pi 未装时无备份）如实跳过
+// 该份。
 //
 // 已知边界（票05 R1 修订）：~/.claude 与 ~/.codex 下另有 install 链备份
 // （installer 的戳是 YYYYMMDD_HHMMSS 下划线形）与本族共享 *.bak-ferryman-*
@@ -53,11 +53,12 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, perm)
 }
 
-// Restore --restore 语义（票05，F5）：按最近一次接管前备份组还原三份，回到
-// interim 拓扑。组 = 三处目录里同时间戳后缀、戳形为本族连字符形
-// （backupStampRe）的 *.bak-ferryman-*——install 族下划线戳不入选组；取字典序
-// 最大的戳（本族内同格式戳即时间序）。组内缺哪个成员就如实跳过哪份；三处皆
-// 无本族备份 → 报错（不是静默成功）。
+// Restore --restore 语义（票05 F5；票10 覆盖 pi 两目标）：按最近一次接管前
+// 备份组还原，回 interim 拓扑。组 = 各目标目录里同时间戳后缀、戳形为本族
+// 连字符形（backupStampRe）的 *.bak-ferryman-*——install 族下划线戳不入选组；
+// 取字典序最大的戳（本族内同格式戳即时间序）。组内缺哪个成员就如实跳过哪
+// 份（pi 未装的机器上从无 pi 备份，跳过不失败）；所有目录皆无本族备份 →
+// 报错（不是静默成功）。
 func Restore(t Targets) (ApplyReport, error) {
 	var rep ApplyReport
 	type rt struct {
@@ -67,6 +68,11 @@ func Restore(t Targets) (ApplyReport, error) {
 		{targetCC, t.CCSettings},
 		{targetCodex, t.CodexConfig},
 		{targetOrca, t.OrcaCodexConfig},
+	}
+	// pi 两目标（票10）：路径成对派生才入还原清单——未派生（旧调用形态）时
+	// 不扫 pi 目录，与 Apply 的入案判定同口径。
+	if t.PiModels != "" && t.PiSettings != "" {
+		rts = append(rts, rt{targetPiModels, t.PiModels}, rt{targetPiSettings, t.PiSettings})
 	}
 	perTarget := make([]map[string]string, len(rts))
 	stamps := map[string]bool{}

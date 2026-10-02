@@ -19,10 +19,11 @@
 //	                映射入供应商表；dialect 按端点线协议推断（internal/provider
 //	                .ImportCCSwitch）；重名跳过不覆盖；库路径默认 ~/.cc-switch/
 //	                cc-switch.db（--db 可指；测试全走假库，绝不触真目录）。
-//	apply           跑票05 写入器（provider.Apply：F7 前置校验+三份同戳备份+
-//	                外科写入）并逐份回显；--restore 按接管前备份还原
-//	                （provider.Restore）。目标路径从家目录与 [dock].listen
-//	                派生（provider.DockURLFromListen 单源，不自造拼接）。
+//	apply           跑票05 写入器（provider.Apply：F7 前置校验+各目标同戳备份+
+//	                外科写入；票10 起含 pi 两文件成对目标）并逐份回显；--restore
+//	                按接管前备份还原（provider.Restore）。目标路径从家目录与
+//	                [dock].listen 派生（provider.DockURLFromListen 单源，不自造
+//	                拼接）。
 //
 // 可注入面：providerSwitchDeps（管理口调用）、osUserHomeDir/providerApplyFn/
 // providerRestoreFn（apply 缝）——单测注桩，绝不真拉进程、绝不触真用户目录。
@@ -661,16 +662,21 @@ var (
 	providerRestoreFn = provider.Restore
 )
 
-// providerTargetsFromHome 三份配置目标 + 渡口地址派生（纯函数）：orca 份路径
+// providerTargetsFromHome 各配置目标 + 渡口地址派生（纯函数）：orca 份路径
 // 与 installer doctor 同位（<Home>/AppData/Roaming/orca/codex-runtime-home/
-// home/config.toml）；渡口地址走 provider.DockURLFromListen 单源（评审留话：
-// 不自造拼接、尾斜杠不在 CLI 层归一）。
-func providerTargetsFromHome(home, dockListen string) provider.Targets {
+// home/config.toml）；pi 两文件在 <Home>/.pi/agent/ 下（票10 第四目标，成对
+// 派生）；渡口地址走 provider.DockURLFromListen 单源（评审留话：不自造拼接、
+// 尾斜杠不在 CLI 层归一）。pi 主模型位由调用方自 active 上游条目派生后透传
+// （票09 PiModel）。
+func providerTargetsFromHome(home, dockListen, piModel string) provider.Targets {
 	return provider.Targets{
 		CCSettings:  filepath.Join(home, ".claude", "settings.json"),
 		CodexConfig: filepath.Join(home, ".codex", "config.toml"),
 		OrcaCodexConfig: filepath.Join(home, "AppData", "Roaming", "orca",
 			"codex-runtime-home", "home", "config.toml"),
+		PiModels:    filepath.Join(home, ".pi", "agent", "models.json"),
+		PiSettings:  filepath.Join(home, ".pi", "agent", "settings.json"),
+		PiModel:     piModel,
 		DockBaseURL: provider.DockURLFromListen(dockListen),
 	}
 }
@@ -711,15 +717,23 @@ func providerApply(cfgPath string, restore bool, w io.Writer) int {
 		fmt.Fprintf(w, "家目录解析失败: %v\n", err)
 		return 1
 	}
-	targets := providerTargetsFromHome(home, cfg.Dock.Listen)
+	// pi 主模型位（票10）：自 active 上游条目 model_map 的 pi 键派生（票09
+	// PiModel）。active 悬空/旧单值兜底条目无 pi 键 → 空串：~/.pi 两文件在场
+	// 时写入器按异形拒绝转人工（票面语义）；pi 可用性否决/跳过回显属票12，
+	// 本层不做。
+	var piModel string
+	if _, up := cfg.Dock.ActiveUpstream(); up != nil {
+		piModel = up.PiModel()
+	}
+	targets := providerTargetsFromHome(home, cfg.Dock.Listen, piModel)
 	var (
 		rep provider.ApplyReport
 	)
 	if restore {
-		fmt.Fprintf(w, "接管还原（--restore；按最近一组接管前备份还原三份，回 interim 拓扑）:\n")
+		fmt.Fprintf(w, "接管还原（--restore；按最近一组接管前备份还原，回 interim 拓扑）:\n")
 		rep, err = providerRestoreFn(targets)
 	} else {
-		fmt.Fprintf(w, "接管 apply（三份配置外科写入；F7 认证前置校验；备份同戳成组）:\n")
+		fmt.Fprintf(w, "接管 apply（配置外科写入；F7 认证前置校验；备份同戳成组；pi 两文件成对落盘）:\n")
 		rep, err = providerApplyFn(targets)
 	}
 	for _, r := range rep.Targets {

@@ -720,6 +720,16 @@ func TestProviderApplyTargetsAndReport(t *testing.T) {
 		"codex-runtime-home", "home", "config.toml") {
 		t.Errorf("OrcaCodexConfig = %q", gotTargets.OrcaCodexConfig)
 	}
+	// pi 第四目标（票10）：路径自家目录拼装；主模型位自 active 条目派生——
+	// providerCfgSrc 的 active=zhipu 未配 pi 键 → 空串（写入器对在场两文件按
+	// 异形拒绝转人工，属票面语义；可用性否决/跳过回显在票12）。
+	if gotTargets.PiModels != filepath.Join(home, ".pi", "agent", "models.json") ||
+		gotTargets.PiSettings != filepath.Join(home, ".pi", "agent", "settings.json") {
+		t.Errorf("pi 目标路径不符: %q / %q", gotTargets.PiModels, gotTargets.PiSettings)
+	}
+	if gotTargets.PiModel != "" {
+		t.Errorf("zhipu 无 pi 键，PiModel 应空串: %q", gotTargets.PiModel)
+	}
 	// 回显逐份结果（名/路径/动作/备份）
 	out := buf.String()
 	for _, want := range []string{"[cc]", "[codex]", "已定向写入", "已定向写入",
@@ -798,10 +808,12 @@ func TestProviderApplyErrorAndNoDock(t *testing.T) {
 // ---- 分发与用法 ----
 
 // TestProviderTargetsFromHomeDerivation apply 的 Targets 派生纯函数：渡口地址
-// 与 provider 包单源一致（评审留话：不自造拼接），三份配置路径自家目录拼装。
+// 与 provider 包单源一致（评审留话：不自造拼接），三份配置路径自家目录拼装；
+// 票10 第四目标 pi 两文件同源拼装、pi 主模型位透传（自 active 条目 PiModel()
+// 派生侧传入）。
 func TestProviderTargetsFromHomeDerivation(t *testing.T) {
 	home := filepath.Join("some", "home")
-	tg := providerTargetsFromHome(home, "127.0.0.1:15999")
+	tg := providerTargetsFromHome(home, "127.0.0.1:15999", "glm-5.3")
 	if tg.DockBaseURL != provider.DockURLFromListen("127.0.0.1:15999") {
 		t.Errorf("DockBaseURL 应与 provider 单源一致: %q", tg.DockBaseURL)
 	}
@@ -816,6 +828,13 @@ func TestProviderTargetsFromHomeDerivation(t *testing.T) {
 	if tg.CCSettings != filepath.Join(home, ".claude", "settings.json") ||
 		tg.CodexConfig != filepath.Join(home, ".codex", "config.toml") {
 		t.Errorf("CC/codex 路径派生不符: %q / %q", tg.CCSettings, tg.CodexConfig)
+	}
+	if tg.PiModels != filepath.Join(home, ".pi", "agent", "models.json") ||
+		tg.PiSettings != filepath.Join(home, ".pi", "agent", "settings.json") {
+		t.Errorf("pi 路径派生不符: %q / %q", tg.PiModels, tg.PiSettings)
+	}
+	if tg.PiModel != "glm-5.3" {
+		t.Errorf("PiModel 透传不符: %q", tg.PiModel)
 	}
 }
 
