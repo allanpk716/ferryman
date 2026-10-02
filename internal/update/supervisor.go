@@ -191,10 +191,9 @@ func fileTeeLogf(dataDir string) func(format string, a ...any) {
 }
 
 // Run 监督者主序列。返回 Result;过程日志走 Logf。
-// v0.5.2(票02)删自中继副本机制:自身映像 == 换装目标时不再交棒副本,直接
-// 进入主序列——两步换装(改名让位)对运行映像放行,监督者自己的镜像被改名
-// 成 .old-<版本> 备份即设计保留件;并发第二监督者的防线只剩 update.lock
-// 的三族持活判据(lock.go holderAlive)。
+// 自身映像 == 换装目标时直接进入主序列——两步换装(改名让位)对运行映像放行,
+// 监督者自己的镜像被改名成 .old-<版本> 备份即设计保留件;并发第二监督者的
+// 防线只剩 update.lock 的两族持活判据(lock.go holderAlive)。
 func (s *Supervisor) Run() Result {
 	// 0. 换装目标解析(seam E)
 	targetExe, err := s.resolveTargetExe()
@@ -203,8 +202,7 @@ func (s *Supervisor) Run() Result {
 	}
 	exeDir := filepath.Dir(targetExe)
 
-	// 1. 锁(seam B:持有者活 = PID 活且映像∈三族{目标, supervisor-copy(过渡),
-	// .old-* 备份族})
+	// 1. 锁(seam B:持有者活 = PID 活且映像∈两族{目标, .old-* 备份族})
 	lk, err := acquireUpdateLock(s.cfg.DataDir, targetExe, s.procAlive, s.procImage, s.logf)
 	if err != nil {
 		return Result{Err: err}
@@ -299,16 +297,6 @@ func (s *Supervisor) Run() Result {
 
 	// 9. 回滚
 	return s.rollback(j, seen)
-}
-
-// relayCopyPath 自中继副本落点(历史遗留,过渡保留一版):副本机制已于
-// v0.5.2(票02)整体删除,本函数仅因 lock.go holderAlive 家族②的过渡判据
-// 引用它而保留——升级换代窗口内,旧版(≤v0.5.1)交棒出去的活副本仍持锁,
-// 判活须认;与家族②一并于 v0.5.3 删除(lock_test 回归钉同注)。另:
-// cleanSwapResidues 的 supervisor-copy* 清扫模式同理保留,收旧茬残留
-// (spec F7:首跳后的一过性红由下次 update 清扫自愈)。
-func relayCopyPath(targetExe string) string {
-	return targetExe + ".supervisor-copy"
 }
 
 // resolveTargetExe seam E:点火脚本引号 exe 优先;失败回落本进程映像。

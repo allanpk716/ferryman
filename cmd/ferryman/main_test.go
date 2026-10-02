@@ -169,16 +169,6 @@ func TestCmdUpdate(t *testing.T) {
 		t.Fatalf("--supervise 应同无参走执行路径: calls=%d spec=%q", calls, gotSpec)
 	}
 
-	// --self-relay 已废弃（自中继副本机制 v0.5.2/票02 删除）：解析但忽略
-	// （次版删旗标）——旗标在场不报错,执行路径照常走,值不再透传任何面。
-	calls = 0
-	if code := cmdUpdate([]string{"--supervise", "--self-relay"}, &buf); code != 0 {
-		t.Fatalf("--self-relay 退出码 = %d, want 0（解析但忽略）", code)
-	}
-	if calls != 1 {
-		t.Fatalf("--self-relay 应照常走执行路径（解析但忽略）: calls=%d", calls)
-	}
-
 	buf.Reset()
 	if code := cmdUpdate([]string{"--check", "v0.1.0", "extra"}, &buf); code != 2 {
 		t.Fatalf("多余位置参数退出码 = %d, want 2", code)

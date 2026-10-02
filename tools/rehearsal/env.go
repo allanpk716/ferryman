@@ -69,7 +69,7 @@ type shadowEnv struct {
 	HomeDir string // USERPROFILE 重定向目标
 	CmdPath string // 影子 start-daemon.cmd
 	ExePath string // <Root>/ferryman.exe（换装目标；名字必须是 ferryman.exe——
-	// .new/.old-*/.supervisor-copy 残余与备份的清扫域按本名展开）
+	// .new/.old-* 残余与备份的清扫域按本名展开）
 	Ports    envPorts
 	Token    string
 	assets   map[string]tagAsset

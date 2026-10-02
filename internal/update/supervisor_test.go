@@ -724,29 +724,6 @@ func spawnDeadProcess(t *testing.T) int {
 	return cmd.Process.Pid
 }
 
-// ---- 自中继(v0.1.0 首发实测补):监督者自身 == 换装目标时交棒副本 ----
-
-// ---- 自中继副本机制已删除(v0.5.2 票02) ----
-// 自身映像==换装目标 → 直接两步换装的零副本端到端钉(TestSelfImageTargetSwapsDirectly)
-// 在 swap_locked_windows_test.go——以节映射复刻「监督者自己就是目标的运行映像
-// 持有者」。此处保留清扫域钉:supervisor-copy* 模式在 cleanSwapResidues 域内
-// 保留(收 ≤v0.5.1 旧茬残留,spec F7:首跳后一过性红由下次 update 清扫自愈;
-// 模式与 lock.go 家族②同于 v0.5.3 一并退役)。
-
-// TestSelfRelayCopyInResidueDomain 自中继副本在清扫域内(≤v0.5.1 旧茬残留
-// 靠下次清扫收走;副本机制本体已删,此钉守清扫模式不被提前拆)。
-func TestSelfRelayCopyInResidueDomain(t *testing.T) {
-	dir := t.TempDir()
-	copyPath := filepath.Join(dir, "ferryman.exe.supervisor-copy")
-	if err := os.WriteFile(copyPath, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cleanSwapResidues(dir)
-	if _, err := os.Stat(copyPath); !os.IsNotExist(err) {
-		t.Fatal("supervisor-copy 应被清扫域收走")
-	}
-}
-
 // TestStopDaemonWaitsForProcessExit 端口释放后还须等进程真正退出(v0.1.1
 // 演练实证的镜像解锁竞态:优雅停机里监听口先关、进程后走,swap 抢跑会
 // Access denied)。procAlive 前两轮活、之后死 → stopDaemon 应轮询到死才返回。

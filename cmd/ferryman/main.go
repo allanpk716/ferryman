@@ -714,9 +714,6 @@ func cmdUpdate(args []string, w io.Writer) int {
 	check := fs.Bool("check", false, "只检查并报告，不下载不换文件")
 	pre := fs.Bool("prerelease", false, "检查纳入预发布版（rc/beta；缺省只看稳定版）")
 	_ = fs.Bool("supervise", false, "内部旗标：托盘隐藏派生用，行为与无参一致")
-	// --self-relay 已废弃（自中继副本机制 v0.5.2/票02 整体删除）：解析但忽略，
-	// 仅防旧脚本/旧茬 argv 报错；旗标本身次版（v0.5.3）删除。
-	_ = fs.Bool("self-relay", false, "内部旗标（已废弃）：解析但忽略，次版删除")
 	waitQuiet := fs.Int("wait-quiet", 60, "静默门等待预算（秒；判据不满足时的轮询上限；0=不等；缺省 60s）")
 	force := fs.Bool("force", false, "跳过静默门直接停旧（脚本态）")
 	if err := fs.Parse(orderFlagPairsFirst(args, "config", "reason", "wait-quiet")); err != nil {
@@ -814,8 +811,7 @@ var runUpdateExecute = func(spec string, pre bool, waitQuiet int, force bool, w 
 			}
 		},
 	}).Run()
-	// v0.5.2（票02）删自中继副本机制：监督者恒同步跑完全程,无交棒分支——
-	// 自身映像==换装目标时直接两步换装（改名让位），盘面零 supervisor-copy。
+	// 监督者恒同步跑完全程：自身映像==换装目标时直接两步换装（改名让位）。
 	var summary string
 	switch {
 	case res.Success:

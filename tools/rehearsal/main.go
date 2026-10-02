@@ -121,7 +121,7 @@ func runOrchestrate(args []string) int {
 // ---- 监督者形态（supervisor 子命令） ----
 
 // runSupervisor 监督者形态：装配全注入地跑一次升级事务。自身映像==换装目标
-// （生产同形态）→ v0.5.2（票02）删自中继副本后不再交棒 .supervisor-copy 副本：
+// （生产同形态）→ v0.5.2（票02）删自中继副本机制后：
 // 直接两步换装（改名让位对运行映像放行），本进程同步跑完全程并亲自写
 // result-out。
 func runSupervisor(args []string) int {
