@@ -640,16 +640,18 @@ var (
 	providerRestoreFn = provider.Restore
 )
 
-// providerTargetsFromHome 三份配置目标 + 渡口地址派生（纯函数）：orca 份路径
+// providerTargetsFromHome 配置目标 + 渡口地址派生（纯函数）：orca 份路径
 // 与 installer doctor 同位（<Home>/AppData/Roaming/orca/codex-runtime-home/
-// home/config.toml）；渡口地址走 provider.DockURLFromListen 单源（评审留话：
-// 不自造拼接、尾斜杠不在 CLI 层归一）。
+// home/config.toml）；dsh 份＝<Home>/.dsh（目录不在位由写入器 skip，不代建）；
+// 渡口地址走 provider.DockURLFromListen 单源（评审留话：不自造拼接、尾斜杠
+// 不在 CLI 层归一）。
 func providerTargetsFromHome(home, dockListen string) provider.Targets {
 	return provider.Targets{
 		CCSettings:  filepath.Join(home, ".claude", "settings.json"),
 		CodexConfig: filepath.Join(home, ".codex", "config.toml"),
 		OrcaCodexConfig: filepath.Join(home, "AppData", "Roaming", "orca",
 			"codex-runtime-home", "home", "config.toml"),
+		DSHHome:     filepath.Join(home, ".dsh"),
 		DockBaseURL: provider.DockURLFromListen(dockListen),
 	}
 }
@@ -707,6 +709,17 @@ func providerApply(cfgPath string, restore bool, w io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(w, "失败: %v（以上为已完成部分；转人工按明细处置）\n", err)
 		return 1
+	}
+	// dsh 写入后的一次性提示：配置热生效依赖 dsh-hmr，未开启的实例要重启
+	// 才看到 home 层（桌面端与 CLI web 实例各一次）。
+	if !restore {
+		for _, r := range rep.Targets {
+			if strings.HasPrefix(r.Name, "dsh-") && r.Action == "written" {
+				fmt.Fprintf(w, "提示: dsh 配置需重启 dsh 实例生效（CLI web 实例与桌面端；"+
+					"开 HMR 的实例下一请求即生效）。\n")
+				break
+			}
+		}
 	}
 	fmt.Fprintf(w, "完成（%d 份目标；幂等——重跑只补缺）。\n", len(rep.Targets))
 	return 0

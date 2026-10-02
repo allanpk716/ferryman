@@ -1,0 +1,226 @@
+// dsh.go — dsh（DeepSeek Harness）接管分支（2026-10-02，服务商接管扩 dsh）。
+//
+// 与 CC/codex 分支的形态差异：那边是对**在位配置**的定向改值（键已存在），
+// dsh 侧是**代建**——渡口路由在 dsh 里本来不存在，落点＝home 级
+// `~/.dsh/cordis.patch.yml`（叠加序最高、对所有 profile 生效，含 web/desktop
+// 双实例）＋ `~/.dsh/.env` 占位令牌。纪律不变：
+//
+//   - home patch 是 Ferryman 整文件管理域（首行接管标记）；**他人文件（无标
+//     记）＝前置拒绝、全案转人工**——绝不把别人的补丁层揉进生成物；
+//   - 幂等：已是目标形态零写入零备份；有标记的旧版本允许重铸（dock 地址变
+//     更等），重铸同戳成组备份；
+//   - 新建文件无"接管前备份"可落——Restore 对"无备份＋带标记"的文件走删除
+//     还原（patch 整文件删、.env 剥接管行），回到"接管从未发生"。
+//
+// 线协议事实（docs/research/20261002_dsh-服务商配置与摆渡可行性调研.md）：
+// dsh 的 pi-ai 适配器说 anthropic-messages，模型请求落 {baseURL}/v1/messages
+// ——与 CC 车道同形；模型名走渡口六键映射（别名 claude-opus-5/claude-sonnet-5
+// 与 CC 同键，未知名兜底 default），切上游零写盘。contextWindow 200000 镜像
+// CC 对同名档的信念（claude-opus-5=200k；只影响 dsh 本地压缩规划，不上线）。
+package provider
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// dsh 接管目标名（ApplyReport 稳定可读）。
+const (
+	targetDSHPatch = "dsh-patch"
+	targetDSHEnv   = "dsh-env"
+)
+
+// dshMarker 接管标记字面量：home patch 首行注释与 .env 注释行共用。
+// 判定"这份文件是不是 Ferryman 生成的"唯一依据。
+const dshMarker = "ferryman-takeover"
+
+// DSHTokenEnv 渡口路由的占位令牌环境变量名（.env 落值 PlaceholderToken；
+// 渡口入站不鉴权，非空即可过 dsh 的 MISSING_CREDENTIAL 前置）。
+const DSHTokenEnv = "FERRYMAN_DOCK_TOKEN"
+
+// dshHomePatchName / dshEnvName dsh 家目录下的两个接管文件名。
+const (
+	dshHomePatchName = "cordis.patch.yml"
+	dshEnvName       = ".env"
+)
+
+// dshFilePlan dsh 侧单个文件的写入计划（纯计算产物，不落盘）。
+type dshFilePlan struct {
+	target  string // 目标名（targetDSHPatch / targetDSHEnv）
+	path    string
+	exists  bool   // 在位（改写场景；false＋changed＝新建，无备份）
+	content string // 目标内容（changed=true 时有效）
+	changed bool
+	skipped bool   // true＝本文件不参与（报告行携带 detail）
+	detail  string
+}
+
+// dshPaths 两个接管文件的路径（Targets.DSHHome 派生）。
+func dshPaths(dshHome string) (patch, env string) {
+	return filepath.Join(dshHome, dshHomePatchName), filepath.Join(dshHome, dshEnvName)
+}
+
+// planDSH 纯计算 dsh 两文件的写入计划。返回顺序恒为 [patch, env]：
+//   - DSHHome 目录不存在 → 两行 skipped（"dsh 未安装——跳过（不代建）"）；
+//   - home patch 在位且无接管标记 → error（他人文件，全案拒绝转人工）；
+//   - 其余按"已是目标/重铸/新建/补行"各就各位。
+func planDSH(dshHome, dockBaseURL string) ([]dshFilePlan, error) {
+	patchPath, envPath := dshPaths(dshHome)
+	if fi, err := os.Stat(dshHome); err != nil || !fi.IsDir() {
+		return []dshFilePlan{
+			{target: targetDSHPatch, path: patchPath, skipped: true, detail: "dsh 未安装——跳过（不代建）"},
+			{target: targetDSHEnv, path: envPath, skipped: true, detail: "dsh 未安装——跳过（不代建）"},
+		}, nil
+	}
+	// —— home patch ——
+	wantPatch := dshHomePatchYAML(dockBaseURL)
+	raw, err := os.ReadFile(patchPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		patch := dshFilePlan{target: targetDSHPatch, path: patchPath,
+			content: wantPatch, changed: true,
+			detail: "新建（home 级补丁层——接管前不存在，无备份）"}
+		return append([]dshFilePlan{patch}, planDSHEnv(envPath)...), nil
+	case err != nil:
+		return nil, fmt.Errorf("provider: %s 读取失败: %w", patchPath, err)
+	}
+	if !hasDSHMarker(string(raw)) {
+		return nil, fmt.Errorf("provider: %s 是他人文件（无 %s 标记）——外科纪律不整文件"+
+			"重写别人的补丁层，全案转人工；处置: 手工把 ferryman-dock 路由并入该文件"+
+			"（参照 docs/research/20261002 调研 §2.3）后重跑 apply", patchPath, dshMarker)
+	}
+	patch := dshFilePlan{target: targetDSHPatch, path: patchPath, exists: true}
+	if string(raw) == wantPatch {
+		patch.detail = "已是目标形态（零写入）"
+	} else {
+		patch.content, patch.changed = wantPatch, true
+		patch.detail = "带接管标记的旧版本——整体重铸（dock 地址等参数变更）"
+	}
+	return append([]dshFilePlan{patch}, planDSHEnv(envPath)...), nil
+}
+
+// planDSHEnv .env 的写入计划：缺令牌行＝补行/新建；已有＝零写入。
+func planDSHEnv(envPath string) []dshFilePlan {
+	env := dshFilePlan{target: targetDSHEnv, path: envPath}
+	raw, err := os.ReadFile(envPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		env.content, env.changed = dshEnvNewContent(), true
+		env.detail = "新建（占位令牌——渡口入站不鉴权，非空即可）"
+		return []dshFilePlan{env}
+	case err != nil:
+		// 读不了＝不敢动（.env 常载真钥）：如实报错全案转人工。
+		env.skipped, env.detail = true, fmt.Sprintf("读取失败: %v（转人工）", err)
+		return []dshFilePlan{env}
+	}
+	if dshEnvHasToken(string(raw)) {
+		env.exists, env.detail = true, "已是目标形态（零写入）"
+		return []dshFilePlan{env}
+	}
+	env.exists = true
+	env.content = dshEnvAppendContent(string(raw))
+	env.changed = true
+	env.detail = "补占位令牌行（其余行原样保留）"
+	return []dshFilePlan{env}
+}
+
+// dshHomePatchYAML home 级 cordis.patch.yml 的确定性全量内容。
+// 改这里＝改接管形态：幂等比对、带标记重铸、测试钉字面量三处都会盯着。
+func dshHomePatchYAML(dockBaseURL string) string {
+	return strings.Join([]string{
+		"# ferryman-takeover —— 本文件由 Ferryman provider apply 生成并整体管理。",
+		"# 作用：dsh 的模型流量经 ferryman-dock 路由走本机渡口（anthropic-messages 协议，",
+		"# 对所有 profile 生效——叠加序里 home 层最后、最高）。切供应商＝",
+		"# ferryman provider switch <名>（翻渡口 [dock].active，本文件不动）；",
+		"# 还原＝ferryman provider apply --restore。手改本文件会被下次 apply 重铸。",
+		"- id: llm-pi-ai",
+		"  name: '@deepseek-ai/dsh-llm-pi-ai'",
+		"  config:",
+		"    providers:",
+		"      ferryman-dock:",
+		"        apiKeyEnv: " + DSHTokenEnv,
+		"        api: anthropic-messages",
+		"        baseURL: " + dockBaseURL,
+		"        models:",
+		"          - id: claude-opus-5",
+		"            contextWindow: 200000",
+		"          - id: claude-sonnet-5",
+		"            contextWindow: 200000",
+		"- id: agent-default-model",
+		"  name: '@deepseek-ai/dsh-agent-default-model'",
+		"  config:",
+		"    provider: ferryman-dock",
+		"    model: claude-opus-5",
+	}, "\n") + "\n"
+}
+
+// dshEnvNewContent 全新 .env 内容（接管前不存在时）。
+func dshEnvNewContent() string {
+	return dshEnvMarkerLine() + DSHTokenEnv + "=" + PlaceholderToken + "\n"
+}
+
+// dshEnvMarkerLine .env 里的接管标记注释行（Restore 剥离的锚点）。
+func dshEnvMarkerLine() string {
+	return "# " + dshMarker + " —— 以下令牌行由 Ferryman provider apply 管理（--restore 剥离）\n"
+}
+
+// dshEnvAppendContent 在既有 .env 尾部并入标记行＋令牌行（其余字节不动；
+// 缺尾换行先补）。调用前提：内容里尚无令牌行。
+func dshEnvAppendContent(raw string) string {
+	if raw != "" && !strings.HasSuffix(raw, "\n") {
+		raw += "\n"
+	}
+	return raw + "\n" + dshEnvMarkerLine() + DSHTokenEnv + "=" + PlaceholderToken + "\n"
+}
+
+// dshEnvHasToken .env 是否已含令牌行（行首精确键名，# 注释行不算）。
+func dshEnvHasToken(raw string) bool {
+	for _, ln := range strings.Split(raw, "\n") {
+		if strings.HasPrefix(ln, DSHTokenEnv+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// dshEnvStripToken 从 .env 剥掉接管内容（标记注释行＋令牌行＋我们并入了的
+// 前置空行），其余行逐字节保留；剥完为空 → 返回 ""（调用方删文件）。
+func dshEnvStripToken(raw string) string {
+	var keep []string
+	lines := strings.Split(raw, "\n")
+	for i := 0; i < len(lines); i++ {
+		ln := lines[i]
+		if strings.HasPrefix(ln, "# "+dshMarker) {
+			// 我们并入时在标记行前垫了一个空行——一并剥掉（仅当它是我们垫的：
+			// 上一保留行非空且原本紧贴标记行，无从分辨时多留一个空行无害）。
+			if len(keep) > 0 && keep[len(keep)-1] == "" {
+				keep = keep[:len(keep)-1]
+			}
+			continue
+		}
+		if strings.HasPrefix(ln, DSHTokenEnv+"=") {
+			continue
+		}
+		keep = append(keep, ln)
+	}
+	out := strings.Join(keep, "\n")
+	// 尾部空行收敛成一个换行（剥行后的残渣不留给下次 append 判空）。
+	return strings.TrimRight(out, "\n") + "\n"
+}
+
+// hasDSHMarker 文件首段（前 4 行内）含接管标记＝Ferryman 生成的管理域文件。
+// 只认首段不认全文：他人文件正文里引用了 ferryman 文档链接不构成"我们的文件"。
+func hasDSHMarker(raw string) bool {
+	for i, ln := range strings.Split(raw, "\n") {
+		if i >= 4 {
+			return false
+		}
+		if strings.Contains(ln, dshMarker) {
+			return true
+		}
+	}
+	return false
+}

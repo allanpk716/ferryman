@@ -117,6 +117,7 @@ func newUpstreamView(name string, up *config.DockUpstream) (*upstreamView, strin
 type reqMeta struct {
 	start    time.Time
 	session  string
+	ua       string // 入站 User-Agent（agent 归因：cc 缺省 / deepseek-harness→dsh）
 	mode     string
 	modelIn  string
 	modelOut string
@@ -484,6 +485,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if record {
 		meta = &reqMeta{start: time.Now()}
 		meta.session = sessionID
+		meta.ua = r.UserAgent()
 		if view.rewriteOn {
 			meta.mode = modeRewrite
 			if rewriteDone {
@@ -603,8 +605,15 @@ func (s *Server) recordRow(m *reqMeta, sw *statusWriter) {
 	// token 四列来源：改写模式＝上游响应 SSE usage（message_delta 真值覆盖
 	// message_start 的 0，Q14 语义）；透传模式不解析响应（保真优先，压缩体
 	// 亦扫不出），尽力而为记 0——票面许可条款，注释即说明。
+	// agent 归因（2026-10-02 dsh 接管）：dsh 的 pi-ai 适配器每请求必带
+	// `User-Agent: deepseek-harness/<版本>`（官方强制归因头）——以此分岔 dsh
+	// 流量；其余（含 CC）照旧记 cc。beat 重放不带该头，不受影响。
+	agent := "cc"
+	if strings.HasPrefix(m.ua, "deepseek-harness/") {
+		agent = "dsh"
+	}
 	f := accounts.Fields{
-		"agent":                 "cc",
+		"agent":                 agent,
 		"session_id":            m.session,
 		"mode":                  m.mode,
 		"model_in":              m.modelIn,

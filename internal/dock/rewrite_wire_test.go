@@ -537,3 +537,58 @@ func TestRewriteReplayMarkedRequestGoesThroughRewrite(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordRowAgentLabelByUserAgent agent 归因钉子（2026-10-02 dsh 接管）：
+// dsh 的 pi-ai 适配器每请求带 `User-Agent: deepseek-harness/<版本>`——dock 行
+// agent 记 dsh；claude-cli/其余照旧记 cc。两请求同上游同改写配置，仅 UA 分岔。
+func TestRecordRowAgentLabelByUserAgent(t *testing.T) {
+	var up upstreamEcho
+	backend := httptest.NewServer(http.HandlerFunc(up.handler))
+	defer backend.Close()
+
+	acc, err := accounts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewWithOptions("127.0.0.1:15722", backend.URL,
+		Options{Upstream: rewriteDockUpstream(backend.URL), Accounts: acc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := frontOf(t, srv)
+
+	cases := []struct {
+		ua   string
+		want string
+	}{
+		{"deepseek-harness/0.2.0-rc.2 (+https://github.com/deepseek-ai/deepseek-harness)", "dsh"},
+		{"claude-cli/2.1.273 (external)", "cc"},
+	}
+	for _, tc := range cases {
+		body := []byte(`{"model":"claude-opus-5","max_tokens":8,` +
+			`"metadata":{"session_id":"ua-label-` + tc.want + `"},` +
+			`"messages":[{"role":"user","content":"hi"}]}`)
+		req := ccRequest(t, front+"/v1/messages", body)
+		req.Header.Set("User-Agent", tc.ua)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	rows := waitDockRows(t, acc, 2)
+	got := map[string]string{}
+	for _, row := range rows {
+		agent, _ := row["agent"].(string)
+		sid, _ := row["session_id"].(string)
+		got[sid] = agent
+	}
+	for _, tc := range cases {
+		if got["ua-label-"+tc.want] != tc.want {
+			t.Fatalf("UA %q → agent = %q, want %q（全部行: %v）",
+				tc.ua, got["ua-label-"+tc.want], tc.want, got)
+		}
+	}
+}

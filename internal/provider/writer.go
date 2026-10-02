@@ -49,8 +49,13 @@ type Targets struct {
 	// OrcaCodexConfig orca 生态 CODEX_HOME 下的 config.toml
 	//（%APPDATA%/orca/codex-runtime-home/home/config.toml）。
 	OrcaCodexConfig string
+	// DSHHome dsh 家目录（~/.dsh）；空＝dsh 分支整体不参与（旧调用零变化）。
+	// 非空但目录不在位＝两行 skip（不代建）；home patch 在位且无接管标记＝
+	// 他人文件，全案拒绝转人工（见 planDSH）。
+	DSHHome string
 	// DockBaseURL 渡口根地址（如 http://127.0.0.1:15722）；codex 目标按 /v1
-	// 后缀惯例派生（与 wire_api="responses" 兼容为准）。
+	// 后缀惯例派生（与 wire_api="responses" 兼容为准），dsh 路由原样用作
+	// baseURL（pi-ai 自行追加 /v1/messages）。
 	DockBaseURL string
 }
 
@@ -125,7 +130,16 @@ func Apply(t Targets) (ApplyReport, error) {
 				"OPENAI_API_KEY 后重跑 apply", p.path, string(form))
 		}
 	}
-	// ② 纯计算改写结果（不落盘）。
+	// ② 纯计算改写结果（不落盘）。dsh 分支同段规划（读文件+出计划，不写）：
+	// 他人文件（无标记）在此全案拒绝——任何备份/写盘都还没发生。
+	var dshPlans []dshFilePlan
+	if t.DSHHome != "" {
+		var dshErr error
+		dshPlans, dshErr = planDSH(t.DSHHome, t.DockBaseURL)
+		if dshErr != nil {
+			return rep, dshErr
+		}
+	}
 	var newContent []string // 与 plans 对齐；未在位目标为 ""
 	changed := make([]bool, len(plans))
 	exists := make([]bool, len(plans))
@@ -166,6 +180,19 @@ func Apply(t Targets) (ApplyReport, error) {
 		}
 	}
 	if !any {
+		for _, p := range dshPlans {
+			if p.skipped {
+				rep.Targets = append(rep.Targets, TargetReport{Name: p.target, Path: p.path,
+					Action: ActionSkipped, Detail: p.detail})
+				continue
+			}
+			act := ActionUnchanged
+			if p.changed {
+				act = ActionWritten // 理论不达（any=false），防御保真
+			}
+			rep.Targets = append(rep.Targets, TargetReport{Name: p.target, Path: p.path,
+				Action: act, Detail: p.detail})
+		}
 		for i, p := range plans {
 			if !exists[i] {
 				continue
@@ -175,8 +202,7 @@ func Apply(t Targets) (ApplyReport, error) {
 		}
 		return rep, nil
 	}
-	// ④ 备份：三份在位配置逐一落同戳备份（成组，三份同时间戳前缀；orca 份
-	// 缺失则该组缺成员，Restore 如实跳过）。
+	// ④ 备份：在位配置逐一落同戳备份（成组，同时间戳前缀；缺失份如实跳过）。
 	stamp := stampNow()
 	backupOf := make([]string, len(plans))
 	for i, p := range plans {
@@ -189,7 +215,18 @@ func Apply(t Targets) (ApplyReport, error) {
 		}
 		backupOf[i] = b
 	}
-	// ⑤ 写盘：只写改动文件（权限位沿用原文件）。
+	dshBackupOf := make([]string, len(dshPlans))
+	for i, p := range dshPlans {
+		if !p.exists {
+			continue // 新建文件无"接管前"可备（Restore 走删除还原）
+		}
+		b := filepath.Join(filepath.Dir(p.path), filepath.Base(p.path)+backupMarker+stamp)
+		if err := copyFile(p.path, b); err != nil {
+			return rep, fmt.Errorf("provider: 备份 %s 失败: %w", p.path, err)
+		}
+		dshBackupOf[i] = b
+	}
+	// ⑤ 写盘：只写改动文件（权限位沿用原文件；新建文件 0644）。
 	for i, p := range plans {
 		if !changed[i] {
 			continue
@@ -199,6 +236,18 @@ func Apply(t Targets) (ApplyReport, error) {
 			perm = info.Mode().Perm()
 		}
 		if err := os.WriteFile(p.path, []byte(newContent[i]), perm); err != nil {
+			return rep, fmt.Errorf("provider: 写入 %s 失败: %w", p.path, err)
+		}
+	}
+	for _, p := range dshPlans {
+		if p.skipped || !p.changed {
+			continue
+		}
+		perm := os.FileMode(0o644)
+		if info, err := os.Stat(p.path); err == nil {
+			perm = info.Mode().Perm()
+		}
+		if err := os.WriteFile(p.path, []byte(p.content), perm); err != nil {
 			return rep, fmt.Errorf("provider: 写入 %s 失败: %w", p.path, err)
 		}
 	}
@@ -214,6 +263,19 @@ func Apply(t Targets) (ApplyReport, error) {
 		}
 		rep.Targets = append(rep.Targets, TargetReport{Name: p.name, Path: p.path,
 			Action: act, Backup: backupOf[i], Detail: detail})
+	}
+	for i, p := range dshPlans {
+		if p.skipped {
+			rep.Targets = append(rep.Targets, TargetReport{Name: p.target, Path: p.path,
+				Action: ActionSkipped, Detail: p.detail})
+			continue
+		}
+		act := ActionUnchanged
+		if p.changed {
+			act = ActionWritten
+		}
+		rep.Targets = append(rep.Targets, TargetReport{Name: p.target, Path: p.path,
+			Action: act, Backup: dshBackupOf[i], Detail: p.detail})
 	}
 	return rep, nil
 }
