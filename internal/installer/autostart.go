@@ -6,7 +6,7 @@
 //      "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Ferryman 值在
 //   2. 再跑一次 install           → 值不重复写（幂等；值内容逐字不变）
 //   3. ferryman autostart status  → installed
-//   4. 注销并重新登录             → daemon 无窗口自拉起（127.0.0.1:7311 在听）
+//   4. 注销并重新登录             → daemon 无窗口自拉起（127.0.0.1:15700 在听）
 //   5. ferryman autostart uninstall → reg query 报系统找不到指定的注册表项或值
 //   6. ferryman autostart status  → missing
 //

@@ -992,7 +992,7 @@ func runDoctor(d doctorDeps) int {
 
 // realStatsProbe /stats 探针：Bearer token 读 data_dir，2s 超时；任何失败 → nil
 // （doctor.py real_probe 逐字；端口票05 起由调用方经 config 解析传入——同
-// internal/config 优先级，默认 7311 与 Python 硬编码同位）。
+// internal/config 优先级，默认 15700 与 Python 硬编码同位）。
 func realStatsProbe(dataDir string, port int) func() map[string]any {
 	return func() map[string]any {
 		tokenRaw, err := os.ReadFile(filepath.Join(dataDir, "daemon.token"))

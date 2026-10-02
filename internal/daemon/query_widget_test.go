@@ -376,7 +376,7 @@ func TestWidgetSummaryEmptyAndUnconfigured(t *testing.T) {
 }
 
 // ---- CORS：壳内 webview 跨源 fetch 的预检与响应头（票08 补遗） ----
-// Tauri 壳页面源是 tauri.localhost，fetch 127.0.0.1:7311 且带 Authorization 头
+// Tauri 壳页面源是 tauri.localhost，fetch 127.0.0.1:15700 且带 Authorization 头
 // → WebView2 强制预检；daemon 不答预检则 fetch 永远失败（widget 恒「不可达」
 // ——2026-09-28 真机所见，curl 不走浏览器 CORS 故终检未逮）。
 

@@ -439,7 +439,7 @@ func (s *Supervisor) alert(title, message string) {
 	s.cfg.Alert(title, message)
 }
 
-// launchAndVerify 拉起并校验 want 版本;seam C:失败判定前先查 7311 持有者,
+// launchAndVerify 拉起并校验 want 版本;seam C:失败判定前先查 15700 持有者,
 // 旧版本(看门/自举抢跑重拉)→ 复停一次 → 重拉起 → 重校验一轮。
 func (s *Supervisor) launchAndVerify(j journal, want string) (string, bool) {
 	if err := s.launchTx(j.StartCmd); err != nil {

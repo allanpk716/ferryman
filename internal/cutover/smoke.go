@@ -3,7 +3,7 @@
 // 与 enforce block 契约，全部断言内部完成。
 //
 // 沙箱纪律（票面铁律）：
-//   - 端口：freePort 临时端口（绝不占 7311）；
+//   - 端口：freePort 临时端口（绝不占 15700）；
 //   - 数据：os.MkdirTemp 一次性数据目录（绝不写 ~/ferryman；accounts/handoffs/
 //     index/token 全落沙箱）；
 //   - env：FERRYMAN_CONFIG / FERRYMAN_DATA 沙箱化（进程级改写，退出还原）；
