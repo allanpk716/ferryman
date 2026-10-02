@@ -407,6 +407,10 @@ func realStopDeps(cfg *config.Config) *stopDeps {
 // 监督者停旧同序）。超时如实报告 exit 1；本函数无任何 kill 路径——绝不硬杀。
 func stopRun(w io.Writer, wait time.Duration, deps *stopDeps) int {
 	addr := fmt.Sprintf("127.0.0.1:%d", deps.Port)
+	// 先记旧 PID 再发 /shutdown（supervisor.stopDaemon 同纪律）：优雅停机过程会
+	// 删 daemon.pid（serveConfig 倒数第二句），等端口释放后再读就没了——读不到
+	// 只能跳过进程等待，"进程已退场"便成未经验证的断言。
+	pid, _ := deps.ReadPID()
 	err := deps.Shutdown(deps.Port, deps.Token)
 	switch {
 	case err == nil:
@@ -417,8 +421,7 @@ func stopRun(w io.Writer, wait time.Duration, deps *stopDeps) int {
 		}
 		// 端口释放 ≠ 进程退场（监听口先关、进程后走）；pid 无从跟踪时放行
 		//（supervisor 同语义）。
-		pid, perr := deps.ReadPID()
-		if perr == nil && !deps.WaitExit(pid, wait) {
+		if pid > 0 && !deps.WaitExit(pid, wait) {
 			fmt.Fprintf(w, "超时：端口已释放但 PID %d 在预算 %s 内未退出——未硬杀，请人工检查\n", pid, wait)
 			return 1
 		}
