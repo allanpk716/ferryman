@@ -1,7 +1,7 @@
 package update
 
 // 监督者全流程测试(票05 验收面):httptest 伪 GitHub + 测试内替身 exe +
-// 随机口 + TEMP 数据目录——绝不碰生产 7311/15900 与仓库根 ferryman.exe。
+// 随机口 + TEMP 数据目录——绝不碰生产 15700/15900 与仓库根 ferryman.exe。
 
 import (
 	"encoding/json"
