@@ -17,7 +17,8 @@
 // 的条目段同序（base_url/api_key/model_map/text_only/balance_url），另补票02
 // 的 dialect/codex 两键（迁移条目恒为 anthropic/空，渲染不涉；两处渲染若日後
 // 需合流，以本函数为准回填）。dialect 恒显式落盘（空值在写入前归一 anthropic
-// ——避免「缺省还是有意」歧义）；codex 仅在否决位在位时落盘。
+// ——避免「缺省还是有意」歧义）；codex 仅在否决位在位时落盘；pi 行同款（票12
+// 补，插在 codex 后——票09 否决位写入面移交至此落地）。
 package config
 
 import (
@@ -220,7 +221,8 @@ func rewriteUpstreamsTable(raw []byte, remove []string, add map[string]DockUpstr
 }
 
 // renderUpstreamEntry 渲染一条上游条目块（首行表头、尾随一空行；字段序见
-// 文件头注释）。dialect 恒落盘（调用方已归一非空）；codex 仅否决位在位时落。
+// 文件头注释）。dialect 恒落盘（调用方已归一非空）；codex/pi 仅否决位在位时
+// 落（pi 行票12 补，插在 codex 后——对标 codex 的显式否决位写入面）。
 func renderUpstreamEntry(name string, up DockUpstream, nl string) string {
 	var b strings.Builder
 	w := func(format string, args ...any) {
@@ -248,6 +250,9 @@ func renderUpstreamEntry(name string, up DockUpstream, nl string) string {
 	}
 	if up.Codex != "" {
 		w("codex = %s", tomlString(up.Codex))
+	}
+	if up.Pi != "" {
+		w("pi = %s", tomlString(up.Pi))
 	}
 	w("") // 与后续条目/节保持一空行间隔
 	return b.String()

@@ -142,7 +142,7 @@ func faultSwarm(d rehearsalDeps) phaseRec {
 			return
 		}
 		defer f.Close()
-		// 抢拉：影子 exe 本尊（与换装目标同路径——锁让路判持有者映像三族的
+		// 抢拉：影子 exe 本尊（与换装目标同路径——锁让路判持有者映像的
 		// 前提），env 刻意不带自拉起标记。
 		// CreateProcess 与换装 rename 撞上是毫秒级竞窗——失败隔 150ms 重试
 		// 一次（黑暗窗 1-3s，重试仍在窗内）。

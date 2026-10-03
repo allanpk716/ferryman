@@ -5,8 +5,8 @@ package daemon
 // -ExecutionPolicy Bypass），stdin 喂 UTF-8 JSON，断言 exit code 与 stdout。
 // 守护用 integHarness（integration_test.go 的守望+工人+HTTP 全装配）监听
 // 临时端口；钩子经 FERRYMAN_PORT / FERRYMAN_TOKEN_FILE 环境变量指向它——
-// hooks/*.ps1 均读这两个变量（默认 7311 ~/ferryman/daemon.token），测试
-// 从不落写死端口，无 7311 冲突面。仅 Windows 执行，其余 t.Skip。
+// hooks/*.ps1 均读这两个变量（默认 15700 ~/ferryman/daemon.token），测试
+// 从不落写死端口，无 15700 冲突面。仅 Windows 执行，其余 t.Skip。
 //
 // 语义以 tests/test_hooks.py 实测为准：fail-open（守护关/401/超时→exit 0
 // 且零输出）；block 分支 exit 0 + stdout 纯 JSON（decision/reason/

@@ -21,12 +21,12 @@
 - transcript 格式官方不保证稳定 → 防御式解析、缺字段退 mtime-only。
 - 实测：`ai-title` 行存在（可作交接命名）但**无 timestamp 字段** → 闲置判定用文件 mtime。
 - 现有 hooks 全挂 Orca 的 claude-hook.cmd，本项目追加共存；⚠ CC Switch 切换供应商会覆盖 `~/.claude/settings.json`。**机制实测（2026-09-17，T21）**：切换 = 把该供应商在 `~/.cc-switch/cc-switch.db`（SQLite，`providers.settings_config`）里的**快照逐字写入** settings.json——`common_config_claude`（通用配置）**不参与**切换时合并（只在你手动"应用"时进快照）；Live 代理模式下应用还会不定期重写。**修复**：把 ferryman 四钩子直接注进全部 claude 供应商快照（含未来新增供应商需重注；`cc-switch.db` 改前备份）。附带伤害：这类重写会抹掉**不在快照里的一切**——Orca 钩子同样会灭。
-- 通知（T25，2026-09-16 落地）：daemon 自持 `notify.py`（不耦合插件路径）——block 时异步双通道：Pushover（手机）+ Win10 WinRT Toast（桌面），文案带交接路径；`[notify] enabled` 默认 false，凭据复用 claude-notify 的环境变量 `PUSHOVER_TOKEN/PUSHOVER_USER`（HKCU 用户级持久，config 可覆盖）；通道任何故障只吞不抛，绝不影响 gate 决策。
+- 通知（T25，2026-09-16 落地）：daemon 内置通知通道（现 Go 守护为 `internal/notify`；早期 Python 守护自持 `notify.py`，不耦合插件路径——历史）——block 时异步双通道：Pushover（手机）+ Win10 WinRT Toast（桌面），文案带交接路径；`[notify] enabled` 默认 false，凭据复用 claude-notify 的环境变量 `PUSHOVER_TOKEN/PUSHOVER_USER`（HKCU 用户级持久，config 可覆盖）；通道任何故障只吞不抛，绝不影响 gate 决策。
 - 摆渡模型经作者自建 OpenAI 兼容推理网关——地址/模型/窗口一律经 `~/ferryman/config.toml` 配置（仓库外，永不入库；T39 起代码不内置任何默认 provider，未配置时摆渡降级骨架并由 doctor 提示）。**传输要求**：跨机仅走内网或 Tailscale（禁公网明文）；gateway 绑定面/TLS 为 `ferryman doctor` 部署检查项。
 
 ## 4. 架构与安全
 
-Python 3.12+（uv）守护进程，绑定 127.0.0.1:7311：
+Go 守护进程（单 exe `ferryman.exe`，ADR-0003/0005 整体迁 Go）：控制口绑定 127.0.0.1:15700，面板 15900，渡口 15722：
 
 - **台账**：主键 `agent + session_id`；辅助键 `transcript_path`；**会话族系（lineage）**：同一 transcript_path 出现新 session_id → 继承闲置史与交接关联；**新文件情形**（resume 产生新 jsonl）以**首条 user 消息内容 hash** 建族系链（E0a 附带实测两家 CLI 的 resume 行为校准）。
 - **时钟统一**：daemon 内部一切时间均为 **UTC epoch 秒**；jsonl 时间戳（带时区）与文件 mtime 都转 UTC 后才比较——杜绝"行内 UTC vs 本地 mtime"双时钟错位。
@@ -41,7 +41,7 @@ Python 3.12+（uv）守护进程，绑定 127.0.0.1:7311：
 - **配置校验（拒启）**：按 Agent 分组校验 `summarize_threshold < block_threshold` 且 `block_threshold − summarize_threshold ≥ 2min`（独立硬约束，不依赖 SLA 定义）。
 - **摆渡 SLA**：L0 ≤ 2min；L1 模型调用 90s（E1 实测：490K 材料 78s 已贴上限——材料 >400K 建议直接走 L2，或将 L1 超时上调至 120s）；L2 每块 120s（实测 27-55s/块）；墙钟总时限 8min（实测 L2 总 217-252s，余量 3×）。超时即降级骨架（保证不变量不因模型慢/挂而破）。
 - 钩子侧极薄（PowerShell：读 token + POST /gate，故障即放行）；逻辑全在 daemon（Codex 哈希信任要求配置静态）。
-- **钩子自举 + 唯一化（T35，2026-09-17）**：不做开机自启——**任意 agent 的任意钩子触发时**先探测 :7311（TCP，250ms 上限），不在则隐藏窗口拉起 `~/ferryman/start-daemon.cmd`（`install-cc` 生成的点火脚本，绝对 venv python + 输出重定向到 `serve.{out,err}.log`，进程独立于钩子存活）。等待预算按钩子分级：restore 2.5s（注入最怕缺席，钩子超时已放宽至 10s）、gate 0.4s（新会话本就无需拦截，POST 失败即放行）、subagent 0（fire-and-forget）。**唯一化**三层：① Windows 上禁用 `allow_reuse_address`（socketserver 默认 =1，Windows 的 SO_REUSEADDR 语义允许两进程绑同端口、连接归属未定义——排他性地基）；② serve() 绑定失败 → `/stats`+token 探测：健康实例 → "已在运行"退出 0（钩子并发点火 / 手动+自动竞争都收敛到单实例），非本程序占端口 → 退出 1；③ 绑定成功写 `daemon.pid`，退出清理。另修 HTTP 层缺陷：401/404 响应前未读光 POST body 就关连接 → Windows 发 RST（客户端 10053 连接中断而非状态码）——body 一律先读后答。
+- **钩子自举 + 唯一化（T35，2026-09-17）**：不做开机自启——**任意 agent 的任意钩子触发时**先探测 :15700（TCP，250ms 上限），不在则隐藏窗口拉起 `~/ferryman/start-daemon.cmd`（`install-cc` 生成的点火脚本，绝对路径 ferryman.exe + 输出重定向到 `serve.{out,err}.log`，进程独立于钩子存活）。等待预算按钩子分级：restore 2.5s（注入最怕缺席，钩子超时已放宽至 10s）、gate 0.4s（新会话本就无需拦截，POST 失败即放行）、subagent 0（fire-and-forget）。**唯一化**三层：① Windows 上不设 `SO_REUSEADDR`（该平台地址复用语义允许两进程绑同端口、连接归属未定义——排他性地基）；② serve() 绑定失败 → `/stats`+token 探测：健康实例 → "已在运行"退出 0（钩子并发点火 / 手动+自动竞争都收敛到单实例），非本程序占端口 → 退出 1；③ 绑定成功写 `daemon.pid`，退出清理。另修 HTTP 层缺陷：401/404 响应前未读光 POST body 就关连接 → Windows 发 RST（客户端 10053 连接中断而非状态码）——body 一律先读后答。
 
 ## 5. 拦截/注入配方
 

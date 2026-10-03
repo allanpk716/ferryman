@@ -3,17 +3,18 @@
 // 用户/agent 敲一条命令：读自己的账本（config data_dir 下 accounts/*.jsonl）
 // 与价格表（同一份 config 的 [prices.*]），装配票01 装载 → 票02 网格引擎 →
 // 票03 报告三包，markdown 实验报告落 --out（缺省 docs/ 实验报告惯例文件名），
-// --json 时 stdout 另给结构化结果（BuildView 投影，退出码承载结论）。
+// --json 时 stdout 另给结构化结果（BuildView 投影；退出码只承载成败，空态
+// 非失败——见文末如实语义）。
 //
 // 纪律（票面/规格「通用性」）：全程只读账本与 config，唯一写目标是报告文件；
 // 无任何本机路径/项目名硬编码——默认全量，profile 只经 --projects/--exclude
 // glob 进来；config 解析复用既有优先级（显式 --config > FERRYMAN_CONFIG >
 // ~/ferryman/config.toml，同 daemon）。
 //
-// 如实语义（不崩溃不造数）：
+// 如实语义（不崩溃不造数；票02 退出码契约：0=成功、1=失败、2=用法错）：
 //   - 账本/config 读不动 → 硬错误退 1，不落报告；
-//   - 引擎未产出（ttl_s 未配置 ErrTTLUnset、价格不可算等）→ 空态报告照落
-//     （票03「（引擎未产出）」占位）+ stderr 说明 + 退 1；
+//   - 引擎未产出（ttl_s 未配置 ErrTTLUnset、价格不可算等）→ 数据空态非失败：
+//     空态报告照落（票03「（引擎未产出）」占位）+ 输出明示空态原因 + 退 0；
 //   - 零窗/过滤后零窗是数据状态非错误 → 空态标注 + 退 0。
 package main
 
@@ -103,13 +104,14 @@ func runBacktest(o backtestOpts, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// 引擎未产出（ttl 未配置/价格不可算/网格构造失败）→ 如实空态：报告照落
-	// （BuildView 零值优雅呈现），退出码 1 承载「未得出结论」。
+	// 引擎未产出（ttl 未配置/价格不可算/网格构造失败）→ 数据空态非失败（票02
+	// 退出码契约：空态与失败分离）：报告照落（BuildView 零值优雅呈现）、输出
+	// 明示空态原因，退出码 0——真错误（装载/写盘失败）仍退 1。
 	res, sweepErr := backtest.RunSweep(ds, backtest.SweepOptions{
 		Books: books, EconKey: econKey, TTLS: cfg.Heartbeat.TTLS,
 	})
 	if sweepErr != nil {
-		fmt.Fprintln(stderr, "扫参未执行（空态报告照常落盘）:", sweepErr)
+		fmt.Fprintln(stderr, "数据空态：引擎未产出（报告照常落盘，退出码 0）:", sweepErr)
 		res = nil
 	}
 
@@ -146,11 +148,11 @@ func runBacktest(o backtestOpts, stdout, stderr io.Writer) int {
 		} else if c.ReplayWindows == 0 {
 			fmt.Fprintln(stdout, "空态：过滤后无可重放窗（全部落入 unknown/不可算桶，网格未重放）")
 		}
+		if sweepErr != nil { // 空态标注（文本模式；--json 模式已走 stderr，stdout 保持纯 JSON）
+			fmt.Fprintf(stdout, "⚠ 数据空态：引擎未产出（%v）；报告照落，退出码 0\n", sweepErr)
+		}
 	}
-	if sweepErr != nil {
-		return 1
-	}
-	return 0
+	return 0 // 数据空态（引擎未产出）已标注，非失败；真错误路径各自提前退 1
 }
 
 // resolveConfigPath 显式参数 > FERRYMAN_CONFIG > 默认路径（config.Load 同链；

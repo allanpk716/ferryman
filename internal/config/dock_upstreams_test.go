@@ -372,6 +372,155 @@ default = "m"
 	}
 }
 
+// ---- 票09（pi 面）：model_map pi 主模型键 + pi 可用性位 ----
+
+// TestLoadDockUpstreamPiKeyAndBit pi 两键解析：model_map 的 pi 主模型键（与
+// codex 键并列的扩位键，非本地条目可选）＋条目级 pi 显式否决位；两键缺省＝空
+// （可用性按 dialect 推导，模型位不凭空造默认）。
+func TestLoadDockUpstreamPiKeyAndBit(t *testing.T) {
+	f := writeCfg(t, `
+[dock]
+active = "glm"
+
+[dock.upstreams.glm]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+codex = "unsupported"
+
+[dock.upstreams.glm.model_map]
+default = "glm-5.3"
+codex = "glm-5.3"
+pi = "glm-5.3"
+
+[dock.upstreams.plain]
+base_url = "https://plain.example/api"
+
+[dock.upstreams.plain.model_map]
+default = "m"
+`)
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ups := cfg.Dock.Upstreams
+
+	glm := ups["glm"]
+	if got := glm.PiModel(); got != "glm-5.3" {
+		t.Fatalf("glm pi 模型位 = %q, want glm-5.3", got)
+	}
+	if glm.Pi != "" {
+		t.Fatalf("glm pi 否决位 = %q, want 空（缺省按 dialect 推导）", glm.Pi)
+	}
+	// 既有档位键与 codex 键不受 pi 键并列影响
+	if glm.ModelMap["default"] != "glm-5.3" || glm.CodexModel() != "glm-5.3" {
+		t.Fatalf("既有键被 pi 键破坏: %v", glm.ModelMap)
+	}
+	// codex 否决位与 pi 可用性互不串扰（各管各的车道）
+	if glm.CodexAvailability() != CodexUnsupported || glm.PiAvailability() != PiAvailable {
+		t.Fatalf("codex/pi 可用性串扰: codex=%q pi=%q",
+			glm.CodexAvailability(), glm.PiAvailability())
+	}
+
+	// 缺 pi 两键的条目：模型位空、否决位空（推导可用）
+	pl := ups["plain"]
+	if got := pl.PiModel(); got != "" {
+		t.Fatalf("plain pi 模型位 = %q, want 空（缺键不凭空造默认）", got)
+	}
+	if pl.Pi != "" || pl.PiAvailability() != PiAvailable {
+		t.Fatalf("plain pi 位/可用性 = %q/%q, want \"\"/%q",
+			pl.Pi, pl.PiAvailability(), PiAvailable)
+	}
+}
+
+// TestPiAvailabilityDerivation pi 可用性推导矩阵（对标 CodexAvailability 的
+// "显式否决位+按 dialect 推导"，推导方向相反）：否决位优先；anthropic→可用
+// （pi 说 anthropic-messages，复用 CC 车道）；openai_responses→不可用（无入站
+// 车道）。
+func TestPiAvailabilityDerivation(t *testing.T) {
+	table := []struct {
+		name string
+		up   DockUpstream
+		want string
+	}{
+		{"零值（旧形态结构体）＝缺省 anthropic→可用", DockUpstream{}, PiAvailable},
+		{"显式 anthropic→可用", DockUpstream{Dialect: DialectAnthropic}, PiAvailable},
+		{"openai_responses→不可用", DockUpstream{Dialect: DialectOpenAIResponses}, PiUnavailable},
+		{"显式否决盖过可用推导", DockUpstream{Dialect: DialectAnthropic, Pi: PiUnsupported}, PiUnsupported},
+		{"显式否决盖过不可用推导", DockUpstream{Dialect: DialectOpenAIResponses, Pi: PiUnsupported}, PiUnsupported},
+	}
+	for _, tc := range table {
+		if got := tc.up.PiAvailability(); got != tc.want {
+			t.Errorf("%s: 可用性 = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// pi 模型位：缺键为空（不凭空造默认）
+	var zero DockUpstream
+	if got := zero.PiModel(); got != "" {
+		t.Fatalf("缺 pi 键的条目 PiModel = %q, want 空", got)
+	}
+}
+
+// TestValidateDockUpstreamsPiEnum pi 否决位枚举校验（合法/非法值/缺省表驱动；
+// 仅认 "unsupported"——把推导值当显式值写也拒，与 codex 同款纪律）。
+func TestValidateDockUpstreamsPiEnum(t *testing.T) {
+	table := []struct {
+		name    string
+		pi      string
+		wantErr string // 空＝应通过
+	}{
+		{"缺省（空）＝合法，按 dialect 推导", "", ""},
+		{"显式否决＝合法", PiUnsupported, ""},
+		{"非法值＝拒", "maybe", "pi 非法"},
+		{"把推导值当显式值写＝拒", PiAvailable, "pi 非法"},
+	}
+	for _, tc := range table {
+		cfg := Default()
+		cfg.Dock = &DockCfg{Active: "x", Upstreams: map[string]DockUpstream{
+			"x": {BaseURL: "https://a.b", Pi: tc.pi,
+				ModelMap: map[string]string{"default": "m"}},
+		}}
+		err := Validate(cfg, false)
+		if tc.wantErr == "" {
+			if err != nil {
+				t.Errorf("%s: Validate err = %v, want nil", tc.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s: err = %v, want 含 %q", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
+// TestLoadDockUpstreamBadPi 文件形态的非法 pi 值拒启（Load 内含 Validate，
+// 错误文案点名坏键）。
+func TestLoadDockUpstreamBadPi(t *testing.T) {
+	f := writeCfg(t, "[dock]\nactive = \"x\"\n[dock.upstreams.x]\n"+
+		"base_url = \"https://a.b\"\npi = \"maybe\"\nmodel_map = { default = \"m\" }\n")
+	_, err := Load(f, false)
+	if err == nil || !strings.Contains(err.Error(), "pi") {
+		t.Fatalf("err = %v, want 含 pi 非法", err)
+	}
+}
+
+// TestDockUpstreamPiLegacyZeroChange 旧配置（无 pi 两键）行为零变化：Pi 解析
+// 为空、推导可用——但本票只做展示面，无 switch/apply 行为面（票12 才接）。
+func TestDockUpstreamPiLegacyZeroChange(t *testing.T) {
+	f := writeCfg(t, "[dock]\nactive = \"z\"\n[dock.upstreams.z]\n"+
+		"base_url = \"https://z.example/api\"\n"+
+		"[dock.upstreams.z.model_map]\ndefault = \"m\"\n")
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	up := cfg.Dock.Upstreams["z"]
+	if up.Pi != "" || up.PiModel() != "" {
+		t.Fatalf("旧形态条目 pi 位/模型位 = %q/%q, want 空/空", up.Pi, up.PiModel())
+	}
+	if got := up.PiAvailability(); got != PiAvailable {
+		t.Fatalf("旧形态条目 pi 可用性 = %q, want %q（anthropic 方言推导）", got, PiAvailable)
+	}
+}
+
 // ---- 本地中转地址判定单源（自 dock/guard 迁入；guard.DoubleRewriteRisk 委托此处） ----
 
 func TestIsLoopbackHostNormalization(t *testing.T) {

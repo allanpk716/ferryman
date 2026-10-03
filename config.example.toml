@@ -45,7 +45,9 @@ active = "智谱"
 # 预置：智谱 GLM Coding Plan（模型拼写以官方文档为准，填 key 后即可用）
 base_url = "https://open.bigmodel.cn/api/anthropic"
 api_key = ""
-model_map = { default = "glm-5.3", opus = "glm-5.3", sonnet = "glm-5.3", haiku = "glm-5.3-flash" }
+# model_map 可选 codex/pi 主模型键＝对应车道的主模型位（与 default/档位键并列）
+model_map = { default = "glm-5.3", opus = "glm-5.3", sonnet = "glm-5.3", haiku = "glm-5.3-flash", codex = "glm-5.3", pi = "glm-5.3" }
+# pi = "unsupported"  # pi 显式否决位（仅此一值；缺省按 dialect 推导：anthropic=可用）
 balance_url = "https://open.bigmodel.cn/api/user/balance"
 
 [dock.upstreams.kimi]
@@ -68,8 +70,11 @@ model_map = { default = "deepseek-flash", sonnet = "deepseek-flash", haiku = "de
 #api_key = ""
 #
 # 条目字段：base_url（必填）/ api_key（可空＝未激活占位）/ model_map（非本地
-# 条目必含非空 default；可选 opus/sonnet/haiku 档位键）/ text_only（可选，
-# 命中映射后模型名的 image 块降级文本占位）/ balance_url（可选，不配不显示）。
+# 条目必含非空 default；可选 opus/sonnet/haiku 档位键与 codex/pi 主模型键）/
+# text_only（可选，命中映射后模型名的 image 块降级文本占位）/ balance_url
+# （可选，不配不显示）/ dialect（可选，缺省 anthropic）/ codex（可选，仅
+# "unsupported" 否决位）/ pi（可选，仅 "unsupported" 否决位；可用性缺省按
+# dialect 推导——anthropic=可用、openai_responses=不可用）。
 # 换上游：active 改成条目名（TOML 键），重启守护生效。
 
 [providers.local]

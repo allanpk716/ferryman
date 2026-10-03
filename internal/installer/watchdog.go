@@ -21,8 +21,8 @@
 // 真实冒烟清单（runbook 票引用；本票单测走 httptest/注入 fake/构造层，
 // 绝不真建/删计划任务、不真写注册表）：
 //   1. ferryman watchdog                  → daemon 活：打印有响应、退出 0
-//   2. 停 daemon 再跑                     → 打印无监听→拉起；几秒后 7311 在听
-//   3. 用不发 HTTP 的进程占 7311 再跑      → 打印占用告警、不拉起、退出 0
+//   2. 停 daemon 再跑                     → 打印无监听→拉起；几秒后 15700 在听
+//   3. 用不发 HTTP 的进程占 15700 再跑      → 打印占用告警、不拉起、退出 0
 //   4. ferryman watchdog install          → schtasks /Query /TN FerrymanWatchdog 在位
 //   5. schtasks /Run /TN FerrymanWatchdog → 立即触发一次（wscript 零闪窗——旧
 //      powershell -WindowStyle Hidden 形态实测每跳闪一次黑窗：schtasks 在交互

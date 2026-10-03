@@ -215,6 +215,10 @@ func TestCCSwitchSnapshotCoverage(t *testing.T) {
 	if !strings.Contains(c.Msg, "P1") || strings.Contains(c.Msg, "P2") { // 点名缺钩子的供应商
 		t.Fatalf("点名不符: %s", c.Msg)
 	}
+	// 票13 弃用处置：失败文案尾带弃用路线注记
+	if !strings.Contains(c.Msg, CCSwitchDeprecationRoute) {
+		t.Fatalf("失败文案缺弃用路线注记: %s", c.Msg)
+	}
 }
 
 // ---- test_codex_hooks_and_flag ----
@@ -395,6 +399,10 @@ func TestCCSwitchGateMissingHintNotFail(t *testing.T) {
 	}
 	if !strings.Contains(c.Msg, "UserPromptSubmit") || !strings.Contains(c.Msg, "未安装") {
 		t.Fatalf("提示应注明闸门钩子按用户指令未安装: %s", c.Msg)
+	}
+	// 票13 弃用处置：成功文案尾带弃用路线注记
+	if !strings.Contains(c.Msg, CCSwitchDeprecationRoute) {
+		t.Fatalf("成功文案缺弃用路线注记: %s", c.Msg)
 	}
 	// 硬性事件缺失照旧失败（闸门豁免不覆盖三硬性事件）
 	db2 := filepath.Join(tmp, "cc2.db")
@@ -649,9 +657,10 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	got := out.String()
 	// 票02 起：+2 = Run 键自启 + 看门计划任务两查；票06 起：+1 = MCP 注册在位；
 	// 升级链票06 起：+1 = 升级事务残留检查；服务商接管票05 起：+3 = CC 指向/
-	// codex 指向/orca codex 健康三项（[dock] 未配置形态按 not_checked 计入）。
-	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3,
-		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3)
+	// codex 指向/orca codex 健康三项（[dock] 未配置形态按 not_checked 计入）；
+	// 票11 起：+1 = pi 生效链（provider_pi_dock，同上按 not_checked 计入）。
+	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1,
+		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1)
 	if !strings.Contains(got, want) {
 		t.Fatalf("结论计数不符:\nwant: %s\ngot:\n%s", want, got)
 	}
@@ -1227,8 +1236,10 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		"codex_hooks", "daemon_liveness", "autostart", "watchdog_task",
 		"mcp_registration", // 票06：追加在末位（既有项顺序零漂移）
 		"update_residues",  // 升级事务残留（规格 §C 第9条）：续接末位追加
-		// 服务商接管三项（票05）：续接末位（夹具 cfg.Dock 缺 → not_checked）
+		// 服务商接管四项（票05 三项＋票11 pi 生效链）：续接末位（夹具 cfg.Dock
+		// 缺 → not_checked）
 		"provider_cc_dock", "provider_codex_dock", "provider_orca_codex",
+		"provider_pi_dock",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("项数 = %d, want %d: %+v", len(got), len(want), got)
@@ -1240,11 +1251,11 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		if r.Detail == "" || !legal[r.Status] {
 			t.Fatalf("三要素不齐: %+v", r)
 		}
-		// 夹具 [dock] 未配置：provider 三项按 not_checked 如实标注（不伪造），
+		// 夹具 [dock] 未配置：provider 四项按 not_checked 如实标注（不伪造），
 		// 其余项全 pass。
-		notCheckedOK := i >= len(want)-3
+		notCheckedOK := i >= len(want)-4
 		if r.Status != StatusPass && !(notCheckedOK && r.Status == StatusNotChecked) {
-			t.Fatalf("全绿夹具应 pass（provider 三项可 not_checked）: %+v", r)
+			t.Fatalf("全绿夹具应 pass（provider 四项可 not_checked）: %+v", r)
 		}
 	}
 }
@@ -1335,8 +1346,14 @@ func TestDoctorStructuredTempTargets(t *testing.T) {
 	if r := byName["ferry_provider"]; r.Status != StatusPass {
 		t.Fatalf("providers 面向临时 config 应 pass: %+v", r)
 	}
-	if r := byName["ccswitch_snapshots"]; r.Status != StatusPass {
-		t.Fatalf("未装 CC Switch 应跳过通过: %+v", r)
+	if r := byName["ccswitch_snapshots"]; r.Status != StatusPass ||
+		!strings.Contains(r.Detail, CCSwitchDeprecationRoute) { // 票13：跳过文案也带弃用路线注记
+		t.Fatalf("未装 CC Switch 应跳过通过且带弃用路线注记: %+v", r)
+	}
+	// 票11：agent 面 DoctorStructured 同步含 pi 生效链项（夹具无 dock →
+	// not_checked 如实标注）。
+	if r := byName["provider_pi_dock"]; r.Status != StatusNotChecked {
+		t.Fatalf("agent 面应含 provider_pi_dock（无 dock → not_checked）: %+v", r)
 	}
 	for _, n := range []string{"autostart", "watchdog_task"} {
 		if r := byName[n]; r.Status != StatusNotChecked {
@@ -1400,8 +1417,9 @@ func TestDoctorSameModelHeatTTLMissing(t *testing.T) {
 	}
 }
 
-// ---- 服务商接管三项体检（票05：provider_cc_dock / provider_codex_dock /
-// provider_orca_codex——判定单源 internal/provider，此处只验接线与计数） ----
+// ---- 服务商接管体检（票05 三项＋票11 pi 生效链：provider_cc_dock /
+// provider_codex_dock / provider_orca_codex / provider_pi_dock——判定单源
+// internal/provider，此处只验接线与计数） ----
 
 // providerCheckByName doctorResults 结果按名取项。
 func providerCheckByName(t *testing.T, res []CheckResult, name string) CheckResult {
@@ -1415,8 +1433,8 @@ func providerCheckByName(t *testing.T, res []CheckResult, name string) CheckResu
 	return CheckResult{}
 }
 
-// dock 已挂（migratedDock，listen=15722）+ 三份配置接管后形态 → 三项全 pass、
-// 总数 17+3、全绿退出 0。
+// dock 已挂（migratedDock，listen=15722）+ 三份配置接管后形态 → 三项 pass、
+// pi 项 not_checked（夹具无 ~/.pi）、总数 17+4、全绿退出 0。
 func TestDoctorProviderTakeoverChecksPass(t *testing.T) {
 	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
 	cfg, _ := deps.LoadCfg()
@@ -1426,18 +1444,22 @@ func TestDoctorProviderTakeoverChecksPass(t *testing.T) {
 	// codex_hooks/daemon/autostart/watchdog/mcp/update_residues）
 	// + dock 组 6（dock_rewrite/dock_upstream/三条未激活缺钥提示/dock_listening
 	//   not_checked——migratedDock 表形态）
-	// + provider 三项 3 = 26。
-	if len(res) != 26 {
+	// + provider 四项 4（票11 pi 生效链续接末位；夹具家目录无 ~/.pi →
+	//   provider_pi_dock not_checked 如实标注，不产红）= 27。
+	if len(res) != 27 {
 		names := make([]string, 0, len(res))
 		for _, r := range res {
 			names = append(names, r.Name+":"+string(r.Status))
 		}
-		t.Fatalf("应 26 项(17+6+3), got %d: %v", len(res), names)
+		t.Fatalf("应 27 项(17+6+4), got %d: %v", len(res), names)
 	}
 	for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
 		if r := providerCheckByName(t, res, n); r.Status != StatusPass {
 			t.Fatalf("%s 应 pass: %s", n, r.Detail)
 		}
+	}
+	if r := providerCheckByName(t, res, "provider_pi_dock"); r.Status != StatusNotChecked {
+		t.Fatalf("夹具无 ~/.pi：provider_pi_dock 应 not_checked 不产红: %+v", r)
 	}
 	var out strings.Builder
 	deps.Out = &out
@@ -1478,12 +1500,13 @@ func TestDoctorProviderCCDriftFails(t *testing.T) {
 	}
 }
 
-// [dock] 未配置 → 三项显式 not_checked（如实标注不伪造；greenDoctorDeps 不挂
+// [dock] 未配置 → 四项显式 not_checked（如实标注不伪造；greenDoctorDeps 不挂
 // dock 的存量形态，退出码不受影响）。
 func TestDoctorProviderChecksNotCheckedWithoutDock(t *testing.T) {
 	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
 	res := doctorResults(deps)
-	for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
+	for _, n := range []string{"provider_cc_dock", "provider_codex_dock",
+		"provider_orca_codex", "provider_pi_dock"} {
 		if r := providerCheckByName(t, res, n); r.Status != StatusNotChecked {
 			t.Fatalf("%s 应 not_checked（dock 未配置）: %+v", n, r)
 		}
@@ -1492,5 +1515,172 @@ func TestDoctorProviderChecksNotCheckedWithoutDock(t *testing.T) {
 	deps.Out = &out
 	if code := runDoctor(deps); code != 0 {
 		t.Fatalf("not_checked 不判失败，应退出 0:\n%s", out.String())
+	}
+}
+
+// 票11 接线钉：provider_pi_dock 四态换装——pi 绿形态 pass、错默认供应商漂移
+// fail（不牵连其余项）、残留旧 15721 条目绿+警告、~/.pi 未装 not_checked 不
+// 产红（全绿退出 0）。判定细节归 provider 包四钉（TestCheckPiPointsDock），
+// 此处只验聚合接线与 Verdict→CheckResult 换装。
+func TestDoctorProviderPiDockWiring(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	cfg, _ := deps.LoadCfg()
+	cfg.Dock = migratedDock()
+	piDir := filepath.Join(deps.Home, ".pi", "agent")
+	piModels := filepath.Join(piDir, "models.json")
+	piSettings := filepath.Join(piDir, "settings.json")
+	writePi := func(p, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 最小生效链绿形态（探针只判链上四要素，不碰 apiKey 等写入器主权键）。
+	piGreenModels := `{"providers": {"ferryman": {"name": "ferryman",
+		"baseUrl": "http://127.0.0.1:15722", "api": "anthropic-messages",
+		"apiKey": "FERRYMAN_MANAGED",
+		"models": [{"id": "glm-5.3", "name": "GLM 5.3", "reasoning": false,
+			"input": ["text"], "maxTokens": 32000}]}}}` + "\n"
+
+	// ① ~/.pi 未装 → not_checked 不产红（基线，pi 文件尚未落）。
+	res := doctorResults(deps)
+	if r := providerCheckByName(t, res, "provider_pi_dock"); r.Status != StatusNotChecked {
+		t.Fatalf("~/.pi 未装应 not_checked 不产红: %+v", r)
+	}
+
+	// ② 绿形态 → pass。
+	writePi(piModels, piGreenModels)
+	writePi(piSettings, `{"defaultProvider": "ferryman", "defaultModel": "glm-5.3"}` + "\n")
+	res = doctorResults(deps)
+	if r := providerCheckByName(t, res, "provider_pi_dock"); r.Status != StatusPass {
+		t.Fatalf("pi 绿形态应 pass: %+v", r)
+	}
+
+	// ③ 残留旧 15721 条目（生效链正确）→ 绿 + 警告（F9）。
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(piGreenModels), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["providers"].(map[string]any)["ccswitch"] = map[string]any{
+		"name": "cc-switch", "baseUrl": "http://127.0.0.1:15721",
+		"api": "anthropic-messages", "apiKey": "PROXY_MANAGED",
+		"models": []any{map[string]any{"id": "glm-5.3", "name": "GLM 5.3"}},
+	}
+	residual, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePi(piModels, string(residual))
+	res = doctorResults(deps)
+	if r := providerCheckByName(t, res, "provider_pi_dock"); r.Status != StatusPass ||
+		!strings.Contains(r.Detail, "警告") || !strings.Contains(r.Detail, "15721") {
+		t.Fatalf("残留旧条目应绿+警告: %+v", r)
+	}
+
+	// ④ 错默认供应商漂移 → fail（其余三项不牵连）。
+	writePi(piSettings, `{"defaultProvider": "anthropic", "defaultModel": "glm-5.3"}` + "\n")
+	res = doctorResults(deps)
+	if r := providerCheckByName(t, res, "provider_pi_dock"); r.Status != StatusFail ||
+		!strings.Contains(r.Detail, "defaultProvider") {
+		t.Fatalf("错默认供应商漂移应 fail 并点名: %+v", r)
+	}
+	if r := providerCheckByName(t, res, "provider_cc_dock"); r.Status != StatusPass {
+		t.Fatalf("pi 漂移不应牵连 CC 项: %+v", r)
+	}
+
+	// ⑤ not_checked 不判失败：回到未装态，全绿退出 0。
+	if err := os.RemoveAll(piDir); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	deps.Out = &out
+	if code := runDoctor(deps); code != 0 {
+		t.Fatalf("pi not_checked 不判失败，应退出 0:\n%s", out.String())
+	}
+}
+
+// ---- 票04：CLI --json 出口（doctorJSON / RunDoctorJSON 同源序列化） ----
+
+// TestDoctorJSONShapeVersionAndMasking CLI --json 顶层形状与脱敏契约（F3）：
+// version 随装配参数进、ok＝总判定（零 fail，与退出码同源）、checks（三要素
+// 与 agent 面 MCP doctor 同源）+ summary 计数闭合；夹具 config 挂带真实形态
+// 假钥的 [dock.upstreams] 条目——JSON 全文不得含钥原文（doctor 各检查项
+// Detail 只报路径/状态/修法文案，钥只允许 maskKey 尾 4 位形态经任何出口）。
+func TestDoctorJSONShapeVersionAndMasking(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	const fakeKey = "sk-test-abcdef1234567890"
+	cfg := config.Default()
+	cfg.FerryProvider = "glm"
+	cfg.Dock = &config.DockCfg{
+		Listen: "127.0.0.1:15799",
+		Active: "faketest",
+		Upstreams: map[string]config.DockUpstream{
+			"faketest": {BaseURL: "https://fk.example/api", APIKey: fakeKey,
+				ModelMap: map[string]string{"default": "m-fk"}},
+		},
+	}
+	deps.LoadCfg = func() (*config.Config, error) { return cfg, nil }
+
+	b, code := doctorJSON(deps, "v9.9.9-test")
+	outJSON := string(b)
+	var rep DoctorJSONReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		t.Fatalf("doctor --json 非法 JSON: %v\n%s", err, outJSON)
+	}
+	if rep.Version != "v9.9.9-test" {
+		t.Errorf("version = %q, want v9.9.9-test（顶层须含 version）", rep.Version)
+	}
+	if len(rep.Checks) == 0 {
+		t.Fatal("checks 不应为空")
+	}
+	if rep.Summary.Total != len(rep.Checks) {
+		t.Errorf("summary.total = %d, want %d（checks 逐项数）", rep.Summary.Total, len(rep.Checks))
+	}
+	if rep.Summary.Pass+rep.Summary.Fail+rep.Summary.NotChecked != rep.Summary.Total {
+		t.Errorf("summary 三态计数不闭合: %+v", rep.Summary)
+	}
+	if rep.OK != (rep.Summary.Fail == 0) {
+		t.Errorf("ok 与 fail 计数不同源: ok=%v fail=%d", rep.OK, rep.Summary.Fail)
+	}
+	wantCode := 0
+	if !rep.OK {
+		wantCode = 1
+	}
+	if code != wantCode {
+		t.Errorf("退出码 = %d, want %d（与 ok 总判定同源）", code, wantCode)
+	}
+	// 夹具 [dock.upstreams] 真流进了体检（dock_upstream 在案且判 pass——
+	// active/base_url/default 全中）
+	var dockRow *CheckResult
+	for i := range rep.Checks {
+		if rep.Checks[i].Name == "dock_upstream" {
+			dockRow = &rep.Checks[i]
+			break
+		}
+	}
+	if dockRow == nil || dockRow.Status != StatusPass {
+		t.Fatalf("夹具上游表应产出 pass 的 dock_upstream 项: %+v", dockRow)
+	}
+	// F3 脱敏契约：JSON 全文不含假钥原文
+	if strings.Contains(outJSON, fakeKey) {
+		t.Errorf("doctor --json 全文泄漏明文钥:\n%s", outJSON)
+	}
+}
+
+// TestDoctorJSONExitCodeFollowsFails 有 fail 时 ok=false 且退出 1（与文本面
+// runDoctor 同判——夹具 daemon 死必有 daemon_liveness fail）。
+func TestDoctorJSONExitCodeFollowsFails(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return nil }) // daemon 死 → 必有 fail
+	b, code := doctorJSON(deps, "dev")
+	var rep DoctorJSONReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		t.Fatalf("非法 JSON: %v", err)
+	}
+	if rep.OK || code != 1 || rep.Summary.Fail == 0 {
+		t.Fatalf("有 fail 应 ok=false 且退 1: ok=%v code=%d fail=%d",
+			rep.OK, code, rep.Summary.Fail)
 	}
 }

@@ -1,5 +1,5 @@
 // smoke_test.go — 票23：沙箱冒烟单测（附录#11）。SmokeAll 全四链路即单测本体：
-// 独立端口+独立数据目录+假会话样本+恒成功假 provider（httptest），真实 7311
+// 独立端口+独立数据目录+假会话样本+恒成功假 provider（httptest），真实 15700
 // 与真实数据目录结构性不在参数面。另附启动器体形状单测。
 
 package cutover

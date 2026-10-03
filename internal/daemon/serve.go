@@ -223,10 +223,10 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		return 1
 	}
 
-	// 控制面即刻开始服务（v0.2.6：从渡口段之后提前至此）——pid 落盘后 7311 即
+	// 控制面即刻开始服务（v0.2.6：从渡口段之后提前至此）——pid 落盘后 15700 即
 	// 应答 /stats：渡口绑定重试（最长 bind_retry_s=240s）阻塞装配期间，监督者
 	// 的 90s 版本校验、看门/ensure 探活、restart 脚本的健康等待都必须能看到
-	// 控制面应答（v0.2.5 实战回滚教训：Serve 排在渡口段后＝重试期 7311 只绑
+	// 控制面应答（v0.2.5 实战回滚教训：Serve 排在渡口段后＝重试期 15700 只绑
 	// 不服务，版本校验必超时）。
 	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
 
