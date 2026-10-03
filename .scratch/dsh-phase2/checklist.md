@@ -34,11 +34,12 @@
 
 > 依据：`docs/research/20261002_dsh-服务商配置与摆渡可行性调研.md` §3（路线 A 桥起步、路线 B 原生插件收尾）。dsh 会话当前对台账/闸门完全隐身——闲置无拦截、缓存凉全价重付，这是本役的账。
 
-**P2-1 守望＋台账（Go 侧，第一块砖）**
-- [ ] zstd 会话日志读取：`~/.dsh/sessions/--<规范化cwd>--/<转义id>/session.vN.jsonl.zstd`，追加式不可变代；默认 zstd＝checksummed 帧拼接 → Go `klauspost/compress` 流式逐帧解（调研定案：root 编码唯一性禁改 compression，**必须解压不能关压**）
-- [ ] 会话目录名规范化规则：实现期对 dsh 源码 `src/format.ts` 逐条钉测试（rc 期格式 v3→v4 迁移频繁，夹具多版本钉）
-- [ ] 台账四列接入：`assistant/message` 事件 `TokenUsage`＝inputTokens（仅未缓存）/outputTokens/cacheReadTokens?/cacheWriteTokens?，**不相交口径、计费输入＝三者之和**——与 Ferryman 四列同构，直接映射
-- [ ] 子代理族系：子代理＝独立会话目录，父头 `subagent/catalog` 子女目录引用（族系/判活/子代理记账数据源）
+**P2-1 守望＋台账（Go 侧，第一块砖）——✅ 2026-10-03 完成（分支 dsh-phase2-p2-1-守望台账）**
+- [x] zstd 会话日志读取：`internal/dshtrans`（frames.go 扫描器逐字节对 dsh `zstd.ts scanZstdFrames` 钉死；tail.go 增量尾读只消费完整帧；klauspost/compress **v1.15.13** 单帧 DecodeAll——19.x 要求 go≥1.24 不动仓内 go 1.23.4 工具链）。真机 6 会话全量消费=文件大小、无残帧
+- [x] 会话目录名规范化规则：names.go 对 `src/format.ts` 逐条钉（EncodeSegment/DecodeSegment 单射、ProjectKey 分隔符合并+~XXXX+截 251+root；UTF-16 码元域含非 BMP 拆代理对）；真机双重对账=头行 cwd→ProjectKey==磁盘目录名、头行 id==DecodeSegment(目录名)
+- [x] 台账四列接入：watcher_dsh.go pollDsh（pollGuarded 挂第三轨）→ Touch("dsh")+观察窗+usage 科目四列直映（白名单零改动）；usage 行带 seq 去重、断点随账本恢复（重启实测不重采）；title/peak 采集顺带回写。真机 daemon 面：登记 6 会话/出行 5 条/幂等通过
+- [x] 子代理族系：子头 origin/parentSession 权威判据（随父入账 session_id=父 sid、subagent=子 sid，CC 票01 同款）＋父侧 `CatalogChildren`（subagent/catalog 事件汇总，P2-5 判活数据源）；本机语料暂无真子会话——夹具按源码钉、待真用例回钉
+- 遗留注记：① 摆渡/富化不接线（P2-2 键对齐+P2-3/P2-4 钩子面）；② 代文件切换（格式迁移）偏移清零重采——迁移会重编 seq，跨代可能重复记账一次（rc 期罕见，如实接受）；③ `maybeEnqueue` 接线时须同步补 enrich 的 dsh 分支（现为采集回写替身）
 
 **P2-2 会话键对齐**
 - [ ] 目录名 `session-<uuid>` ≠ 请求体 `metadata.session_id`（渡口捕获键已零改动就位，PR #4 实证）——台账/守望/心跳三方统一对齐到 `metadata.session_id`

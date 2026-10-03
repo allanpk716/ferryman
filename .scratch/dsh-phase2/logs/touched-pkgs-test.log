@@ -1,0 +1,5 @@
+ok  	ferryman/internal/dshtrans	0.296s
+ok  	ferryman/internal/daemon	39.329s
+ok  	ferryman/internal/config	0.889s
+ok  	ferryman/internal/harvest	0.411s
+ok  	ferryman/internal/ledger	0.151s
