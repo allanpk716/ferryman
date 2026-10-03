@@ -27,13 +27,13 @@
 //     provider_codex_dock / provider_orca_codex——CC 指向渡口、codex 两份指向
 //     渡口且 wire_api=responses 且 hooks 旗标在位、orca codex 健康（配置存在/
 //     指向渡口/认证形态合法）。判定单源 internal/provider（与接管写入器同一套
-//     解析）；[dock] 未配置 → 三项显式 not_checked（清单 24→27 的计数同步见
+//     解析）；[dock] 未配置 → 三项显式 not_checked（清单 23→26 的计数同步见
 //     doctor_test 的结论行公式）。
 //   - 票11（pi 生效链）：第四项 provider_pi_dock——绿=完整生效链（settings.json
 //     的 defaultProvider 解析到渡口条目 ∧ defaultModel ∈ 该条目 models ∧
 //     api=anthropic-messages ∧ baseUrl=渡口根地址）；~/.pi 未装 → not_checked
 //     不产红；残留旧 15721 条目但生效链正确 → 绿+警告（F9，非生效残留不阻断）。
-//     结论清单计数再 +1（见 doctor_test 的结论行公式）。
+//     结论清单计数再 +1（全绿计数 26→27，见 doctor_test 的结论行公式）。
 package installer
 
 import (
@@ -213,16 +213,23 @@ func CheckHookScripts(paths []string) []Check {
 	return out
 }
 
+// CCSwitchDeprecationRoute 弃用路线注记（票13，D15）：ccswitch_snapshots 检查
+// 项处于退役路径——cc-switch 替换完成后，此项随 cc-switch 卸载一并移除；在那
+// 之前检查逻辑保留（机上还有 cc-switch 时照常体检），逐条文案尾挂注记。
+const CCSwitchDeprecationRoute = "（弃用路线：cc-switch 卸载后此项随卸载移除）"
+
 // CheckCCSwitch 全部 claude 供应商快照都带 ferryman 钩子（切换=逐字写入，
 // 缺了就会被抹）（doctor.py check_ccswitch 逐字 + 票22 骑手 M2：闸门事件
 // 豁免同 CheckCCHooks——UserPromptSubmit 缺位 = 提示不失败；其余三事件硬性）。
+// 票13：检查逻辑不删（机上仍有 cc-switch 时仍有用），各出口文案尾加弃用路线
+// 注记 CCSwitchDeprecationRoute。
 func CheckCCSwitch(dbPath string) Check {
 	if _, err := os.Stat(dbPath); err != nil {
-		return Check{true, "未装 CC Switch（跳过）"}
+		return Check{true, "未装 CC Switch（跳过）" + CCSwitchDeprecationRoute}
 	}
 	rows, err := readClaudeProviders(dbPath, 5000)
 	if err != nil {
-		return Check{false, fmt.Sprintf("cc-switch.db 读取失败: %v", err)}
+		return Check{false, fmt.Sprintf("cc-switch.db 读取失败: %v", err) + CCSwitchDeprecationRoute}
 	}
 	var lacking []string
 	gateMissing := false
@@ -235,15 +242,17 @@ func CheckCCSwitch(dbPath string) Check {
 		}
 	}
 	if len(lacking) > 0 {
-		return Check{false, fmt.Sprintf("供应商快照缺钩子: %s（重跑 install-ccswitch）",
-			strings.Join(lacking, ", "))}
+		return Check{false, fmt.Sprintf("供应商快照缺钩子: %s（重跑 install-ccswitch）%s",
+			strings.Join(lacking, ", "), CCSwitchDeprecationRoute)}
 	}
 	if gateMissing {
 		// C12 用户策略：闸门钩子按用户指令未安装——提示不失败
 		return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照钩子在位"+
-			"（缺闸门 UserPromptSubmit——闸门钩子按用户指令未安装，提示不判失败）", len(rows))}
+			"（缺闸门 UserPromptSubmit——闸门钩子按用户指令未安装，提示不判失败）%s",
+			len(rows), CCSwitchDeprecationRoute)}
 	}
-	return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照全带钩子", len(rows))}
+	return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照全带钩子%s",
+		len(rows), CCSwitchDeprecationRoute)}
 }
 
 // snapshotMissing 单快照缺位清单分两桶（票22 骑手 M2）：others = 硬性三事件

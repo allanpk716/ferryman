@@ -215,6 +215,10 @@ func TestCCSwitchSnapshotCoverage(t *testing.T) {
 	if !strings.Contains(c.Msg, "P1") || strings.Contains(c.Msg, "P2") { // 点名缺钩子的供应商
 		t.Fatalf("点名不符: %s", c.Msg)
 	}
+	// 票13 弃用处置：失败文案尾带弃用路线注记
+	if !strings.Contains(c.Msg, CCSwitchDeprecationRoute) {
+		t.Fatalf("失败文案缺弃用路线注记: %s", c.Msg)
+	}
 }
 
 // ---- test_codex_hooks_and_flag ----
@@ -395,6 +399,10 @@ func TestCCSwitchGateMissingHintNotFail(t *testing.T) {
 	}
 	if !strings.Contains(c.Msg, "UserPromptSubmit") || !strings.Contains(c.Msg, "未安装") {
 		t.Fatalf("提示应注明闸门钩子按用户指令未安装: %s", c.Msg)
+	}
+	// 票13 弃用处置：成功文案尾带弃用路线注记
+	if !strings.Contains(c.Msg, CCSwitchDeprecationRoute) {
+		t.Fatalf("成功文案缺弃用路线注记: %s", c.Msg)
 	}
 	// 硬性事件缺失照旧失败（闸门豁免不覆盖三硬性事件）
 	db2 := filepath.Join(tmp, "cc2.db")
@@ -1338,8 +1346,9 @@ func TestDoctorStructuredTempTargets(t *testing.T) {
 	if r := byName["ferry_provider"]; r.Status != StatusPass {
 		t.Fatalf("providers 面向临时 config 应 pass: %+v", r)
 	}
-	if r := byName["ccswitch_snapshots"]; r.Status != StatusPass {
-		t.Fatalf("未装 CC Switch 应跳过通过: %+v", r)
+	if r := byName["ccswitch_snapshots"]; r.Status != StatusPass ||
+		!strings.Contains(r.Detail, CCSwitchDeprecationRoute) { // 票13：跳过文案也带弃用路线注记
+		t.Fatalf("未装 CC Switch 应跳过通过且带弃用路线注记: %+v", r)
 	}
 	// 票11：agent 面 DoctorStructured 同步含 pi 生效链项（夹具无 dock →
 	// not_checked 如实标注）。

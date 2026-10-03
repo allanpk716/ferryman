@@ -6,7 +6,9 @@
 //	      key＝合法常态，显示"本地中转（无需 key）"）+ 密钥脱敏（只露尾
 //	      4 位）；--json 出同构机器可读表（票04，字段表见 upstreamUsage
 //	      注释；F3 脱敏契约：无明文密钥）。
-//	use <名> [--config 路径]   （--config 在名前名后皆可）
+//	use <名> [--config 路径]   （--config 在名前名后皆可；票13 起弃用——
+//	      冷切换重启守护已由 provider switch（热切换零重启）替代，命令保留
+//	      一版仍可用，输出首行打弃用警示）
 //	      条目不存在→拒绝并列出可用条目；非本地条目缺 api_key→拒绝并提示
 //	      先填 key（本地中转地址空 key 豁免——回退通道不出站鉴权）；
 //	      有效→提示"在途请求将被中断"→校验配置（写回会让守护拒启的先拦下）→
@@ -84,12 +86,18 @@ const upstreamUsage string = `用法:
                                             #   upstreams[name/active/base_url/
                                             #   model_map/api_key=尾4位掩码/
                                             #   key_status/balance_url]
-  ferryman upstream use <名> [--config 路径]  # 切换 active 并自动重启守护
-                                            #   （--config 在名前名后皆可；自定义
-                                            #   配置路径不自动重启；在途请求中断；
-                                            #   守护未起来时如实报告，不自动回滚/
-                                            #   重试）
+  ferryman upstream use <名> [--config 路径]  # （弃用）切换 active 并自动重启守护
+                                            #   →请用 ferryman provider switch
+                                            #   （热切换零重启；--config 在名前名后
+                                            #   皆可；自定义配置路径不自动重启；
+                                            #   在途请求中断；守护未起来时如实
+                                            #   报告，不自动回滚/重试）
 `
+
+// upstreamUseDeprecatedNotice 弃用警示（票13，D15）：upstream use 每次执行输出
+// 的首行——冷切换重启守护已由 provider switch（热切换零重启）替代；命令本体
+// 保留一版不删（退役随 cc-switch 替换收官另行移除）。
+const upstreamUseDeprecatedNotice = "弃用警示：冷切换重启守护已弃用，请用 ferryman provider switch（热切换零重启）。"
 
 // parseUpstreamFlags --config 旗标（缺省 = FERRYMAN_CONFIG 或 ~/ferryman/config.toml）。
 // 文档顺序 `use <名> [--config 路径]` 与 `use [--config 路径] <名>` 皆可：Go flag
@@ -399,6 +407,9 @@ func upstreamUse(cfgPath, name string, w io.Writer, deps *upstreamRestartDeps) i
 		fmt.Fprint(os.Stderr, upstreamUsage)
 		return 2
 	}
+	// 票13 弃用处置（D15）：输出首行打弃用警示——行为面零改动，命令保留一版
+	// 仍可用（热切换替代见 provider switch）。
+	fmt.Fprintln(w, upstreamUseDeprecatedNotice)
 	cfg, err := config.Load(cfgPath, false)
 	if err != nil {
 		fmt.Fprintf(w, "配置加载失败（%s）: %v\n", config.ResolveConfigPath(cfgPath), err)

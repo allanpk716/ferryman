@@ -77,7 +77,8 @@ const providerUsage string = `用法:
   ferryman provider remove <名> [--config 路径]   # 删除条目（active 条目拒删）
   ferryman provider import-ccswitch [--db 路径] [--config 路径]
                                                 # 从 cc-switch 库导入 claude/codex
-                                                #   两类供应商（重名跳过不覆盖）
+                                                #   两类供应商（重名跳过不覆盖）；
+                                                #   搬家工具，保留不弃用（票13）
   ferryman provider apply [--restore] [--config 路径]
                                                 # 三份编辑器配置与 pi 两文件外科写入
                                                 #   渡口指向；pi 不可用时该目标跳过

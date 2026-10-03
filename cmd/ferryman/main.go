@@ -123,7 +123,7 @@ serve 与面板:
 
 安装（钩子/配置注入与常驻保障）:
   ferryman install-cc [--events 事件1,事件2,…]
-  ferryman install-ccswitch      # cc-switch 供应商快照注入（不接受参数）
+  ferryman install-ccswitch      # （弃用）cc-switch 供应商快照注入（不接受参数）
   ferryman install-codex [--events 事件1,事件2,…]
   ferryman install-mcp [--force]  # agent 面 MCP 注册进 CC 用户级配置（幂等）
   ferryman autostart install|uninstall|status    # 登录自启 Run 键（缺省 status）
@@ -137,7 +137,7 @@ serve 与面板:
 
 渡口与供应商:
   ferryman upstream list [--config 路径] [--json]  # 上游表：active/脱敏/可用状态
-  ferryman upstream use <名> [--config 路径]     # 切换 active 并自动重启守护
+  ferryman upstream use <名> [--config 路径]     # （弃用）切换 active 并自动重启守护
   ferryman provider list [--json]|switch|add|remove|import-ccswitch|apply
                                                 # 供应商操作面（热切换不重启）
   ferryman eval-ferry --provider <名> --n <样本数> --out <目录> [--handoffs 目录]
@@ -156,6 +156,7 @@ serve 与面板:
 
 工具:
   ferryman mcp [--config 路径]       # stdio MCP server（agent 面只读工具）
+  ferryman cutover                   # 切换工具族：backup/rollback-write/rollback-drill/smoke（细账 -h）
   ferryman help                      # 本用法（-h/--help 同）
 
 --events 缺省 = 全集（UserPromptSubmit,SessionStart,SubagentStart,SubagentStop）；
@@ -180,9 +181,13 @@ const doctorUsage string = `用法:
                            #   fail/not_checked]——与 agent 面 MCP doctor 同源
 `
 
-// ccswitchUsage install-ccswitch 的用法面（零参数契约不变，票01）。
+// ccswitchUsage install-ccswitch 的用法面（零参数契约不变，票01；票13 起标
+// 弃用——cc-switch 替换完成后此命令退役，搬家走 provider import-ccswitch；
+// 命令本体保留一版不删）。
 const ccswitchUsage string = `用法:
-  ferryman install-ccswitch   # cc-switch 供应商快照注入（不接受任何参数）
+  ferryman install-ccswitch   # （弃用）cc-switch 供应商快照注入（不接受任何参数）
+                              #   cc-switch 替换完成后此命令退役；搬家用
+                              #   provider import-ccswitch
 `
 
 func main() {

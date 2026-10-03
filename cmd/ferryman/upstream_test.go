@@ -277,6 +277,29 @@ func TestUpstreamUseSuccessWritesStopsRelaunchesChecksHealth(t *testing.T) {
 	}
 }
 
+// ---- 票13 弃用处置：use 输出首行钉弃用警示（命令保留可用，仅提示） ----
+
+func TestUpstreamUseDeprecationNoticeFirstLine(t *testing.T) {
+	f := writeUpstreamCfg(t, upstreamCfgSrc)
+	stubDefaultCfgPath(t)
+	deps, _ := fakeRestart(true, nil)
+	var buf bytes.Buffer
+	if code := upstreamUse(f, "zhipu", &buf, deps); code != 0 {
+		t.Fatalf("use 退出码 = %d, want 0（弃用警示不改变行为面）\n%s", code, buf.String())
+	}
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) == 0 || lines[0] != upstreamUseDeprecatedNotice {
+		t.Fatalf("输出首行应为弃用警示:\nwant: %q\ngot:  %q", upstreamUseDeprecatedNotice, lines[0])
+	}
+	// 警示之后成功链照旧：active 写回 + 冷启动提示
+	if after := readFileUp(t, f); !strings.Contains(after, `active = "zhipu"`) {
+		t.Fatalf("弃用警示不得影响切换本身:\n%s", after)
+	}
+	if !strings.Contains(buf.String(), "内存缓存快照已清空") {
+		t.Fatalf("警示后成功输出缺失:\n%s", buf.String())
+	}
+}
+
 // ---- use：失败路径（健康检查超时） ----
 
 func TestUpstreamUseHealthTimeoutHonestReportNoRollbackNoRetry(t *testing.T) {
