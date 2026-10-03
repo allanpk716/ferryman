@@ -59,6 +59,33 @@ func TestSanitizeOutboundHeadersReplacesAuthAndStrips(t *testing.T) {
 	}
 }
 
+// TestSanitizeStripsDSHAttributionHeaders dsh 接法乙归因头出站剥离（2026-10-03）：
+// 三头的消费都在入站侧（会话键＝ExtractSessionID 第三回落、agent 判定＝UA、
+// compact＝信号位），出站只剩泄漏面，一律剥；无关自定义头不受前缀误伤。
+func TestSanitizeStripsDSHAttributionHeaders(t *testing.T) {
+	h := http.Header{}
+	h.Set("Content-Type", "application/json")
+	h.Set("X-Deepseek-Harness-User-Id", "11111111-2222-3333-4444-555555555555")
+	h.Set("X-Deepseek-Harness-Session-Id", "session-6c7128a4")
+	h.Set("X-Deepseek-Harness-Compact", "1")
+	h.Set("X-Deepseek-Harness-Whatever-Future", "x")
+	h.Set("X-Custom-Passthrough", "keep-me")
+	sanitizeOutboundHeaders(h, "sk-real-key")
+	for _, k := range []string{"X-Deepseek-Harness-User-Id",
+		"X-Deepseek-Harness-Session-Id", "X-Deepseek-Harness-Compact",
+		"X-Deepseek-Harness-Whatever-Future"} {
+		if len(h.Values(k)) != 0 {
+			t.Fatalf("dsh 归因头 %s 未剥", k)
+		}
+	}
+	if h.Get("X-Custom-Passthrough") != "keep-me" {
+		t.Fatal("无关自定义头须保留")
+	}
+	if got := h.Get("Authorization"); got != "Bearer sk-real-key" {
+		t.Fatalf("Authorization = %q, want 真钥 Bearer", got)
+	}
+}
+
 func TestSanitizeBetaKeepsClientFlags(t *testing.T) {
 	h := clientStyleHeaders() // 已含 claude-code-20250219
 	sanitizeOutboundHeaders(h, "k")

@@ -255,9 +255,10 @@ var conflictLog = func(format string, args ...any) { logger.Printf(format, args.
 //     2026-10-02 PR #4 验收说的"捕获键零改动就位"是把自家 CC 会话的记账行
 //     误读成了 dsh 行——当日 dsh 流量两行（09:40:22/27）session_id 恒空。
 //   - 唯一带会话键上线的 dsh 线通道＝本头（走 llm-deepseek 适配器的流量）。
-//     当前接管路由 llm-pi-ai（cordis.patch.yml ferryman-dock）不上线任何键——
-//     该路的捕获归因待 P2-3/P2-4 路线决策（接法乙换 llm-deepseek 路由即得
-//     本头；原生插件 session/event 直报则不依赖渡口捕获）。
+//     2026-10-03 用户拍板切接法乙：接管路由已由 llm-pi-ai 换 llm-deepseek
+//     （provider apply v2 补丁，见 internal/provider/dsh.go），走渡口的 dsh
+//     流量每请求恒带本头——渡口捕获归因/记账归因自此有键（此前 pi-ai 路
+//     无任何键上线，捕获恒 skipped）。
 const HeaderDeepSeekHarnessSessionID = "x-deepseek-harness-session-id"
 
 // ExtractSessionID 会话归因提取（快照捕获与渡口记账归因两个消费点共用，一处

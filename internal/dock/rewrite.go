@@ -7,10 +7,12 @@
 // 在真钥字段（T39：真钥只活本机 config.toml 永不入库）。纯逻辑层的第二件
 // ＝无，仅留本注释钉住边界，防止后续把钥匙逻辑误塞进 body 改写。
 //
-// 纯函数约束：无 I/O、无包级可变状态，同入参同出参。只动顶层 model 与
-// messages（且 messages 仅在图片降级命中 image 块时语义改变）两个键；其余
-// 顶层键（system/tools/thinking/max_tokens/metadata/stream/output_config/
-// context_management 等）原值保留（解析后逐键 DeepEqual 级别）。
+// 纯函数约束：无 I/O、无包级可变状态，同入参同出参。动顶层 model 与
+// messages（且 messages 仅在图片降级命中 image 块时语义改变）两个键，外加
+// 剥除顶层 dsh_* 线扩展键（见 stripDSHWireKeys——2026-10-03 接法乙新增，
+// 唯一的「删键」改写）；其余顶层键（system/tools/thinking/max_tokens/
+// metadata/stream/output_config/context_management 等）原值保留（解析后逐键
+// DeepEqual 级别）。
 //
 // 保真实现口径：UseNumber 解析（数字按字面量保留，>2^53 整数不丢精度）＋
 // SetEscapeHTML(false) 重编码（不对 <>& 做多余转义，CC 请求体常含代码片段）。
@@ -83,6 +85,10 @@ func Rewrite(body []byte, cfg RewriteConfig) (Rewritten, error) {
 	out := Rewritten{ModelIn: modelIn, ModelOut: mapModel(modelIn, cfg)}
 	obj["model"] = out.ModelOut
 
+	// 接法乙方言卫生：剥顶层 dsh_* 线扩展键（与 count_tokens 路同款，见
+	// mapCountTokensModel 调用点）。
+	stripDSHWireKeys(obj)
+
 	if containsStr(cfg.TextOnly, out.ModelOut) {
 		degradeImages(obj["messages"])
 	}
@@ -97,6 +103,30 @@ func Rewrite(body []byte, cfg RewriteConfig) (Rewritten, error) {
 	}
 	out.Body = bytes.TrimRight(buf.Bytes(), "\n") // Encoder 尾部补的 \n 不入请求体
 	return out, nil
+}
+
+// dshWireKeyPrefix dsh 线扩展保留域前缀（dsh 调研克隆
+// docs/deepseek-llm-api-wire-extensions.md「dsh_ 前缀保留域」）。已知贡献者
+// 键：dsh_plugin_packages（插件清单）、dsh_session_log（全会话明文后缀，
+// 可达 8 MiB/请求，含 cwd/系统提示/用户助手全文/工具参数结果）。
+const dshWireKeyPrefix = "dsh_"
+
+// stripDSHWireKeys 就地剥除顶层 dsh_* 线扩展键（2026-10-03 接法乙方言卫生）。
+// 纪律：明文绝不出站——上游 GLM/Kimi 不该见 dsh_session_log 的会话明文，
+// 未知键也不该打上游吃 400。两层防线里的渡口层：provider apply 的 dsh 补丁
+// 已 disabled 两个贡献者插件（配置层），此处是版本耐受的防御纵深——dsh 是
+// developer preview，升级若让插件 id 漂移致配置层关不住，键仍在此被剥。
+// CC/codex 流量永无此域键（保留域无歧义，无需按 UA 分岔）；只剥顶层，
+// messages 内同前缀内容块不动（那是消息内容，非线扩展）。快照存原始体
+// （改写前），重放经同一改写出站——剥除对快照/重放天然一致。
+// 注：改写守卫拒绝时的透传模式不读本函数（整体退透传，连 model 映射也无），
+// 那是配置病态的降级态，不在本防线覆盖内。
+func stripDSHWireKeys(obj map[string]any) {
+	for k := range obj {
+		if strings.HasPrefix(k, dshWireKeyPrefix) {
+			delete(obj, k)
+		}
+	}
 }
 
 // mapModel 模型映射核心，判定顺序即票面语义：
