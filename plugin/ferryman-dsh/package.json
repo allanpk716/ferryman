@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Ferryman 原生 dsh 插件——闸门问询/归还播种/用量上报/判活转发/挂载自检（票05 业务对接完成）",
-  "main": "src/index.ts",
+  "main": "index.mjs",
   "engines": {
     "node": ">=22"
   },
