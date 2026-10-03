@@ -1,26 +1,30 @@
 // provider.go — 票06：`ferryman provider` 命令族（CLI 操作面，spec
 // Implementation Decisions 5；D3 决定 CLI 是唯一写路径、D9 面向本机单人）。
 //
-//	list            全部条目 + active 标注 + dialect/codex 可用性（需翻译/
-//	                原生透传/不支持）+ 模型位概要 + 密钥脱敏（只露尾 4 位，
+//	list            全部条目 + active 标注 + dialect/codex/pi 可用性（需翻译/
+//	                原生透传/不支持等）+ 模型位概要 + 密钥脱敏（只露尾 4 位，
 //	                整钥零回显——T39）。
 //	switch <名>     热切换活跃供应商：走守护管理口 POST /provider_switch
 //	                （票02），守护不重启、无端口空窗、在跑会话不断流；条目
-//	                不存在→拒绝并列可用；codex="unsupported"→默认拒绝并报因，
-//	                --cc-only 显式放行并明示"codex 暂断供，仅 CC"；成功回显新
-//	                active 与 codex 车道模式；守护不在线如实报错给拉起指引，
-//	                不静默失败。持久化由端点侧落盘（SetActiveUpstream），CLI
-//	                零写配置——与 upstream use（排水重启）语义不同，两族并存。
+//	                不存在→拒绝并列可用；codex="unsupported" 或 pi 不可用
+//	                （票12：显式否决/缺 pi 主模型键/dialect 非 anthropic）→
+//	                默认拒绝并逐因报明（两 agent 同时断供都列），--cc-only
+//	                显式放行并分开列明各自断供面；成功回显新 active 与 codex
+//	                车道模式；守护不在线如实报错给拉起指引，不静默失败。
+//	                持久化由端点侧落盘（SetActiveUpstream），CLI 零写配置——
+//	                与 upstream use（排水重启）语义不同，两族并存。
 //	add <名>        编辑本机 config 供应商表：密钥经 --key 或 --key-env 传入，
-//	                输出永不回显全钥；写入走 config.AddDockUpstream（文本手术
-//	                ＋前置校验＋原子写）。
+//	                输出永不回显全钥；--codex/--pi 只收 "unsupported" 否决位
+//	                （票12 补 pi 写入面）；写入走 config.AddDockUpstream
+//	                （文本手术＋前置校验＋原子写）。
 //	remove <名>     删除条目；active 条目拒删（先 switch 再删）。
 //	import-ccswitch 读 cc-switch 库（sqlite，票面 D1：只收 claude/codex 两类）
 //	                映射入供应商表；dialect 按端点线协议推断（internal/provider
 //	                .ImportCCSwitch）；重名跳过不覆盖；库路径默认 ~/.cc-switch/
 //	                cc-switch.db（--db 可指；测试全走假库，绝不触真目录）。
 //	apply           跑票05 写入器（provider.Apply：F7 前置校验+各目标同戳备份+
-//	                外科写入；票10 起含 pi 两文件成对目标）并逐份回显；--restore
+//	                外科写入；票10 起含 pi 两文件成对目标）并逐份回显；pi 不可
+//	                用时该目标跳过并如实回显、其余目标照常（票12）。--restore
 //	                按接管前备份还原（provider.Restore）。目标路径从家目录与
 //	                [dock].listen 派生（provider.DockURLFromListen 单源，不自造
 //	                拼接）。
@@ -51,15 +55,16 @@ import (
 
 const providerUsage string = `用法:
   ferryman provider list [--config 路径]          # 供应商表：active 标注/dialect/
-                                                #   codex 可用性/模型位/密钥脱敏
+                                                #   codex/pi 可用性/模型位/密钥脱敏
   ferryman provider switch <名> [--cc-only] [--config 路径]
                                                 # 热切换活跃供应商（走守护管理口：
-                                                #   不重启、在跑会话不断流）；codex
-                                                #   不支持条目默认拒绝，--cc-only
-                                                #   显式放行；守护不在线如实报错
+                                                #   不重启、在跑会话不断流）；codex/pi
+                                                #   不可用条目默认拒绝并报因，
+                                                #   --cc-only 显式放行；守护不在线如实报错
   ferryman provider add <名> --base-url <端点> [--key <钥>|--key-env <环境变量>]
                         [--dialect anthropic|openai_responses] [--codex unsupported]
-                        [--model-map k=v,k=v] [--balance-url <端点>] [--config 路径]
+                        [--pi unsupported] [--model-map k=v,k=v] [--balance-url <端点>]
+                        [--config 路径]
                                                 # 新增条目（密钥只落本机 config；
                                                 #   输出永不回显全钥）
   ferryman provider remove <名> [--config 路径]   # 删除条目（active 条目拒删）
@@ -67,7 +72,8 @@ const providerUsage string = `用法:
                                                 # 从 cc-switch 库导入 claude/codex
                                                 #   两类供应商（重名跳过不覆盖）
   ferryman provider apply [--restore] [--config 路径]
-                                                # 三份编辑器配置外科写入渡口指向
+                                                # 三份编辑器配置与 pi 两文件外科写入
+                                                #   渡口指向；pi 不可用时该目标跳过
                                                 #   （--restore 按接管前备份还原）
 `
 
@@ -195,7 +201,7 @@ func providerCodexLine(up config.DockUpstream) string {
 }
 
 // providerPiLine pi 可用性行（票09，与 codex 行并列的三态人话 + pi 主模型位
-// 概要；本票只做展示——switch/apply 对 pi 的拒绝/放行语义在票12 落地）。
+// 概要；票12 起 switch/apply 对 pi 不可用同 codex 先例拒绝/放行/跳过）。
 func providerPiLine(up config.DockUpstream) string {
 	if up.PiAvailability() == config.PiUnsupported {
 		return fmt.Sprintf("不支持（pi = %q）", config.PiUnsupported)
@@ -219,8 +225,8 @@ func cmdProviderSwitch(args []string, w io.Writer) int {
 	}
 	rest = orderFlagPairsFirst(rest)
 	fs := flag.NewFlagSet("provider switch", flag.ContinueOnError)
-	ccOnly := fs.Bool("cc-only", false, "对 codex=unsupported 条目显式放行"+
-		"（明示 codex 暂断供，仅 CC 走该供应商）")
+	ccOnly := fs.Bool("cc-only", false, "对 codex/pi 不可用条目显式放行"+
+		"（明示各自断供面：codex 暂断供仅 CC；pi 暂断供仅 CC/codex）")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -253,8 +259,8 @@ func realProviderSwitchDeps(cfg *config.Config) *providerSwitchDeps {
 		}}
 }
 
-// providerSwitch switch 可测核心：拒绝分支（不存在/不支持）先于任何网络；
-// 热切换走管理口（配置写与内存换绑都在端点侧，CLI 零写配置）。
+// providerSwitch switch 可测核心：拒绝分支（不存在/codex/pi 不可用，票12 扩
+// pi）先于任何网络；热切换走管理口（配置写与内存换绑都在端点侧，CLI 零写配置）。
 func providerSwitch(cfgPath, name string, ccOnly bool, w io.Writer, deps *providerSwitchDeps) int {
 	if name == "" {
 		fmt.Fprint(os.Stderr, providerUsage)
@@ -276,16 +282,47 @@ func providerSwitch(cfgPath, name string, ccOnly bool, w io.Writer, deps *provid
 			name, strings.Join(sortedNames(cfg.Dock.Upstreams), ", "))
 		return 1
 	}
-	// codex 否决位（F2）：默认拒绝并报因；--cc-only 显式放行并明示后果。
+	// 可用性拒绝面（F2；票12 扩 pi）：codex＝显式否决位（票06 先例）；pi＝
+	// 显式否决/方言非 anthropic/缺 pi 主模型键（票09 PiAvailability/PiModel
+	// 单源裁决）。默认拒绝并逐因报明——两 agent 同时断供时都列，不混写；
+	// --cc-only 显式放行并逐 agent 明示断供面。拒绝先于任何网络。
+	type providerOutage struct{ agent, why string }
+	var outages []providerOutage
 	if up.CodexAvailability() == config.CodexUnsupported {
+		outages = append(outages, providerOutage{"codex",
+			fmt.Sprintf("codex = %q", config.CodexUnsupported)})
+	}
+	switch av := up.PiAvailability(); {
+	case av == config.PiUnsupported:
+		outages = append(outages, providerOutage{"pi",
+			fmt.Sprintf("pi = %q", config.PiUnsupported)})
+	case av == config.PiUnavailable:
+		outages = append(outages, providerOutage{"pi",
+			fmt.Sprintf("dialect = %q，pi 无入站车道", up.Dialect)})
+	case up.PiModel() == "":
+		outages = append(outages, providerOutage{"pi", "model_map 缺 pi 主模型键"})
+	}
+	if len(outages) > 0 {
+		whys := make([]string, 0, len(outages))
+		agents := make([]string, 0, len(outages))
+		for _, o := range outages {
+			whys = append(whys, fmt.Sprintf("对 %s 不可用（%s）", o.agent, o.why))
+			agents = append(agents, o.agent)
+		}
 		if !ccOnly {
-			fmt.Fprintf(w, "拒绝：条目 %q 对 codex 不可用（codex = \"unsupported\"）——"+
-				"切换默认拒绝，避免不知不觉把 codex 弄断。若确认仅 CC 走该供应商，"+
-				"加 --cc-only 显式放行。\n", name)
+			fmt.Fprintf(w, "拒绝：条目 %q %s——切换默认拒绝，避免不知不觉把 %s 弄断。"+
+				"若确认接受上述断供面，加 --cc-only 显式放行。\n",
+				name, strings.Join(whys, "；"), strings.Join(agents, "、"))
 			return 1
 		}
-		fmt.Fprintf(w, "注意：codex 暂断供，仅 CC 走该供应商（--cc-only 显式放行）——"+
-			"codex 请求到渡口将收到带原因的显式错误，不会挂起。\n")
+		for _, o := range outages {
+			if o.agent == "codex" {
+				fmt.Fprintf(w, "注意：codex 暂断供，仅 CC 走该供应商（--cc-only 显式放行）——"+
+					"codex 请求到渡口将收到带原因的显式错误，不会挂起。\n")
+			} else {
+				fmt.Fprintf(w, "注意：pi 暂断供，仅 CC/codex 走该供应商（--cc-only 显式放行）。\n")
+			}
+		}
 	}
 	if deps == nil {
 		deps = realProviderSwitchDeps(cfg)
@@ -387,6 +424,7 @@ type providerAddOpts struct {
 	KeyEnv     string // 环境变量名（优先级低于 Key）
 	Dialect    string // anthropic（缺省）| openai_responses
 	Codex      string // 仅 "unsupported" 否决位
+	Pi         string // 仅 "unsupported" 否决位（票12，对标 Codex 同款）
 	ModelMap   string // "k=v[,k=v]"
 	BalanceURL string
 }
@@ -397,13 +435,14 @@ func cmdProviderAdd(args []string, w io.Writer) int {
 		return 2
 	}
 	rest = orderFlagPairsFirst(rest, "base-url", "key", "key-env", "dialect",
-		"codex", "model-map", "balance-url")
+		"codex", "pi", "model-map", "balance-url")
 	fs := flag.NewFlagSet("provider add", flag.ContinueOnError)
 	baseURL := fs.String("base-url", "", "上游端点（必填）")
 	key := fs.String("key", "", "API 密钥字面量（或 --key-env；都不给＝未激活预置）")
 	keyEnv := fs.String("key-env", "", "从该环境变量读 API 密钥（密钥不进 shell 历史）")
 	dialect := fs.String("dialect", "", "线协议方言：anthropic（缺省）| openai_responses")
 	codex := fs.String("codex", "", "codex 否决位：仅 unsupported（可用性缺省按 dialect 推导）")
+	pi := fs.String("pi", "", "pi 否决位：仅 unsupported（可用性缺省按 dialect 推导）")
 	modelMap := fs.String("model-map", "", "模型位 k=v[,k=v]（非本地端点必含 default；codex 键＝codex 主模型）")
 	balanceURL := fs.String("balance-url", "", "余额端点（不配不显示）")
 	if err := fs.Parse(rest); err != nil {
@@ -415,7 +454,7 @@ func cmdProviderAdd(args []string, w io.Writer) int {
 	}
 	return providerAdd(cfgPath, fs.Arg(0), providerAddOpts{
 		BaseURL: *baseURL, Key: *key, KeyEnv: *keyEnv, Dialect: *dialect,
-		Codex: *codex, ModelMap: *modelMap, BalanceURL: *balanceURL,
+		Codex: *codex, Pi: *pi, ModelMap: *modelMap, BalanceURL: *balanceURL,
 	}, w)
 }
 
@@ -441,6 +480,10 @@ func providerAdd(cfgPath, name string, opts providerAddOpts, w io.Writer) int {
 	}
 	if opts.Codex != "" && opts.Codex != config.CodexUnsupported {
 		fmt.Fprintf(w, "拒绝：codex 仅可选 \"unsupported\" 否决位（可用性缺省按 dialect 推导）\n")
+		return 1
+	}
+	if opts.Pi != "" && opts.Pi != config.PiUnsupported {
+		fmt.Fprintf(w, "拒绝：pi 仅可选 \"unsupported\" 否决位（可用性缺省按 dialect 推导）\n")
 		return 1
 	}
 	mm := map[string]string{}
@@ -470,7 +513,7 @@ func providerAdd(cfgPath, name string, opts providerAddOpts, w io.Writer) int {
 		key = v
 	}
 	up := config.DockUpstream{BaseURL: opts.BaseURL, APIKey: key, ModelMap: mm,
-		Dialect: dialect, Codex: opts.Codex, BalanceURL: opts.BalanceURL}
+		Dialect: dialect, Codex: opts.Codex, Pi: opts.Pi, BalanceURL: opts.BalanceURL}
 	cfg, err := config.Load(cfgPath, false)
 	if err != nil {
 		fmt.Fprintf(w, "配置加载失败（%s）: %v\n", resolved, err)
@@ -497,6 +540,9 @@ func providerAdd(cfgPath, name string, opts providerAddOpts, w io.Writer) int {
 	fmt.Fprintf(w, "  dialect: %s\n", up.Dialect)
 	if up.Codex != "" {
 		fmt.Fprintf(w, "  codex: 否决位 %q（switch 默认拒绝）\n", up.Codex)
+	}
+	if up.Pi != "" {
+		fmt.Fprintf(w, "  pi: 否决位 %q（switch 默认拒绝）\n", up.Pi)
 	}
 	fmt.Fprintf(w, "  model_map: %s\n", renderModelMapBrief(up.ModelMap))
 	fmt.Fprintf(w, "  api_key: %s\n", renderKeyStatus(up.APIKey, up.BaseURL))
@@ -666,18 +712,20 @@ var (
 // 与 installer doctor 同位（<Home>/AppData/Roaming/orca/codex-runtime-home/
 // home/config.toml）；pi 两文件在 <Home>/.pi/agent/ 下（票10 第四目标，成对
 // 派生）；渡口地址走 provider.DockURLFromListen 单源（评审留话：不自造拼接、
-// 尾斜杠不在 CLI 层归一）。pi 主模型位由调用方自 active 上游条目派生后透传
-// （票09 PiModel）。
-func providerTargetsFromHome(home, dockListen, piModel string) provider.Targets {
+// 尾斜杠不在 CLI 层归一）。pi 主模型位与可用性位由调用方自 active 上游条目
+// 派生后透传（票09 PiModel/PiAvailability；票12 起可用性位进行为面——写入器
+// 据此跳过 pi 目标）。
+func providerTargetsFromHome(home, dockListen, piModel, piAvail string) provider.Targets {
 	return provider.Targets{
 		CCSettings:  filepath.Join(home, ".claude", "settings.json"),
 		CodexConfig: filepath.Join(home, ".codex", "config.toml"),
 		OrcaCodexConfig: filepath.Join(home, "AppData", "Roaming", "orca",
 			"codex-runtime-home", "home", "config.toml"),
-		PiModels:    filepath.Join(home, ".pi", "agent", "models.json"),
-		PiSettings:  filepath.Join(home, ".pi", "agent", "settings.json"),
-		PiModel:     piModel,
-		DockBaseURL: provider.DockURLFromListen(dockListen),
+		PiModels:       filepath.Join(home, ".pi", "agent", "models.json"),
+		PiSettings:     filepath.Join(home, ".pi", "agent", "settings.json"),
+		PiModel:        piModel,
+		PiAvailability: piAvail,
+		DockBaseURL:    provider.DockURLFromListen(dockListen),
 	}
 }
 
@@ -717,15 +765,17 @@ func providerApply(cfgPath string, restore bool, w io.Writer) int {
 		fmt.Fprintf(w, "家目录解析失败: %v\n", err)
 		return 1
 	}
-	// pi 主模型位（票10）：自 active 上游条目 model_map 的 pi 键派生（票09
-	// PiModel）。active 悬空/旧单值兜底条目无 pi 键 → 空串：~/.pi 两文件在场
-	// 时写入器按异形拒绝转人工（票面语义）；pi 可用性否决/跳过回显属票12，
-	// 本层不做。
-	var piModel string
+	// pi 主模型位与可用性位（票10/票12）：自 active 上游条目 model_map 的 pi 键
+	// 派生（票09 PiModel），可用性走票09 PiAvailability 单源。active 悬空/旧
+	// 单值兜底条目 → 空串/可用推导。pi 主模型缺 → 写入器按异形拒绝转人工
+	//（票10 语义，不变）；可用性不可用 → 写入器跳过 pi 目标并如实回显（票12），
+	// 其余目标照常——两态分开，本层只透传不裁决。
+	var piModel, piAvail string
 	if _, up := cfg.Dock.ActiveUpstream(); up != nil {
 		piModel = up.PiModel()
+		piAvail = up.PiAvailability()
 	}
-	targets := providerTargetsFromHome(home, cfg.Dock.Listen, piModel)
+	targets := providerTargetsFromHome(home, cfg.Dock.Listen, piModel, piAvail)
 	var (
 		rep provider.ApplyReport
 	)

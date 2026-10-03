@@ -32,6 +32,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"ferryman/internal/config"
 )
 
 // PlaceholderToken Ferryman 占位令牌字面量（票05）：接管后 codex 配置里的
@@ -64,6 +66,13 @@ type Targets struct {
 	// config.DockUpstream.PiModel；渡口 CC 车道改写时换成上游真名）。空＝
 	// models 列表派生不出，pi 两文件在场时按异形拒绝转人工。
 	PiModel string
+	// PiAvailability pi 可用性裁决值（票12）：调用方自 active 上游条目的
+	// PiAvailability()（票09 config 单源）透传；空＝可用（零值不改既有行为面
+	// ——未透传的既有调用方零变化）。PiUnsupported/PiUnavailable＝active 上游
+	// 对 pi 不可用 → pi 目标跳过并如实回显、其余目标照常（票12）。注意两态
+	// 分开：这里只拦「上游不可用」；pi 两文件结构异形/缺 pi 主模型键仍走计算
+	// 段的异形拒绝转人工（票10 语义不变——异形是全案拒绝，不是跳过）。
+	PiAvailability string
 	// DockBaseURL 渡口根地址（如 http://127.0.0.1:15722）；codex 目标按 /v1
 	// 后缀惯例派生（与 wire_api="responses" 兼容为准），pi/CC 目标用根地址
 	//（anthropic-messages 复用 CC 车道，客户端自行追加 /v1/messages）。
@@ -181,43 +190,50 @@ func Apply(t Targets) (ApplyReport, error) {
 	// ②-b pi 目标计算（票10，spec Implementation Decisions 3）：两文件成对——
 	// 任一异形（结构不合/模型名无法对齐/pi 主模型位缺/单边缺失）→ 整体拒绝
 	// 转人工（全案零备份零写盘，绝不半写）；两文件皆不在位（~/.pi 未装）→
-	// 该目标跳过不代建、如实回显、不算失败。
+	// 该目标跳过不代建、如实回显、不算失败。前置（票12）：active 上游对 pi
+	// 不可用（显式否决/方言非 anthropic，票09 PiAvailability 单源）→ pi 目标
+	// 跳过不写入、如实回显、不算失败，其余目标照常——同样发生在任何读取之前。
 	piInPlay := t.PiModels != "" && t.PiSettings != ""
 	piComputed := false
 	var piModelsNew, piSettingsNew string
 	var piModelsCh, piSettingsCh bool
 	if piInPlay {
-		mRaw, mErr := os.ReadFile(t.PiModels)
-		sRaw, sErr := os.ReadFile(t.PiSettings)
-		switch {
-		case errors.Is(mErr, os.ErrNotExist) && errors.Is(sErr, os.ErrNotExist):
+		if why := piSkipReason(t.PiAvailability); why != "" {
 			rep.Targets = append(rep.Targets, TargetReport{Name: targetPi,
-				Path: t.PiModels, Action: ActionSkipped,
-				Detail: "~/.pi 未装（models.json 与 settings.json 皆不在位）——跳过（不代建、不算失败）"})
-		case errors.Is(mErr, os.ErrNotExist) || errors.Is(sErr, os.ErrNotExist):
-			return rep, errors.New("provider: pi 两文件须成对在位——单边缺失＝异形，" +
-				"整体拒绝转人工（绝不半写；手工补齐或删除另一份后重跑）")
-		case mErr != nil:
-			return rep, fmt.Errorf("provider: %s 读取失败: %w", t.PiModels, mErr)
-		case sErr != nil:
-			return rep, fmt.Errorf("provider: %s 读取失败: %w", t.PiSettings, sErr)
-		default:
-			var err error
-			piModelsNew, piModelsCh, err = applyPiModels(string(mRaw), t.DockBaseURL, t.PiModel)
-			if err != nil {
-				return rep, fmt.Errorf("provider: %s: %w", t.PiModels, err)
+				Path: t.PiModels, Action: ActionSkipped, Detail: why})
+		} else {
+			mRaw, mErr := os.ReadFile(t.PiModels)
+			sRaw, sErr := os.ReadFile(t.PiSettings)
+			switch {
+			case errors.Is(mErr, os.ErrNotExist) && errors.Is(sErr, os.ErrNotExist):
+				rep.Targets = append(rep.Targets, TargetReport{Name: targetPi,
+					Path: t.PiModels, Action: ActionSkipped,
+					Detail: "~/.pi 未装（models.json 与 settings.json 皆不在位）——跳过（不代建、不算失败）"})
+			case errors.Is(mErr, os.ErrNotExist) || errors.Is(sErr, os.ErrNotExist):
+				return rep, errors.New("provider: pi 两文件须成对在位——单边缺失＝异形，" +
+					"整体拒绝转人工（绝不半写；手工补齐或删除另一份后重跑）")
+			case mErr != nil:
+				return rep, fmt.Errorf("provider: %s 读取失败: %w", t.PiModels, mErr)
+			case sErr != nil:
+				return rep, fmt.Errorf("provider: %s 读取失败: %w", t.PiSettings, sErr)
+			default:
+				var err error
+				piModelsNew, piModelsCh, err = applyPiModels(string(mRaw), t.DockBaseURL, t.PiModel)
+				if err != nil {
+					return rep, fmt.Errorf("provider: %s: %w", t.PiModels, err)
+				}
+				piSettingsNew, piSettingsCh, err = applyPiSettings(string(sRaw), piProviderName, t.PiModel)
+				if err != nil {
+					return rep, fmt.Errorf("provider: %s: %w", t.PiSettings, err)
+				}
+				// 成对自证（票10：「模型名无法对齐」异形）：settings 的 defaultModel
+				// 必须落在 models 新形态 ferryman 条目的 models 列表内。两值同源于
+				// PiModel，构造上恒真——此处是防回归硬闸（改派生链路先红在这里）。
+				if err := piPairAligned(piModelsNew, piSettingsNew); err != nil {
+					return rep, fmt.Errorf("provider: pi 两文件模型名无法对齐，转人工: %w", err)
+				}
+				piComputed = true
 			}
-			piSettingsNew, piSettingsCh, err = applyPiSettings(string(sRaw), piProviderName, t.PiModel)
-			if err != nil {
-				return rep, fmt.Errorf("provider: %s: %w", t.PiSettings, err)
-			}
-			// 成对自证（票10：「模型名无法对齐」异形）：settings 的 defaultModel
-			// 必须落在 models 新形态 ferryman 条目的 models 列表内。两值同源于
-			// PiModel，构造上恒真——此处是防回归硬闸（改派生链路先红在这里）。
-			if err := piPairAligned(piModelsNew, piSettingsNew); err != nil {
-				return rep, fmt.Errorf("provider: pi 两文件模型名无法对齐，转人工: %w", err)
-			}
-			piComputed = true
 		}
 	}
 	// ③ 幂等短路：零改动 → 零备份零写盘。
@@ -323,6 +339,20 @@ func Apply(t Targets) (ApplyReport, error) {
 	}
 	appendPiRows(&rep, t, piComputed, false, piBackup, piModelsCh, piSettingsCh)
 	return rep, nil
+}
+
+// piSkipReason active 上游对 pi 的不可用跳过报因（票12）：不可用 → 回显行明细
+//（「pi 目标跳过: <原因>」形态，不算失败）；可用或调用方未透传（空值）→ 空串
+// ＝照常计算。判定值与 config.PiAvailability 单源同字面量。
+func piSkipReason(avail string) string {
+	switch avail {
+	case config.PiUnsupported:
+		return fmt.Sprintf("pi 目标跳过: active 上游对 pi 显式否决（pi = %q）——不写 pi 两文件，其余目标照常",
+			config.PiUnsupported)
+	case config.PiUnavailable:
+		return "pi 目标跳过: active 上游为 openai_responses 方言，pi 无入站车道——不写 pi 两文件，其余目标照常"
+	}
+	return ""
 }
 
 // appendPiRows pi 两文件的报告行（成功路径 unchanged/written；restoredOnly 时
