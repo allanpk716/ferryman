@@ -17,10 +17,20 @@ package daemon
 //     同代文件收缩（写方 rollbackAppend/truncateTornTail 修复残尾）偏移
 //     清零重采、seq 去重保留（同文件内 seq 唯一，防重账）。
 //
-// P2-1 边界（后续票接线，本文件不预铺）：
-//   - 不 maybeEnqueue：dsh 摆渡面待 P2-2 会话键对齐（目录名 session-<uuid> ≠
-//     请求体 metadata.session_id）与 P2-3/P2-4 钩子面；enrich 亦无 dsh 分支
-//     （标题/峰值改由采集顺带回写，不读第二遍盘）；
+// P2-2 会话键对齐结论（2026-10-03 调查钉死，详见 dock.HeaderDeepSeekHarnessSessionID
+// 注记与 .scratch/dsh-phase2 清单）：三方统一键＝会话头行 id（session-<uuid>，
+// 即目录名本体——守望 Touch/usage 现行键，零改动即已对齐）；dsh 请求体**没有**
+// metadata.session_id（pi-ai 路无任何键上线；PR #4 的"捕获键零改动就位"系把
+// 自家 CC 会话记账行误读为 dsh 行——当日 dsh 流量两行 session_id 恒空，渡口
+// 账面实证）。渡口已加 X-Deepseek-Harness-Session-Id 头第三回落（键=头行 id，
+// 与守望同键）——但当前接管路由 llm-pi-ai 不发该头，捕获归因仍空。
+//
+// P2-1/P2-2 边界（后续票接线，本文件不预铺）：
+//   - 不 maybeEnqueue：摆渡依赖渡口快照，而 pi-ai 路快照捕获恒 skipped（无键）
+//     ——接线必 snapshot_missing，待 P2-3 接法乙（llm-deepseek 路由带
+//     x-deepseek-harness-session-id 头）或 P2-4 原生插件（session/event 直报，
+//     不依赖渡口捕获）解锁；enrich 亦无 dsh 分支（标题/峰值改由采集顺带回写，
+//     不读第二遍盘）；
 //   - 不喂 NoteUsage/ReqClock：停车窗/判热钟是 cc 面机制，dsh 判活信号待
 //     P2-5 设计；
 //   - 不 qwatch/心跳/同模型：三处均 cc-only（各自入口 agent 检查）。

@@ -444,7 +444,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 票01 头回落：会话归因一次提取、两个消费点（快照捕获/记账归因）共用——
 	// 体 metadata.session_id 第一优先，缺失回落 X-Claude-Code-Session-Id 头
-	//（UUID 格式校验、头体冲突以体为准留痕，语义见 ExtractSessionID）。
+	//（UUID 格式校验），再缺失回落 X-DeepSeek-Harness-Session-Id 头（dsh 会话
+	// 形校验；头体冲突以体为准留痕，语义见 ExtractSessionID）。
 	var sessionID string
 	if capture || record {
 		sessionID = ExtractSessionID(body, r.Header)

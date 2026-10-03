@@ -241,11 +241,31 @@ const HeaderClaudeCodeSessionID = "x-claude-code-session-id"
 // 恰一行"不必截 stderr；生产路径即 logger.Printf 一行）。
 var conflictLog = func(format string, args ...any) { logger.Printf(format, args...) }
 
+// HeaderDeepSeekHarnessSessionID dsh（DeepSeek Harness）LLM 适配器的官方会话
+// 归因头（llm-deepseek 每请求必带，值＝dsh 持久会话 ID——与守望/台账键同源：
+// 会话头行 id，即目录名 session-<uuid> 的本体；铸造处 session-controller/
+// subagent/headless 缺省皆 `session-${randomUUID()}`，另有 32hex/计数器变体）。
+//
+// P2-2 键对齐调查结论（2026-10-03，四源钉死：dsh 克隆 master@639ed015、pi-ai
+// 0.87.1 与 main、装机 asar；生产账面交叉实证）：
+//   - dsh 请求体**没有** metadata.session_id——pi-ai 的 anthropic-messages
+//     只把 options.metadata.user_id 映进体（dsh 不传），sessionId 仅映
+//     x-session-affinity/x-session-id 头且开关（sendSessionAffinityHeaders）
+//     被 dsh 侧 catalog 标 'withhold' 不可开；llm-deepseek 的 serialize 亦不写。
+//     2026-10-02 PR #4 验收说的"捕获键零改动就位"是把自家 CC 会话的记账行
+//     误读成了 dsh 行——当日 dsh 流量两行（09:40:22/27）session_id 恒空。
+//   - 唯一带会话键上线的 dsh 线通道＝本头（走 llm-deepseek 适配器的流量）。
+//     当前接管路由 llm-pi-ai（cordis.patch.yml ferryman-dock）不上线任何键——
+//     该路的捕获归因待 P2-3/P2-4 路线决策（接法乙换 llm-deepseek 路由即得
+//     本头；原生插件 session/event 直报则不依赖渡口捕获）。
+const HeaderDeepSeekHarnessSessionID = "x-deepseek-harness-session-id"
+
 // ExtractSessionID 会话归因提取（快照捕获与渡口记账归因两个消费点共用，一处
 // 实现）：请求体 JSON 的 metadata.session_id 第一优先；缺失时回落
-// X-Claude-Code-Session-Id 头。头值须过 UUID 格式校验（36 位 8-4-4-4-12 带连
-// 字符十六进制，大小写均可；不合格式＝缺失）；头体并存以体为准（值不同留一
-// 行日志）；都缺返回 ""（调用方据此走跳过计数——绝不伪造 ID）。
+// X-Claude-Code-Session-Id 头（UUID 形校验）；再缺失回落
+// X-DeepSeek-Harness-Session-Id 头（dsh 会话形校验，见 isDshSessionIDShape）。
+// 头值格式校验不合格＝缺失；头体并存以体为准（值不同留一行日志）；都缺返回
+// ""（调用方据此走跳过计数——绝不伪造 ID）。
 func ExtractSessionID(body []byte, h http.Header) string {
 	sid := bodySessionID(body)
 	hv := headerSessionID(h)
@@ -255,7 +275,10 @@ func ExtractSessionID(body []byte, h http.Header) string {
 		}
 		return sid
 	}
-	return hv
+	if hv != "" {
+		return hv
+	}
+	return dshHeaderSessionID(h)
 }
 
 // bodySessionID 体侧原样提取 metadata.session_id（不做格式校验——体是既有台账
@@ -284,6 +307,38 @@ func headerSessionID(h http.Header) string {
 		return ""
 	}
 	return v
+}
+
+// dshHeaderSessionID dsh 头回落值：无头或值不合 dsh 会话形＝""（视同缺失）。
+func dshHeaderSessionID(h http.Header) string {
+	if h == nil {
+		return ""
+	}
+	v := h.Get(HeaderDeepSeekHarnessSessionID)
+	if v == "" || !isDshSessionIDShape(v) {
+		return ""
+	}
+	return v
+}
+
+// isDshSessionIDShape dsh 会话 ID 形校验：`session-` 前缀（全部铸造处的缺省
+// 形态；自定 --session-id 不带前缀者放弃归因，同缺失语义）、总长 9..128、
+// 字符集 [A-Za-z0-9._-]（覆盖 uuid36 连字符形/32hex/计数器种子；同
+// EncodeSegment 安全集的哲学——形状对即可，归因识别面非安全面）。
+func isDshSessionIDShape(v string) bool {
+	if len(v) < 9 || len(v) > 128 || !strings.HasPrefix(v, "session-") {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case '0' <= c && c <= '9', 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+		case c == '.' || c == '_' || c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // isUUID36 裸 UUID 形校验：36 字节、8-4-4-4-12 连字符分段、十六进制（大小写

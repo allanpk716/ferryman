@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -256,6 +257,9 @@ func TestExtractSessionID(t *testing.T) {
 // uuidFixture 合法裸 UUID（36 位 8-4-4-4-12 连字符形，claude-cli 地面真值形状）。
 const uuidFixture = "123e4567-e89b-12d3-a456-426614174000"
 
+// dshSidFixture 合法 dsh 会话 ID（session-controller 铸造缺省形 session-<uuid36>）。
+const dshSidFixture = "session-6e360520-09b8-46b6-9d82-cc9446ec8bd9"
+
 // TestExtractSessionIDHeaderFallbackMatrix 票01 头回落归因矩阵：
 // 体有（第一优先）/体无头有（合法 UUID 回落）/都无（空语义不伪造）/
 // 头格式坏（＝缺失）/头体冲突（以体为准）/大写 UUID 合法/非 JSON 体头回落。
@@ -283,6 +287,50 @@ func TestExtractSessionIDHeaderFallbackMatrix(t *testing.T) {
 		var h http.Header
 		if c.header != "" {
 			h = hdr("X-Claude-Code-Session-Id", c.header)
+		}
+		if got := ExtractSessionID([]byte(c.body), h); got != c.want {
+			t.Errorf("%s: ExtractSessionID = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestExtractSessionIDDshHeaderFallbackMatrix P2-2 dsh 头第三回落矩阵：CC 头
+// 合法则 dsh 头不参与；CC 头缺失/坏形时 dsh 头接管；dsh 头自身形校验
+//（前缀/长度/字符集）拒绝脏值；体始终第一优先。
+func TestExtractSessionIDDshHeaderFallbackMatrix(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		ccHdr   string // X-Claude-Code-Session-Id；""＝不带头
+		dshHdr  string // X-Deepseek-Harness-Session-Id；""＝不带头
+		want    string
+	}{
+		{"dsh头单独在", `{"model":"m"}`, "", dshSidFixture, dshSidFixture},
+		{"dsh头32hex变体", `{"model":"m"}`, "", "session-3d96ff17fba0466160050931f96b12e6", "session-3d96ff17fba0466160050931f96b12e6"},
+		{"dsh头计数器种子形", `{"model":"m"}`, "", "session-1024", "session-1024"},
+		{"CC头优先于dsh头", `{"model":"m"}`, uuidFixture, dshSidFixture, uuidFixture},
+		{"CC头坏形dsh头接管", `{"model":"m"}`, "not-a-uuid", dshSidFixture, dshSidFixture},
+		{"体优先于dsh头", `{"metadata":{"session_id":"body-sid"}}`, "", dshSidFixture, "body-sid"},
+		{"dsh头无前缀拒收", `{"model":"m"}`, "", "6e360520-09b8-46b6-9d82-cc9446ec8bd9", ""},
+		{"dsh头空前缀拒收", `{"model":"m"}`, "", "session-", ""},
+		{"dsh头最短边界收", `{"model":"m"}`, "", "session-x", "session-x"},
+		{"dsh头带空格拒收", `{"model":"m"}`, "", "session-6e360520 09b8", ""},
+		{"dsh头带斜杠拒收", `{"model":"m"}`, "", "session-a/b", ""},
+		{"dsh头超长拒收", `{"model":"m"}`, "", "session-" + strings.Repeat("a", 130), ""},
+		{"dsh头恰上限128收", `{"model":"m"}`, "", "session-" + strings.Repeat("a", 120), "session-" + strings.Repeat("a", 120)},
+		{"两头皆缺维持空", `{"model":"m"}`, "", "", ""},
+		{"两头皆坏维持空", `{"model":"m"}`, "bad", "also-bad", ""},
+	}
+	for _, c := range cases {
+		var h http.Header
+		if c.ccHdr != "" {
+			h = hdr("X-Claude-Code-Session-Id", c.ccHdr)
+		}
+		if c.dshHdr != "" {
+			if h == nil {
+				h = http.Header{}
+			}
+			h.Set("X-Deepseek-Harness-Session-Id", c.dshHdr)
 		}
 		if got := ExtractSessionID([]byte(c.body), h); got != c.want {
 			t.Errorf("%s: ExtractSessionID = %q, want %q", c.name, got, c.want)

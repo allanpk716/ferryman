@@ -41,8 +41,12 @@
 - [x] 子代理族系：子头 origin/parentSession 权威判据（随父入账 session_id=父 sid、subagent=子 sid，CC 票01 同款）＋父侧 `CatalogChildren`（subagent/catalog 事件汇总，P2-5 判活数据源）；本机语料暂无真子会话——夹具按源码钉、待真用例回钉
 - 遗留注记：① 摆渡/富化不接线（P2-2 键对齐+P2-3/P2-4 钩子面）；② 代文件切换（格式迁移）偏移清零重采——迁移会重编 seq，跨代可能重复记账一次（rc 期罕见，如实接受）；③ `maybeEnqueue` 接线时须同步补 enrich 的 dsh 分支（现为采集回写替身）
 
-**P2-2 会话键对齐**
-- [ ] 目录名 `session-<uuid>` ≠ 请求体 `metadata.session_id`（渡口捕获键已零改动就位，PR #4 实证）——台账/守望/心跳三方统一对齐到 `metadata.session_id`
+**P2-2 会话键对齐——✅ 2026-10-03 完成（分支 dsh-phase2-p2-2-会话键对齐）**
+- [x] 调查翻案：**dsh 请求体没有 metadata.session_id**——四源钉死（dsh 克隆 master@639ed015、pi-ai 0.87.1+main、装机 asar、生产账面）：pi-ai anthropic-messages 只把 options.metadata.user_id 映体（dsh 不传）、sessionId 仅映 affinity 头且开关被 dsh catalog 标 'withhold' 不可开；llm-deepseek serialize 亦不写体。PR #4 验收说的「捕获键零改动就位」是把自家 CC 会话（af22e212）的记账行误读成 dsh 行——当日 dsh 流量两行（10-02 09:40:22/27）session_id 恒空
+- [x] 三方统一键定案＝会话头行 id（`session-<uuid>`，即目录名本体）：守望 Touch/usage 现行键就是它，零改动已对齐；渡口 ExtractSessionID 加 `X-Deepseek-Harness-Session-Id` 第三回落（dsh 官方归因头，键=头行 id 与守望同源；形校验 `session-` 前缀+9..128+安全字符集）——CC 体>CC 头>dsh 头三级，快照捕获/记账归因两点同生效
+- [x] 真会话对账（`TestRealDshSessionsVsDockLedger`，env 门控）：6 会话 5 行对渡口账面，验收行匹配（四列签名+±120s；9169/21 ↔ 09:40:27 空键行）、title 行邻域未匹配（属预期）、键不变式（匹配行 session_id ∈ {"", 头行 id}）零违例；接管后强制匹配断言通过
+- [x] maybeEnqueue 仍不接线（摆渡依赖快照，pi-ai 路捕获恒 skipped 必 snapshot_missing）——解锁路径留 P2-3 接法乙（llm-deepseek 路由自带该头）或 P2-4 原生插件（session/event 直报）；beat 发送侧对非 UUID36 形键须改发 dsh 头（P2-5 接线时动，两处：httpsender/appendreplay）
+- 遗留给 P2-3/P2-4 的接口结论：渡口侧捕获键已就位（第三回落）；映射机制结论＝无需映射（头行 id 与渡口键同值），缺的是**上线通道**（路由选择或插件上报），不是键换算
 
 **P2-3 闸门 MVP（路线 A：CC 钩子桥）**
 - [ ] 桥接：`dsh plugin --profile web add @deepseek-ai/dsh-hooks-claude-code`，`configPath` 指 Ferryman 为 dsh 单发的 hooks.json（现有 CC 钩子脚本复用：UserPromptSubmit 问闸门、block→deny）

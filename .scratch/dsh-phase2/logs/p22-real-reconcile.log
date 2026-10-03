@@ -1,0 +1,5 @@
+=== RUN   TestRealDshSessionsVsDockLedger
+    watcher_dsh_real_test.go:170: 真机对账：会话 6、文件 usage 行 5、渡口匹配 1（其中按会话键归因 0、空键 1）、邻域未匹配行 1（title/compaction 类属预期）
+--- PASS: TestRealDshSessionsVsDockLedger (1.51s)
+PASS
+ok  	ferryman/internal/daemon	1.919s
