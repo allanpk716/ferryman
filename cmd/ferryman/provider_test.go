@@ -4,7 +4,7 @@
 //   - list：全部条目 + active 标注 + dialect/codex 可用性（原生/需翻译/不支持）
 //   - 模型位概要 + 密钥脱敏（只露尾 4 位，整钥零回显）；
 //   - switch：不存在→拒绝并列可用；codex="unsupported"→默认拒绝并报因；
-//     --cc-only 显式放行并明示"codex 暂断供，仅 CC"；成功回显新 active 与
+//     --cc-only 显式放行并逐 agent 列明断供面（codex 暂断供/pi 暂断供）；成功回显新 active 与
 //     codex 车道模式；守护不在线如实报错给拉起指引（热切换走管理口，不重启）；
 //   - add/remove：密钥经参数或环境变量传入且输出永不回显全钥；remove 拒删
 //     active；
