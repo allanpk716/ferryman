@@ -29,6 +29,11 @@
 //     指向渡口/认证形态合法）。判定单源 internal/provider（与接管写入器同一套
 //     解析）；[dock] 未配置 → 三项显式 not_checked（清单 24→27 的计数同步见
 //     doctor_test 的结论行公式）。
+//   - 票11（pi 生效链）：第四项 provider_pi_dock——绿=完整生效链（settings.json
+//     的 defaultProvider 解析到渡口条目 ∧ defaultModel ∈ 该条目 models ∧
+//     api=anthropic-messages ∧ baseUrl=渡口根地址）；~/.pi 未装 → not_checked
+//     不产红；残留旧 15721 条目但生效链正确 → 绿+警告（F9，非生效残留不阻断）。
+//     结论清单计数再 +1（见 doctor_test 的结论行公式）。
 package installer
 
 import (
@@ -862,22 +867,26 @@ func doctorResults(d doctorDeps) []CheckResult {
 		exeDir = filepath.Dir(targetExe)
 	}
 	out = append(out, CheckUpdateResidues(dataDir, exeDir).named("update_residues"))
-	// 服务商接管三项体检（票05，spec Implementation Decisions 7）：
-	// provider_cc_dock / provider_codex_dock / provider_orca_codex——判定单源
-	// internal/provider（与写入器同一套解析与目标地址派生，绝不两套判据）。
-	// [dock] 未配置/配置加载失败 → 三项显式 not_checked（接管目标不可判——
-	// 如实标注不伪造）。续接末位：既有检查项顺序零漂移。
+	// 服务商接管体检（票05 三项＋票11 pi 生效链第四项，spec Implementation
+	// Decisions 7/4）：provider_cc_dock / provider_codex_dock /
+	// provider_orca_codex / provider_pi_dock——判定单源 internal/provider（与
+	// 写入器同一套解析与目标地址派生，绝不两套判据）。[dock] 未配置/配置加载
+	// 失败 → 四项显式 not_checked（接管目标不可判——如实标注不伪造）。续接
+	// 末位：既有检查项顺序零漂移。
 	out = append(out, providerCheckResults(cfg, err, d)...)
 	return out
 }
 
-// providerCheckResults 服务商接管三项（票05）：dock 未配置 → 三行 not_checked；
-// 否则按 cfg.Dock.Listen 派生渡口目标（CC=http 根、codex=http+/v1，单源
-// provider.DockURLFromListen / DockCodexURLFromListen）交 provider 探针判定。
+// providerCheckResults 服务商接管四项（票05 三项＋票11 pi 生效链）：dock 未配
+// 置 → 四行 not_checked；否则按 cfg.Dock.Listen 派生渡口目标（CC/pi=http 根、
+// codex=http+/v1，单源 provider.DockURLFromListen / DockCodexURLFromListen）
+// 交 provider 探针判定。pi 两路径与 CLI 装配层 providerTargetsFromHome 同口径
+// （~/.pi/agent 下成对两文件，home 派生、无配置项）。
 func providerCheckResults(cfg *config.Config, cfgErr error, d doctorDeps) []CheckResult {
 	notChecked := func() []CheckResult {
-		rows := make([]CheckResult, 0, 3)
-		for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
+		rows := make([]CheckResult, 0, 4)
+		for _, n := range []string{"provider_cc_dock", "provider_codex_dock",
+			"provider_orca_codex", "provider_pi_dock"} {
 			rows = append(rows, CheckResult{Name: n, Status: StatusNotChecked,
 				Detail: "服务商接管体检未检查（[dock] 未配置——接管目标不可判，如实标注不伪造）"})
 		}
@@ -901,14 +910,22 @@ func providerCheckResults(cfg *config.Config, cfgErr error, d doctorDeps) []Chec
 			provider.DockCodexURLFromListen(cfg.Dock.Listen))),
 		providerVerdict("provider_orca_codex", provider.CheckOrcaCodexHealth(
 			orcaCfg, provider.DockCodexURLFromListen(cfg.Dock.Listen))),
+		providerVerdict("provider_pi_dock", provider.CheckPiPointsDock(
+			filepath.Join(d.Home, ".pi", "agent", "models.json"),
+			filepath.Join(d.Home, ".pi", "agent", "settings.json"),
+			provider.DockURLFromListen(cfg.Dock.Listen))),
 	}
 }
 
 // providerVerdict provider.Verdict → CheckResult 换装（与 Check.named 同款：
-// OK→pass、!OK→fail；Detail 原样透传——判定在 provider 单源，本包不重复）。
+// NotChecked→not_checked、OK→pass、!OK→fail；Detail 原样透传——判定在
+// provider 单源，本包不重复）。
 func providerVerdict(name string, v provider.Verdict) CheckResult {
 	st := StatusFail
-	if v.OK {
+	switch {
+	case v.NotChecked:
+		st = StatusNotChecked
+	case v.OK:
 		st = StatusPass
 	}
 	return CheckResult{Name: name, Status: st, Detail: v.Detail}

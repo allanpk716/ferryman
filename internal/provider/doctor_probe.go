@@ -1,10 +1,13 @@
-// doctor_probe.go — 票05 doctor 三项体检（只读探针）：
+// doctor_probe.go — 票05 doctor 三项体检（只读探针；票11 增 pi 生效链第四项）：
 //
 //	① CheckCCPointsDock      CC 指向渡口；
 //	② CheckCodexPointsDock   codex 两份指向渡口且 wire_api=responses 且
 //	                         [features] hooks 旗标在位；
 //	③ CheckOrcaCodexHealth   orca codex 健康（配置存在、指向渡口、认证形态
-//	                         合法）。
+//	                         合法）；
+//	④ CheckPiPointsDock      pi 生效链（票11）：defaultProvider 解析到渡口条
+//	                         目 ∧ defaultModel ∈ 该条目 models ∧ api=
+//	                         anthropic-messages ∧ baseUrl=渡口根地址。
 //
 // 判定与写入器（writer.go）同一套解析函数与目标地址派生（单源）——doctor 与
 // apply 绝不出现两套判据（CONTEXT.md 同一检查只许一份实现）。installer 面
@@ -13,6 +16,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -20,11 +24,13 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Verdict 体检结论（installer 面换装成 CheckResult：OK→pass、!OK→fail，
-// Detail 原样透传）。
+// Verdict 体检结论（installer 面换装成 CheckResult：NotChecked→not_checked、
+// OK→pass、!OK→fail，Detail 原样透传）。
 type Verdict struct {
-	OK     bool
-	Detail string
+	OK bool
+	// NotChecked 检查目标不在（票11：~/.pi 未装）——如实标注不伪造，不产红。
+	NotChecked bool
+	Detail     string
 }
 
 // DockURLFromListen 渡口 CC 目标地址：[dock].listen（host:port）→ http 根。
@@ -46,24 +52,24 @@ func CheckCCPointsDock(settingsPath, dockBaseURL string) Verdict {
 	raw, err := os.ReadFile(settingsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Verdict{false, fmt.Sprintf("%s 不存在——CC 未接管（跑 ferryman provider apply）", settingsPath)}
+			return Verdict{Detail: fmt.Sprintf("%s 不存在——CC 未接管（跑 ferryman provider apply）", settingsPath)}
 		}
-		return Verdict{false, fmt.Sprintf("%s 读取失败: %v", settingsPath, err)}
+		return Verdict{Detail: fmt.Sprintf("%s 读取失败: %v", settingsPath, err)}
 	}
 	var root map[string]any
 	if err := json.Unmarshal(raw, &root); err != nil {
-		return Verdict{false, fmt.Sprintf("settings.json 解析失败（转人工）: %v", err)}
+		return Verdict{Detail: fmt.Sprintf("settings.json 解析失败（转人工）: %v", err)}
 	}
 	env, _ := root["env"].(map[string]any)
 	cur, _ := env["ANTHROPIC_BASE_URL"].(string)
 	if cur == dockBaseURL {
-		return Verdict{true, fmt.Sprintf("CC env.ANTHROPIC_BASE_URL → 渡口（%s）", dockBaseURL)}
+		return Verdict{OK: true, Detail: fmt.Sprintf("CC env.ANTHROPIC_BASE_URL → 渡口（%s）", dockBaseURL)}
 	}
 	if cur == "" {
-		return Verdict{false, "settings.json env.ANTHROPIC_BASE_URL 缺失——CC 未接管" +
+		return Verdict{Detail: "settings.json env.ANTHROPIC_BASE_URL 缺失——CC 未接管" +
 			"（跑 ferryman provider apply）"}
 	}
-	return Verdict{false, fmt.Sprintf("settings.json env.ANTHROPIC_BASE_URL=%s 未指向渡口"+
+	return Verdict{Detail: fmt.Sprintf("settings.json env.ANTHROPIC_BASE_URL=%s 未指向渡口"+
 		"（%s）——疑似被外部工具改写（首周多视作 cc-switch 会话自动同步复开，F9）"+
 		"——跑 ferryman provider apply 修复", cur, dockBaseURL)}
 }
@@ -140,10 +146,10 @@ func CheckCodexPointsDock(cfgPath, orcaCfgPath, dockCodexURL string) Verdict {
 	probs = append(probs, codexBaseProblems(orcaCfgPath, "orca-codex", dockCodexURL)...)
 	probs = append(probs, codexProtoProblems(orcaCfgPath, "orca-codex")...)
 	if len(probs) > 0 {
-		return Verdict{false, "codex 接管形态有问题: " + strings.Join(probs, "；") +
+		return Verdict{Detail: "codex 接管形态有问题: " + strings.Join(probs, "；") +
 			"——跑 ferryman provider apply 修复"}
 	}
-	return Verdict{true, fmt.Sprintf("codex 两份 config 指向渡口（%s）且 wire_api=responses、"+
+	return Verdict{OK: true, Detail: fmt.Sprintf("codex 两份 config 指向渡口（%s）且 wire_api=responses、"+
 		"hooks 旗标在位", dockCodexURL)}
 }
 
@@ -154,13 +160,108 @@ func CheckCodexPointsDock(cfgPath, orcaCfgPath, dockCodexURL string) Verdict {
 // 不改，硬改是写入器被 F7 拒绝的同一红线）。
 func CheckOrcaCodexHealth(orcaCfgPath, dockCodexURL string) Verdict {
 	if probs := codexBaseProblems(orcaCfgPath, "orca-codex", dockCodexURL); len(probs) > 0 {
-		return Verdict{false, "orca codex 不健康: " + strings.Join(probs, "；")}
+		return Verdict{Detail: "orca codex 不健康: " + strings.Join(probs, "；")}
 	}
 	form := CodexAuthForm(orcaCfgPath)
 	if form != AuthAPIKey && form != AuthBearer {
-		return Verdict{false, fmt.Sprintf("orca codex 认证形态为 %q——chatgpt-OAuth/不明"+
+		return Verdict{Detail: fmt.Sprintf("orca codex 认证形态为 %q——chatgpt-OAuth/不明"+
 			"形态不硬改，转人工（F7）", string(form))}
 	}
-	return Verdict{true, fmt.Sprintf("orca codex 健康（config 在位、指向渡口、认证形态 %s）",
+	return Verdict{OK: true, Detail: fmt.Sprintf("orca codex 健康（config 在位、指向渡口、认证形态 %s）",
 		string(form))}
+}
+
+// ---- ④ pi 生效链（票11） ----
+
+// CheckPiPointsDock pi 生效链体检（票11，spec Implementation Decisions 4）。
+// 绿＝生效链全中：settings.json 的 defaultProvider 解析到 providers 条目 ∧
+// defaultModel ∈ 该条目 models ∧ 该条目 api=anthropic-messages ∧ 该条目
+// baseUrl=渡口根地址。判定与写入器（writer.go）同一套（单源，不造第二套判
+// 据）：models.json 走 applyPiModels 同款 parseJDoc 树与结构门，条目判定素材
+// 直用 piAPIAnthropicMessages 常量与 hasModelID/isDeadCCSwitchBaseURL；
+// settings.json 键读取与 applyPiSettings 同口径（defaultProvider/defaultModel
+// 字符串键，缺失＝异形）。
+//
+// ~/.pi 未装（两文件皆不在位，与写入器 piInPlay 同口径）→ NotChecked 不产
+// 红；单边缺失＝异形（写入器成对纪律同款）→ fail 转人工。残留旧 15721 条目
+// 但生效链正确 → 绿，Detail 附一行警告（非生效残留不阻断，F9——清理归
+// apply，体检只提示；与写入器清理测试分开钉）。
+func CheckPiPointsDock(piModelsPath, piSettingsPath, dockBaseURL string) Verdict {
+	mRaw, mErr := os.ReadFile(piModelsPath)
+	sRaw, sErr := os.ReadFile(piSettingsPath)
+	switch {
+	case errors.Is(mErr, os.ErrNotExist) && errors.Is(sErr, os.ErrNotExist):
+		return Verdict{NotChecked: true, Detail: "~/.pi 未装（models.json 与 settings.json " +
+			"皆不在位）——pi 未接入，不算失败"}
+	case errors.Is(mErr, os.ErrNotExist) || errors.Is(sErr, os.ErrNotExist):
+		return Verdict{Detail: "pi 两文件须成对在位——单边缺失＝异形（与写入器成对纪律" +
+			"同源），转人工（手工补齐或删除另一份后跑 ferryman provider apply）"}
+	case mErr != nil:
+		return Verdict{Detail: fmt.Sprintf("%s 读取失败: %v", piModelsPath, mErr)}
+	case sErr != nil:
+		return Verdict{Detail: fmt.Sprintf("%s 读取失败: %v", piSettingsPath, sErr)}
+	}
+	// settings 侧：与 applyPiSettings 同一套键读取。
+	var sroot map[string]any
+	if err := json.Unmarshal(sRaw, &sroot); err != nil {
+		return Verdict{Detail: fmt.Sprintf("pi settings.json 解析失败（转人工）: %v", err)}
+	}
+	dp, okP := sroot["defaultProvider"].(string)
+	dm, okM := sroot["defaultModel"].(string)
+	if !okP || !okM {
+		return Verdict{Detail: "pi settings.json 缺 defaultProvider/defaultModel 键或非字符串" +
+			"——生效链断（转人工）"}
+	}
+	// models 侧：与 applyPiModels 同一套 parseJDoc 树与结构门。
+	mdoc, err := parseJDoc(string(mRaw))
+	if err != nil {
+		return Verdict{Detail: fmt.Sprintf("pi models.json 解析失败（转人工）: %v", err)}
+	}
+	if !mdoc.isObj {
+		return Verdict{Detail: "pi models.json 根非对象——结构不合，转人工"}
+	}
+	provs, ok := mdoc.fields["providers"]
+	if !ok || !provs.isObj {
+		return Verdict{Detail: "pi models.json 缺 providers 对象——结构不合，转人工"}
+	}
+	var probs []string
+	entry := provs.fields[dp]
+	if entry == nil || !entry.isObj {
+		probs = append(probs, fmt.Sprintf("defaultProvider=%q 解析不到 providers 条目", dp))
+	} else {
+		if u, _ := entry.fields["baseUrl"].leafString(); u != dockBaseURL {
+			probs = append(probs, fmt.Sprintf("defaultProvider=%s 的条目 baseUrl=%s 未指向渡口（%s）",
+				dp, u, dockBaseURL))
+		}
+		if a, _ := entry.fields["api"].leafString(); a != piAPIAnthropicMessages {
+			probs = append(probs, fmt.Sprintf("defaultProvider=%s 的条目 api=%q 非 anthropic-messages",
+				dp, a))
+		}
+		if ms := entry.fields["models"]; ms == nil || !ms.isArr || !hasModelID(ms.items, dm) {
+			probs = append(probs, fmt.Sprintf("defaultModel=%q 不在条目 %s models 内", dm, dp))
+		}
+	}
+	if len(probs) > 0 {
+		return Verdict{Detail: "pi 生效链有问题: " + strings.Join(probs, "；") +
+			"——跑 ferryman provider apply 修复"}
+	}
+	// 绿。残留旧 15721 条目（cc-switch 旧址死条目，isDeadCCSwitchBaseURL 同一
+	// 判据）→ 附一行警告：非生效残留不阻断（F9），清理归 apply。
+	var dead []string
+	for _, k := range provs.keys {
+		e := provs.fields[k]
+		if e == nil || !e.isObj {
+			continue
+		}
+		if u, _ := e.fields["baseUrl"].leafString(); isDeadCCSwitchBaseURL(u) {
+			dead = append(dead, k)
+		}
+	}
+	detail := fmt.Sprintf("pi 生效链走渡口（%s）：defaultProvider=%s、defaultModel=%s、api=%s",
+		dockBaseURL, dp, dm, piAPIAnthropicMessages)
+	if len(dead) > 0 {
+		detail += fmt.Sprintf("；警告: 残留旧 15721 条目 %s（非生效残留不阻断，F9——跑 "+
+			"ferryman provider apply 可清理）", strings.Join(dead, "/"))
+	}
+	return Verdict{OK: true, Detail: detail}
 }

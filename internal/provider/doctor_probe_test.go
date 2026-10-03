@@ -3,6 +3,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,95 @@ func TestCheckOrcaCodexHealth(t *testing.T) {
 	if v := CheckOrcaCodexHealth(fp3.orcaCfg, dockCodexBase); v.OK ||
 		!strings.Contains(v.Detail, "15721") {
 		t.Fatalf("未指向应失败并点名现值: %+v", v)
+	}
+}
+
+// ---- ④ pi 生效链（票11） ----
+
+func TestCheckPiPointsDock(t *testing.T) {
+	// 真：apply 接管后的 pi 两文件——生效链全中（写入器产物过探针＝同源自证）
+	fp := piFixture(t)
+	if _, err := Apply(targetsWithPi(fp, "glm-5.3")); err != nil {
+		t.Fatal(err)
+	}
+	if v := CheckPiPointsDock(fp.piModels, fp.piSettings, dockBase); v.NotChecked || !v.OK {
+		t.Fatalf("接管形态应通过: %+v", v)
+	}
+
+	// 假钉①：错默认供应商——渡口条目在但 defaultProvider 指他处
+	fp1 := piFixture(t)
+	if _, err := Apply(targetsWithPi(fp1, "glm-5.3")); err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, fp1.piSettings, `{"defaultProvider": "anthropic", "defaultModel": "glm-5.3"}`)
+	if v := CheckPiPointsDock(fp1.piModels, fp1.piSettings, dockBase); v.OK || v.NotChecked ||
+		!strings.Contains(v.Detail, "defaultProvider") || !strings.Contains(v.Detail, "未指向渡口") {
+		t.Fatalf("错默认供应商应失败并点名: %+v", v)
+	}
+
+	// 假钉②：错模型——defaultModel 不在渡口条目 models 内
+	fp2 := piFixture(t)
+	if _, err := Apply(targetsWithPi(fp2, "glm-5.3")); err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, fp2.piSettings, `{"defaultProvider": "ferryman", "defaultModel": "kimi-k3"}`)
+	if v := CheckPiPointsDock(fp2.piModels, fp2.piSettings, dockBase); v.OK || v.NotChecked ||
+		!strings.Contains(v.Detail, "defaultModel") {
+		t.Fatalf("错模型应失败并点名: %+v", v)
+	}
+
+	// 真钉③：残留旧 15721 条目但生效链正确 → 绿 + 附一行警告（F9 非生效残留
+	// 不阻断；与写入器清理测试分开钉——此处只钉体检面）
+	fp3 := piFixture(t)
+	if _, err := Apply(targetsWithPi(fp3, "glm-5.3")); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(mustReadStr(t, fp3.piModels)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["providers"].(map[string]any)["ccswitch"] = map[string]any{
+		"name":    "cc-switch",
+		"baseUrl": "http://127.0.0.1:15721",
+		"api":     "anthropic-messages",
+		"apiKey":  "PROXY_MANAGED",
+		"models":  []any{map[string]any{"id": "glm-5.3", "name": "GLM 5.3"}},
+	}
+	residual, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, fp3.piModels, string(residual))
+	v := CheckPiPointsDock(fp3.piModels, fp3.piSettings, dockBase)
+	if !v.OK || v.NotChecked || !strings.Contains(v.Detail, "警告") ||
+		!strings.Contains(v.Detail, "15721") {
+		t.Fatalf("残留旧条目应绿+警告（不阻断）: %+v", v)
+	}
+
+	// 钉④：~/.pi 未装（两文件皆不在位）→ not_checked 不产红
+	fp4 := interimFixture(t) // 家目录无 ~/.pi
+	v = CheckPiPointsDock(filepath.Join(fp4.home, ".pi", "agent", "models.json"),
+		filepath.Join(fp4.home, ".pi", "agent", "settings.json"), dockBase)
+	if !v.NotChecked || v.OK {
+		t.Fatalf("~/.pi 未装应 not_checked 不产红: %+v", v)
+	}
+
+	// 补钉：单边缺失＝异形（与写入器成对纪律同源）→ fail
+	fp5 := piFixture(t)
+	if err := os.Remove(fp5.piSettings); err != nil {
+		t.Fatal(err)
+	}
+	if v := CheckPiPointsDock(fp5.piModels, fp5.piSettings, dockBase); v.NotChecked || v.OK ||
+		!strings.Contains(v.Detail, "成对") {
+		t.Fatalf("单边缺失应失败并点名成对纪律: %+v", v)
+	}
+
+	// 补钉：坏 JSON → fail 转人工
+	fp6 := piFixture(t)
+	writeFixture(t, fp6.piModels, "{oops")
+	if v := CheckPiPointsDock(fp6.piModels, fp6.piSettings, dockBase); v.OK || v.NotChecked ||
+		!strings.Contains(v.Detail, "解析失败") {
+		t.Fatalf("坏 JSON 应失败并报解析: %+v", v)
 	}
 }
 
