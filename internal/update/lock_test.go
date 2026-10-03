@@ -97,26 +97,7 @@ func TestLockBusyHolder(t *testing.T) {
 	}
 }
 
-// TestLockBusyHolderViaRelayCopy 盲区修(票04):持有者是自中继副本(映像 ==
-// target+".supervisor-copy",监督者 --self-relay 交棒后的常态形态)→ 也判活,
-// 不得误接管——修前副本映像恒判陈旧,并发第二次 update 会接管成双监督者齐跑。
-func TestLockBusyHolderViaRelayCopy(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "ferryman.exe")
-	copyImg := target + ".supervisor-copy"
-	probes := fakeProbes{alive: map[int]bool{5150: true}, images: map[int]string{5150: copyImg}}
-	writeLock(t, dir, lockInfo{PID: 5150, Image: copyImg, Generation: 2})
-
-	_, err := acquireUpdateLock(dir, target, probes.aliveFn, probes.imageFn, quietLogf)
-	if !errors.Is(err, ErrUpdateInProgress) {
-		t.Fatalf("副本持有者应判活(不误接管), got %v", err)
-	}
-	if got := readLockFor(t, dir); got.PID != 5150 || got.Generation != 2 {
-		t.Fatalf("锁文件应原样保留持有者的, got %+v", got)
-	}
-}
-
-// TestLockBusyHolderViaOldBackupFamily 备份族判据(票01 三族定案):两步换装
+// TestLockBusyHolderViaOldBackupFamily 备份族判据(票01 定案):两步换装
 // 第①步把目标改名为 ferryman.exe.old-<版本>(backupPath 备份位)后,Windows
 // 运行映像路径随文件改名更新——活监督者的映像即 .old-* 形态,现行判据不含
 // 它,并发第二个 update 会误判锁陈旧接管成双监督者齐跑。备份族=同目录
@@ -229,7 +210,7 @@ func TestLockAliveButImageUnqueryable(t *testing.T) {
 
 // TestLockHeldByLiveSupervisor 导出只读助手(票04 守护层让路的单源判定):
 // 锁态到 (持有者PID, 是否持有) 的映射——不存在/内容坏/持有者死/映像无关一律
-// (0,false)=照常启动;目标映像与自中继副本映像皆判持有。探针全注入,测试
+// (0,false)=照常启动;目标映像与 .old-* 备份族映像皆判持有。探针全注入,测试
 // 不依赖真进程面;daemon 侧只经本助手判定,不复制锁逻辑。
 func TestLockHeldByLiveSupervisor(t *testing.T) {
 	dir := t.TempDir()
@@ -268,15 +249,8 @@ func TestLockHeldByLiveSupervisor(t *testing.T) {
 		t.Fatalf("目标映像持有者应判持有, got pid=%d held=%v", pid, held)
 	}
 
-	// 映像 == 自中继副本 → (4242,true)(盲区修同步暴露给守护层让路面)
-	relay := fakeProbes{alive: map[int]bool{4242: true},
-		images: map[int]string{4242: target + ".supervisor-copy"}}
-	if pid, held := LockHeldByLiveSupervisor(dir, target, relay.aliveFn, relay.imageFn); !held || pid != 4242 {
-		t.Fatalf("副本映像持有者应判持有, got pid=%d held=%v", pid, held)
-	}
-
 	// 映像 == 同目录 .old-* 备份族(改名后监督者,含 .stale- 变体)→ (4242,true)
-	// (票01 三族定案同步暴露给守护层让路面——与 holderAlive 同源,只钉不改)
+	// (票01 定案同步暴露给守护层让路面——与 holderAlive 同源,只钉不改)
 	backup := fakeProbes{alive: map[int]bool{4242: true},
 		images: map[int]string{4242: filepath.Join(dir, "ferryman.exe.old-v0.5.1")}}
 	if pid, held := LockHeldByLiveSupervisor(dir, target, backup.aliveFn, backup.imageFn); !held || pid != 4242 {

@@ -2,7 +2,7 @@
 //
 // 两个路由,都注册在 Routes()(panelMux 首块调用,cmd 装配层零改动即挂上):
 //   - GET /api/config-tuning 数据代理:服务端读 <dataDir>/daemon.token 持
-//     Bearer 调守护 GET /config_tuning(127.0.0.1:[server].port,缺省 7311),
+//     Bearer 调守护 GET /config_tuning(127.0.0.1:[server].port,缺省 15700),
 //     原样中转 JSON。token 只活在服务端,永不出现在给页面的任何字节里。
 //     守护不可达/token 缺席 → 200 {ok:false, note} 如实降级(页面渲染说明,
 //     不编造数据)。

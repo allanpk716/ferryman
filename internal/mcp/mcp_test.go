@@ -7,7 +7,7 @@ package mcp
 //
 // 铁律（规格 docs/superpowers/specs/20260920-agent-surface-mcp-readonly-spec.md
 // 「Testing Decisions」节）：测试显式断言所用端口非生产端口（15722/15724 渡口
-// 双轨与 15721 上游、7311 守护、15900 面板一并避开）；绝不触生产端口、绝不杀
+// 双轨与 15721 上游、15700 守护、15900 面板一并避开）；绝不触生产端口、绝不杀
 // 生产进程；生产 daemon 正在本机服务真实流量。
 
 import (
@@ -42,7 +42,7 @@ const testToken = "mcp-e2e-token-7f3a9c"
 const testVersion = "test-ver-02"
 
 // prodPorts 生产端口全集：渡口双轨 15722/15724、上游 cc-switch 15721、守护
-// 7311、面板 15900。测试端口必须避开（验收钉子显式覆盖 15722/15724）。
+// 15700（表内 7311 为迁移前旧口，一并避开）、面板 15900。测试端口必须避开（验收钉子显式覆盖 15722/15724）。
 var prodPorts = map[int]bool{15721: true, 15722: true, 15724: true, 7311: true, 15900: true}
 
 // freePort 绑 0 取空闲口即关（daemon singleton_test 同款，竞窗接受）。

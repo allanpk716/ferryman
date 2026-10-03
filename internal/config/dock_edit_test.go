@@ -351,6 +351,55 @@ func TestEditDockUpstreamsMissingFileErrors(t *testing.T) {
 	}
 }
 
+// TestAddDockUpstreamPiUnsupportedFlagPersists 票12：pi 否决位落盘（renderUpstreamEntry
+// pi 渲染行）与解析回读互逆；写入不报错即 verifyDockEdit 过。
+func TestAddDockUpstreamPiUnsupportedFlagPersists(t *testing.T) {
+	f := writeCfg(t, editCfgSrc)
+	up := DockUpstream{BaseURL: "https://pi.example.com/anthropic",
+		APIKey:   "sk-pi-0000aabb",
+		ModelMap: map[string]string{"default": "m-pi", "pi": "glm-pi"},
+		Dialect:  DialectAnthropic, Pi: PiUnsupported}
+	if err := AddDockUpstream(f, "piveto", up); err != nil {
+		t.Fatalf("AddDockUpstream: %v", err)
+	}
+	if after := readFileEdit(t, f); !strings.Contains(after, `pi = "unsupported"`) {
+		t.Errorf("pi 否决位应落盘:\n%s", after)
+	}
+	cfg := mustLoadEdit(t, f)
+	got, ok := cfg.Dock.Upstreams["piveto"]
+	if !ok || got.PiAvailability() != PiUnsupported {
+		t.Errorf("pi=unsupported 应落盘并否决推导, got %+v", got)
+	}
+}
+
+// TestAddDockUpstreamCodexAndPiVetoCoRender 票12：codex/pi 否决位并存时各自成
+// 行渲染，pi 行在 codex 行后（renderUpstreamEntry 字段序）。
+func TestAddDockUpstreamCodexAndPiVetoCoRender(t *testing.T) {
+	f := writeCfg(t, editCfgSrc)
+	up := DockUpstream{BaseURL: "https://cp.example.com/anthropic",
+		APIKey:   "sk-cp-0000aabb",
+		ModelMap: map[string]string{"default": "m-cp"},
+		Dialect:  DialectAnthropic, Codex: CodexUnsupported, Pi: PiUnsupported}
+	if err := AddDockUpstream(f, "cpveto", up); err != nil {
+		t.Fatalf("AddDockUpstream: %v", err)
+	}
+	after := readFileEdit(t, f)
+	block := after[strings.Index(after, "[dock.upstreams.cpveto]"):]
+	ci := strings.Index(block, `codex = "unsupported"`)
+	piIdx := strings.Index(block, `pi = "unsupported"`)
+	if ci < 0 || piIdx < 0 {
+		t.Fatalf("codex/pi 否决位应各自成行落盘:\n%s", after)
+	}
+	if piIdx < ci {
+		t.Errorf("pi 行应渲染在 codex 行后:\n%s", after)
+	}
+	cfg := mustLoadEdit(t, f)
+	got := cfg.Dock.Upstreams["cpveto"]
+	if got.CodexAvailability() != CodexUnsupported || got.PiAvailability() != PiUnsupported {
+		t.Errorf("双否决位回读不符: %+v", got)
+	}
+}
+
 func TestAddDockUpstreamNoDockSectionRefused(t *testing.T) {
 	f := writeCfg(t, "[server]\nport = 7399\n")
 	if err := AddDockUpstream(f, "a", DockUpstream{BaseURL: "https://a.example",

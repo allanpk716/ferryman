@@ -169,16 +169,6 @@ func TestCmdUpdate(t *testing.T) {
 		t.Fatalf("--supervise 应同无参走执行路径: calls=%d spec=%q", calls, gotSpec)
 	}
 
-	// --self-relay 已废弃（自中继副本机制 v0.5.2/票02 删除）：解析但忽略
-	// （次版删旗标）——旗标在场不报错,执行路径照常走,值不再透传任何面。
-	calls = 0
-	if code := cmdUpdate([]string{"--supervise", "--self-relay"}, &buf); code != 0 {
-		t.Fatalf("--self-relay 退出码 = %d, want 0（解析但忽略）", code)
-	}
-	if calls != 1 {
-		t.Fatalf("--self-relay 应照常走执行路径（解析但忽略）: calls=%d", calls)
-	}
-
 	buf.Reset()
 	if code := cmdUpdate([]string{"--check", "v0.1.0", "extra"}, &buf); code != 2 {
 		t.Fatalf("多余位置参数退出码 = %d, want 2", code)
@@ -348,5 +338,189 @@ func TestTrayUpgradeLaunchFlow(t *testing.T) {
 	wantErr := errors.New("boom")
 	if err := upgradeLaunchFlow(`ferryman.exe`, func(string, ...string) error { return wantErr }); !errors.Is(err, wantErr) {
 		t.Fatalf("启动失败应原样上抛: got %v", err)
+	}
+}
+
+// ---- help 安全契约（本票）：-h/--help 永不触发真实动作 ----
+
+// captureStd 捕获进程级 stdout/stderr（usage/帮助面直写 os.Stdout/os.Stderr，
+// 无注入缝——测试以管道换底取回，两路输出按流分桶；测试串行跑，无并发互踩）。
+func captureStd(t *testing.T, fn func()) (string, string) {
+	t.Helper()
+	oldOut, oldErr := os.Stdout, os.Stderr
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout, os.Stderr = wOut, wErr
+	defer func() { os.Stdout, os.Stderr = oldOut, oldErr }()
+
+	outC := make(chan string, 1)
+	errC := make(chan string, 1)
+	go func() { b, _ := io.ReadAll(rOut); outC <- string(b) }()
+	go func() { b, _ := io.ReadAll(rErr); errC <- string(b) }()
+
+	fn()
+
+	wOut.Close()
+	wErr.Close()
+	return <-outC, <-errC
+}
+
+// TestNoArgCommandsRejectArgs doctor/install-ccswitch 零参数契约（本票①）：
+// 任何非空参数（含 -h/--help/任意词）= 用法错退 2，且注入桩计数为零——拒绝
+// 先于执行（旧缺陷：参数整体丢弃照跑，install-ccswitch -h 会真写宿主配置）。
+// 桩缝参照 runUpdateExecute 的 var 注入先例；真跑 RunDoctor/InjectCCSwitch 的
+// 行为在 internal 包各有单测，这里绝不触。
+func TestNoArgCommandsRejectArgs(t *testing.T) {
+	origDoctor, origInject := runDoctorEntry, injectCCSwitchEntry
+	defer func() { runDoctorEntry, injectCCSwitchEntry = origDoctor, origInject }()
+
+	var doctorCalls, injectCalls int
+	runDoctorEntry = func(string) int { doctorCalls++; return 0 }
+	injectCCSwitchEntry = func(string, string, []string) int { injectCalls++; return 0 }
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"doctor -h", []string{"doctor", "-h"}},
+		{"doctor --help", []string{"doctor", "--help"}},
+		{"doctor extra", []string{"doctor", "extra"}},
+		{"install-ccswitch -h", []string{"install-ccswitch", "-h"}},
+		{"install-ccswitch --help", []string{"install-ccswitch", "--help"}},
+		{"install-ccswitch extra", []string{"install-ccswitch", "extra"}},
+	}
+	for _, tc := range cases {
+		var code int
+		_, stderr := captureStd(t, func() { code = run(tc.args) })
+		if code != 2 {
+			t.Fatalf("%s: 退出码 = %d, want 2（用法错）", tc.name, code)
+		}
+		if !strings.Contains(stderr, "用法:") {
+			t.Fatalf("%s: 应打印用法到 stderr, got %q", tc.name, stderr)
+		}
+	}
+	if doctorCalls != 0 {
+		t.Fatalf("doctor 注入桩被调 %d 次, want 0（拒绝先于执行）", doctorCalls)
+	}
+	if injectCalls != 0 {
+		t.Fatalf("install-ccswitch 注入桩被调 %d 次, want 0（拒绝先于执行）", injectCalls)
+	}
+
+	// 零参数形态照常进桩（缝接线健全性；桩返回 0 = 成功退出码）
+	if code := run([]string{"doctor"}); code != 0 || doctorCalls != 1 {
+		t.Fatalf("doctor 零参应进桩: code=%d calls=%d", code, doctorCalls)
+	}
+	if code := run([]string{"install-ccswitch"}); code != 0 || injectCalls != 1 {
+		t.Fatalf("install-ccswitch 零参应进桩: code=%d calls=%d", code, injectCalls)
+	}
+}
+
+// TestFamilyHelpContract 七族 -h/--help（本票②）：account/tuning/autostart/
+// watchdog/upstream/provider/cutover 在分发层识别 -h/--help——打印各自 usage
+// 常量退 0（帮助走 stdout）；用法错分支（缺参/未知子命令）依旧退 2 且输出含
+// usage。经 run() 分发走真路径，钉住"分发层识别"而非仅 cmd 函数本面。
+func TestFamilyHelpContract(t *testing.T) {
+	// 常量不可寻址——各族 usage 以名取值对照
+	usages := map[string]string{
+		"account":   accountUsage,
+		"autostart": autostartUsage,
+		"watchdog":  watchdogUsage,
+		"cutover":   cutoverUsage,
+		"tuning":    tuningUsage,
+		"upstream":  upstreamUsage,
+		"provider":  providerUsage,
+	}
+	helps := []struct {
+		name   string
+		args   []string
+		family string
+	}{
+		{"account -h", []string{"account", "-h"}, "account"},
+		{"account --help", []string{"account", "--help"}, "account"},
+		{"autostart -h", []string{"autostart", "-h"}, "autostart"},
+		{"autostart --help", []string{"autostart", "--help"}, "autostart"},
+		{"watchdog -h", []string{"watchdog", "-h"}, "watchdog"},
+		{"watchdog --help", []string{"watchdog", "--help"}, "watchdog"},
+		{"cutover -h", []string{"cutover", "-h"}, "cutover"},
+		{"cutover --help", []string{"cutover", "--help"}, "cutover"},
+		{"tuning -h", []string{"tuning", "-h"}, "tuning"},
+		{"tuning --help", []string{"tuning", "--help"}, "tuning"},
+		{"upstream -h", []string{"upstream", "-h"}, "upstream"},
+		{"upstream --help", []string{"upstream", "--help"}, "upstream"},
+		{"provider -h", []string{"provider", "-h"}, "provider"},
+		{"provider --help", []string{"provider", "--help"}, "provider"},
+	}
+	for _, tc := range helps {
+		var code int
+		stdout, _ := captureStd(t, func() { code = run(tc.args) })
+		if code != 0 {
+			t.Fatalf("%s: 退出码 = %d, want 0", tc.name, code)
+		}
+		if want := usages[tc.family]; stdout != want {
+			t.Fatalf("%s: 帮助输出应恰为该族 usage 常量:\ngot  %q\nwant %q", tc.name, stdout, want)
+		}
+	}
+
+	errs := []struct {
+		name string
+		args []string
+	}{
+		{"account 无参", []string{"account"}},
+		{"account 未知子命令", []string{"account", "nope"}},
+		{"autostart 未知子命令", []string{"autostart", "nope"}},
+		{"watchdog 未知子命令", []string{"watchdog", "nope"}},
+		{"cutover 无参", []string{"cutover"}},
+		{"cutover 未知子命令", []string{"cutover", "nope"}},
+		{"tuning 无参", []string{"tuning"}},
+		{"tuning 未知子命令", []string{"tuning", "nope"}},
+		{"upstream 无参", []string{"upstream"}},
+		{"upstream 未知子命令", []string{"upstream", "nope"}},
+		{"provider 无参", []string{"provider"}},
+		{"provider 未知子命令", []string{"provider", "nope"}},
+	}
+	for _, tc := range errs {
+		var code int
+		_, stderr := captureStd(t, func() { code = run(tc.args) })
+		if code != 2 {
+			t.Fatalf("%s: 退出码 = %d, want 2", tc.name, code)
+		}
+		if !strings.Contains(stderr, "用法:") {
+			t.Fatalf("%s: 用法错应打印 usage, got %q", tc.name, stderr)
+		}
+	}
+}
+
+// TestTopLevelUsageContract 顶层用法面（本票③）：-h/--help/help 三入口退 0 且
+// 输出恰为顶层 usage；usage 含 update 条目（--check/--prerelease/--wait-quiet/
+// --force/版本参数，照 main.go 文件头注释形态）与八个分组标题；总行数不增
+// （钉 ≤ 重构前 69 行基线——"篇幅明显缩短"的防线，防将来静默回涨）。
+func TestTopLevelUsageContract(t *testing.T) {
+	for _, entry := range []string{"-h", "--help", "help"} {
+		var code int
+		stdout, _ := captureStd(t, func() { code = run([]string{entry}) })
+		if code != 0 {
+			t.Fatalf("%s: 退出码 = %d, want 0", entry, code)
+		}
+		if stdout != usage {
+			t.Fatalf("%s: 输出应恰为顶层 usage 常量", entry)
+		}
+	}
+	for _, want := range []string{
+		"ferryman update [--check] [vX.Y.Z] [--prerelease]",
+		"--wait-quiet", "--force",
+		"serve", "体检", "安装", "账本", "渡口与供应商", "调参", "换装", "工具",
+	} {
+		if !strings.Contains(usage, want) {
+			t.Fatalf("顶层 usage 缺条目/分组: %q", want)
+		}
+	}
+	if n := strings.Count(strings.TrimRight(usage, "\n"), "\n") + 1; n > 69 {
+		t.Fatalf("顶层 usage %d 行, want ≤ 69（重构前基线，总行数不增）", n)
 	}
 }

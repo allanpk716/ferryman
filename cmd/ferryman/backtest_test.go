@@ -293,19 +293,64 @@ func TestBacktestZeroWindows(t *testing.T) {
 	}
 }
 
-// ---- 验收 6：ttl_s 未配置 → ErrTTLUnset 如实空态（退出码 1，报告照落） ----
+// ---- 验收 6：ttl_s 未配置 → 引擎未产出=数据空态非失败（票02 退出码契约：
+// 空态与失败分离——报告照落 + 输出明示空态原因 + 退出码 0；真错误见验收 7） ----
 
 func TestBacktestTTLUnset(t *testing.T) {
 	cfgPath := btMakeConfig(t, btMakeData(t, []btWin{
 		{"s1", "C:/work/alpha", 600, 100000},
 	}), 0, true) // 无 [heartbeat] 节 = ttl_s 未配置
 
-	code, _, stderr := btRun(t, "--config", cfgPath, "--json")
-	if code != 1 {
-		t.Fatalf("ttl 未配置退出码 = %d, want 1", code)
+	// 文本模式：exit 0 + stdout 空态标注（明示原因 ttl_s）+ 报告照落（引擎未产出占位）
+	outPath := filepath.Join(t.TempDir(), "report.md")
+	code, stdout, stderr := btRun(t, "--config", cfgPath, "--out", outPath)
+	if code != 0 {
+		t.Fatalf("数据空态退出码 = %d, want 0（空态非失败）\nstdout=%s\nstderr=%s", code, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "ttl_s") {
-		t.Fatalf("stderr 应含 ErrTTLUnset 语义（ttl_s）: %q", stderr)
+	if !strings.Contains(stdout, "数据空态") || !strings.Contains(stdout, "退出码 0") {
+		t.Fatalf("stdout 缺空态标注: %q", stdout)
+	}
+	if !strings.Contains(stdout, "ttl_s") {
+		t.Fatalf("stdout 空态标注应明示原因（ttl_s）: %q", stdout)
+	}
+	b, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("空态报告应照常落盘: %v", err)
+	}
+	if !strings.Contains(string(b), "（引擎未产出）") {
+		t.Fatal("空态报告缺「引擎未产出」占位")
+	}
+
+	// --json 模式：stdout 保持纯 JSON（BuildView 零值优雅呈现，装载计数照常），
+	// 空态标注走 stderr（stdout 机器可解析纪律）
+	code, stdout, stderr = btRun(t, "--config", cfgPath, "--json")
+	if code != 0 {
+		t.Fatalf("--json 空态退出码 = %d, want 0\nstderr=%s", code, stderr)
+	}
+	if v := btDecodeJSON(t, stdout); v.Counts.ReplayWindows != 1 {
+		t.Fatalf("--json replay = %d, want 1（装载照常）", v.Counts.ReplayWindows)
+	}
+	if !strings.Contains(stderr, "数据空态") || !strings.Contains(stderr, "ttl_s") {
+		t.Fatalf("stderr 缺空态标注/原因（ttl_s）: %q", stderr)
+	}
+}
+
+// ---- 验收 7：真错误（账本读不到：data_dir 无 accounts/ 子目录）→ 退出码 1、
+// 报告不落（票02 契约：空态与失败分离——失败路径不因空态改造放松） ----
+
+func TestBacktestLedgerUnreadable(t *testing.T) {
+	cfgPath := btMakeConfig(t, t.TempDir(), 600, true) // 空 data_dir，无 accounts/
+
+	outPath := filepath.Join(t.TempDir(), "report.md")
+	code, _, stderr := btRun(t, "--config", cfgPath, "--out", outPath)
+	if code != 1 {
+		t.Fatalf("账本读不到退出码 = %d, want 1", code)
+	}
+	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+		t.Fatal("真错误不应落报告")
+	}
+	if !strings.Contains(stderr, "读账本目录失败") {
+		t.Fatalf("stderr 应含失败原因: %q", stderr)
 	}
 }
 
@@ -341,5 +386,26 @@ func TestGlobList(t *testing.T) {
 	}
 	if got := g.String(); got != "*ft-lab*,*压测*" {
 		t.Fatalf("String() = %q", got)
+	}
+}
+
+// ---- 票02：顶层 usage 文末退出码契约三行（0=成功含空态语义 / 1=失败 /
+// 2=用法错——为票06 CLI.md 底稿） ----
+
+func TestUsageExitCodeContract(t *testing.T) {
+	trimmed := strings.TrimRight(usage, "\n")
+	// 文末断言：契约第三行收尾，其后无其它正文
+	if !strings.HasSuffix(trimmed, "2 = 用法错（未知子命令/未知旗标/多余位置参数）。") {
+		i := strings.LastIndex(trimmed, "退出码")
+		tail := "（usage 无退出码字样）"
+		if i >= 0 {
+			tail = trimmed[i:]
+		}
+		t.Fatalf("退出码契约未进 usage 文末，末尾相关内容:\n%s", tail)
+	}
+	for _, want := range []string{"0 = 成功", "数据空态", "1 = 失败", "2 = 用法错"} {
+		if !strings.Contains(trimmed, want) {
+			t.Fatalf("usage 退出码契约缺 %q", want)
+		}
 	}
 }

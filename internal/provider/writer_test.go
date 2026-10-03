@@ -10,8 +10,11 @@
 package provider
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -134,6 +137,8 @@ var codexInterimOAuthForm = strings.Replace(codexInterimForm,
 
 type fixturePaths struct {
 	home, cc, codexCfg, orcaHome, orcaCfg string
+	// pi 两文件（票10 第四目标；零值＝该夹具不带 pi 目标——targetsOf 不派生）。
+	piModels, piSettings string
 }
 
 func authPathOf(cfgPath string) string {
@@ -230,11 +235,16 @@ func lineDiff(t *testing.T, oldRaw, newRaw string) [][3]string {
 	return out
 }
 
-// bakFiles 三处目录里的全部 bak-ferryman 备份（完整路径）。
+// bakFiles 各目录里的全部 bak-ferryman 备份（完整路径）。pi 目录仅在夹具带
+// pi 目标时纳入（零值路径 Dir("") 会扫到工作目录）。
 func bakFiles(t *testing.T, fp fixturePaths) []string {
 	t.Helper()
 	var out []string
-	for _, dir := range []string{filepath.Dir(fp.cc), filepath.Dir(fp.codexCfg), filepath.Dir(fp.orcaCfg)} {
+	dirs := []string{filepath.Dir(fp.cc), filepath.Dir(fp.codexCfg), filepath.Dir(fp.orcaCfg)}
+	if fp.piModels != "" {
+		dirs = append(dirs, filepath.Dir(fp.piModels))
+	}
+	for _, dir := range dirs {
 		matches, err := filepath.Glob(filepath.Join(dir, "*"+backupMarker+"*"))
 		if err != nil {
 			t.Fatal(err)
@@ -572,5 +582,417 @@ func TestApplyRequiresDockBaseURL(t *testing.T) {
 	tg.DockBaseURL = ""
 	if _, err := Apply(tg); err == nil {
 		t.Fatal("无渡口地址应拒绝")
+	}
+}
+
+// ---- pi 第四目标（票10）：models.json / settings.json 成对外科 ----
+//
+// 夹具形态对照 cc-switch 参考实现（.scratch/cc-switch-ref/src-tauri/src/pi_config）：
+// models.json 条目 {name,baseUrl,api,apiKey,models:[{id,name,reasoning,input,
+// maxTokens,compat?}]}，input 是字符串数组；旧 ccswitch 条目指向 15721（死条目
+// 清理靶），其 models 内 glm-5.3 带 compat（收割后必须剥除）。测试路径全参数化
+// （t.TempDir 下合成家目录），真机 ~/.pi 零触碰。
+
+const piModelsCCSwitchEra = `{
+  "providers": {
+    "anthropic": {
+      "name": "Anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "api": "anthropic-messages",
+      "apiKey": "sk-ant-noop",
+      "models": [
+        {
+          "id": "claude-fable-5",
+          "name": "Claude Fable 5",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "maxTokens": 128000
+        }
+      ]
+    },
+    "ccswitch": {
+      "name": "cc-switch",
+      "baseUrl": "http://127.0.0.1:15721",
+      "api": "anthropic-messages",
+      "apiKey": "PROXY_MANAGED",
+      "models": [
+        {
+          "id": "glm-5.3",
+          "name": "GLM 5.3",
+          "reasoning": false,
+          "input": ["text"],
+          "maxTokens": 16384,
+          "compat": { "thinkingFormat": "anthropic" }
+        }
+      ]
+    }
+  }
+}
+`
+
+const piSettingsCCSwitchEra = `{
+  "defaultProvider": "ccswitch",
+  "defaultModel": "glm-5.3",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "C:/bin/pi-hook.cmd", "timeout": 30 }
+        ]
+      }
+    ]
+  },
+  "lastChangelogVersion": "3.20.4"
+}
+`
+
+// piFixture interim 家目录 + pi 两文件落位（cc-switch 时代形态）。
+func piFixture(t *testing.T) fixturePaths {
+	t.Helper()
+	fp := interimFixture(t)
+	fp.piModels = filepath.Join(fp.home, ".pi", "agent", "models.json")
+	fp.piSettings = filepath.Join(fp.home, ".pi", "agent", "settings.json")
+	writeFixture(t, fp.piModels, piModelsCCSwitchEra)
+	writeFixture(t, fp.piSettings, piSettingsCCSwitchEra)
+	return fp
+}
+
+// targetsWithPi targetsOf + pi 目标三参（主模型 id 模拟票09 PiModel() 派生侧）。
+func targetsWithPi(fp fixturePaths, piModel string) Targets {
+	tg := targetsOf(fp)
+	tg.PiModels, tg.PiSettings, tg.PiModel = fp.piModels, fp.piSettings, piModel
+	return tg
+}
+
+// pi 两文件成对改写：死条目（15721）清理、ferryman 条目四要素、收割模型剥
+// compat 保真值、他人条目语义原样；settings 两键改写、hooks/lastChangelog
+// 他人键逐字节原样；备份五份一组同戳（cc/codex/orca/pi 两文件）。
+func TestApplyPiPairSurgicalGroupBackup(t *testing.T) {
+	fp := piFixture(t)
+	oldModels := mustReadStr(t, fp.piModels)
+	rep, err := Apply(targetsWithPi(fp, "glm-5.3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ---- models.json ----
+	nowModels := mustReadStr(t, fp.piModels)
+	var oldDoc, newDoc map[string]any
+	if err := json.Unmarshal([]byte(oldModels), &oldDoc); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(nowModels), &newDoc); err != nil {
+		t.Fatal(err)
+	}
+	oldProvs := oldDoc["providers"].(map[string]any)
+	newProvs := newDoc["providers"].(map[string]any)
+	if _, has := newProvs["ccswitch"]; has {
+		t.Fatal("ccswitch 死条目（15721）应被清理")
+	}
+	if !reflect.DeepEqual(oldProvs["anthropic"], newProvs["anthropic"]) {
+		t.Fatalf("他人条目 anthropic 必须语义原样:\n%v\n%v",
+			oldProvs["anthropic"], newProvs["anthropic"])
+	}
+	fm, ok := newProvs["ferryman"].(map[string]any)
+	if !ok {
+		t.Fatalf("ferryman 条目应在:\n%s", nowModels)
+	}
+	if fm["baseUrl"] != dockBase || fm["api"] != "anthropic-messages" ||
+		fm["apiKey"] != PlaceholderToken || fm["name"] != "ferryman" {
+		t.Fatalf("ferryman 条目形态不符: %v", fm)
+	}
+	ms, _ := fm["models"].([]any)
+	if len(ms) != 1 {
+		t.Fatalf("models 应恰一条（收割的 glm-5.3）: %v", ms)
+	}
+	m0, _ := ms[0].(map[string]any)
+	if m0["id"] != "glm-5.3" || m0["name"] != "GLM 5.3" || m0["reasoning"] != false ||
+		m0["maxTokens"] != float64(16384) {
+		t.Fatalf("收割模型真值（input/maxTokens 等）应保留: %v", m0)
+	}
+	if in, ok := m0["input"].([]any); !ok || len(in) != 1 || in[0] != "text" {
+		t.Fatalf("收割模型 input 应保留: %v", m0["input"])
+	}
+	if _, has := m0["compat"]; has {
+		t.Fatal("收割模型须剥除 compat（渡口条目不带 compat）")
+	}
+	// ---- settings.json ----
+	nowS := mustReadStr(t, fp.piSettings)
+	for _, want := range []string{
+		`"defaultProvider": "ferryman"`,
+		`"defaultModel": "glm-5.3"`,
+		`"command": "C:/bin/pi-hook.cmd"`, // hooks 他人键原样（外科）
+		`"lastChangelogVersion": "3.20.4"`,
+	} {
+		if !strings.Contains(nowS, want) {
+			t.Errorf("settings.json 缺 %q:\n%s", want, nowS)
+		}
+	}
+	// ---- 备份：五份一组同戳 ----
+	backs := bakFiles(t, fp)
+	if len(backs) != 5 {
+		t.Fatalf("备份应五份一组（cc/codex/orca/pi 两文件）, got %d: %v", len(backs), backs)
+	}
+	stamps := map[string]bool{}
+	for _, n := range backs {
+		m := bakStampRe.FindStringSubmatch(n)
+		if m == nil {
+			t.Fatalf("备份命名不合 bak-ferryman 惯例: %s", n)
+		}
+		stamps[m[1]] = true
+	}
+	if len(stamps) != 1 {
+		t.Fatalf("五份备份应同戳成组: %v", backs)
+	}
+	// 报告：pi 两行 written
+	sawM, sawS := false, false
+	for _, r := range rep.Targets {
+		if r.Name == targetPiModels {
+			sawM = r.Action == ActionWritten
+		}
+		if r.Name == targetPiSettings {
+			sawS = r.Action == ActionWritten
+		}
+	}
+	if !sawM || !sawS {
+		t.Fatalf("pi 两行应 written: %+v", rep.Targets)
+	}
+}
+
+// 无收割源（死条目无同 id 模型、无旧 ferryman 条目）→ 保守合成一条模型项
+// （不带 compat/contextWindow），settings defaultModel 对齐到合成 id。
+func TestApplyPiSynthesizesWhenNoHarvest(t *testing.T) {
+	fp := piFixture(t)
+	if _, err := Apply(targetsWithPi(fp, "kimi-k3")); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(mustReadStr(t, fp.piModels)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	fm := doc["providers"].(map[string]any)["ferryman"].(map[string]any)
+	ms := fm["models"].([]any)
+	if len(ms) != 1 {
+		t.Fatalf("无收割源应恰一条合成项: %v", ms)
+	}
+	m0 := ms[0].(map[string]any)
+	if m0["id"] != "kimi-k3" || m0["name"] != "kimi-k3" || m0["reasoning"] != false ||
+		m0["maxTokens"] != float64(32000) {
+		t.Fatalf("合成形态不符: %v", m0)
+	}
+	if in, _ := m0["input"].([]any); len(in) != 1 || in[0] != "text" {
+		t.Fatalf(`合成 input 应 ["text"]: %v`, m0["input"])
+	}
+	for _, k := range []string{"compat", "contextWindow"} {
+		if _, has := m0[k]; has {
+			t.Errorf("合成项不应带 %s", k)
+		}
+	}
+	if s := mustReadStr(t, fp.piSettings); !strings.Contains(s, `"defaultModel": "kimi-k3"`) {
+		t.Errorf("defaultModel 应对齐 kimi-k3:\n%s", s)
+	}
+}
+
+// 幂等：二跑零写入零新增备份，pi 两行 unchanged。
+func TestApplyPiIdempotentSecondRunZeroWrite(t *testing.T) {
+	fp := piFixture(t)
+	if _, err := Apply(targetsWithPi(fp, "glm-5.3")); err != nil {
+		t.Fatal(err)
+	}
+	first := snapshot(t, fp.cc, fp.codexCfg, fp.orcaCfg, fp.piModels, fp.piSettings)
+	n := len(bakFiles(t, fp))
+	rep, err := Apply(targetsWithPi(fp, "glm-5.3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertUnchanged(t, first)
+	if got := len(bakFiles(t, fp)); got != n {
+		t.Fatalf("幂等跑不得新增备份: %d→%d", n, got)
+	}
+	sawM, sawS := false, false
+	for _, r := range rep.Targets {
+		if r.Name == targetPiModels {
+			sawM = r.Action == ActionUnchanged
+		}
+		if r.Name == targetPiSettings {
+			sawS = r.Action == ActionUnchanged
+		}
+	}
+	if !sawM || !sawS {
+		t.Fatalf("pi 两行应 unchanged: %+v", rep.Targets)
+	}
+}
+
+// 异形拒绝：models 空（pi 键缺）/结构不合/单边缺失→零写入零备份、报因转人工。
+func TestApplyPiMalformedRefusedZeroWrite(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(fp fixturePaths)
+		model   string // 注入的 pi 主模型（缺省 glm-5.3；空＝模拟 model_map 无 pi 键）
+		wantSub string
+	}{
+		{"models 非法 JSON", func(fp fixturePaths) {
+			writeFixture(t, fp.piModels, "{oops")
+		}, "glm-5.3", "解析失败"},
+		{"models 缺 providers", func(fp fixturePaths) {
+			writeFixture(t, fp.piModels, `{"nope": 1}`)
+		}, "glm-5.3", "providers"},
+		{"models 根非对象", func(fp fixturePaths) {
+			writeFixture(t, fp.piModels, `[]`)
+		}, "glm-5.3", "结构不合"},
+		{"models 条目非对象", func(fp fixturePaths) {
+			writeFixture(t, fp.piModels, `{"providers": {"weird": 3}}`)
+		}, "glm-5.3", "结构不合"},
+		{"settings 非法 JSON", func(fp fixturePaths) {
+			writeFixture(t, fp.piSettings, "{oops")
+		}, "glm-5.3", "解析失败"},
+		{"settings 缺 defaultProvider", func(fp fixturePaths) {
+			writeFixture(t, fp.piSettings, `{"defaultModel": "m"}`)
+		}, "glm-5.3", "defaultProvider"},
+		{"settings defaultModel 非字符串", func(fp fixturePaths) {
+			writeFixture(t, fp.piSettings, `{"defaultProvider": "x", "defaultModel": 3}`)
+		}, "glm-5.3", "非字符串"},
+		{"两文件单边缺失", func(fp fixturePaths) {
+			if err := os.Remove(fp.piSettings); err != nil {
+				t.Fatal(err)
+			}
+		}, "glm-5.3", "成对"},
+		{"pi 主模型位缺（model_map 无 pi 键）", func(fp fixturePaths) {}, "", "pi"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := piFixture(t)
+			tc.mutate(fp)
+			// 异形注入后的在场快照（零写入断言基准＝Apply 时刻的盘面）
+			before := map[string][]byte{}
+			for _, p := range []string{fp.cc, fp.codexCfg, fp.orcaCfg, fp.piModels, fp.piSettings} {
+				if b, err := os.ReadFile(p); err == nil {
+					before[p] = b
+				}
+			}
+			_, err := Apply(targetsWithPi(fp, tc.model))
+			if err == nil || !strings.Contains(err.Error(), "转人工") {
+				t.Fatalf("异形应拒绝转人工: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("报错应含 %q: %v", tc.wantSub, err)
+			}
+			for p, b := range before { // 零写入（被用例删掉的文件不在场即零写入）
+				if got := mustReadStr(t, p); got != string(b) {
+					t.Errorf("%s 被改动（异形拒绝须零写入）", p)
+				}
+			}
+			if n := len(bakFiles(t, fp)); n != 0 {
+				t.Errorf("异形拒绝须零备份, got %d", n)
+			}
+		})
+	}
+}
+
+// ~/.pi 未装（两文件皆不在位）→ 跳过+回显，不失败（其余目标照常）。
+func TestApplyPiAbsentSkippedNotFailed(t *testing.T) {
+	fp := interimFixture(t) // 家目录无 ~/.pi
+	tg := targetsOf(fp)
+	tg.PiModels = filepath.Join(fp.home, ".pi", "agent", "models.json")
+	tg.PiSettings = filepath.Join(fp.home, ".pi", "agent", "settings.json")
+	tg.PiModel = "glm-5.3"
+	rep, err := Apply(tg)
+	if err != nil {
+		t.Fatalf("~/.pi 未装应跳过不失败: %v", err)
+	}
+	saw := false
+	for _, r := range rep.Targets {
+		if r.Name == "pi" {
+			saw = r.Action == ActionSkipped
+		}
+	}
+	if !saw {
+		t.Fatalf("pi 目标应 skipped: %+v", rep.Targets)
+	}
+}
+
+// F10 部分失败恢复：第二文件（settings.json）写败 → 按同戳备份恢复两份，
+// 恢复后与接管前基线一致（绝不留半写形态）。
+func TestApplyPiSecondFileWriteFailureRecoversToBaseline(t *testing.T) {
+	fp := piFixture(t)
+	before := snapshot(t, fp.piModels, fp.piSettings)
+	oldWrite := osWriteFile
+	osWriteFile = func(p string, d []byte, perm os.FileMode) error {
+		if p == fp.piSettings {
+			return errors.New("ENOSPC: 模拟写盘失败")
+		}
+		return oldWrite(p, d, perm)
+	}
+	t.Cleanup(func() { osWriteFile = oldWrite })
+	_, err := Apply(targetsWithPi(fp, "glm-5.3"))
+	if err == nil || !strings.Contains(err.Error(), "恢复") {
+		t.Fatalf("第二文件写败应报恢复语义: %v", err)
+	}
+	assertUnchanged(t, before) // 两文件与基线逐字节一致
+}
+
+// 真机形态防回归：CRLF + 4 空格缩进的 models.json 改写后保持原排版风格
+// （缩进单位/换行风格/尾换行照检测复刻——他人条目不因重排漂风格）。
+func TestApplyPiPreservesCRLFAndIndent(t *testing.T) {
+	fp := piFixture(t)
+	crlf := strings.ReplaceAll(strings.ReplaceAll(piModelsCCSwitchEra, "\n", "\r\n"),
+		"  ", "    ") // 4 空格档（粗换——夹具本就 2 空格纯缩进）
+	writeFixture(t, fp.piModels, crlf)
+	if _, err := Apply(targetsWithPi(fp, "glm-5.3")); err != nil {
+		t.Fatal(err)
+	}
+	got := mustReadStr(t, fp.piModels)
+	if !strings.Contains(got, "\r\n") {
+		t.Fatalf("改写后应保持 CRLF 换行:\n%q", got)
+	}
+	if !strings.Contains(got, "\r\n    \"") {
+		t.Fatalf("缩进单位应保持 4 空格:\n%q", got)
+	}
+	if strings.Contains(got, "\r\n  \"") { // 2 空格单位混入＝风格漂移
+		t.Fatalf("缩进单位不得漂回 2 空格:\n%q", got)
+	}
+	if !strings.HasSuffix(got, "\r\n") {
+		t.Fatalf("尾换行应保持:\n%q", got)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("改写产物应合法 JSON: %v", err)
+	}
+	if _, has := doc["providers"].(map[string]any)["ferryman"]; !has {
+		t.Fatal("ferryman 条目应在")
+	}
+}
+
+// --restore 覆盖 pi 两目标：接管后漂移 → 还原回接管前基线。
+func TestRestoreCoversPiPair(t *testing.T) {
+	fp := piFixture(t)
+	origModels := mustReadStr(t, fp.piModels)
+	origSettings := mustReadStr(t, fp.piSettings)
+	if _, err := Apply(targetsWithPi(fp, "glm-5.3")); err != nil {
+		t.Fatal(err)
+	}
+	// 接管后再漂移（模拟外部工具改写）
+	writeFixture(t, fp.piModels, `{"providers": {}}`)
+	writeFixture(t, fp.piSettings, `{"defaultProvider": "drift", "defaultModel": "m"}`)
+	rep, err := Restore(targetsWithPi(fp, "glm-5.3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustReadStr(t, fp.piModels); got != origModels {
+		t.Fatalf("models.json 应回滚到接管前:\n%s", got)
+	}
+	if got := mustReadStr(t, fp.piSettings); got != origSettings {
+		t.Fatalf("settings.json 应回滚到接管前:\n%s", got)
+	}
+	sawM, sawS := false, false
+	for _, r := range rep.Targets {
+		if r.Name == targetPiModels {
+			sawM = r.Action == ActionRestored
+		}
+		if r.Name == targetPiSettings {
+			sawS = r.Action == ActionRestored
+		}
+	}
+	if !sawM || !sawS {
+		t.Fatalf("--restore 应覆盖 pi 两文件: %+v", rep.Targets)
 	}
 }

@@ -1,7 +1,7 @@
 package update
 
 // 替身守护(票05 验收:「测试里的 daemon 一律用测试内编译的替身 exe,随机口、
-// TEMP 数据目录;不碰生产 7311 与仓库根 exe」)。
+// TEMP 数据目录;不碰生产 15700 与仓库根 exe」)。
 //
 // TestDaemonStandin 以 `exe -test.run=TestDaemonStandin` 形态被拉起(exe =
 // 测试二进制的副本,盘上文件尾部追加版本标记);env 开关门控,正常 go test
@@ -191,7 +191,7 @@ func startStandinProcess(t *testing.T, exePath string, port int, token, dataDir 
 	return pid
 }
 
-// freePort 随机空闲口(测试绝不碰生产 7311/15900)。
+// freePort 随机空闲口(测试绝不碰生产 15700/15900)。
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

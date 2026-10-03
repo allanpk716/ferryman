@@ -27,8 +27,13 @@
 //     provider_codex_dock / provider_orca_codex——CC 指向渡口、codex 两份指向
 //     渡口且 wire_api=responses 且 hooks 旗标在位、orca codex 健康（配置存在/
 //     指向渡口/认证形态合法）。判定单源 internal/provider（与接管写入器同一套
-//     解析）；[dock] 未配置 → 三项显式 not_checked（清单 24→27 的计数同步见
+//     解析）；[dock] 未配置 → 三项显式 not_checked（清单 23→26 的计数同步见
 //     doctor_test 的结论行公式）。
+//   - 票11（pi 生效链）：第四项 provider_pi_dock——绿=完整生效链（settings.json
+//     的 defaultProvider 解析到渡口条目 ∧ defaultModel ∈ 该条目 models ∧
+//     api=anthropic-messages ∧ baseUrl=渡口根地址）；~/.pi 未装 → not_checked
+//     不产红；残留旧 15721 条目但生效链正确 → 绿+警告（F9，非生效残留不阻断）。
+//     结论清单计数再 +1（全绿计数 26→27，见 doctor_test 的结论行公式）。
 package installer
 
 import (
@@ -208,16 +213,23 @@ func CheckHookScripts(paths []string) []Check {
 	return out
 }
 
+// CCSwitchDeprecationRoute 弃用路线注记（票13，D15）：ccswitch_snapshots 检查
+// 项处于退役路径——cc-switch 替换完成后，此项随 cc-switch 卸载一并移除；在那
+// 之前检查逻辑保留（机上还有 cc-switch 时照常体检），逐条文案尾挂注记。
+const CCSwitchDeprecationRoute = "（弃用路线：cc-switch 卸载后此项随卸载移除）"
+
 // CheckCCSwitch 全部 claude 供应商快照都带 ferryman 钩子（切换=逐字写入，
 // 缺了就会被抹）（doctor.py check_ccswitch 逐字 + 票22 骑手 M2：闸门事件
 // 豁免同 CheckCCHooks——UserPromptSubmit 缺位 = 提示不失败；其余三事件硬性）。
+// 票13：检查逻辑不删（机上仍有 cc-switch 时仍有用），各出口文案尾加弃用路线
+// 注记 CCSwitchDeprecationRoute。
 func CheckCCSwitch(dbPath string) Check {
 	if _, err := os.Stat(dbPath); err != nil {
-		return Check{true, "未装 CC Switch（跳过）"}
+		return Check{true, "未装 CC Switch（跳过）" + CCSwitchDeprecationRoute}
 	}
 	rows, err := readClaudeProviders(dbPath, 5000)
 	if err != nil {
-		return Check{false, fmt.Sprintf("cc-switch.db 读取失败: %v", err)}
+		return Check{false, fmt.Sprintf("cc-switch.db 读取失败: %v", err) + CCSwitchDeprecationRoute}
 	}
 	var lacking []string
 	gateMissing := false
@@ -230,15 +242,17 @@ func CheckCCSwitch(dbPath string) Check {
 		}
 	}
 	if len(lacking) > 0 {
-		return Check{false, fmt.Sprintf("供应商快照缺钩子: %s（重跑 install-ccswitch）",
-			strings.Join(lacking, ", "))}
+		return Check{false, fmt.Sprintf("供应商快照缺钩子: %s（重跑 install-ccswitch）%s",
+			strings.Join(lacking, ", "), CCSwitchDeprecationRoute)}
 	}
 	if gateMissing {
 		// C12 用户策略：闸门钩子按用户指令未安装——提示不失败
 		return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照钩子在位"+
-			"（缺闸门 UserPromptSubmit——闸门钩子按用户指令未安装，提示不判失败）", len(rows))}
+			"（缺闸门 UserPromptSubmit——闸门钩子按用户指令未安装，提示不判失败）%s",
+			len(rows), CCSwitchDeprecationRoute)}
 	}
-	return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照全带钩子", len(rows))}
+	return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照全带钩子%s",
+		len(rows), CCSwitchDeprecationRoute)}
 }
 
 // snapshotMissing 单快照缺位清单分两桶（票22 骑手 M2）：others = 硬性三事件
@@ -622,7 +636,7 @@ const (
 )
 
 // updateResiduePatterns exe 旁换装残留清扫域（update.cleanSwapResidues 同域）。
-var updateResiduePatterns = []string{"ferryman.exe.new", "ferryman.exe.new.part", "ferryman.exe.swap-tmp*", "ferryman.exe.supervisor-copy*"}
+var updateResiduePatterns = []string{"ferryman.exe.new", "ferryman.exe.new.part", "ferryman.exe.swap-tmp*"}
 
 // CheckUpdateResidues 升级事务残留检查（本票，规格 §C 第9条崩溃恢复，review
 // block F4 配套检测）：journal 在册/半写 + 换装目标 exe 旁 .new/.swap-tmp 残留
@@ -711,6 +725,25 @@ func RepoRoot() string { return repoRoot() }
 // RunDoctor 一键体检真实入口（HOME/exe 面）；返回进程退出码（有 FAIL → 1）。
 // version 版本号经装配参数传入（cmd/ferryman 的 main.version——票02，规格 §A）。
 func RunDoctor(version string) int {
+	return runDoctor(realDoctorDeps(version))
+}
+
+// RunDoctorJSON doctor --json 真实入口（票04）：真装配与 RunDoctor 同一套
+// （realDoctorDeps 单源——两出口绝不各拼一套 deps）；结果经 doctorJSON 序列化
+// （与 agent 面 MCP doctor 同源——CheckResult 逐项 + summary 计数，顶层加
+// version 与 ok 总判定），单行 JSON 到 stdout；退出码与文本面同判（有 fail → 1）。
+func RunDoctorJSON(version string) int {
+	d := realDoctorDeps(version)
+	b, code := doctorJSON(d, version)
+	if b != nil {
+		fmt.Fprintln(d.Out, string(b))
+	}
+	return code
+}
+
+// realDoctorDeps RunDoctor/RunDoctorJSON 共用的真装配（HOME/exe 面 + config
+// 解析的探针目标；公式单源纪律）。
+func realDoctorDeps(version string) doctorDeps {
 	home := homeDir()
 	// 票05：daemon 活性目标经 config 解析（config.Load 优先级：显式参数 >
 	// FERRYMAN_CONFIG > 默认路径）；加载失败回落内置默认口（探针目标与既有
@@ -720,7 +753,7 @@ func RunDoctor(version string) int {
 	if cfgErr == nil {
 		port = cfg.Server.Port
 	}
-	return runDoctor(doctorDeps{
+	return doctorDeps{
 		Home:        home,
 		Repo:        repoRoot(),
 		CCSwitchDB:  CCSwitchDBPath(home),
@@ -742,7 +775,7 @@ func RunDoctor(version string) int {
 		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
 		Version:      version,
 		Out:          os.Stdout,
-	})
+	}
 }
 
 // doctorScriptNames 体检的钩子脚本清单（doctor.py run_doctor scripts 逐字）。
@@ -862,22 +895,26 @@ func doctorResults(d doctorDeps) []CheckResult {
 		exeDir = filepath.Dir(targetExe)
 	}
 	out = append(out, CheckUpdateResidues(dataDir, exeDir).named("update_residues"))
-	// 服务商接管三项体检（票05，spec Implementation Decisions 7）：
-	// provider_cc_dock / provider_codex_dock / provider_orca_codex——判定单源
-	// internal/provider（与写入器同一套解析与目标地址派生，绝不两套判据）。
-	// [dock] 未配置/配置加载失败 → 三项显式 not_checked（接管目标不可判——
-	// 如实标注不伪造）。续接末位：既有检查项顺序零漂移。
+	// 服务商接管体检（票05 三项＋票11 pi 生效链第四项，spec Implementation
+	// Decisions 7/4）：provider_cc_dock / provider_codex_dock /
+	// provider_orca_codex / provider_pi_dock——判定单源 internal/provider（与
+	// 写入器同一套解析与目标地址派生，绝不两套判据）。[dock] 未配置/配置加载
+	// 失败 → 四项显式 not_checked（接管目标不可判——如实标注不伪造）。续接
+	// 末位：既有检查项顺序零漂移。
 	out = append(out, providerCheckResults(cfg, err, d)...)
 	return out
 }
 
-// providerCheckResults 服务商接管三项（票05）：dock 未配置 → 三行 not_checked；
-// 否则按 cfg.Dock.Listen 派生渡口目标（CC=http 根、codex=http+/v1，单源
-// provider.DockURLFromListen / DockCodexURLFromListen）交 provider 探针判定。
+// providerCheckResults 服务商接管四项（票05 三项＋票11 pi 生效链）：dock 未配
+// 置 → 四行 not_checked；否则按 cfg.Dock.Listen 派生渡口目标（CC/pi=http 根、
+// codex=http+/v1，单源 provider.DockURLFromListen / DockCodexURLFromListen）
+// 交 provider 探针判定。pi 两路径与 CLI 装配层 providerTargetsFromHome 同口径
+// （~/.pi/agent 下成对两文件，home 派生、无配置项）。
 func providerCheckResults(cfg *config.Config, cfgErr error, d doctorDeps) []CheckResult {
 	notChecked := func() []CheckResult {
-		rows := make([]CheckResult, 0, 3)
-		for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
+		rows := make([]CheckResult, 0, 4)
+		for _, n := range []string{"provider_cc_dock", "provider_codex_dock",
+			"provider_orca_codex", "provider_pi_dock"} {
 			rows = append(rows, CheckResult{Name: n, Status: StatusNotChecked,
 				Detail: "服务商接管体检未检查（[dock] 未配置——接管目标不可判，如实标注不伪造）"})
 		}
@@ -901,14 +938,22 @@ func providerCheckResults(cfg *config.Config, cfgErr error, d doctorDeps) []Chec
 			provider.DockCodexURLFromListen(cfg.Dock.Listen))),
 		providerVerdict("provider_orca_codex", provider.CheckOrcaCodexHealth(
 			orcaCfg, provider.DockCodexURLFromListen(cfg.Dock.Listen))),
+		providerVerdict("provider_pi_dock", provider.CheckPiPointsDock(
+			filepath.Join(d.Home, ".pi", "agent", "models.json"),
+			filepath.Join(d.Home, ".pi", "agent", "settings.json"),
+			provider.DockURLFromListen(cfg.Dock.Listen))),
 	}
 }
 
 // providerVerdict provider.Verdict → CheckResult 换装（与 Check.named 同款：
-// OK→pass、!OK→fail；Detail 原样透传——判定在 provider 单源，本包不重复）。
+// NotChecked→not_checked、OK→pass、!OK→fail；Detail 原样透传——判定在
+// provider 单源，本包不重复）。
 func providerVerdict(name string, v provider.Verdict) CheckResult {
 	st := StatusFail
-	if v.OK {
+	switch {
+	case v.NotChecked:
+		st = StatusNotChecked
+	case v.OK:
 		st = StatusPass
 	}
 	return CheckResult{Name: name, Status: st, Detail: v.Detail}
@@ -954,6 +999,58 @@ func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, res
 	return doctorResults(d)
 }
 
+// DoctorJSONSummary --json 顶层汇总（票04）：与 agent 面 MCP doctor 工具的
+// summary 同键同口径（计数从逐项结论推导，非第二事实源）。
+type DoctorJSONSummary struct {
+	Total      int `json:"total"`
+	Pass       int `json:"pass"`
+	Fail       int `json:"fail"`
+	NotChecked int `json:"not_checked"`
+}
+
+// DoctorJSONReport doctor --json 顶层形状（票04）：version（票02 装配参数，
+// dev＝非 release 构建）+ ok 总判定（零 fail，与退出码同源）+ checks（
+// CheckResult 三要素与 MCP 面同源）+ summary 计数。脱敏契约（F3）：逐项
+// Detail 只报路径/状态/修法文案，密钥只允许 maskKey 尾 4 位形态经此出口。
+type DoctorJSONReport struct {
+	Version string            `json:"version"`
+	OK      bool              `json:"ok"`
+	Checks  []CheckResult     `json:"checks"`
+	Summary DoctorJSONSummary `json:"summary"`
+}
+
+// doctorJSON 结构化体检的 --json 序列化（票04；deps 注入可测，真装配见
+// RunDoctorJSON）：doctorResults 单源计算 → 聚合 summary 与 ok 总判定 →
+// 单行 JSON 字节；退出码与 runDoctor 同判（有 fail → 1，ok 与退出码同源）。
+// 纯函数：不打印、不写盘。
+func doctorJSON(d doctorDeps, ver string) ([]byte, int) {
+	checks := doctorResults(d)
+	if checks == nil {
+		checks = []CheckResult{}
+	}
+	rep := DoctorJSONReport{Version: ver, Checks: checks}
+	for _, r := range checks {
+		rep.Summary.Total++
+		switch r.Status {
+		case StatusPass:
+			rep.Summary.Pass++
+		case StatusFail:
+			rep.Summary.Fail++
+		default:
+			rep.Summary.NotChecked++
+		}
+	}
+	rep.OK = rep.Summary.Fail == 0
+	b, err := json.Marshal(rep)
+	if err != nil { // 全字符串/计数字段，理论不可达——护底线不静默
+		return nil, 1
+	}
+	if !rep.OK {
+		return b, 1
+	}
+	return b, 0
+}
+
 // runDoctor 聚合检查并打印（doctor.py run_doctor 逐字 + 附录#14 声明行）。
 // 票05 起结论计算单源 doctorResults——本函数只负责人面打印与退出码，格式
 // 与拆分前逐字一致（tag/空行/声明行/结论行）。
@@ -992,7 +1089,7 @@ func runDoctor(d doctorDeps) int {
 
 // realStatsProbe /stats 探针：Bearer token 读 data_dir，2s 超时；任何失败 → nil
 // （doctor.py real_probe 逐字；端口票05 起由调用方经 config 解析传入——同
-// internal/config 优先级，默认 7311 与 Python 硬编码同位）。
+// internal/config 优先级，默认 15700 与 Python 硬编码同位）。
 func realStatsProbe(dataDir string, port int) func() map[string]any {
 	return func() map[string]any {
 		tokenRaw, err := os.ReadFile(filepath.Join(dataDir, "daemon.token"))
