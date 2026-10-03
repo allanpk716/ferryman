@@ -9,7 +9,7 @@
 **A. 接管又被打回 cc-switch（4 红：provider_cc_dock / provider_codex_dock / provider_orca_codex / codex_hooks）**
 - [x] 跑 `ferryman provider apply` 修复：CC/codex/orca-codex 回渡口 15722。（✅ 10-03 09:50 完成：三份 written、同戳备份 20261003-095014、未触发他人文件拒写；外加快照 `~/ferryman/rollback-snapshots/20261003-0949/` 三份原件）
 - [x] 根因实锤一半：cc-switch.exe 活着（PID 12284），且 10-02 apply 修完后又被写回——观察期结论=不卸会一直复发。（✅ 10-03 实证：修复后 90 秒+ 未被再写回，改写是事件触发非轮询；但进程仍在，复发风险未除）
-- [ ] 根治=走 W4 收尾（白天用户动作）：托盘退出 cc-switch → 关自启 → 卸载 → 重启后 doctor 复检（渡口 responses 翻译车道 v0.4.0 起已顶上，cc-switch 的翻译不再需要）
+- [x] 根治=走 W4 收尾（白天用户动作）：托盘退出 cc-switch → 关自启 → 卸载 → 重启后 doctor 复检（渡口 responses 翻译车道 v0.4.0 起已顶上，cc-switch 的翻译不再需要）。（✅ 10-03 10:10 用户令代理执行：杀进程（零退出改写，15721 释放）→ HKCU Run 键删（.reg 备份）→ MSI 静默卸载（{1376663C-…}，安装目录/快捷方式全清）→ 三份配置仍 15722 → doctor 27/27。回退资产：`~/ferryman/rollback-snapshots/ccswitch-uninstall-1011/`（db+settings+Run键）；`~/.cc-switch` 813MB 原地保留（doctor ccswitch_snapshots 仍读它）。真重启终验待下次自然开机；确认无复发后可删 ~/.cc-switch，届时 doctor 该项应转 not_checked——**后续票**：v0.5.3 给 ccswitch_snapshots 检查加"cc-switch 不在场→not_checked"语义）
 - [x] 修后复验：doctor provider_* 三项 + codex_hooks 回绿。（✅ 10-03 09:51 起 26/27，update 后 27/27 全绿）
 
 **B. 升级残留（1 红：update_residues）**
