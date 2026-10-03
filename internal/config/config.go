@@ -89,6 +89,11 @@ type QuestionWatchCfg struct {
 	BeatIntervalS      float64 // 0.7×GLM 实测 TTL 600s（口径统一 0.7×）
 	MaxBeats           int     // 每窗最多心跳跳数
 	FerryDeadlineLeadS float64 // 摆渡死线提前量（校验见 Validate）
+	// DshMode dsh 等答复窗独立三元（dsh-heartbeat 票03，规格「分档开关」）：
+	// 默认 off；与 CC 的 Mode 完全独立（熔断降级/一键停互不影响，dsh 独立
+	// 断路器只降本键）。心跳参数（BeatIntervalS/MaxBeats）两轨共用同参数
+	// 起步。生产首启 observe（真发钱之前先看零成本演练数据，升档人工拍板）。
+	DshMode string // off | observe | enforce
 }
 
 // WaitWindowCfg 等待窗心跳（票04，spec「心跳·配置」）：与 [question_watch]
@@ -190,6 +195,7 @@ func Default() *Config {
 			BeatIntervalS:      420.0,
 			MaxBeats:           2,
 			FerryDeadlineLeadS: 480.0,
+			DshMode:            "off", // dsh 等答复窗默认关（票03；生产首启 observe 由运维者显式配置）
 		},
 		WaitWindow:    WaitWindowCfg{Mode: "off", ManualWaitCapS: 0},
 		FerryProvider: "",
@@ -392,6 +398,7 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			BeatIntervalS:      beat,
 			MaxBeats:           mb,
 			FerryDeadlineLeadS: lead,
+			DshMode:            pyStr(get(q, "dsh_mode", cfg.QuestionWatch.DshMode)), // 票03：dsh 等答复窗独立三元
 		}
 	}
 	// [wait_window]（票04）：缺字段回落默认（off/0）。夹紧不在此做——manual
@@ -634,9 +641,27 @@ func Validate(c *Config, relaxMinGap bool) error {
 		problems = append(problems, fmt.Sprintf("question_watch.mode 非法: %s（可选 %s）",
 			qw.Mode, pyTuple(QWatchModes[:])))
 	}
+	// dsh_mode（票03）：独立三元，合法值与 mode 同集（QWatchModes 单源）。
+	if !slices.Contains(QWatchModes[:], qw.DshMode) {
+		problems = append(problems, fmt.Sprintf("question_watch.dsh_mode 非法: %s（可选 %s）",
+			qw.DshMode, pyTuple(QWatchModes[:])))
+	}
 	if qw.BeatIntervalS <= 0 { // 票04 M5：≤0 排出的计划全是过去跳（开窗即狂跳）
 		problems = append(problems, fmt.Sprintf("question_watch.beat_interval_s 须 > 0（当前 %gs）",
 			qw.BeatIntervalS))
+	}
+	// 参数相容断言（票03 dsh 等答复窗，规格「参数相容断言」）：
+	// BeatIntervalS × MaxBeats < BlockS——dsh 窗的全部心跳须赶在 block_s 到期
+	// 关窗之前跳完（生产 420×2=840 < 2100 成立）。只在 dsh_mode != off 时校验
+	//（qw.Mode lead 的同款先例：休眠键不拦启动，存量小阈值配置零影响）；
+	// MaxBeats ≤ 0 无跳可排，断言自然成立不校验。
+	if qw.DshMode != "off" && qw.MaxBeats > 0 {
+		if span := qw.BeatIntervalS * float64(qw.MaxBeats); span >= c.ThresholdFor("dsh").BlockS {
+			problems = append(problems, fmt.Sprintf(
+				"question_watch.dsh_mode=%s 时 beat_interval_s × max_beats（%gs × %d = %gs）"+
+					"须 < block_s（%gs）——全部心跳须赶在到期关窗之前",
+				qw.DshMode, qw.BeatIntervalS, qw.MaxBeats, span, c.ThresholdFor("dsh").BlockS))
+		}
 	}
 	// [wait_window]（票04）：mode 三元；manual_wait_cap_s ≥0（0=未配置，
 	// 负值拒绝——夹紧逻辑只认 >0）。enforce＋渡口关不在配置层拒——那是运行时

@@ -492,3 +492,95 @@ func TestDefaultValuesVerbatim(t *testing.T) {
 		t.Fatalf("常量 = %v/%v", FerryWallTimeoutS, QwatchMinLeadS)
 	}
 }
+
+// ---- dsh 等答复窗配置（dsh-heartbeat 票03）：[question_watch] dsh_mode ----
+
+func TestDshModeDefaultOff(t *testing.T) {
+	// 缺省 off：未配置时 dsh 心跳零行为（验收底线——生产首启 observe 由
+	// 运维者显式配置，规格「分档开关」）。
+	d := Default()
+	if d.QuestionWatch.DshMode != "off" {
+		t.Fatalf("dsh_mode 默认 = %q, want off", d.QuestionWatch.DshMode)
+	}
+	if err := Validate(d, false); err != nil {
+		t.Fatalf("默认配置应通过校验: %v", err)
+	}
+}
+
+func TestDshModeTOMLOverride(t *testing.T) {
+	// [question_watch] 同节新增键 dsh_mode；缺字段回落默认（节内 .get 语义）。
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(p, []byte(`
+[question_watch]
+mode = "observe"
+dsh_mode = "enforce"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QuestionWatch.DshMode != "enforce" {
+		t.Fatalf("dsh_mode = %q, want enforce", cfg.QuestionWatch.DshMode)
+	}
+	if cfg.QuestionWatch.Mode != "observe" {
+		t.Fatalf("mode = %q（同节既有键不受影响）", cfg.QuestionWatch.Mode)
+	}
+	// 只配 mode：dsh_mode 回落默认 off。
+	p2 := filepath.Join(dir, "c2.toml")
+	if err := os.WriteFile(p2, []byte("[question_watch]\nmode = \"observe\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Load(p2, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.QuestionWatch.DshMode != "off" {
+		t.Fatalf("缺省 dsh_mode = %q, want off", cfg2.QuestionWatch.DshMode)
+	}
+}
+
+func TestDshModeBadValueRejected(t *testing.T) {
+	cfg := Default()
+	cfg.QuestionWatch.DshMode = "loud"
+	err := Validate(cfg, false)
+	if err == nil || !strings.Contains(err.Error(), "question_watch.dsh_mode") {
+		t.Fatalf("非法 dsh_mode 应拒启（文案含 question_watch.dsh_mode）, err = %v", err)
+	}
+}
+
+func TestDshModeBeatSpanAssertion(t *testing.T) {
+	// 参数相容断言（规格「参数相容断言」）：BeatIntervalS × MaxBeats < BlockS
+	//——全部心跳跳完须赶在 block_s 到期关窗之前。只在 dsh_mode != off 时校验
+	//（qw.Mode lead 的同款先例：存量小阈值配置零影响）。
+	cfg := Default()
+	cfg.Thresholds = ThresholdCfg{SummarizeS: 900, BlockS: 1000, MinCtxTokens: 100}
+	cfg.QuestionWatch.DshMode = "observe"
+	// 420×2=840 ≥ 1000？否——840 < 1000 过；改大间隔到 600：1200 ≥ 1000 拒。
+	cfg.QuestionWatch.BeatIntervalS = 600
+	err := Validate(cfg, true) // relaxMinGap：阈值差由既有分支管，本例只看心跳计划断言
+	if err == nil || !strings.Contains(err.Error(), "max_beats") || !strings.Contains(err.Error(), "block_s") {
+		t.Fatalf("心跳计划超 block_s 应拒启（文案含 max_beats 与 block_s）, err = %v", err)
+	}
+	// dsh_mode=off：同参数不校验（休眠键不拦启动）。
+	cfg.QuestionWatch.DshMode = "off"
+	if err := Validate(cfg, true); err != nil {
+		t.Fatalf("dsh_mode=off 时不应校验心跳计划: %v", err)
+	}
+}
+
+func TestDshProductionParamsSatisfyBeatSpan(t *testing.T) {
+	// 生产参数钉死：420×2=840 < 2100（35min）成立——dsh_mode 拨 observe 即
+	// 通过校验（上线票 D 的配置前提）。
+	cfg := Default()
+	cfg.QuestionWatch.DshMode = "observe"
+	if cfg.QuestionWatch.BeatIntervalS*float64(cfg.QuestionWatch.MaxBeats) >= cfg.Thresholds.BlockS {
+		t.Fatalf("生产参数断言不成立: %g×%d ≥ %g",
+			cfg.QuestionWatch.BeatIntervalS, cfg.QuestionWatch.MaxBeats, cfg.Thresholds.BlockS)
+	}
+	if err := Validate(cfg, false); err != nil {
+		t.Fatalf("生产参数 + dsh_mode=observe 应通过: %v", err)
+	}
+}
