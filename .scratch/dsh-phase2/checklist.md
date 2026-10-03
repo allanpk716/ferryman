@@ -7,13 +7,13 @@
 ## ① 立即修：生产面三件事（今天就值得做）
 
 **A. 接管又被打回 cc-switch（4 红：provider_cc_dock / provider_codex_dock / provider_orca_codex / codex_hooks）**
-- [ ] 跑 `ferryman provider apply` 修复：CC/codex/orca-codex 回渡口 15722。若被「他人文件（无接管标记）全案拒绝」纪律拦下，按 10-02 会话同款手工接管路径处理
-- [ ] 根因实锤一半：cc-switch.exe 活着（PID 12284），且 10-02 apply 修完后又被写回——观察期结论=不卸会一直复发
+- [x] 跑 `ferryman provider apply` 修复：CC/codex/orca-codex 回渡口 15722。（✅ 10-03 09:50 完成：三份 written、同戳备份 20261003-095014、未触发他人文件拒写；外加快照 `~/ferryman/rollback-snapshots/20261003-0949/` 三份原件）
+- [x] 根因实锤一半：cc-switch.exe 活着（PID 12284），且 10-02 apply 修完后又被写回——观察期结论=不卸会一直复发。（✅ 10-03 实证：修复后 90 秒+ 未被再写回，改写是事件触发非轮询；但进程仍在，复发风险未除）
 - [ ] 根治=走 W4 收尾（白天用户动作）：托盘退出 cc-switch → 关自启 → 卸载 → 重启后 doctor 复检（渡口 responses 翻译车道 v0.4.0 起已顶上，cc-switch 的翻译不再需要）
-- [ ] 修后复验：doctor provider_* 三项 + codex_hooks 回绿
+- [x] 修后复验：doctor provider_* 三项 + codex_hooks 回绿。（✅ 10-03 09:51 起 26/27，update 后 27/27 全绿）
 
 **B. 升级残留（1 红：update_residues）**
-- [ ] `ferryman.exe update` 同版本整套换装自愈（清 ferryman.exe.supervisor-copy），或留到 v0.5.3 换装一并清
+- [x] `ferryman.exe update` 同版本整套换装自愈（清 ferryman.exe.supervisor-copy），或留到 v0.5.3 换装一并清。（✅ 10-03 09:53 完成：静默门 60s 未等到位走硬切兜底——恰有 1 笔周期性在途（大概率心跳），切断点距末次请求 40s 应无活跃流；换装后旧 PID 11668 退场、新 PID 22868 双口在听、supervisor-copy/swap-tmp 双清、doctor 27/27 无首跳旧茬；备份 exe.old-v0.5.2 在场）
 
 注：生产 v0.5.2 的 apply 不含 dsh 目标（dsh 分支合并发版后才进生产）；`~/.dsh/` 两文件现状不受影响。
 
