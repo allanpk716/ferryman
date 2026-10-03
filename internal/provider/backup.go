@@ -59,6 +59,10 @@ func copyFile(src, dst string) error {
 // 取字典序最大的戳（本族内同格式戳即时间序）。组内缺哪个成员就如实跳过哪
 // 份（pi 未装的机器上从无 pi 备份，跳过不失败）；所有目录皆无本族备份 →
 // 报错（不是静默成功）。
+//
+// dsh 分支（2026-10-02）：home patch / .env 参与选组；"本组无该份备份但文件
+// 带接管标记"＝apply 当年新建（无接管前状态可回）——patch 删整文件、.env 剥
+// 接管行（剥空删文件），即"接管从未发生"。
 func Restore(t Targets) (ApplyReport, error) {
 	var rep ApplyReport
 	type rt struct {
@@ -92,6 +96,32 @@ func Restore(t Targets) (ApplyReport, error) {
 			stamps[s] = true
 		}
 	}
+	// dsh 两文件同法入组（DSHHome 空＝dsh 分支从未参与，零行为）。
+	var dshRts []rt
+	if t.DSHHome != "" {
+		patchPath, envPath := dshPaths(t.DSHHome)
+		dshRts = []rt{{targetDSHPatch, patchPath}, {targetDSHEnv, envPath}}
+		perDSH := make([]map[string]string, len(dshRts))
+		for i, r := range dshRts {
+			perDSH[i] = map[string]string{}
+			matches, err := filepath.Glob(filepath.Join(filepath.Dir(r.path),
+				filepath.Base(r.path)+backupMarker+"*"))
+			if err != nil {
+				return rep, fmt.Errorf("provider: 备份扫描失败(%s): %w", r.path, err)
+			}
+			for _, m := range matches {
+				s := strings.TrimPrefix(filepath.Base(m),
+					filepath.Base(r.path)+backupMarker)
+				if !backupStampRe.MatchString(s) {
+					continue
+				}
+				perDSH[i][s] = m
+				stamps[s] = true
+			}
+		}
+		perTarget = append(perTarget, perDSH...)
+		rts = append(rts, dshRts...)
+	}
 	if len(stamps) == 0 {
 		return rep, fmt.Errorf("provider: 无接管前备份（*%s*）——apply 从未写过，无法还原",
 			backupMarker)
@@ -105,6 +135,14 @@ func Restore(t Targets) (ApplyReport, error) {
 	for i, r := range rts {
 		b, ok := perTarget[i][latest]
 		if !ok {
+			// dsh"本组无备份＋带标记"＝apply 当年新建 → 删除还原；其余＝如实跳过。
+			if isDSHTarget(r.name) {
+				if done, detail := restoreDSHCreated(r.name, r.path); done {
+					rep.Targets = append(rep.Targets, TargetReport{Name: r.name, Path: r.path,
+						Action: ActionRestored, Detail: detail})
+					continue
+				}
+			}
 			rep.Targets = append(rep.Targets, TargetReport{Name: r.name, Path: r.path,
 				Action: ActionSkipped,
 				Detail: "最近一组备份(" + latest + ")缺该目标——未还原"})
@@ -118,4 +156,44 @@ func Restore(t Targets) (ApplyReport, error) {
 			Detail: "已还原到接管前备份(" + latest + ")"})
 	}
 	return rep, nil
+}
+
+// isDSHTarget 目标名是否 dsh 分支（删除还原仅适用 dsh 的新建文件）。
+func isDSHTarget(name string) bool {
+	return name == targetDSHPatch || name == targetDSHEnv
+}
+
+// restoreDSHCreated "无备份＋带标记"的 dsh 文件删除还原。返回 done=false＝
+// 文件不在位或不带标记（如实按"缺备份跳过"处理，不误删他人文件）。
+func restoreDSHCreated(name, path string) (bool, string) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, ""
+	}
+	switch name {
+	case targetDSHPatch:
+		if !hasDSHMarker(string(raw)) {
+			return false, ""
+		}
+		if err := os.Remove(path); err != nil {
+			return false, ""
+		}
+		return true, "本组无备份＋带接管标记＝apply 新建——已删除还原（接管前无此文件）"
+	case targetDSHEnv:
+		if !strings.Contains(string(raw), "# "+dshMarker) {
+			return false, ""
+		}
+		stripped := dshEnvStripToken(string(raw))
+		if strings.TrimRight(stripped, "\n") == "" {
+			if err := os.Remove(path); err != nil {
+				return false, ""
+			}
+			return true, "本组无备份＋带接管标记＝apply 新建——已删除还原（接管前无此文件）"
+		}
+		if err := os.WriteFile(path, []byte(stripped), 0o644); err != nil {
+			return false, ""
+		}
+		return true, "本组无备份＋带接管标记——已剥离接管行（其余行保留）"
+	}
+	return false, ""
 }
