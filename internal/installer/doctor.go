@@ -716,6 +716,25 @@ func RepoRoot() string { return repoRoot() }
 // RunDoctor 一键体检真实入口（HOME/exe 面）；返回进程退出码（有 FAIL → 1）。
 // version 版本号经装配参数传入（cmd/ferryman 的 main.version——票02，规格 §A）。
 func RunDoctor(version string) int {
+	return runDoctor(realDoctorDeps(version))
+}
+
+// RunDoctorJSON doctor --json 真实入口（票04）：真装配与 RunDoctor 同一套
+// （realDoctorDeps 单源——两出口绝不各拼一套 deps）；结果经 doctorJSON 序列化
+// （与 agent 面 MCP doctor 同源——CheckResult 逐项 + summary 计数，顶层加
+// version 与 ok 总判定），单行 JSON 到 stdout；退出码与文本面同判（有 fail → 1）。
+func RunDoctorJSON(version string) int {
+	d := realDoctorDeps(version)
+	b, code := doctorJSON(d, version)
+	if b != nil {
+		fmt.Fprintln(d.Out, string(b))
+	}
+	return code
+}
+
+// realDoctorDeps RunDoctor/RunDoctorJSON 共用的真装配（HOME/exe 面 + config
+// 解析的探针目标；公式单源纪律）。
+func realDoctorDeps(version string) doctorDeps {
 	home := homeDir()
 	// 票05：daemon 活性目标经 config 解析（config.Load 优先级：显式参数 >
 	// FERRYMAN_CONFIG > 默认路径）；加载失败回落内置默认口（探针目标与既有
@@ -725,7 +744,7 @@ func RunDoctor(version string) int {
 	if cfgErr == nil {
 		port = cfg.Server.Port
 	}
-	return runDoctor(doctorDeps{
+	return doctorDeps{
 		Home:        home,
 		Repo:        repoRoot(),
 		CCSwitchDB:  CCSwitchDBPath(home),
@@ -747,7 +766,7 @@ func RunDoctor(version string) int {
 		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
 		Version:      version,
 		Out:          os.Stdout,
-	})
+	}
 }
 
 // doctorScriptNames 体检的钩子脚本清单（doctor.py run_doctor scripts 逐字）。
@@ -969,6 +988,58 @@ func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, res
 		d.WatchdogTask = func() (TaskStatus, error) { return queryTask(realTaskDeps()) }
 	}
 	return doctorResults(d)
+}
+
+// DoctorJSONSummary --json 顶层汇总（票04）：与 agent 面 MCP doctor 工具的
+// summary 同键同口径（计数从逐项结论推导，非第二事实源）。
+type DoctorJSONSummary struct {
+	Total      int `json:"total"`
+	Pass       int `json:"pass"`
+	Fail       int `json:"fail"`
+	NotChecked int `json:"not_checked"`
+}
+
+// DoctorJSONReport doctor --json 顶层形状（票04）：version（票02 装配参数，
+// dev＝非 release 构建）+ ok 总判定（零 fail，与退出码同源）+ checks（
+// CheckResult 三要素与 MCP 面同源）+ summary 计数。脱敏契约（F3）：逐项
+// Detail 只报路径/状态/修法文案，密钥只允许 maskKey 尾 4 位形态经此出口。
+type DoctorJSONReport struct {
+	Version string            `json:"version"`
+	OK      bool              `json:"ok"`
+	Checks  []CheckResult     `json:"checks"`
+	Summary DoctorJSONSummary `json:"summary"`
+}
+
+// doctorJSON 结构化体检的 --json 序列化（票04；deps 注入可测，真装配见
+// RunDoctorJSON）：doctorResults 单源计算 → 聚合 summary 与 ok 总判定 →
+// 单行 JSON 字节；退出码与 runDoctor 同判（有 fail → 1，ok 与退出码同源）。
+// 纯函数：不打印、不写盘。
+func doctorJSON(d doctorDeps, ver string) ([]byte, int) {
+	checks := doctorResults(d)
+	if checks == nil {
+		checks = []CheckResult{}
+	}
+	rep := DoctorJSONReport{Version: ver, Checks: checks}
+	for _, r := range checks {
+		rep.Summary.Total++
+		switch r.Status {
+		case StatusPass:
+			rep.Summary.Pass++
+		case StatusFail:
+			rep.Summary.Fail++
+		default:
+			rep.Summary.NotChecked++
+		}
+	}
+	rep.OK = rep.Summary.Fail == 0
+	b, err := json.Marshal(rep)
+	if err != nil { // 全字符串/计数字段，理论不可达——护底线不静默
+		return nil, 1
+	}
+	if !rep.OK {
+		return b, 1
+	}
+	return b, 0
 }
 
 // runDoctor 聚合检查并打印（doctor.py run_doctor 逐字 + 附录#14 声明行）。

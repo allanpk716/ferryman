@@ -4,7 +4,7 @@
 //
 //	ferryman                     # 无参 = serve：守护(15700) + 面板(15900) + 托盘
 //	ferryman serve               # 同上（点火脚本 start-daemon.cmd 调它）
-//	ferryman doctor              # 一键体检
+//	ferryman doctor [--json]     # 一键体检（--json 机器可读）
 //	ferryman status              # 守护探活：守护/版本、渡口、台账摘要（只读）
 //	ferryman stop [--wait 秒]    # 优雅停守护（/shutdown+排水等待，绝不硬杀）
 //	ferryman version             # 版本号（dev = 非 release 构建）
@@ -113,7 +113,8 @@ serve 与面板:
   ferryman --install-shortcuts    # 建桌面+开始菜单快捷方式后退出
 
 体检:
-  ferryman doctor         # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
+  ferryman doctor [--json]  # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
+                          #   （--json 机器可读，字段见 doctor 用法页）
   ferryman version        # 版本号（dev = 非 release 构建）
 
 守护:
@@ -135,9 +136,9 @@ serve 与面板:
                   [--json] [--out 路径]   # 等待窗扫参（离线只读：反事实重放）
 
 渡口与供应商:
-  ferryman upstream list [--config 路径]         # 上游表：active/脱敏/可用状态
+  ferryman upstream list [--config 路径] [--json]  # 上游表：active/脱敏/可用状态
   ferryman upstream use <名> [--config 路径]     # 切换 active 并自动重启守护
-  ferryman provider list|switch|add|remove|import-ccswitch|apply
+  ferryman provider list [--json]|switch|add|remove|import-ccswitch|apply
                                                 # 供应商操作面（热切换不重启）
   ferryman eval-ferry --provider <名> --n <样本数> --out <目录> [--handoffs 目录]
                   [--config 路径] [--timeout 秒]  # 盲评生成（骨架/叙事并排对）
@@ -165,14 +166,21 @@ serve 与面板:
 2 = 用法错（未知子命令/未知旗标/多余位置参数）。
 `
 
-// doctorUsage / ccswitchUsage 零参数命令的用法面（help 安全契约，本票）：两命令
-// 不收任何参数——任何非空参数（含 -h）都是用法错退 2，绝不执行体检/快照注入
-// （旧缺陷：install-ccswitch -h 参数整体丢弃照跑、真写宿主配置，即此钉死）。
+// doctorUsage doctor 的用法面（help 安全契约，票01；票04 起 --json 为唯一
+// 合法旗标）：除恰好一个可选 --json 外不收任何参数——其余任何参数（含 -h）
+// 都是用法错退 2，绝不执行体检（真跑触真机配置，误触发代价高）。--json 字段
+// 表底稿（票04，F3 脱敏契约：无明文密钥）：
+//   version 版本号；ok 总判定（零 fail）；checks[] 每项 name/status/detail
+//   （与 agent 面 MCP doctor 同源）；summary 计数 total/pass/fail/not_checked。
 const doctorUsage string = `用法:
-  ferryman doctor         # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
-                          #   （不接受任何参数）
+  ferryman doctor [--json]   # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
+                           #   除可选 --json 外不接受任何参数（-h 亦然）
+                           #   --json 字段: version/ok(总判定=零fail)/
+                           #   checks[name/status/detail]/summary[total/pass/
+                           #   fail/not_checked]——与 agent 面 MCP doctor 同源
 `
 
+// ccswitchUsage install-ccswitch 的用法面（零参数契约不变，票01）。
 const ccswitchUsage string = `用法:
   ferryman install-ccswitch   # cc-switch 供应商快照注入（不接受任何参数）
 `
@@ -191,7 +199,7 @@ func run(args []string) int {
 	case "serve":
 		return cmdServe(args[1:])
 	case "doctor":
-		return cmdDoctor(args[1:]) // 零参数契约（help 安全契约，本票）
+		return cmdDoctor(args[1:]) // 恰好一个可选 --json，其余参数拒（票01/票04）
 	case "status":
 		return cmdStatus(args[1:])
 	case "stop":
@@ -521,21 +529,43 @@ func parseEvents(s string) []string {
 	return out
 }
 
-// runDoctorEntry / injectCCSwitchEntry doctor 与 install-ccswitch 的 var 注入缝
-// （参照 runUpdateExecute 先例）：真身分别跑真机体检/写宿主配置——单测钉
-// "参数拒绝先于执行"时注桩计数，测试里绝不真跑。
+// runDoctorEntry / runDoctorJSONEntry / injectCCSwitchEntry doctor 两出口与
+// install-ccswitch 的 var 注入缝（参照 runUpdateExecute 先例）：真身分别跑
+// 真机体检（文本/--json 机器可读）/写宿主配置——单测钉"参数拒绝先于执行"
+// 时注桩计数，测试里绝不真跑。
 var (
 	runDoctorEntry      = installer.RunDoctor
+	runDoctorJSONEntry  = installer.RunDoctorJSON
 	injectCCSwitchEntry = installer.InjectCCSwitch
 )
 
-// cmdDoctor doctor 入口（help 安全契约，本票①）：零参数契约——任何非空参数
-// （含 -h）打印用法退 2，绝不执行体检（真跑触真机配置，误触发代价高）。体检
-// 本体经 runDoctorEntry 缝装配；版本经装配参数进（票02，规格 §A）。
+// cmdDoctor doctor 入口（help 安全契约，票01；票04 起收可选 --json）：恰好一个
+// --json 旗标 = 机器可读出口（installer.RunDoctorJSON——与 agent 面 MCP doctor
+// 同源序列化，顶层 version/ok/checks/summary）；其余任何参数（含 -h/--help/
+// --json 重复）打印用法退 2，绝不执行体检（真跑触真机配置，误触发代价高）。
+// 体检本体经 runDoctorEntry / runDoctorJSONEntry 缝装配；版本经装配参数进
+// （票02，规格 §A）。
 func cmdDoctor(args []string) int {
-	if len(args) > 0 {
-		fmt.Fprintf(os.Stderr, "未知参数 %q——ferryman doctor 不接受任何参数\n%s", args[0], doctorUsage)
+	asJSON := false
+	var rest []string
+	for _, a := range args {
+		switch a {
+		case "--json", "-json":
+			if asJSON {
+				fmt.Fprintf(os.Stderr, "重复参数 %q——ferryman doctor 至多一个 --json\n%s", a, doctorUsage)
+				return 2
+			}
+			asJSON = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) > 0 {
+		fmt.Fprintf(os.Stderr, "未知参数 %q——ferryman doctor 只接受可选的 --json\n%s", rest[0], doctorUsage)
 		return 2
+	}
+	if asJSON {
+		return runDoctorJSONEntry(version)
 	}
 	return runDoctorEntry(version)
 }

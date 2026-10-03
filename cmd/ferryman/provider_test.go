@@ -1208,3 +1208,173 @@ func TestCmdProviderDispatch(t *testing.T) {
 		t.Fatalf("apply --restore 出错应退出 1, got %d\n%s", code, buf.String())
 	}
 }
+
+// ---- 票04：list --json（机器可读出口＋F3 脱敏契约） ----
+
+// TestProviderListJSONFieldsAndMasking --json 出口验收：合法 JSON、与文本表
+// 同构（dialect/codex 与 pi 可用性（CodexAvailability/PiAvailability 单源值，
+// 票09 providerPiLine 同素材）+ codex_model/pi_model 模型位 + api_key 尾 4 位
+// 掩码 + key_status），夹具 providerCfgSrc 即真实形态假钥——五钥任一原文都
+// 不得出现在 JSON 全文（F3 脱敏契约）；经 cmdProvider 分发钉 --json 旗标面。
+func TestProviderListJSONFieldsAndMasking(t *testing.T) {
+	f := writeProviderCfg(t, providerCfgSrc)
+	var buf bytes.Buffer
+	if code := cmdProvider([]string{"list", "--config", f, "--json"}, &buf); code != 0 {
+		t.Fatalf("list --json 退出码 = %d\n%s", code, buf.String())
+	}
+	out := buf.String()
+	var rep struct {
+		Config    string `json:"config"`
+		Active    string `json:"active"`
+		Providers []struct {
+			Name       string            `json:"name"`
+			Active     bool              `json:"active"`
+			BaseURL    string            `json:"base_url"`
+			Dialect    string            `json:"dialect"`
+			Codex      string            `json:"codex"`
+			CodexModel string            `json:"codex_model"`
+			Pi         string            `json:"pi"`
+			PiModel    string            `json:"pi_model"`
+			ModelMap   map[string]string `json:"model_map"`
+			APIKey     string            `json:"api_key"`
+			KeyStatus  string            `json:"key_status"`
+			BalanceURL string            `json:"balance_url"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("--json 非法 JSON: %v\n%s", err, out)
+	}
+	if rep.Active != "zhipu" {
+		t.Errorf("顶层 active = %q, want zhipu", rep.Active)
+	}
+	if len(rep.Providers) != 5 {
+		t.Fatalf("应有 5 条供应商, got %d:\n%s", len(rep.Providers), out)
+	}
+	idx := map[string]int{}
+	for i, r := range rep.Providers {
+		idx[r.Name] = i
+	}
+	z := rep.Providers[idx["zhipu"]]
+	if !z.Active || z.Dialect != config.DialectAnthropic ||
+		z.Codex != config.CodexTranslation || z.CodexModel != "glm-5.3" ||
+		z.Pi != config.PiAvailable || z.PiModel != "glm-5.3" ||
+		z.APIKey != "****ef12" || z.KeyStatus != "configured" {
+		t.Errorf("zhipu 行不符: %+v", z)
+	}
+	n := rep.Providers[idx["native"]]
+	if n.Codex != config.CodexNative || n.CodexModel != "gpt-x" ||
+		n.Pi != config.PiUnavailable || n.Dialect != config.DialectOpenAIResponses {
+		t.Errorf("native 行不符: %+v", n)
+	}
+	b := rep.Providers[idx["blocked"]]
+	if b.Codex != config.CodexUnsupported || b.APIKey != "****ab21" {
+		t.Errorf("blocked 行不符: %+v", b)
+	}
+	pv := rep.Providers[idx["piveto"]]
+	if pv.Pi != config.PiUnsupported || pv.PiModel != "glm-pv" {
+		t.Errorf("piveto 行不符: %+v", pv)
+	}
+	// F3 脱敏契约：夹具五钥（真实形态假钥）任一原文都不得出现在 JSON 全文
+	for _, secret := range []string{
+		"sk-zhipu-00001234ef12", "sk-native-9988ccd01234", "sk-blocked-4433ab21",
+		"sk-piveto-7788ccdd", "sk-nokey-5566eeff",
+	} {
+		if strings.Contains(out, secret) {
+			t.Errorf("--json 全文泄漏明文钥 %q", secret)
+		}
+	}
+}
+
+// TestProviderListJSONErrorAndEmptyShapes --json 错误面与空态（票04）：配置坏 →
+// JSON error 对象＋退出 1（与文本面同判）；无 [dock] 与旧单值形态 → 退出 0 且
+// providers 为空数组（恒非 null）。
+func TestProviderListJSONErrorAndEmptyShapes(t *testing.T) {
+	// 配置坏（active 悬空）：--json → 退出 1 + error 键
+	bad := writeProviderCfg(t, "[dock]\nactive = \"ghost\"\n\n[dock.upstreams.a]\n"+
+		"base_url = \"https://a.example\"\nmodel_map = { default = \"m\" }\n")
+	var buf bytes.Buffer
+	if code := cmdProvider([]string{"list", "--config", bad, "--json"}, &buf); code != 1 {
+		t.Fatalf("坏配置 --json 应退出 1（与文本面同判）, got %d\n%s", code, buf.String())
+	}
+	var errShape struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &errShape); err != nil || errShape.Error == "" {
+		t.Fatalf("坏配置 --json 应输出含 error 键的 JSON: %v\n%s", err, buf.String())
+	}
+
+	// 无 [dock]：退出 0 + providers 空数组（非 null）
+	nodock := writeProviderCfg(t, "[server]\nport = 7399\n")
+	buf.Reset()
+	if code := cmdProvider([]string{"list", "--config", nodock, "--json"}, &buf); code != 0 {
+		t.Fatalf("无 [dock] --json 应退出 0, got %d\n%s", code, buf.String())
+	}
+	var rep struct {
+		Providers []map[string]any `json:"providers"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &rep); err != nil {
+		t.Fatalf("非法 JSON: %v\n%s", err, buf.String())
+	}
+	if rep.Providers == nil || len(rep.Providers) != 0 {
+		t.Errorf("无 [dock] 的 providers 应为空数组（非 null）: %v", rep.Providers)
+	}
+
+	// 旧单值形态（无上游表）：退出 0 + providers 空数组（非 null）
+	legacy := writeProviderCfg(t, "[dock]\napi_key = \"k\"\n")
+	buf.Reset()
+	if code := cmdProvider([]string{"list", "--config", legacy, "--json"}, &buf); code != 0 {
+		t.Fatalf("旧单值 --json 应退出 0, got %d\n%s", code, buf.String())
+	}
+	buf2 := struct {
+		Providers []map[string]any `json:"providers"`
+	}{}
+	if err := json.Unmarshal(buf.Bytes(), &buf2); err != nil {
+		t.Fatalf("非法 JSON: %v\n%s", err, buf.String())
+	}
+	if buf2.Providers == nil || len(buf2.Providers) != 0 {
+		t.Errorf("旧单值的 providers 应为空数组（非 null）: %v", buf2.Providers)
+	}
+}
+
+// ---- doctor --json（票04；cmd/ferryman 侧分发钉——序列化本体在
+// internal/installer，另有单测） ----
+
+// TestCmdDoctorJSONFlagDispatch doctor 参数面（票04）：恰好一个可选 --json
+// 合法（进 runDoctorJSONEntry 缝）；其余参数（含 -h/--help/未知词/--json 重复）
+// 仍用法错退 2 且缝零调用（拒绝先于执行，票01 零参数契约的延续）。
+func TestCmdDoctorJSONFlagDispatch(t *testing.T) {
+	origJSON, origText := runDoctorJSONEntry, runDoctorEntry
+	defer func() { runDoctorJSONEntry, runDoctorEntry = origJSON, origText }()
+	var jsonCalls, textCalls int
+	runDoctorJSONEntry = func(string) int { jsonCalls++; return 0 }
+	runDoctorEntry = func(string) int { textCalls++; return 0 }
+
+	captureStd(t, func() {
+		if code := cmdDoctor([]string{"--json"}); code != 0 {
+			t.Errorf("--json 应进 JSON 缝退 0, got %d", code)
+		}
+	})
+	if jsonCalls != 1 || textCalls != 0 {
+		t.Fatalf("--json 缝调用: json=%d text=%d, want 1/0", jsonCalls, textCalls)
+	}
+
+	for _, tc := range [][]string{
+		{"-h"}, {"--help"}, {"extra"}, {"--json", "--json"}, {"--json", "extra"},
+	} {
+		before := jsonCalls
+		var code int
+		_, stderr := captureStd(t, func() { code = cmdDoctor(tc) })
+		if code != 2 {
+			t.Errorf("参数 %v 应用法错退 2, got %d", tc, code)
+		}
+		if !strings.Contains(stderr, "用法:") {
+			t.Errorf("参数 %v 拒绝应打印用法到 stderr, got %q", tc, stderr)
+		}
+		if jsonCalls != before {
+			t.Errorf("参数 %v 拒绝不得进缝（拒绝先于执行）", tc)
+		}
+	}
+	if textCalls != 0 {
+		t.Errorf("本测全程不应触文本缝, got %d", textCalls)
+	}
+}

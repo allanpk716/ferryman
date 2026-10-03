@@ -4,7 +4,8 @@
 //	list  全部条目 + active 标注 + base_url + model_map 概要 + 可用状态
 //	      （缺 key 显示"未配置，需手编 config 填 api_key"；本地中转地址空
 //	      key＝合法常态，显示"本地中转（无需 key）"）+ 密钥脱敏（只露尾
-//	      4 位）。
+//	      4 位）；--json 出同构机器可读表（票04，字段表见 upstreamUsage
+//	      注释；F3 脱敏契约：无明文密钥）。
 //	use <名> [--config 路径]   （--config 在名前名后皆可）
 //	      条目不存在→拒绝并列出可用条目；非本地条目缺 api_key→拒绝并提示
 //	      先填 key（本地中转地址空 key 豁免——回退通道不出站鉴权）；
@@ -28,6 +29,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -75,8 +77,13 @@ func cmdUpstream(args []string, w io.Writer) int {
 }
 
 const upstreamUsage string = `用法:
-  ferryman upstream list [--config 路径]      # 渡口上游表：active 标注/base_url/
+  ferryman upstream list [--config 路径] [--json]
+                                            # 渡口上游表：active 标注/base_url/
                                             #   model_map 概要/可用状态/密钥脱敏
+                                            #   --json 字段: config/active/
+                                            #   upstreams[name/active/base_url/
+                                            #   model_map/api_key=尾4位掩码/
+                                            #   key_status/balance_url]
   ferryman upstream use <名> [--config 路径]  # 切换 active 并自动重启守护
                                             #   （--config 在名前名后皆可；自定义
                                             #   配置路径不自动重启；在途请求中断；
@@ -122,33 +129,144 @@ func parseUpstreamFlags(name string, args []string) (string, []string, int) {
 // ---- list ----
 
 func cmdUpstreamList(args []string, w io.Writer) int {
-	cfgPath, _, code := parseUpstreamFlags("upstream list", args)
+	// 票04：--json 为 list 专属旗标，手工摘出（不进 parseUpstreamFlags 共用面
+	// ——use 不得误认 --json）；其余仍交 parseUpstreamFlags（未知旗标维持退 2，
+	// 位置参数忽略——文本面既有行为原样）。
+	asJSON := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" || a == "-json" {
+			asJSON = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	cfgPath, _, code := parseUpstreamFlags("upstream list", rest)
 	if code != 0 {
 		return code
 	}
-	return upstreamList(cfgPath, w)
+	return upstreamListOut(cfgPath, w, asJSON)
 }
 
-// upstreamList list 可测核心：只读解析（绝不写配置），逐条渲染状态。
+// upstreamList list 文本出口（票04 前的既有签名与行为原样保留——文本面零漂移）。
 func upstreamList(cfgPath string, w io.Writer) int {
+	return upstreamListOut(cfgPath, w, false)
+}
+
+// upstreamEntryView upstream list 的结构化行（票04 --json；与文本面同一取数）。
+// 脱敏契约（F3/T39）：api_key 只装 maskKey 尾 4 位形态（空钥＝空串，状态看
+// key_status）——装配即脱敏，整钥绝不进本结构、不经过任何渲染层。
+type upstreamEntryView struct {
+	Name       string            `json:"name"`
+	Active     bool              `json:"active"`
+	BaseURL    string            `json:"base_url"`
+	ModelMap   map[string]string `json:"model_map"`
+	APIKey     string            `json:"api_key"`
+	KeyStatus  string            `json:"key_status"`
+	BalanceURL string            `json:"balance_url,omitempty"`
+}
+
+// --json 的 key_status 枚举（与文本面 renderKeyStatus 三态同判据：key 空 +
+// IsLocalRelayAddr 豁免），机器可读形。
+const (
+	upstreamKeyConfigured = "configured"
+	upstreamKeyNotSet     = "not_configured"
+	upstreamKeyLocalRelay = "local_relay_exempt"
+)
+
+// keyStatusOf 密钥状态枚举（renderKeyStatus 的机器可读同判据版本）。
+func keyStatusOf(key, baseURL string) string {
+	if key == "" {
+		if config.IsLocalRelayAddr(baseURL) {
+			return upstreamKeyLocalRelay
+		}
+		return upstreamKeyNotSet
+	}
+	return upstreamKeyConfigured
+}
+
+// copyModelMap model_map 拷贝（JSON 出口恒非 null——空表落 {}）。
+func copyModelMap(mm map[string]string) map[string]string {
+	out := make(map[string]string, len(mm))
+	for k, v := range mm {
+		out[k] = v
+	}
+	return out
+}
+
+// newUpstreamEntryView 条目 → 结构化行（装配即脱敏：api_key 只装 maskKey 形态）。
+func newUpstreamEntryView(name string, active bool, up config.DockUpstream) upstreamEntryView {
+	key := ""
+	if up.APIKey != "" {
+		key = maskKey(up.APIKey)
+	}
+	return upstreamEntryView{
+		Name: name, Active: active, BaseURL: up.BaseURL,
+		ModelMap: copyModelMap(up.ModelMap), APIKey: key,
+		KeyStatus: keyStatusOf(up.APIKey, up.BaseURL), BalanceURL: up.BalanceURL,
+	}
+}
+
+// collectUpstreamEntryViews 上游表 → 结构化行序列（sortedNames 确定性序）。
+func collectUpstreamEntryViews(d *config.DockCfg) []upstreamEntryView {
+	rows := make([]upstreamEntryView, 0, len(d.Upstreams))
+	for _, name := range sortedNames(d.Upstreams) {
+		rows = append(rows, newUpstreamEntryView(name, name == d.Active, d.Upstreams[name]))
+	}
+	return rows
+}
+
+// upstreamListReport upstream list --json 顶层（票04）：config＝解析后的配置
+// 路径；note 非空＝无 [dock]/旧单值形态等如实说明；upstreams 恒非 null。
+type upstreamListReport struct {
+	Config    string              `json:"config"`
+	Active    string              `json:"active"`
+	Note      string              `json:"note,omitempty"`
+	Upstreams []upstreamEntryView `json:"upstreams"`
+}
+
+// upstreamListOut list 可测核心（票04 起 asJSON 分渲染）：只读解析（绝不写
+// 配置）；文本/JSON 共用同一份 cfg 与同一组判据（maskKey/renderKeyStatus/
+// IsLocalRelayAddr），只分渲染。
+func upstreamListOut(cfgPath string, w io.Writer, asJSON bool) int {
+	resolved := config.ResolveConfigPath(cfgPath)
 	cfg, err := config.Load(cfgPath, false)
 	if err != nil {
-		fmt.Fprintf(w, "配置加载失败（%s）: %v\n", config.ResolveConfigPath(cfgPath), err)
+		if asJSON {
+			writeJSONLine(w, map[string]string{
+				"config": resolved, "error": fmt.Sprintf("配置加载失败: %v", err)})
+			return 1 // 与文本面同判——机器可读面不静默成功
+		}
+		fmt.Fprintf(w, "配置加载失败（%s）: %v\n", resolved, err)
 		return 1
 	}
-	resolved := config.ResolveConfigPath(cfgPath)
 	if cfg.Dock == nil {
+		if asJSON {
+			return writeJSONLine(w, upstreamListReport{Config: resolved,
+				Note: "配置无 [dock] 节，渡口未启用，无上游条目",
+				Upstreams: []upstreamEntryView{}})
+		}
 		fmt.Fprintf(w, "渡口上游表：配置无 [dock] 节，渡口未启用，无上游条目（%s）\n", resolved)
 		return 0
 	}
 	d := cfg.Dock
 	if len(d.Upstreams) == 0 {
 		// 旧单值形态（未迁移/迁移失败回退）：如实说明＋兜底条目脱敏可见
-		_, up := d.ActiveUpstream()
+		name, up := d.ActiveUpstream()
+		if asJSON {
+			return writeJSONLine(w, upstreamListReport{Config: resolved,
+				Active: d.Active,
+				Note:   "无 [dock.upstreams] 表（旧单值形态——守护下次启动自动迁移出 cc-switch 回退条目＋三条预置）",
+				Upstreams: []upstreamEntryView{newUpstreamEntryView(name, true, *up)}})
+		}
 		fmt.Fprintf(w, "渡口上游表：无 [dock.upstreams] 表（旧单值形态——守护下次启动自动迁移出 cc-switch 回退条目＋三条预置）\n")
 		fmt.Fprintf(w, "  旧单值（兜底生效） base_url: %s\n", up.BaseURL)
 		fmt.Fprintf(w, "  api_key: %s\n", renderKeyStatus(up.APIKey, up.BaseURL))
 		return 0
+	}
+	if asJSON {
+		return writeJSONLine(w, upstreamListReport{Config: resolved,
+			Active: d.Active, Upstreams: collectUpstreamEntryViews(d)})
 	}
 	fmt.Fprintf(w, "渡口上游表（config: %s；active = %s）:\n", resolved, d.Active)
 	for _, name := range sortedNames(d.Upstreams) {
@@ -165,6 +283,19 @@ func upstreamList(cfgPath string, w io.Writer) int {
 			fmt.Fprintf(w, "    balance_url: %s\n", up.BalanceURL)
 		}
 	}
+	return 0
+}
+
+// writeJSONLine 票04 共用 JSON 出口（upstream/provider list --json 与 doctor
+// --json 的 cmd 面装配各走各的；本助手服务前两者）：单行 JSON＋换行写 w；
+// 序列化失败理论不可达（结构全可序列化）也如实退 1——护底线不静默。
+func writeJSONLine(w io.Writer, v any) int {
+	b, err := json.Marshal(v)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Fprintln(w, string(b))
 	return 0
 }
 

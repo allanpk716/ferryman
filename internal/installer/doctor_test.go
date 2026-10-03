@@ -1592,3 +1592,86 @@ func TestDoctorProviderPiDockWiring(t *testing.T) {
 		t.Fatalf("pi not_checked 不判失败，应退出 0:\n%s", out.String())
 	}
 }
+
+// ---- 票04：CLI --json 出口（doctorJSON / RunDoctorJSON 同源序列化） ----
+
+// TestDoctorJSONShapeVersionAndMasking CLI --json 顶层形状与脱敏契约（F3）：
+// version 随装配参数进、ok＝总判定（零 fail，与退出码同源）、checks（三要素
+// 与 agent 面 MCP doctor 同源）+ summary 计数闭合；夹具 config 挂带真实形态
+// 假钥的 [dock.upstreams] 条目——JSON 全文不得含钥原文（doctor 各检查项
+// Detail 只报路径/状态/修法文案，钥只允许 maskKey 尾 4 位形态经任何出口）。
+func TestDoctorJSONShapeVersionAndMasking(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
+	const fakeKey = "sk-test-abcdef1234567890"
+	cfg := config.Default()
+	cfg.FerryProvider = "glm"
+	cfg.Dock = &config.DockCfg{
+		Listen: "127.0.0.1:15799",
+		Active: "faketest",
+		Upstreams: map[string]config.DockUpstream{
+			"faketest": {BaseURL: "https://fk.example/api", APIKey: fakeKey,
+				ModelMap: map[string]string{"default": "m-fk"}},
+		},
+	}
+	deps.LoadCfg = func() (*config.Config, error) { return cfg, nil }
+
+	b, code := doctorJSON(deps, "v9.9.9-test")
+	outJSON := string(b)
+	var rep DoctorJSONReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		t.Fatalf("doctor --json 非法 JSON: %v\n%s", err, outJSON)
+	}
+	if rep.Version != "v9.9.9-test" {
+		t.Errorf("version = %q, want v9.9.9-test（顶层须含 version）", rep.Version)
+	}
+	if len(rep.Checks) == 0 {
+		t.Fatal("checks 不应为空")
+	}
+	if rep.Summary.Total != len(rep.Checks) {
+		t.Errorf("summary.total = %d, want %d（checks 逐项数）", rep.Summary.Total, len(rep.Checks))
+	}
+	if rep.Summary.Pass+rep.Summary.Fail+rep.Summary.NotChecked != rep.Summary.Total {
+		t.Errorf("summary 三态计数不闭合: %+v", rep.Summary)
+	}
+	if rep.OK != (rep.Summary.Fail == 0) {
+		t.Errorf("ok 与 fail 计数不同源: ok=%v fail=%d", rep.OK, rep.Summary.Fail)
+	}
+	wantCode := 0
+	if !rep.OK {
+		wantCode = 1
+	}
+	if code != wantCode {
+		t.Errorf("退出码 = %d, want %d（与 ok 总判定同源）", code, wantCode)
+	}
+	// 夹具 [dock.upstreams] 真流进了体检（dock_upstream 在案且判 pass——
+	// active/base_url/default 全中）
+	var dockRow *CheckResult
+	for i := range rep.Checks {
+		if rep.Checks[i].Name == "dock_upstream" {
+			dockRow = &rep.Checks[i]
+			break
+		}
+	}
+	if dockRow == nil || dockRow.Status != StatusPass {
+		t.Fatalf("夹具上游表应产出 pass 的 dock_upstream 项: %+v", dockRow)
+	}
+	// F3 脱敏契约：JSON 全文不含假钥原文
+	if strings.Contains(outJSON, fakeKey) {
+		t.Errorf("doctor --json 全文泄漏明文钥:\n%s", outJSON)
+	}
+}
+
+// TestDoctorJSONExitCodeFollowsFails 有 fail 时 ok=false 且退出 1（与文本面
+// runDoctor 同判——夹具 daemon 死必有 daemon_liveness fail）。
+func TestDoctorJSONExitCodeFollowsFails(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return nil }) // daemon 死 → 必有 fail
+	b, code := doctorJSON(deps, "dev")
+	var rep DoctorJSONReport
+	if err := json.Unmarshal(b, &rep); err != nil {
+		t.Fatalf("非法 JSON: %v", err)
+	}
+	if rep.OK || code != 1 || rep.Summary.Fail == 0 {
+		t.Fatalf("有 fail 应 ok=false 且退 1: ok=%v code=%d fail=%d",
+			rep.OK, code, rep.Summary.Fail)
+	}
+}

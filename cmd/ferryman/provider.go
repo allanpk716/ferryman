@@ -3,7 +3,8 @@
 //
 //	list            全部条目 + active 标注 + dialect/codex/pi 可用性（需翻译/
 //	                原生透传/不支持等）+ 模型位概要 + 密钥脱敏（只露尾 4 位，
-//	                整钥零回显——T39）。
+//	                整钥零回显——T39）；--json 出同构机器可读表（票04，字段表
+//	                见 providerUsage 注释；F3 脱敏契约：无明文密钥）。
 //	switch <名>     热切换活跃供应商：走守护管理口 POST /provider_switch
 //	                （票02），守护不重启、无端口空窗、在跑会话不断流；条目
 //	                不存在→拒绝并列可用；codex="unsupported" 或 pi 不可用
@@ -54,8 +55,14 @@ import (
 )
 
 const providerUsage string = `用法:
-  ferryman provider list [--config 路径]          # 供应商表：active 标注/dialect/
+  ferryman provider list [--config 路径] [--json]
+                                                # 供应商表：active 标注/dialect/
                                                 #   codex/pi 可用性/模型位/密钥脱敏
+                                                #   --json 字段: config/active/
+                                                #   providers[name/active/base_url/
+                                                #   dialect/codex/codex_model/pi/
+                                                #   pi_model/model_map/api_key=尾4
+                                                #   位掩码/key_status/balance_url]
   ferryman provider switch <名> [--cc-only] [--config 路径]
                                                 # 热切换活跃供应商（走守护管理口：
                                                 #   不重启、在跑会话不断流）；codex/pi
@@ -139,29 +146,114 @@ func parseProviderArgs(args []string) (string, []string, bool) {
 }
 
 func cmdProviderList(args []string, w io.Writer) int {
-	cfgPath, _, ok := parseProviderArgs(args)
+	// 票04：--json 手工摘出（parseProviderArgs 本不管旗标，文本面既有行为——
+	// 未知旗标/位置参数被忽略——原样保留，只新认 --json/-json 一个布尔旗标）。
+	asJSON := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" || a == "-json" {
+			asJSON = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	cfgPath, _, ok := parseProviderArgs(rest)
 	if !ok {
 		return 2
 	}
-	return providerList(cfgPath, w)
+	return providerListOut(cfgPath, w, asJSON)
 }
 
-// providerList list 可测核心：只读解析（绝不写配置），逐条渲染可用性与脱敏。
+// providerList list 文本出口（票04 前的既有签名与行为原样保留——文本面零漂移）。
 func providerList(cfgPath string, w io.Writer) int {
+	return providerListOut(cfgPath, w, false)
+}
+
+// providerEntryView provider list 的结构化行（票04 --json；与文本面同一取数）。
+// codex/pi 装可用性裁决值（CodexAvailability/PiAvailability 单源——票09
+// providerPiLine 人话行的同一素材）与主模型位；脱敏契约（F3/T39）：api_key 只
+// 装 maskKey 尾 4 位形态（空钥＝空串，状态看 key_status）——装配即脱敏，整钥
+// 绝不进本结构、不经过任何渲染层。
+type providerEntryView struct {
+	Name       string            `json:"name"`
+	Active     bool              `json:"active"`
+	BaseURL    string            `json:"base_url"`
+	Dialect    string            `json:"dialect"`
+	Codex      string            `json:"codex"`
+	CodexModel string            `json:"codex_model"`
+	Pi         string            `json:"pi"`
+	PiModel    string            `json:"pi_model"`
+	ModelMap   map[string]string `json:"model_map"`
+	APIKey     string            `json:"api_key"`
+	KeyStatus  string            `json:"key_status"`
+	BalanceURL string            `json:"balance_url,omitempty"`
+}
+
+// newProviderEntryView 条目 → 结构化行（可用性单源裁决＋装配即脱敏）。
+func newProviderEntryView(name string, active bool, up config.DockUpstream) providerEntryView {
+	key := ""
+	if up.APIKey != "" {
+		key = maskKey(up.APIKey)
+	}
+	return providerEntryView{
+		Name: name, Active: active, BaseURL: up.BaseURL, Dialect: up.Dialect,
+		Codex: up.CodexAvailability(), CodexModel: up.CodexModel(),
+		Pi: up.PiAvailability(), PiModel: up.PiModel(),
+		ModelMap: copyModelMap(up.ModelMap), APIKey: key,
+		KeyStatus: keyStatusOf(up.APIKey, up.BaseURL), BalanceURL: up.BalanceURL,
+	}
+}
+
+// providerListReport provider list --json 顶层（票04）：providers 恒非 null；
+// note 非空＝无 [dock]/旧单值形态等如实说明。
+type providerListReport struct {
+	Config    string              `json:"config"`
+	Active    string              `json:"active"`
+	Note      string              `json:"note,omitempty"`
+	Providers []providerEntryView `json:"providers"`
+}
+
+// providerListOut list 可测核心（票04 起 asJSON 分渲染）：只读解析（绝不写
+// 配置）；文本/JSON 共用同一份 cfg 与同一组判据（可用性三态单源/
+// maskKey/renderKeyStatus），只分渲染。
+func providerListOut(cfgPath string, w io.Writer, asJSON bool) int {
+	resolved := config.ResolveConfigPath(cfgPath)
 	cfg, err := config.Load(cfgPath, false)
 	if err != nil {
-		fmt.Fprintf(w, "配置加载失败（%s）: %v\n", config.ResolveConfigPath(cfgPath), err)
+		if asJSON {
+			writeJSONLine(w, map[string]string{
+				"config": resolved, "error": fmt.Sprintf("配置加载失败: %v", err)})
+			return 1 // 与文本面同判——机器可读面不静默成功
+		}
+		fmt.Fprintf(w, "配置加载失败（%s）: %v\n", resolved, err)
 		return 1
 	}
-	resolved := config.ResolveConfigPath(cfgPath)
 	if cfg.Dock == nil {
+		if asJSON {
+			return writeJSONLine(w, providerListReport{Config: resolved,
+				Note: "配置无 [dock] 节，渡口未启用，无供应商条目",
+				Providers: []providerEntryView{}})
+		}
 		fmt.Fprintf(w, "供应商表：配置无 [dock] 节，渡口未启用，无供应商条目（%s）\n", resolved)
 		return 0
 	}
 	d := cfg.Dock
 	if len(d.Upstreams) == 0 {
+		if asJSON {
+			return writeJSONLine(w, providerListReport{Config: resolved,
+				Note: "无 [dock.upstreams] 表（旧单值形态——守护下次启动自动迁移出上游表后再用 ferryman provider 管理）",
+				Providers: []providerEntryView{}})
+		}
 		fmt.Fprintf(w, "供应商表：无 [dock.upstreams] 表（旧单值形态——守护下次启动自动迁移出上游表后再用 ferryman provider 管理）\n")
 		return 0
+	}
+	rows := make([]providerEntryView, 0, len(d.Upstreams))
+	for _, name := range sortedNames(d.Upstreams) {
+		rows = append(rows, newProviderEntryView(name, name == d.Active, d.Upstreams[name]))
+	}
+	if asJSON {
+		return writeJSONLine(w, providerListReport{Config: resolved,
+			Active: d.Active, Providers: rows})
 	}
 	fmt.Fprintf(w, "渡口供应商表（config: %s；active = %s）:\n", resolved, d.Active)
 	for _, name := range sortedNames(d.Upstreams) {

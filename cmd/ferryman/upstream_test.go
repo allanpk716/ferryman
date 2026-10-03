@@ -15,6 +15,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -609,6 +610,139 @@ func readFileUp(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// ---- 票04：list --json（机器可读出口＋F3 脱敏契约） ----
+
+// TestUpstreamListJSONFieldsAndMasking --json 出口验收：合法 JSON、与文本表
+// 同构（config/active/upstreams[name/active/base_url/model_map/api_key/
+// key_status/balance_url]），密钥一律尾 4 位掩码——带真实形态假钥的夹具
+// 全文断言不含钥原文（F3 脱敏契约）；经 cmdUpstream 分发钉 --json 旗标面，
+// 文本面（无 --json）行为不变作对照。
+func TestUpstreamListJSONFieldsAndMasking(t *testing.T) {
+	const fakeKey = "sk-test-abcdef1234567890"
+	f := writeUpstreamCfg(t, `
+[server]
+port = 7399
+
+[dock]
+listen = "127.0.0.1:15722"
+active = "fake"
+
+[dock.upstreams.fake]
+base_url = "https://fk.example/api"
+api_key = "`+fakeKey+`"
+model_map = { default = "m-fk", haiku = "m-haiku" }
+balance_url = "https://fk.example/balance"
+
+[dock.upstreams.local]
+base_url = "http://127.0.0.1:15721"
+
+[dock.upstreams.void]
+base_url = "https://vd.example/api"
+model_map = { default = "m-vd" }
+
+[ferry]
+provider = "deepseek"
+`)
+	var buf bytes.Buffer
+	if code := cmdUpstream([]string{"list", "--config", f, "--json"}, &buf); code != 0 {
+		t.Fatalf("list --json 退出码 = %d\n%s", code, buf.String())
+	}
+	out := buf.String()
+	var rep struct {
+		Config    string `json:"config"`
+		Active    string `json:"active"`
+		Upstreams []struct {
+			Name       string            `json:"name"`
+			Active     bool              `json:"active"`
+			BaseURL    string            `json:"base_url"`
+			ModelMap   map[string]string `json:"model_map"`
+			APIKey     string            `json:"api_key"`
+			KeyStatus  string            `json:"key_status"`
+			BalanceURL string            `json:"balance_url"`
+		} `json:"upstreams"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("--json 非法 JSON: %v\n%s", err, out)
+	}
+	if len(rep.Upstreams) != 3 {
+		t.Fatalf("应有 3 条上游, got %d:\n%s", len(rep.Upstreams), out)
+	}
+	if rep.Active != "fake" {
+		t.Errorf("顶层 active = %q, want fake", rep.Active)
+	}
+	idx := map[string]int{}
+	for i, r := range rep.Upstreams {
+		idx[r.Name] = i
+	}
+	fake := rep.Upstreams[idx["fake"]]
+	if !fake.Active || fake.BaseURL != "https://fk.example/api" ||
+		fake.ModelMap["default"] != "m-fk" || fake.ModelMap["haiku"] != "m-haiku" ||
+		fake.APIKey != "****7890" || fake.KeyStatus != "configured" ||
+		fake.BalanceURL != "https://fk.example/balance" {
+		t.Errorf("fake 行不符: %+v", fake)
+	}
+	local := rep.Upstreams[idx["local"]]
+	if local.KeyStatus != "local_relay_exempt" || local.APIKey != "" {
+		t.Errorf("local 行应为本地中转豁免（空 api_key）: %+v", local)
+	}
+	void := rep.Upstreams[idx["void"]]
+	if void.KeyStatus != "not_configured" || void.BalanceURL != "" {
+		t.Errorf("void 行应为未配置且无 balance_url 键: %+v", void)
+	}
+	// F3 脱敏契约：JSON 全文不含假钥原文
+	if strings.Contains(out, fakeKey) {
+		t.Errorf("--json 全文泄漏明文钥:\n%s", out)
+	}
+
+	// 文本面行为不变：同配置不带 --json 仍走文本（active 标注＋掩码＋两种豁免/
+	// 未配置文案照旧）
+	buf.Reset()
+	if code := cmdUpstream([]string{"list", "--config", f}, &buf); code != 0 {
+		t.Fatalf("文本 list 退出码 = %d\n%s", code, buf.String())
+	}
+	text := buf.String()
+	for _, want := range []string{"（active）", "****7890", "未配置", "本地中转（无需 key）"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("文本面行为漂移，缺 %q:\n%s", want, text)
+		}
+	}
+}
+
+// TestUpstreamListJSONErrorAndEmptyShapes --json 错误面与空态（票04）：配置坏 →
+// JSON error 对象＋退出 1（与文本面同判，不因机器可读面静默成功）；无 [dock] →
+// 退出 0 且 upstreams 为空数组（恒非 null——机器可读消费方按数组处理）。
+func TestUpstreamListJSONErrorAndEmptyShapes(t *testing.T) {
+	// 配置坏（active 悬空）：--json → 退出 1 + error 键
+	bad := writeUpstreamCfg(t, "[dock]\nactive = \"ghost\"\n\n[dock.upstreams.a]\n"+
+		"base_url = \"https://a.example\"\nmodel_map = { default = \"m\" }\n")
+	var buf bytes.Buffer
+	if code := cmdUpstream([]string{"list", "--config", bad, "--json"}, &buf); code != 1 {
+		t.Fatalf("坏配置 --json 应退出 1（与文本面同判）, got %d\n%s", code, buf.String())
+	}
+	var errShape struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &errShape); err != nil || errShape.Error == "" {
+		t.Fatalf("坏配置 --json 应输出含 error 键的 JSON: %v\n%s", err, buf.String())
+	}
+
+	// 无 [dock]：退出 0 + upstreams 空数组（非 null）
+	nodock := writeUpstreamCfg(t, "[server]\nport = 7399\n")
+	buf.Reset()
+	if code := cmdUpstream([]string{"list", "--config", nodock, "--json"}, &buf); code != 0 {
+		t.Fatalf("无 [dock] --json 应退出 0, got %d\n%s", code, buf.String())
+	}
+	var rep struct {
+		Upstreams []map[string]any `json:"upstreams"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &rep); err != nil {
+		t.Fatalf("非法 JSON: %v\n%s", err, buf.String())
+	}
+	if rep.Upstreams == nil || len(rep.Upstreams) != 0 {
+		t.Errorf("无 [dock] 的 upstreams 应为空数组（非 null）: %v", rep.Upstreams)
+	}
 }
 
 func countStr(list []string, s string) int {
