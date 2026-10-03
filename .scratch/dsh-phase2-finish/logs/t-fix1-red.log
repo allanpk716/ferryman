@@ -1,0 +1,16 @@
+# t-fix1-red: go test ./internal/provider/ -run 'DSHHooks|BridgePin|DshGateVariant' -count=1
+--- FAIL: TestApplyDSHHooksCreatesJSON (0.04s)
+    dsh_hooks_test.go:127: 命令应指向 dsh 变体脚本路径 C:\Users\allan716\AppData\Local\Temp\TestApplyDSHHooksCreatesJSON1699009442\001\home\ferryhooks\ferryman-gate-dsh.ps1:
+        powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\allan716\AppData\Local\Temp\TestApplyDSHHooksCreatesJSON1699009442\001\home\ferryhooks\ferryman-gate.ps1"
+--- FAIL: TestBridgePinEventMappingAndPayload (0.01s)
+    dsh_hooks_test.go:427: 仓内 gate 脚本读不到（钉测试前提）: open ../../hooks/ferryman-gate-dsh.ps1: The system cannot find the file specified.
+--- FAIL: TestBridgePinDenySemantics (0.00s)
+    dsh_hooks_test.go:476: 仓内 gate 脚本读不到（钉测试前提）: open ../../hooks/ferryman-gate-dsh.ps1: The system cannot find the file specified.
+--- FAIL: TestBridgePinSessionKeyZeroConversion (0.00s)
+    dsh_hooks_test.go:567: 仓内 gate 脚本读不到（钉测试前提）: open ../../hooks/ferryman-gate-dsh.ps1: The system cannot find the file specified.
+--- FAIL: TestDshGateVariantScriptPins (0.00s)
+    dsh_hooks_test.go:591: 仓内 gate 脚本读不到（钉测试前提）: open ../../hooks/ferryman-gate-dsh.ps1: The system cannot find the file specified.
+FAIL
+FAIL	ferryman/internal/provider	0.726s
+FAIL
+exit=1

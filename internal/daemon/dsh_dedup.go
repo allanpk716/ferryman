@@ -19,8 +19,9 @@ package daemon
 //   - 残余竞窗（如实留痕,不装不存在的不变量）：接管首条事件（turn/start,无
 //     usage）文件落盘→HTTP 标记落账之间若恰有轮询完成 fed 查询并读尾,理论上
 //     可双记一条带 usage 的历史行;窗宽毫秒级且需轮询恰落其中,rc 期接受。
-//     注意不可经 /dsh/gate 标记收窄——CC 桥（票01 hooks.json）同问 /dsh/gate
-//     而桥不报事件,gate 侧标记会把纯桥会话错剔出文件面（usage 全丢）。
+//     注意不可经 /dsh/gate 标记收窄——CC 桥（票01 hooks.json→
+//     ferryman-gate-dsh.ps1 变体,终局修复1 落地）同问 /dsh/gate 而桥不报事件,
+//     gate 侧标记会把纯桥会话错剔出文件面（usage 全丢）。
 //
 // 归位：Daemon 持表（d.dshFed,NewDaemon 自账本回种）;DshEvent 标记;
 // pollDshSession 查询让位（经 w.Daemon——serve.go:282 生产装配本就同传 d）。

@@ -1,0 +1,3 @@
+# t-fix2-green: go test ./internal/daemon/ -count=1
+ok  	ferryman/internal/daemon	39.052s
+exit=0

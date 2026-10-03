@@ -296,8 +296,11 @@ func planDSHHooks(dshHome, hooksPath, hooksDir string) (dshFilePlan, error) {
 }
 
 // dshHooksJSONContent hooks.json 的确定性全量内容：UserPromptSubmit 单组单
-// command 钩子，复用既有 CC 闸门脚本（ferryman-gate.ps1，问闸门＋block→deny
-// 语义），只指路径不复制脚本本体。命令行形与 installer.buildEntries 的 CC 侧
+// command 钩子，指向 dsh 专用闸门变体脚本（ferryman-gate-dsh.ps1——终局修复1：
+// 桥 base() 恒传空 transcript_path（hooks-claude-code/src/index.ts:331-333），
+// 基脚本的 agent='cc'+/gate 对 dsh 会话必 miss 台账＝永 no-ledger 放行；变体钉
+// agent='dsh' 问 /dsh/gate 才能按 (dsh, session_id) 键命中，block→deny 语义与
+// CC 同链），只指路径不复制脚本本体。命令行形与 installer.buildEntries 的 CC 侧
 // 同字面量（powershell -NoProfile -ExecutionPolicy Bypass -File "<脚本>"）；
 // timeout 3s 与 installer ccSpecs UserPromptSubmit 同值。改这里＝改桥配置形态：
 // 幂等比对、带标记重铸、测试钉字面量三处都会盯着。
@@ -309,7 +312,7 @@ func dshHooksJSONContent(hooksDir string) string {
 			// 命令值＝手工套引号（%q 是 Go 转义，会把路径反斜杠翻倍；JSON
 			// 转义归 marshal 管，钩子命令值里是单反斜杠原路径）。
 			Command: fmt.Sprintf("powershell -NoProfile -ExecutionPolicy Bypass -File \"%s\"",
-				filepath.Join(hooksDir, "ferryman-gate.ps1")),
+				filepath.Join(hooksDir, "ferryman-gate-dsh.ps1")),
 			Timeout: 3,
 		}}}},
 	}

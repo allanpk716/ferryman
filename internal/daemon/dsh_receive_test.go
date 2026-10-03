@@ -4,9 +4,10 @@ package daemon
 //（spec「daemon 接收面」，D5 同构复用）。
 //
 //   - POST /dsh/gate 闸门问询：判定走既有 Gate 入口——台账 miss 放行、非 cc
-//     档开关（gate.codex_mode）、observe 只警告＋摆渡入队、enforce 拦截＋交接
-//     ＋原话保存，全套既有语义原样生效（「不复制阈值逻辑」的验收＝Stats/
-//     决策/副作用全部按 Gate 出，本文件不另写一分判定）；
+//     档开关（gate.codex_mode）、observe 只警告、enforce 拦截＋交接＋原话
+//     保存，全套既有语义原样生效（「不复制阈值逻辑」的验收＝Stats/决策/副作用
+//     全部按 Gate 出，本文件不另写一分判定）；唯摆渡入队对 dsh 关闭（终局
+//     修复2——材料不可得,入队必败循环不收敛,见 gate.go observe/分支7 守卫）；
 //   - POST /dsh/event 事件接收：Touch("dsh") 登记＋usage 四列入账；行字段与
 //     P2-1 pollDsh 现行行做 keyset 直接 diff（逐字段一致，pollDsh 改字段即红）；
 //     子会话直报随父入账不 Touch；坏形静默收窄（空键/未知事件/usage 非对象/
@@ -131,12 +132,55 @@ func TestDshGateReusesExistingJudgement(t *testing.T) {
 		t.Fatalf("原话未按既有语义保存: %q", p.Prompt)
 	}
 
-	// observe 案摆渡入队照旧触发（既有分支语义随判定入口一起复用）。
+	// observe 案摆渡入队：dsh 不入队（终局修复2,票04×票06 跨票缝——摆渡材料
+	// 不可得,入队必败→CC 提取器产空骨架→covers=0 恒不过,循环不收敛；接法乙
+	// 落地票再开接线）；cc 会话照常入队（守护既有 observe 语义不回归）。
 	e2 := newDshRcvEnv(t, "observe")
+	e2.d.Cfg.GateCC = "observe" // cc 对照显式走 observe（不靠 Default 缺省）
 	reg(e2, 120)
 	e2.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
-	if got := e2.enqueuedList(); len(got) != 1 || got[0] != "dsh/"+sid {
-		t.Fatalf("observe 入队 = %v, want [dsh/%s]", got, sid)
+	if got := e2.enqueuedList(); len(got) != 0 {
+		t.Fatalf("dsh observe 不应入队摆渡（修复2）: %v", got)
+	}
+	ccSID := "cc-observe-contrast-0000000000000000"
+	ccPath := filepath.Join(e2.tmp, "cc-session.jsonl")
+	e2.led.TouchFull("cc", ccSID, ccPath, e2.t0-120, 10, "C:/proj", "",
+		testMinCtx+50, 0)
+	e2.d.Gate(gateBody(ccSID, ccPath, "C:/proj"))
+	if got := e2.enqueuedList(); len(got) != 1 || got[0] != "cc/"+ccSID {
+		t.Fatalf("cc observe 应照常入队（既有语义不回归）: %v", got)
+	}
+}
+
+// TestDshGateEmptyTranscriptPathHitsLedger 终局修复1（票01×票04 跨票缝）
+// daemon 侧钉：桥 base() 恒传 transcript_path=''（hooks-claude-code/src/
+// index.ts:331-333）——DshGate 必须按 (dsh, session_id) 键命中台账。修复前
+// 桥脚本（ferryman-gate.ps1）问 /gate+agent='cc'：Get("cc",sid) 必 miss、
+// GetByPath("") 必 nil ＝ 永远 no-ledger 放行；修复后桥走变体脚本
+// ferryman-gate-dsh.ps1（agent='dsh'+/dsh/gate），本测试钉住变体所依赖的
+// daemon 侧键语义不回潮。
+func TestDshGateEmptyTranscriptPathHitsLedger(t *testing.T) {
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	// 守望面登记形态（pollDsh Touch：真代文件路径＋闲置 120s＋足量 peak）
+	// ＋有效交接 → enforce 拦截可达。
+	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "session.v4.jsonl.zstd"),
+		e.t0-120, 10, "C:/proj", "", testMinCtx+50, 0)
+	e.store.SaveHandoff(sid, "dsh", "C:/proj", "dsh 交接", isoUTC(e.t0-30),
+		"fresh", "交接正文 md")
+	// 桥形 body：transcript_path 显式空串（桥恒空——非缺键）。
+	r := e.d.DshGate(map[string]any{"session_id": sid, "transcript_path": "",
+		"cwd": "C:/proj", "prompt": "继续"})
+	if r["decision"] != "block" {
+		t.Fatalf("空 transcript_path 应仍按 (dsh,sid) 命中台账进拦（桥形 body）: %v", r)
+	}
+	// 对照＝修复前的桥行为形态：同 body 问 cc 口（agent='cc'）——dsh 会话在
+	// (cc,sid) 键下无登记、GetByPath("") 亦空 → no-ledger 放行。此即变体脚本
+	// 存在的全部理由，钉住防回潮。
+	r2 := e.d.Gate(map[string]any{"agent": "cc", "session_id": sid,
+		"transcript_path": "", "cwd": "C:/proj", "prompt": "继续"})
+	if r2["decision"] != "allow" || r2["reason"] != "no-ledger" {
+		t.Fatalf("cc 键应 miss＝修复前错键失效的复现形态: %v", r2)
 	}
 }
 

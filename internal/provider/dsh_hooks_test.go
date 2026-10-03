@@ -45,10 +45,10 @@ func dshHooksPathOf(fp fixturePaths) string {
 }
 
 // mkHooksScriptDir 造钩子脚本目录＋gate 脚本占位（内容无关紧要——机制测试只
-// 钉"命令指向该路径"；桥钉测试读仓内真脚本）。
+// 钉"命令指向该路径"；终局修复1 起命令指向 dsh 变体脚本；桥钉测试读仓内真脚本）。
 func mkHooksScriptDir(t *testing.T, dir string) {
 	t.Helper()
-	writeFixture(t, filepath.Join(dir, "ferryman-gate.ps1"), "# stub gate\n")
+	writeFixture(t, filepath.Join(dir, "ferryman-gate-dsh.ps1"), "# stub gate\n")
 }
 
 // dshHooksGlobDotDash 列 ~/.dsh（临时镜像）下新增文件名（D12 红线断言用）。
@@ -119,9 +119,12 @@ func TestApplyDSHHooksCreatesJSON(t *testing.T) {
 		t.Fatalf("type want command: %v", hook["type"])
 	}
 	cmd, _ := hook["command"].(string)
-	wantSub := filepath.Join(dshHooksTargetsOf(fp).FerrymanHooksDir, "ferryman-gate.ps1")
+	// 终局修复1：必须指向 dsh 变体脚本（ferryman-gate-dsh.ps1）——桥 base()
+	// 恒传空 transcript_path（index.ts:331-333），基脚本的 agent='cc'+/gate
+	// 形态对 dsh 会话永 no-ledger 放行。
+	wantSub := filepath.Join(dshHooksTargetsOf(fp).FerrymanHooksDir, "ferryman-gate-dsh.ps1")
 	if !strings.Contains(cmd, wantSub) {
-		t.Fatalf("命令应指向既有脚本路径 %s:\n%s", wantSub, cmd)
+		t.Fatalf("命令应指向 dsh 变体脚本路径 %s:\n%s", wantSub, cmd)
 	}
 	if !strings.HasPrefix(cmd, "powershell -NoProfile -ExecutionPolicy Bypass -File") {
 		t.Fatalf("命令前缀应与 CC 侧 install 惯例一致:\n%s", cmd)
@@ -348,8 +351,9 @@ func TestDSHHooksEmptyHooksDirRejected(t *testing.T) {
 
 // ---- 桥行为钉测试（四组；源码事实＝调研克隆 packages/hooks/，file:line 随注）----
 
-// 真仓 gate 脚本（桥钉测试对真文件钉——钩子脚本与 hooks.json 单发机制复用同一体）。
-const repoGateScript = "../../hooks/ferryman-gate.ps1"
+// 真仓 gate 脚本＝dsh 变体（终局修复1：桥钉测试对"桥实际会跑的脚本"钉真文件
+// ——hooks.json 命令指向它；基脚本 ferryman-gate.ps1 由变体钉测试逐行 diff 对照）。
+const repoGateScript = "../../hooks/ferryman-gate-dsh.ps1"
 
 func readRepoGateScript(t *testing.T) string {
 	t.Helper()
@@ -527,7 +531,7 @@ func TestBridgePinConfigPath(t *testing.T) {
 	// apply 真跑：目录先建（读失败＝零钩子注册的桥行为要求文件先在位）。
 	mkDSHHome(t, fp)
 	tg := dshHooksTargetsOf(fp)
-	writeFixture(t, filepath.Join(tg.FerrymanHooksDir, "ferryman-gate.ps1"), "# stub\n")
+	writeFixture(t, filepath.Join(tg.FerrymanHooksDir, "ferryman-gate-dsh.ps1"), "# stub\n")
 	if _, err := Apply(tg); err != nil {
 		t.Fatal(err)
 	}
@@ -571,5 +575,48 @@ func TestBridgePinSessionKeyZeroConversion(t *testing.T) {
 	}
 	if strings.Contains(ps1, "-replace $j.session_id") || strings.Contains(ps1, "$j.session_id -replace") {
 		t.Fatal("gate 脚本对 session_id 有正则改写（零换算破坏）")
+	}
+}
+
+// TestDshGateVariantScriptPins 终局修复1（票01×票04 跨票缝）值层钉：dsh 桥的
+// 闸门脚本必须是 ferryman-gate.ps1 的 dsh 变体 ferryman-gate-dsh.ps1——桥的
+// base() 恒传 transcript_path=''（hooks-claude-code/src/index.ts:331-333），
+// 基脚本 agent='cc' 问 /gate 时 Get("cc",sid) 必 miss、GetByPath("") 必 nil
+// ＝ 永远 no-ledger 放行；变体钉 agent='dsh' 问 /dsh/gate 才按 (dsh,sid)
+// 键命中台账。行为面（fail-open/UTF-8 body/block 透传/session_id 原样透传）
+// 由四组桥钉测试对同文件钉（repoGateScript 已指向变体），本测试只钉差异面
+// ＋逐字变体纪律（与基脚本逐行 diff，差异行只许 键值/端点/平台指称 且变体侧
+// 含 "dsh"——防变体与基脚本漂移出第三种行为）。
+func TestDshGateVariantScriptPins(t *testing.T) {
+	s := readRepoGateScript(t)
+	if !strings.Contains(s, "agent           = 'dsh'") {
+		t.Fatal("变体脚本缺 agent='dsh'（错键失效修复本体——dsh 台账键）")
+	}
+	if !strings.Contains(s, "$port/dsh/gate") {
+		t.Fatal("变体脚本缺 /dsh/gate 端点（DshGate 同键判定口）")
+	}
+	if strings.Contains(s, "= 'cc'") {
+		t.Fatal("变体脚本残留 agent='cc'（错键失效形态回潮）")
+	}
+	if strings.Contains(s, "$port/gate\"") {
+		t.Fatal("变体脚本残留 /gate 端点（cc 闸门口——dsh 会话在该口永 no-ledger）")
+	}
+	base, err := os.ReadFile("../../hooks/ferryman-gate.ps1")
+	if err != nil {
+		t.Fatalf("基脚本读不到（逐字变体纪律的对照前提）: %v", err)
+	}
+	vl, bl := strings.Split(s, "\n"), strings.Split(string(base), "\n")
+	if len(vl) != len(bl) {
+		t.Fatalf("变体 %d 行 ≠ 基脚本 %d 行——逐字变体纪律破坏（只许改行,不许增删行）",
+			len(vl), len(bl))
+	}
+	for i := range vl {
+		if vl[i] == bl[i] {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(vl[i]), "dsh") {
+			t.Fatalf("第 %d 行差异超出允许集（差异行变体侧必须含 dsh＝键值/端点/平台注释）:\n基:   %q\n变体: %q",
+				i+1, bl[i], vl[i])
+		}
 	}
 }
