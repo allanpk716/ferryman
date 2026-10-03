@@ -1,0 +1,147 @@
+TAP version 13
+# (node:18460) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: compareVersions(v0.5.2, 0.5.2) = 0 — v 前缀剥除后相等
+ok 1 - compareVersions(v0.5.2, 0.5.2) = 0 — v 前缀剥除后相等
+  ---
+  duration_ms: 1.7126
+  ...
+# Subtest: compareVersions(0.5.2, 0.5.3) = -1 — 小版本落后
+ok 2 - compareVersions(0.5.2, 0.5.3) = -1 — 小版本落后
+  ---
+  duration_ms: 0.1299
+  ...
+# Subtest: compareVersions(0.10.0, 0.9.1) = 1 — 逐段数值比,非字典序
+ok 3 - compareVersions(0.10.0, 0.9.1) = 1 — 逐段数值比,非字典序
+  ---
+  duration_ms: 0.1729
+  ...
+# Subtest: compareVersions(1.0.0+build.5, 1.0.0) = 0 — 构建元数据不参与比较
+ok 4 - compareVersions(1.0.0+build.5, 1.0.0) = 0 — 构建元数据不参与比较
+  ---
+  duration_ms: 0.1302
+  ...
+# Subtest: compareVersions(1.0.0-alpha, 1.0.0) = -1 — 有预发布 < 同号无预发布
+ok 5 - compareVersions(1.0.0-alpha, 1.0.0) = -1 — 有预发布 < 同号无预发布
+  ---
+  duration_ms: 0.1114
+  ...
+# Subtest: compareVersions(1.0.0-alpha, 1.0.0-beta) = -1 — 预发布字母段按字典序
+ok 6 - compareVersions(1.0.0-alpha, 1.0.0-beta) = -1 — 预发布字母段按字典序
+  ---
+  duration_ms: 0.0992
+  ...
+# Subtest: compareVersions(1.0.0-1, 1.0.0-2) = -1 — 预发布数字段按数值
+ok 7 - compareVersions(1.0.0-1, 1.0.0-2) = -1 — 预发布数字段按数值
+  ---
+  duration_ms: 0.0913
+  ...
+# Subtest: compareVersions(1.0.0-2, 1.0.0-10) = -1 — 预发布数字段按数值,非字典序
+ok 8 - compareVersions(1.0.0-2, 1.0.0-10) = -1 — 预发布数字段按数值,非字典序
+  ---
+  duration_ms: 0.0878
+  ...
+# Subtest: compareVersions(1.0.0-1, 1.0.0-alpha) = -1 — 数字标识 < 字母标识
+ok 9 - compareVersions(1.0.0-1, 1.0.0-alpha) = -1 — 数字标识 < 字母标识
+  ---
+  duration_ms: 0.3508
+  ...
+# Subtest: compareVersions(dev, 0.5.2) = null — dev 构建无从比较
+ok 10 - compareVersions(dev, 0.5.2) = null — dev 构建无从比较
+  ---
+  duration_ms: 0.3663
+  ...
+# Subtest: compareVersions(70e8431, 0.5.2) = null — commit 描述无从比较
+ok 11 - compareVersions(70e8431, 0.5.2) = null — commit 描述无从比较
+  ---
+  duration_ms: 0.1428
+  ...
+# Subtest: compareVersions(0.5, 0.5.2) = null — 段数不足三段解析失败
+ok 12 - compareVersions(0.5, 0.5.2) = null — 段数不足三段解析失败
+  ---
+  duration_ms: 0.068
+  ...
+# Subtest: compareVersions(abc, 0.5.2) = null — 非版本串解析失败
+ok 13 - compareVersions(abc, 0.5.2) = null — 非版本串解析失败
+  ---
+  duration_ms: 0.0556
+  ...
+# Subtest: runSelfcheck: 渡口任一响应(200)即活
+ok 14 - runSelfcheck: 渡口任一响应(200)即活
+  ---
+  duration_ms: 20.802
+  ...
+# Subtest: runSelfcheck: 渡口反代上游 404/502 也算渡口活着
+ok 15 - runSelfcheck: 渡口反代上游 404/502 也算渡口活着
+  ---
+  duration_ms: 0.463
+  ...
+# Subtest: runSelfcheck: 渡口连不上＝未装/未启动,自检失败
+ok 16 - runSelfcheck: 渡口连不上＝未装/未启动,自检失败
+  ---
+  duration_ms: 0.494
+  ...
+# Subtest: runSelfcheck: daemon 版本达标(v0.5.4 ≥ 0.5.3)
+ok 17 - runSelfcheck: daemon 版本达标(v0.5.4 ≥ 0.5.3)
+  ---
+  duration_ms: 0.3827
+  ...
+# Subtest: runSelfcheck: daemon 版本低于插件要求(v0.5.2 < 0.5.3)＝对账失败
+ok 18 - runSelfcheck: daemon 版本低于插件要求(v0.5.2 < 0.5.3)＝对账失败
+  ---
+  duration_ms: 1.0738
+  ...
+# Subtest: runSelfcheck: daemon dev 构建无从比较＝对账跳过(放行并注明)
+ok 19 - runSelfcheck: daemon dev 构建无从比较＝对账跳过(放行并注明)
+  ---
+  duration_ms: 0.4706
+  ...
+# Subtest: runSelfcheck: daemon 401＝token 缺失/失效,自检失败
+ok 20 - runSelfcheck: daemon 401＝token 缺失/失效,自检失败
+  ---
+  duration_ms: 0.2355
+  ...
+# Subtest: runSelfcheck: daemon 响应缺 version 字段＝自检失败
+ok 21 - runSelfcheck: daemon 响应缺 version 字段＝自检失败
+  ---
+  duration_ms: 0.3033
+  ...
+# Subtest: runSelfcheck: daemon 响应非 JSON＝自检失败
+ok 22 - runSelfcheck: daemon 响应非 JSON＝自检失败
+  ---
+  duration_ms: 0.4772
+  ...
+# Subtest: runSelfcheck: daemon 非法版本串(空串回落 dev 之外的场景按无从比较放行)
+ok 23 - runSelfcheck: daemon 非法版本串(空串回落 dev 之外的场景按无从比较放行)
+  ---
+  duration_ms: 0.5758
+  ...
+# Subtest: runSelfcheck: daemon 500＝自检失败
+ok 24 - runSelfcheck: daemon 500＝自检失败
+  ---
+  duration_ms: 0.2658
+  ...
+# Subtest: runSelfcheck: daemon 管理口连不上＝自检失败
+ok 25 - runSelfcheck: daemon 管理口连不上＝自检失败
+  ---
+  duration_ms: 0.2227
+  ...
+# Subtest: runSelfcheck: 两处都挂＝失败原因合并为用户可见消息
+ok 26 - runSelfcheck: 两处都挂＝失败原因合并为用户可见消息
+  ---
+  duration_ms: 0.2037
+  ...
+# Subtest: runSelfcheck: /stats 请求带 Bearer token（daemon.token 对账前提）
+ok 27 - runSelfcheck: /stats 请求带 Bearer token（daemon.token 对账前提）
+  ---
+  duration_ms: 0.4665
+  ...
+1..27
+# tests 27
+# suites 0
+# pass 27
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 180.4742

@@ -1,0 +1,200 @@
+TAP version 13
+# (node:1632) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: manifest 形状钉夹具：package.json 满足 DshPackageManifest 必填与 dsh.bundle 形状
+ok 1 - manifest 形状钉夹具：package.json 满足 DshPackageManifest 必填与 dsh.bundle 形状
+  ---
+  duration_ms: 1.8987
+  ...
+# Subtest: 零依赖钉夹具：无 dependencies/devDependencies 等任何依赖键,无 node_modules
+ok 2 - 零依赖钉夹具：无 dependencies/devDependencies 等任何依赖键,无 node_modules
+  ---
+  duration_ms: 0.7195
+  ...
+# Subtest: bundle patch 就位：cordis.patch.yml 含 - insert 与插件 id（publish.md:38-51 三件套）
+ok 3 - bundle patch 就位：cordis.patch.yml 含 - insert 与插件 id（publish.md:38-51 三件套）
+  ---
+  duration_ms: 0.3658
+  ...
+# Subtest: 入口文件存在：main 指向的文件在盘上
+ok 4 - 入口文件存在：main 指向的文件在盘上
+  ---
+  duration_ms: 0.6591
+  ...
+# Subtest: 五事件位导出桩：events 模块导出五个钩子函数（骨架位）
+ok 5 - 五事件位导出桩：events 模块导出五个钩子函数（骨架位）
+  ---
+  duration_ms: 0.9023
+  ...
+# Subtest: pre-step 桩默认透传 next()（骨架不拦,票 05 才接闸门）
+ok 6 - pre-step 桩默认透传 next()（骨架不拦,票 05 才接闸门）
+  ---
+  duration_ms: 0.3757
+  ...
+# Subtest: created 桩可 await（agent/created 是 serial awaited 位,runtime-types.ts:261）
+ok 7 - created 桩可 await（agent/created 是 serial awaited 位,runtime-types.ts:261）
+  ---
+  duration_ms: 0.659
+  ...
+# Subtest: registerHooks 挂接五事件位：事件名用 dsh 协议斜杠字符串
+ok 8 - registerHooks 挂接五事件位：事件名用 dsh 协议斜杠字符串
+  ---
+  duration_ms: 1.1239
+  ...
+# Subtest: apply 不因缺 on/logger 抛错（桥先例：logged and the agent continues）
+ok 9 - apply 不因缺 on/logger 抛错（桥先例：logged and the agent continues）
+  ---
+  duration_ms: 33.7838
+  ...
+# Subtest: selfcheckOnce 失败经 logger.error 用户可见,成功静默
+ok 10 - selfcheckOnce 失败经 logger.error 用户可见,成功静默
+  ---
+  duration_ms: 3.6221
+  ...
+# [ferryman-dsh] 挂载自检失败：daemon 鉴权失败——daemon.token 缺失或失效（须重开 dsh 会话刷新挂载）
+# (node:11948) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: compareVersions(v0.5.2, 0.5.2) = 0 — v 前缀剥除后相等
+ok 11 - compareVersions(v0.5.2, 0.5.2) = 0 — v 前缀剥除后相等
+  ---
+  duration_ms: 2.603
+  ...
+# Subtest: compareVersions(0.5.2, 0.5.3) = -1 — 小版本落后
+ok 12 - compareVersions(0.5.2, 0.5.3) = -1 — 小版本落后
+  ---
+  duration_ms: 0.1564
+  ...
+# Subtest: compareVersions(0.10.0, 0.9.1) = 1 — 逐段数值比,非字典序
+ok 13 - compareVersions(0.10.0, 0.9.1) = 1 — 逐段数值比,非字典序
+  ---
+  duration_ms: 0.1846
+  ...
+# Subtest: compareVersions(1.0.0+build.5, 1.0.0) = 0 — 构建元数据不参与比较
+ok 14 - compareVersions(1.0.0+build.5, 1.0.0) = 0 — 构建元数据不参与比较
+  ---
+  duration_ms: 0.1104
+  ...
+# Subtest: compareVersions(1.0.0-alpha, 1.0.0) = -1 — 有预发布 < 同号无预发布
+ok 15 - compareVersions(1.0.0-alpha, 1.0.0) = -1 — 有预发布 < 同号无预发布
+  ---
+  duration_ms: 0.1136
+  ...
+# Subtest: compareVersions(1.0.0-alpha, 1.0.0-beta) = -1 — 预发布字母段按字典序
+ok 16 - compareVersions(1.0.0-alpha, 1.0.0-beta) = -1 — 预发布字母段按字典序
+  ---
+  duration_ms: 0.1041
+  ...
+# Subtest: compareVersions(1.0.0-1, 1.0.0-2) = -1 — 预发布数字段按数值
+ok 17 - compareVersions(1.0.0-1, 1.0.0-2) = -1 — 预发布数字段按数值
+  ---
+  duration_ms: 0.1122
+  ...
+# Subtest: compareVersions(1.0.0-2, 1.0.0-10) = -1 — 预发布数字段按数值,非字典序
+ok 18 - compareVersions(1.0.0-2, 1.0.0-10) = -1 — 预发布数字段按数值,非字典序
+  ---
+  duration_ms: 0.0957
+  ...
+# Subtest: compareVersions(1.0.0-1, 1.0.0-alpha) = -1 — 数字标识 < 字母标识
+ok 19 - compareVersions(1.0.0-1, 1.0.0-alpha) = -1 — 数字标识 < 字母标识
+  ---
+  duration_ms: 0.3539
+  ...
+# Subtest: compareVersions(dev, 0.5.2) = null — dev 构建无从比较
+ok 20 - compareVersions(dev, 0.5.2) = null — dev 构建无从比较
+  ---
+  duration_ms: 0.4597
+  ...
+# Subtest: compareVersions(70e8431, 0.5.2) = null — commit 描述无从比较
+ok 21 - compareVersions(70e8431, 0.5.2) = null — commit 描述无从比较
+  ---
+  duration_ms: 0.15
+  ...
+# Subtest: compareVersions(0.5, 0.5.2) = null — 段数不足三段解析失败
+ok 22 - compareVersions(0.5, 0.5.2) = null — 段数不足三段解析失败
+  ---
+  duration_ms: 0.0754
+  ...
+# Subtest: compareVersions(abc, 0.5.2) = null — 非版本串解析失败
+ok 23 - compareVersions(abc, 0.5.2) = null — 非版本串解析失败
+  ---
+  duration_ms: 0.0966
+  ...
+# Subtest: runSelfcheck: 渡口任一响应(200)即活
+ok 24 - runSelfcheck: 渡口任一响应(200)即活
+  ---
+  duration_ms: 22.6523
+  ...
+# Subtest: runSelfcheck: 渡口反代上游 404/502 也算渡口活着
+ok 25 - runSelfcheck: 渡口反代上游 404/502 也算渡口活着
+  ---
+  duration_ms: 0.5075
+  ...
+# Subtest: runSelfcheck: 渡口连不上＝未装/未启动,自检失败
+ok 26 - runSelfcheck: 渡口连不上＝未装/未启动,自检失败
+  ---
+  duration_ms: 0.4963
+  ...
+# Subtest: runSelfcheck: daemon 版本达标(v0.5.4 ≥ 0.5.3)
+ok 27 - runSelfcheck: daemon 版本达标(v0.5.4 ≥ 0.5.3)
+  ---
+  duration_ms: 0.3933
+  ...
+# Subtest: runSelfcheck: daemon 版本低于插件要求(v0.5.2 < 0.5.3)＝对账失败
+ok 28 - runSelfcheck: daemon 版本低于插件要求(v0.5.2 < 0.5.3)＝对账失败
+  ---
+  duration_ms: 0.9413
+  ...
+# Subtest: runSelfcheck: daemon dev 构建无从比较＝对账跳过(放行并注明)
+ok 29 - runSelfcheck: daemon dev 构建无从比较＝对账跳过(放行并注明)
+  ---
+  duration_ms: 0.4618
+  ...
+# Subtest: runSelfcheck: daemon 401＝token 缺失/失效,自检失败
+ok 30 - runSelfcheck: daemon 401＝token 缺失/失效,自检失败
+  ---
+  duration_ms: 0.2383
+  ...
+# Subtest: runSelfcheck: daemon 响应缺 version 字段＝自检失败
+ok 31 - runSelfcheck: daemon 响应缺 version 字段＝自检失败
+  ---
+  duration_ms: 0.3043
+  ...
+# Subtest: runSelfcheck: daemon 响应非 JSON＝自检失败
+ok 32 - runSelfcheck: daemon 响应非 JSON＝自检失败
+  ---
+  duration_ms: 0.4692
+  ...
+# Subtest: runSelfcheck: daemon 非法版本串(空串回落 dev 之外的场景按无从比较放行)
+ok 33 - runSelfcheck: daemon 非法版本串(空串回落 dev 之外的场景按无从比较放行)
+  ---
+  duration_ms: 0.5746
+  ...
+# Subtest: runSelfcheck: daemon 500＝自检失败
+ok 34 - runSelfcheck: daemon 500＝自检失败
+  ---
+  duration_ms: 0.2574
+  ...
+# Subtest: runSelfcheck: daemon 管理口连不上＝自检失败
+ok 35 - runSelfcheck: daemon 管理口连不上＝自检失败
+  ---
+  duration_ms: 0.22
+  ...
+# Subtest: runSelfcheck: 两处都挂＝失败原因合并为用户可见消息
+ok 36 - runSelfcheck: 两处都挂＝失败原因合并为用户可见消息
+  ---
+  duration_ms: 0.2062
+  ...
+# Subtest: runSelfcheck: /stats 请求带 Bearer token（daemon.token 对账前提）
+ok 37 - runSelfcheck: /stats 请求带 Bearer token（daemon.token 对账前提）
+  ---
+  duration_ms: 0.4615
+  ...
+1..37
+# tests 37
+# suites 0
+# pass 37
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 304.2432

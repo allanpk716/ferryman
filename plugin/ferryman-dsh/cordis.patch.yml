@@ -1,0 +1,13 @@
+# ferryman-dsh 的 bundle patch——激活声明。
+# 协议事实（dsh 调研克隆,只读）钉点：
+#   - docs/user/develop/basic/publish.md:38-51——最小可装插件包三件套：
+#     package.json（"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}）＋ 入口（导出 name/apply）
+#     ＋ 本文件的 - insert 行;无 dsh.bundle 声明的包只作普通依赖安装、不激活任何层（publish.md:56-58）。
+#   - 加载器接受插件形状：vendor/cordis/src/registry.ts:222-228（function/class/{ apply }）。
+# 安装（晨间人操作;本役红线 D12——不装活实例、不改 ~/.dsh/ 任何文件）：
+#   dsh plugin --profile <name> add <本目录路径>
+#   → profile 的 package.json 长出 "ferryman-dsh": "link:/路径" 依赖并追加 dsh.profile.bundles
+#     （publish.md:82-98,票面「分发先 file:./」对应此 link 形态）。
+- insert:
+    - id: ferryman-dsh
+      name: ferryman-dsh
