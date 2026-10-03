@@ -322,6 +322,16 @@ func dshHeaderSessionID(h http.Header) string {
 	return v
 }
 
+// KeyIsDshSessionID 会话键形状分类器（心跳头分流的 dock 单源，票 B）：dsh 形
+//（isDshSessionIDShape，`session-` 前缀）返回 true。beat 两发送点（Send/
+// SendAppendReplay）据此分流归因头，禁止 beat 复刻第二份形状规则。false＝其余
+// 一切形（UUID36 与未识别形），调用方保守走 CC 头——两形互斥（`session-` 前缀
+// 不满足 UUID36 的 36 字节连字符段形），dsh 分流不可能触碰 CC 键路径；未识别
+// 形无 agent 证据，维持今日 CC 头行为＝CC 零回归（decision D5）。
+func KeyIsDshSessionID(sid string) bool {
+	return isDshSessionIDShape(sid)
+}
+
 // isDshSessionIDShape dsh 会话 ID 形校验：`session-` 前缀（全部铸造处的缺省
 // 形态；自定 --session-id 不带前缀者放弃归因，同缺失语义）、总长 9..128、
 // 字符集 [A-Za-z0-9._-]（覆盖 uuid36 连字符形/32hex/计数器种子；同

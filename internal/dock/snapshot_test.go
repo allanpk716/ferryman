@@ -374,3 +374,32 @@ func TestExtractSessionIDConflictLogsBodyWins(t *testing.T) {
 		t.Fatalf("单侧来源不留痕, logged = %d", logged)
 	}
 }
+
+// TestKeyIsDshSessionIDClassifier 票 B：会话键形状分类器（心跳头分流的 dock
+// 单源）。钉三面：dsh 形（session- 前缀，三种铸造变体＋长度边界）＝true；
+// UUID36（CC 形）＝false（两形互斥）；一切非两形键＝false（beat 侧保守走
+// CC 头的判定面——false 是保守语义的承载方向，规则本体仍单源在
+// isDshSessionIDShape，本测试只钉导出面的语义不另立规则）。
+func TestKeyIsDshSessionIDClassifier(t *testing.T) {
+	cases := []struct {
+		name string
+		sid  string
+		want bool
+	}{
+		{"缺省形 session-<uuid36>", dshSidFixture, true},
+		{"32hex 变体", "session-0123456789abcdef0123456789abcdef", true},
+		{"计数器种子变体", "session-counter-7", true},
+		{"最短 9 字节", "session-a", true},
+		{"最长 128 字节", "session-" + strings.Repeat("a", 120), true},
+		{"129 字节超界", "session-" + strings.Repeat("a", 121), false},
+		{"坏字符集（空格）", "session-has space", false},
+		{"无前缀裸 UUID36（放弃归因形）", uuidFixture, false},
+		{"非两形键（既有测试键）", "sess-1", false},
+		{"空串", "", false},
+	}
+	for _, c := range cases {
+		if got := KeyIsDshSessionID(c.sid); got != c.want {
+			t.Errorf("%s: KeyIsDshSessionID(%q) = %v, want %v", c.name, c.sid, got, c.want)
+		}
+	}
+}

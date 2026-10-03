@@ -398,3 +398,87 @@ func TestNewHttpBeatSenderDefaults(t *testing.T) {
 		t.Errorf("timeout = %v, want %v", s.timeout, beatTimeout)
 	}
 }
+
+// ---- 票 B：心跳头分流（dsh 形键发 dsh 归因头；其余形保守维持 CC 头） ----
+
+// beatWantHeaders 归因头以外的期望头集（快照五件内容头＋占位令牌字面量＋
+// identity）；归因头由各用例经 attribution 键值给出——分流断言只换一枚头。
+func beatWantHeaders(attributionKey, attributionVal string) map[string]string {
+	return map[string]string{
+		"Content-Type":      "application/json",
+		"Anthropic-Version": "2023-06-01",
+		"Anthropic-Beta":    "claude-code-20250219,context-1m-2025-08-07",
+		"User-Agent":        "claude-cli/2.0.0 (external, cli)",
+		"Accept":            "text/event-stream",
+		"Accept-Encoding":   "identity",
+		"Authorization":     "Bearer PROXY_MANAGED",
+		"X-Api-Key":         "PROXY_MANAGED",
+		attributionKey:      attributionVal,
+	}
+}
+
+// assertBeatHeaderSet 头集双向断言：收到头恰等 want（零新增应用头＋逐键等值）
+// ——dsh 键若多发 CC 头（或反之）会以"新增应用头"暴露。Content-Length＝Go
+// client 传输框架头，白名单豁免（同 TestSendNormalPathRewriteHeadersUsage）。
+func assertBeatHeaderSet(t *testing.T, hdr http.Header, want map[string]string) {
+	t.Helper()
+	framing := map[string]bool{"Content-Length": true}
+	for k := range hdr {
+		if _, ok := want[k]; !ok && !framing[k] {
+			t.Errorf("新增应用头 %s=%q, want 零新增", k, hdr.Get(k))
+		}
+	}
+	for k, v := range want {
+		if g := hdr.Get(k); g != v {
+			t.Errorf("头 %s = %q, want %q", k, g, v)
+		}
+	}
+}
+
+func TestSendHeaderSplitDshKey(t *testing.T) {
+	// dsh 缺省铸造形 session-<uuid36>（与台账键同源，见 dock.HeaderDeepSeekHarnessSessionID 注记）
+	sid := "session-6e360520-09b8-46b6-9d82-cc9446ec8bd9"
+	u := newSSEUpstream(t, nil)
+	s := NewHttpBeatSender(u.srv.URL, newStoreWithSession(sid))
+	r := s.Send(BeatPlan{SessionID: sid})
+	if !r.Sent || !r.OK {
+		t.Fatalf("Send = %+v, want Sent=true OK=true（分流只换归因头,不改发送路径）", r)
+	}
+	hdr, _, _ := u.last()
+	assertBeatHeaderSet(t, hdr, beatWantHeaders("X-Deepseek-Harness-Session-Id", sid))
+	if g := hdr.Get("X-Claude-Code-Session-Id"); g != "" {
+		t.Errorf("dsh 键误发 CC 头 = %q, want 不发（渡口对 CC 头做 UUID36 校验,塞 dsh 键被拒收）", g)
+	}
+}
+
+func TestSendHeaderSplitUUID36Key(t *testing.T) {
+	// CC 键：行为与今日逐字节一致（CC 头）；dsh 头不发。
+	sid := "123e4567-e89b-12d3-a456-426614174000"
+	u := newSSEUpstream(t, nil)
+	s := NewHttpBeatSender(u.srv.URL, newStoreWithSession(sid))
+	r := s.Send(BeatPlan{SessionID: sid})
+	if !r.Sent || !r.OK {
+		t.Fatalf("Send = %+v, want Sent=true OK=true", r)
+	}
+	hdr, _, _ := u.last()
+	assertBeatHeaderSet(t, hdr, beatWantHeaders("X-Claude-Code-Session-Id", sid))
+	if g := hdr.Get("X-Deepseek-Harness-Session-Id"); g != "" {
+		t.Errorf("UUID36 键误发 dsh 头 = %q, want 不发", g)
+	}
+}
+
+func TestSendHeaderSplitOtherShapeKeyStaysCC(t *testing.T) {
+	// 其余非两形键：保守维持今日 CC 头（无键形证据无从判 agent,不冒险换头）。
+	sid := "counter-7"
+	u := newSSEUpstream(t, nil)
+	s := NewHttpBeatSender(u.srv.URL, newStoreWithSession(sid))
+	r := s.Send(BeatPlan{SessionID: sid})
+	if !r.Sent || !r.OK {
+		t.Fatalf("Send = %+v, want Sent=true OK=true", r)
+	}
+	hdr, _, _ := u.last()
+	assertBeatHeaderSet(t, hdr, beatWantHeaders("X-Claude-Code-Session-Id", sid))
+	if g := hdr.Get("X-Deepseek-Harness-Session-Id"); g != "" {
+		t.Errorf("非两形键误发 dsh 头 = %q, want 不发", g)
+	}
+}

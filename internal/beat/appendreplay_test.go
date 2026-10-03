@@ -388,3 +388,47 @@ func TestSendAppendReplayThroughRewriteDock(t *testing.T) {
 		t.Fatalf("占位 x-api-key 未剥: %q", g)
 	}
 }
+
+// ---- 票 B：追加重放头分流（与 Send 同款；重放标记头不受分流影响） ----
+
+func TestSendAppendReplayHeaderSplitDshKey(t *testing.T) {
+	// dsh 键：发 dsh 归因头、CC 头不发；x-ferryman-replay 标记头与其余头集不动。
+	sid := "session-6e360520-09b8-46b6-9d82-cc9446ec8bd9"
+	u := newSSEUpstream(t, writeHandoffSSE)
+	s := NewHttpBeatSender(u.srv.URL, newStoreWithSession(sid))
+	r := s.SendAppendReplay(AppendReplayPlan{SessionID: sid, Instruction: "写交接", MaxTokens: 777})
+	if !r.Sent || !r.OK || r.Err != "" {
+		t.Fatalf("SendAppendReplay = %+v, want Sent=true OK=true（分流只换归因头,不改发送路径）", r)
+	}
+	hdr, _, _ := u.last()
+	want := beatWantHeaders("X-Deepseek-Harness-Session-Id", sid)
+	want["X-Ferryman-Replay"] = "same_model" // 既有重放标记头：分流不碰
+	assertBeatHeaderSet(t, hdr, want)
+	if g := hdr.Get("X-Claude-Code-Session-Id"); g != "" {
+		t.Errorf("dsh 键误发 CC 头 = %q, want 不发（渡口对 CC 头做 UUID36 校验,塞 dsh 键被拒收）", g)
+	}
+}
+
+func TestSendAppendReplayHeaderSplitCCAndOtherKeys(t *testing.T) {
+	cases := []struct{ name, sid string }{
+		{"UUID36 键（今日行为逐字节一致）", "123e4567-e89b-12d3-a456-426614174000"},
+		{"其余非两形键（保守 CC 头）", "counter-7"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			u := newSSEUpstream(t, writeHandoffSSE)
+			s := NewHttpBeatSender(u.srv.URL, newStoreWithSession(c.sid))
+			r := s.SendAppendReplay(AppendReplayPlan{SessionID: c.sid, Instruction: "写交接", MaxTokens: 777})
+			if !r.Sent || !r.OK || r.Err != "" {
+				t.Fatalf("SendAppendReplay = %+v, want Sent=true OK=true", r)
+			}
+			hdr, _, _ := u.last()
+			want := beatWantHeaders("X-Claude-Code-Session-Id", c.sid)
+			want["X-Ferryman-Replay"] = "same_model"
+			assertBeatHeaderSet(t, hdr, want)
+			if g := hdr.Get("X-Deepseek-Harness-Session-Id"); g != "" {
+				t.Errorf("%q 误发 dsh 头 = %q, want 不发", c.sid, g)
+			}
+		})
+	}
+}
