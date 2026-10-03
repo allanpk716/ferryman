@@ -27,6 +27,11 @@ import (
 // SubagentEventLeakS 子代理计数泄漏防护：1h 无新事件视为已结束（Stop 丢失场景）。
 const SubagentEventLeakS = 3600.0
 
+// DshRunStaleS dsh 运行态失效上界（票 A 判活地基，dsh-heartbeat 规格「判活」
+// 节）：置位/刷新距今超过它即判失效——有界失效回正常闸门路径（与 CC 悬空道/
+// SubagentEventLeakS 同哲学）。同值 3600 但独立命名：语义不同源，将来各自可调。
+const DshRunStaleS = 3600.0
+
 // QSnap qwatch 开窗瞬间的 (last_write, size)，供两道验新鲜度比对。
 type QSnap struct {
 	MTime float64
@@ -54,10 +59,10 @@ type SessionState struct {
 	//                    时钟——入队重查的判定基准：内容未越过它即不再摆渡。
 	// 均仅内存（同 HandedOffAt）：daemon 重启归零=重启后多摆渡一轮（无害，既有
 	// 语义不变）。
-	ContentTS       float64
-	ContentStamp    float64
+	ContentTS        float64
+	ContentStamp     float64
 	HandledContentTS float64
-	EnrichedWrite  float64 // 已富化(标题/峰值)到哪个 last_write 版本；初值 -1
+	EnrichedWrite    float64 // 已富化(标题/峰值)到哪个 last_write 版本；初值 -1
 	// T51 等答复窗口（问询守望）：QWatchOpenedTS nil=无窗。开窗在 daemon 问询
 	// 守望（命中谓词四条件），关窗只在 Touch 新写入分支（任何新写入=用户已
 	// 作答）；plan 开窗即排定（票03调度器：max_beats 跳 × beat_interval_s，
@@ -66,6 +71,12 @@ type SessionState struct {
 	QWatchBeatsFired int
 	QWatchPlan       []float64
 	QWatchSnapshot   *QSnap
+	// dsh 判活地基（票 A，dsh-heartbeat 规格「判活」节）：主会话（parent 空）
+	// 运行/终结态，时间戳形（nil=无态），仅内存——daemon 重启归零＝插件下一
+	// 事件重新置位（同 HandedOffAt 纪律，无害）。子会话不 Touch、无 SessionState
+	//（dsh_receive.go 随父入账分流），其态在 Ledger.dshChildRuns（键=子键）。
+	DshRunningTS  *float64
+	DshDisposedTS *float64
 }
 
 // subEnt T32 子代理计数值：(运行数, 最后事件时刻)。仅内存——daemon 重启丢
@@ -85,14 +96,23 @@ type Ledger struct {
 	lastWrite float64 // last_transcript_write：健康监控用（DESIGN §4）
 
 	subagents map[[2]string]subEnt // T32：(agent, session_id) → (运行数, 最后事件时刻)
+
+	// dsh 判活地基（票 A）：族系子键表 parent→children＋子会话运行/终结态小表
+	//（子会话不 Touch、无 SessionState 可挂——随父入账分流的镜像，键=子键）。
+	// 仅内存，子键来源见 DshChildSeen 头注。
+	dshChildren       map[string]map[string]bool
+	dshChildRuns      map[string]*dshRunEnt
+	dshChildrenSeeded bool // 族系子键账本回种防重闸（DshChildrenSeedClaim test-and-set）
 }
 
 // New 构造空台账。
 func New() *Ledger {
 	return &Ledger{
-		byKey:     map[[2]string]*SessionState{},
-		byPath:    map[string]*SessionState{},
-		subagents: map[[2]string]subEnt{},
+		byKey:        map[[2]string]*SessionState{},
+		byPath:       map[string]*SessionState{},
+		subagents:    map[[2]string]subEnt{},
+		dshChildren:  map[string]map[string]bool{},
+		dshChildRuns: map[string]*dshRunEnt{},
 	}
 }
 
@@ -282,4 +302,190 @@ func (l *Ledger) MarkHandedOff(st *SessionState) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	st.HandedOffAt = clock.Now()
+}
+
+// ---- dsh 判活地基（票 A，dsh-heartbeat 规格「判活」节）----
+//
+// 运行/终结态维护与族系判定。事件面（daemon DshEvent，HTTP goroutine）写、
+// 闸门（machineWaiting dsh 道）读——公共方法全部自带锁、锁内只内存操作（本包
+// 并发模型纪律）；查询对过期态「判定即清理」（SubagentActive 泄漏防护同款）。
+// 状态仅内存：daemon 重启归零＝插件下一事件重新置位（同 HandedOffAt 纪律，
+// 无害）。主会话（parent 空）两态挂 SessionState（DshRunningTS/DshDisposedTS）；
+// 子会话态在 dshChildRuns。
+
+// dshRunEnt dsh 子会话运行/终结态（主会话同款两字段挂 SessionState）。
+type dshRunEnt struct {
+	runningTS  *float64 // nil=无运行态
+	disposedTS *float64 // nil=未终结
+}
+
+// dshChildRunEnt 取/建子条目（调用方持锁）。
+func (l *Ledger) dshChildRunEnt(sid string) *dshRunEnt {
+	ent, ok := l.dshChildRuns[sid]
+	if !ok {
+		ent = &dshRunEnt{}
+		l.dshChildRuns[sid] = ent
+	}
+	return ent
+}
+
+// dshChildPrune 双空条目删除（调用方持锁；子会话终态无消费后不占内存）。
+func (l *Ledger) dshChildPrune(sid string, ent *dshRunEnt) {
+	if ent.runningTS == nil && ent.disposedTS == nil {
+		delete(l.dshChildRuns, sid)
+	}
+}
+
+// DshMainRunSet 置/清主会话运行态：running=true 置位（ts=事件时刻）并清终结
+// 态（规格：同键新 running 清除终结态）；running=false=idle 显式复位（规格：
+// idle 优先于刷新）。会话未登记＝无态可维护，no-op。
+func (l *Ledger) DshMainRunSet(sid string, running bool, ts float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st := l.byKey[[2]string{"dsh", sid}]
+	if st == nil {
+		return
+	}
+	if running {
+		t := ts
+		st.DshRunningTS = &t
+		st.DshDisposedTS = nil
+	} else {
+		st.DshRunningTS = nil
+	}
+}
+
+// DshChildRunSet DshMainRunSet 的子会话形（态在 dshChildRuns，键=子键）。
+func (l *Ledger) DshChildRunSet(sid string, running bool, ts float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ent := l.dshChildRunEnt(sid)
+	if running {
+		t := ts
+		ent.runningTS = &t
+		ent.disposedTS = nil
+	} else {
+		ent.runningTS = nil
+		l.dshChildPrune(sid, ent)
+	}
+}
+
+// DshMainDisposed 置主会话终结态并清运行态（终结即不在跑——否则 disposed
+// 会话仍吃豁免直至上界）。会话未登记＝无态可维护，no-op。
+func (l *Ledger) DshMainDisposed(sid string, ts float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st := l.byKey[[2]string{"dsh", sid}]
+	if st == nil {
+		return
+	}
+	t := ts
+	st.DshDisposedTS = &t
+	st.DshRunningTS = nil
+}
+
+// DshChildDisposed DshMainDisposed 的子会话形。
+func (l *Ledger) DshChildDisposed(sid string, ts float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ent := l.dshChildRunEnt(sid)
+	t := ts
+	ent.disposedTS = &t
+	ent.runningTS = nil
+	l.dshChildPrune(sid, ent)
+}
+
+// DshDisposedClear 清终结态（resume 载荷——事件 body 带 source=resume；主/子
+// 两处都试：同一键不会既是主又是子，双试无害）。
+func (l *Ledger) DshDisposedClear(sid string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if st := l.byKey[[2]string{"dsh", sid}]; st != nil {
+		st.DshDisposedTS = nil
+	}
+	if ent, ok := l.dshChildRuns[sid]; ok {
+		ent.disposedTS = nil
+		l.dshChildPrune(sid, ent)
+	}
+}
+
+// DshRunRefresh 运行态刷新：同键已白名单活动事件（turn/start、assistant/
+// message——fed 会话走事件口，本方法即事件口路径；未接管会话的文件面检测态
+// 推进随 dsh-heartbeat 票 03 补）推进运行态时间戳。仅运行态在位时推进（刷新
+// 不置位——置位只认 status=running）；到达的事件本身即活性证据，过期态同样
+// 照推（失效上界只在查询侧判定）。
+func (l *Ledger) DshRunRefresh(sid string, ts float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if st := l.byKey[[2]string{"dsh", sid}]; st != nil && st.DshRunningTS != nil {
+		t := ts
+		st.DshRunningTS = &t
+	}
+	if ent, ok := l.dshChildRuns[sid]; ok && ent.runningTS != nil {
+		t := ts
+		ent.runningTS = &t
+	}
+}
+
+// DshChildSeen 登记族系子键（parent→child）。子键两个来源（规格「判活」）：
+// ①fed 子会话直报——daemon DshEvent 对 parent 非空的事件登记（live）；②台账
+// usage 行 subagent 列回种——daemon 侧 dshEnsureChildrenSeeded（重启恢复，
+// DshGate 首问惰性触发、DshChildrenSeedClaim 防重）。
+func (l *Ledger) DshChildSeen(parent, child string) {
+	if parent == "" || child == "" || parent == child {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.dshChildren[parent] == nil {
+		l.dshChildren[parent] = map[string]bool{}
+	}
+	l.dshChildren[parent][child] = true
+}
+
+// DshHasChild 族系子键查询（回种/直报登记的可观察面；等答复窗票 03 复用）。
+func (l *Ledger) DshHasChild(parent, child string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dshChildren[parent][child]
+}
+
+// DshChildrenSeedClaim 族系回种防重闸（test-and-set）：首调返回 true（调用方
+// 获回种执行权），其后 false。回种本体在 daemon 侧——锁外读账本（一次性全量，
+// dshFed.seedFromAccounts 同款成本），经 DshChildSeen 锁内写。
+func (l *Ledger) DshChildrenSeedClaim() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.dshChildrenSeeded {
+		return false
+	}
+	l.dshChildrenSeeded = true
+	return true
+}
+
+// DshFamilyRunning 族系在跑判定（闸门 dsh 道，machineWaiting）：本键运行态
+// 在效 OR 任一已知子键运行态在效。在效＝置位/刷新距今 ≤ DshRunStaleS（有界
+// 失效——过期回正常闸门路径）；过期态判定即清理。
+func (l *Ledger) DshFamilyRunning(sid string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := clock.Now()
+	if st := l.byKey[[2]string{"dsh", sid}]; st != nil && st.DshRunningTS != nil {
+		if now-*st.DshRunningTS <= DshRunStaleS {
+			return true
+		}
+		st.DshRunningTS = nil // 判定即清理（有界失效）
+	}
+	for child := range l.dshChildren[sid] {
+		ent, ok := l.dshChildRuns[child]
+		if !ok || ent.runningTS == nil {
+			continue
+		}
+		if now-*ent.runningTS <= DshRunStaleS {
+			return true
+		}
+		ent.runningTS = nil
+		l.dshChildPrune(child, ent)
+	}
+	return false
 }

@@ -129,6 +129,161 @@ func TestSubagentsActiveCountSumAndLeakCutoff(t *testing.T) {
 	}
 }
 
+// ---- 票 A 判活地基（dsh-heartbeat 规格「判活」节）：dsh 运行/终结态＋族系 ----
+
+// freezeLedgerClock 冻结包级时钟并返回可推进的当前时刻指针（gate_test
+// .freezeClock 同款——包级注入，用毕 Cleanup 还原）。
+func freezeLedgerClock(t *testing.T, v float64) *float64 {
+	t.Helper()
+	orig := clock.Now
+	cur := v
+	clock.Now = func() float64 { return cur }
+	t.Cleanup(func() { clock.Now = orig })
+	return &cur
+}
+
+// dshLifeOf 锁内快照主会话生命态（运行/终结时间戳，nil=无态）。
+func dshLifeOf(l *Ledger, sid string) (run, disposed *float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st := l.GetLocked("dsh", sid)
+	if st == nil {
+		return nil, nil
+	}
+	if st.DshRunningTS != nil {
+		ts := *st.DshRunningTS
+		run = &ts
+	}
+	if st.DshDisposedTS != nil {
+		ts := *st.DshDisposedTS
+		disposed = &ts
+	}
+	return run, disposed
+}
+
+func TestDshRunStateLifecycle(t *testing.T) {
+	led := New()
+	now := freezeLedgerClock(t, 1000)
+	led.TouchFull("dsh", "m", "C:\\p\\m.jsonl", 1000, 1, "", "", 0, 0)
+	if led.DshFamilyRunning("m") {
+		t.Fatal("无态应为 false")
+	}
+	led.DshMainRunSet("m", true, *now)
+	if !led.DshFamilyRunning("m") {
+		t.Fatal("running 置位应 true")
+	}
+	led.DshMainRunSet("m", false, *now+5) // idle 显式复位
+	if led.DshFamilyRunning("m") {
+		t.Fatal("idle 复位应 false")
+	}
+	led.DshMainDisposed("m", *now+10)
+	if run, disp := dshLifeOf(led, "m"); run != nil || disp == nil || *disp != *now+10 {
+		t.Fatalf("disposed = %v/%v, want nil/%v", run, disp, *now+10)
+	}
+	led.DshMainRunSet("m", true, *now+20) // 新 running 清终结态
+	if _, disp := dshLifeOf(led, "m"); disp != nil {
+		t.Fatalf("新 running 应清终结态: %v", *disp)
+	}
+	if !led.DshFamilyRunning("m") {
+		t.Fatal("新 running 后应 true")
+	}
+}
+
+func TestDshRunStateStaleBound(t *testing.T) {
+	// 失效上界 3600s（有界失效回正常闸门路径）；判定即清理（SubagentActive
+	// 泄漏防护同款纪律）。
+	led := New()
+	now := freezeLedgerClock(t, 1000)
+	led.TouchFull("dsh", "m", "C:\\p\\m.jsonl", 1000, 1, "", "", 0, 0)
+	led.DshMainRunSet("m", true, 1000)
+	*now += DshRunStaleS // 恰在界上：仍在效
+	if !led.DshFamilyRunning("m") {
+		t.Fatal("上界内应 true")
+	}
+	*now += 1
+	if led.DshFamilyRunning("m") {
+		t.Fatal("超界应 false")
+	}
+	if run, _ := dshLifeOf(led, "m"); run != nil {
+		t.Fatalf("过期态应判定即清理: %v", *run)
+	}
+}
+
+func TestDshRunRefresh(t *testing.T) {
+	// 刷新：运行态在位时推进时间戳；不在位不置位（置位只认 status=running）；
+	// idle 复位后刷新不复活。
+	led := New()
+	freezeLedgerClock(t, 1000)
+	led.TouchFull("dsh", "m", "C:\\p\\m.jsonl", 1000, 1, "", "", 0, 0)
+	led.DshMainRunSet("m", true, 1000)
+	led.DshRunRefresh("m", 1500)
+	if run, _ := dshLifeOf(led, "m"); run == nil || *run != 1500 {
+		t.Fatalf("刷新后运行态 = %v, want 1500", run)
+	}
+	led.DshMainRunSet("m", false, 1600)
+	led.DshRunRefresh("m", 1700)
+	if run, _ := dshLifeOf(led, "m"); run != nil {
+		t.Fatalf("idle 后刷新不得复活: %v", *run)
+	}
+	led.TouchFull("dsh", "n", "C:\\p\\n.jsonl", 1000, 1, "", "", 0, 0)
+	led.DshRunRefresh("n", 1800) // 从未置位
+	if led.DshFamilyRunning("n") {
+		t.Fatal("刷新不得置位（置位只认 status=running）")
+	}
+}
+
+func TestDshFamilyChildRunning(t *testing.T) {
+	// 族系＝本键 OR 任一已知子键；子键两来源（直报 DshChildSeen／账本回种，
+	// 回种在 daemon 侧）。子态同失效上界；子 disposed 清其运行态；resume 载荷
+	// 清终结态（条目双空即删防泄漏）。
+	led := New()
+	now := freezeLedgerClock(t, 1000)
+	led.TouchFull("dsh", "p", "C:\\p\\p.jsonl", 1000, 1, "", "", 0, 0)
+	led.DshChildSeen("p", "c1")
+	led.DshChildSeen("p", "c2")
+	if !led.DshHasChild("p", "c1") || !led.DshHasChild("p", "c2") {
+		t.Fatal("DshChildSeen 应登记族系子键")
+	}
+	if led.DshFamilyRunning("p") {
+		t.Fatal("子无运行态应 false")
+	}
+	led.DshChildRunSet("c1", true, *now)
+	if !led.DshFamilyRunning("p") {
+		t.Fatal("任一子在跑应 true")
+	}
+	if led.DshFamilyRunning("c1") {
+		t.Fatal("子键自问族系（自身无登记无子键）应 false")
+	}
+	*now += DshRunStaleS + 1
+	if led.DshFamilyRunning("p") {
+		t.Fatal("子过期应 false")
+	}
+	led.DshChildRunSet("c1", true, *now)
+	led.DshChildDisposed("c1", *now)
+	if led.DshFamilyRunning("p") {
+		t.Fatal("子 disposed 后应 false")
+	}
+	led.DshDisposedClear("c1") // resume 载荷
+	led.mu.Lock()
+	_, ok := led.dshChildRuns["c1"]
+	led.mu.Unlock()
+	if ok {
+		t.Fatal("子条目双空应删除（防泄漏）")
+	}
+}
+
+func TestDshChildrenSeedClaim(t *testing.T) {
+	// 回种防重闸（test-and-set）：首调 true＝获回种执行权，其后 false（每
+	// Ledger 生命周期一次——daemon 换台账＝重启语义，重新回种是本分）。
+	led := New()
+	if !led.DshChildrenSeedClaim() {
+		t.Fatal("首调应返回 true（获回种执行权）")
+	}
+	if led.DshChildrenSeedClaim() || led.DshChildrenSeedClaim() {
+		t.Fatal("其后应恒返回 false（防重）")
+	}
+}
+
 // ---- 票面补充钉子：Touch 覆盖分支 ----
 
 func TestTouchOverwriteBranches(t *testing.T) {
