@@ -91,11 +91,16 @@ func TestApplyDSHCreatesFiles(t *testing.T) {
 	if pr.Backup != "" || er.Backup != "" {
 		t.Fatalf("新建文件不应带备份: %+v %+v", pr, er)
 	}
-	// 内容要素抽查：路由名/协议/baseURL/模型别名/默认模型。
+	// 内容要素抽查（v2＝接法乙）：适配器插件/凭据/方言钉值/模型别名/贡献者
+	// 关闭/默认模型路由。
 	for _, want := range []string{
-		"ferryman-dock:", "api: anthropic-messages", "baseURL: " + dockBase,
+		"- id: llm-deepseek", "name: '@deepseek-ai/dsh-llm-deepseek-api-key'",
+		"baseURL: " + dockBase, "apiKeyEnv: " + DSHTokenEnv,
+		"thinking: disabled", "reasoningEffort: off", "maxTokens: 32768",
 		"- id: claude-opus-5", "- id: claude-sonnet-5",
-		"provider: ferryman-dock", "model: claude-opus-5",
+		"- id: plugin-package-inventory-deepseek", "- id: session-log-deepseek",
+		"  disabled: true",
+		"provider: deepseek-official", "model: claude-opus-5",
 	} {
 		if !strings.Contains(mustReadStr(t, dshPatchOf(fp)), want) {
 			t.Fatalf("home patch 缺要素 %q", want)

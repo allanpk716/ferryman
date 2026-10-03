@@ -77,6 +77,63 @@ func imageBlock() map[string]any {
 // TestRewriteModelMappingSixKeys 六键映射逐键：先剥 [1M] 后缀（大小写变体），
 // 值域真名原样透传（[1M] 信息丢弃），别名换映射值，未知名落 default，
 // 中段 [1M] 不剥。
+// TestRewriteStripsDSHWireKeys 接法乙方言卫生（2026-10-03）：顶层 dsh_* 线
+// 扩展键一律剥除（dsh_plugin_packages 清单／dsh_session_log 全会话明文绝
+// 不出站，未知名 dsh_* 同剥——保留域无歧义）；messages 内同前缀内容不动；
+// CC 形状（无 dsh_* 键）零影响。
+func TestRewriteStripsDSHWireKeys(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-5","system":"sys","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"dsh_marker","x":1}]}],"dsh_plugin_packages":["pkg-a"],"dsh_session_log":{"cwd":"C:\\secret","turns":9},"dsh_future_key":true,"max_tokens":1024}`)
+	out := rewriteOK(t, body, fixtureCfg())
+
+	got := parseWithUseNumber(t, out.Body)
+	for _, k := range []string{"dsh_plugin_packages", "dsh_session_log", "dsh_future_key"} {
+		if _, ok := got[k]; ok {
+			t.Fatalf("顶层 %s 未剥", k)
+		}
+	}
+	if out.ModelOut != "glm-5.5" {
+		t.Fatalf("模型映射受牵连: %q", out.ModelOut)
+	}
+	if got["system"] != "sys" || got["max_tokens"] != json.Number("1024") {
+		t.Fatal("无关顶层键被误伤")
+	}
+	// messages 内同前缀内容块是消息内容，非线扩展——不动。
+	blocks := got["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	if len(blocks) != 2 || blocks[1].(map[string]any)["type"] != "dsh_marker" {
+		t.Fatalf("messages 内 dsh_ 前缀内容块被误伤: %v", blocks)
+	}
+}
+
+// TestRewriteKeepsBodyWithoutDSHKeys CC 形状零影响：无 dsh_* 键的体改写后
+// 语义不变（剥除只做减法，无键无减）。
+func TestRewriteKeepsBodyWithoutDSHKeys(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-5","system":"sys","messages":[{"role":"user","content":"hi"}],"max_tokens":2048,"stream":true}`)
+	out := rewriteOK(t, body, fixtureCfg())
+
+	got := parseWithUseNumber(t, out.Body)
+	if got["model"] != "glm-5.5" || got["system"] != "sys" ||
+		got["max_tokens"] != json.Number("2048") || got["stream"] != true {
+		t.Fatalf("CC 形状被误伤: %v", got)
+	}
+}
+
+// TestMapCountTokensModelStripsDSHWireKeys count_tokens 轻改写路同款剥除
+//（真流量与 messages 路同一方言卫生）。
+func TestMapCountTokensModelStripsDSHWireKeys(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-5","messages":[],"dsh_session_log":{"turns":1}}`)
+	out, mi, mo, ok := mapCountTokensModel(body, fixtureCfg())
+	if !ok {
+		t.Fatal("count_tokens 改写意外失败")
+	}
+	got := parseWithUseNumber(t, out)
+	if _, exists := got["dsh_session_log"]; exists {
+		t.Fatal("count_tokens 路 dsh_session_log 未剥")
+	}
+	if mi != "claude-opus-5" || mo != "glm-5.5" {
+		t.Fatalf("count_tokens 模型映射漂移: %q→%q", mi, mo)
+	}
+}
+
 func TestRewriteModelMappingSixKeys(t *testing.T) {
 	cases := []struct {
 		name    string

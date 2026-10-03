@@ -23,14 +23,15 @@ package daemon
 // metadata.session_id（pi-ai 路无任何键上线；PR #4 的"捕获键零改动就位"系把
 // 自家 CC 会话记账行误读为 dsh 行——当日 dsh 流量两行 session_id 恒空，渡口
 // 账面实证）。渡口已加 X-Deepseek-Harness-Session-Id 头第三回落（键=头行 id，
-// 与守望同键）——但当前接管路由 llm-pi-ai 不发该头，捕获归因仍空。
+// 与守望同键）——2026-10-03 已切接法乙（接管路由换 llm-deepseek，provider
+// apply v2 补丁），走渡口的 dsh 流量每请求发该头，渡口捕获归因自此有键
+//（此前 pi-ai 路不发，捕获归因恒空）。
 //
 // P2-1/P2-2 边界（后续票接线，本文件不预铺）：
-//   - 不 maybeEnqueue：摆渡依赖渡口快照，而 pi-ai 路快照捕获恒 skipped（无键）
-//     ——接线必 snapshot_missing，待 P2-3 接法乙（llm-deepseek 路由带
-//     x-deepseek-harness-session-id 头）或 P2-4 原生插件（session/event 直报，
-//     不依赖渡口捕获）解锁；enrich 亦无 dsh 分支（标题/峰值改由采集顺带回写，
-//     不读第二遍盘）；
+//   - 不 maybeEnqueue：摆渡依赖渡口快照；接法乙已切（2026-10-03）后快照键
+//     自此可得（llm-deepseek 路每请求带 x-deepseek-harness-session-id 头），
+//     但 maybeEnqueue/enrich 的 dsh 接线留给后续票（P2-5 设计面）——本文件
+//     仍不预铺；
 //   - 不喂 NoteUsage/ReqClock：停车窗/判热钟是 cc 面机制，dsh 判活信号待
 //     P2-5 设计；
 //   - 不 qwatch/心跳/同模型：三处均 cc-only（各自入口 agent 检查）。

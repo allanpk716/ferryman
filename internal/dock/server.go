@@ -583,6 +583,7 @@ func mapCountTokensModel(body []byte, cfg RewriteConfig) (out []byte, modelIn, m
 	}
 	mo := mapModel(raw, cfg)
 	obj["model"] = mo
+	stripDSHWireKeys(obj) // 接法乙方言卫生：count_tokens 与 messages 同款剥顶层 dsh_*
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -606,7 +607,8 @@ func (s *Server) recordRow(m *reqMeta, sw *statusWriter) {
 	// token 四列来源：改写模式＝上游响应 SSE usage（message_delta 真值覆盖
 	// message_start 的 0，Q14 语义）；透传模式不解析响应（保真优先，压缩体
 	// 亦扫不出），尽力而为记 0——票面许可条款，注释即说明。
-	// agent 归因（2026-10-02 dsh 接管）：dsh 的 pi-ai 适配器每请求必带
+	// agent 归因（2026-10-02 dsh 接管；2026-10-03 切接法乙）：dsh 的适配器
+	// （pi-ai 与 llm-deepseek 两路同源 attribution.ts）每请求必带
 	// `User-Agent: deepseek-harness/<版本>`（官方强制归因头）——以此分岔 dsh
 	// 流量；其余（含 CC）照旧记 cc。beat 重放不带该头，不受影响。
 	agent := "cc"

@@ -12,11 +12,25 @@
 //   - 新建文件无"接管前备份"可落——Restore 对"无备份＋带标记"的文件走删除
 //     还原（patch 整文件删、.env 剥接管行），回到"接管从未发生"。
 //
-// 线协议事实（docs/research/20261002_dsh-服务商配置与摆渡可行性调研.md）：
-// dsh 的 pi-ai 适配器说 anthropic-messages，模型请求落 {baseURL}/v1/messages
-// ——与 CC 车道同形；模型名走渡口六键映射（别名 claude-opus-5/claude-sonnet-5
-// 与 CC 同键，未知名兜底 default），切上游零写盘。contextWindow 200000 镜像
-// CC 对同名档的信念（claude-opus-5=200k；只影响 dsh 本地压缩规划，不上线）。
+// 线协议事实（docs/research/20261002_dsh-服务商配置与摆渡可行性调研.md＋
+// .scratch/dsh-phase2-finish/spike/jiefayi-report.md；2026-10-03 用户拍板切接法乙）：
+// v2 走 llm-deepseek-api-key 适配器（v1 pi-ai 路四源钉死无会话键上线，渡口
+// 永远抓不到会话归属——保温/摆渡全堵死；llm-deepseek 路每请求恒带
+// x-deepseek-harness-session-id 头，值＝台账现行键 session-<uuid> 零换算，
+// 渡口第三回落现成接住）。请求仍落 {baseURL}/v1/messages，模型名走渡口
+// 六键映射（claude-opus-5/claude-sonnet-5 与 CC 同键），切上游零写盘。
+// 最小方言档：thinking disabled＋reasoningEffort off（不显式设 off 则请求档
+// 缺省 high 会带 output_config 上线；配置校验只拒「disabled＋显式非 off」）＋
+// maxTokens 钉 32768（适配器缺省 256k 超上游上限，CC 同上游实测 32k 档安全）＋
+// models 只写 id/contextWindow（能力标志缺省关：图片/工具增删/in-history
+// system 等方言整体不上线）。两贡献者插件 disabled（dsh_plugin_packages/
+// dsh_session_log 全会话明文不上线；渡口 rewrite 剥 dsh_* 顶层键兜底）。
+// 实证锚点（20261003 dsh --dump-config）：适配器插件注册 id＝llm-deepseek
+// （包名 dsh-llm-deepseek-api-key 是 name 不是 id）；路由 id＝deepseek-official
+// （适配器 index.ts 硬编码）；disabled: true 是 dsh 原生补丁机制（base 层关
+// hmr/tool-plugin-manager 同款）；.env 令牌走 credentials-local 的
+// $DSH_HOME/.env 只读回落，解析路径在案。contextWindow 200000 镜像 CC 对
+// 同名档的信念（claude-opus-5=200k；只影响 dsh 本地压缩规划，不上线）。
 package provider
 
 import (
@@ -91,8 +105,10 @@ func planDSH(dshHome, dockBaseURL string) ([]dshFilePlan, error) {
 	}
 	if !hasDSHMarker(string(raw)) {
 		return nil, fmt.Errorf("provider: %s 是他人文件（无 %s 标记）——外科纪律不整文件"+
-			"重写别人的补丁层，全案转人工；处置: 手工把 ferryman-dock 路由并入该文件"+
-			"（参照 docs/research/20261002 调研 §2.3）后重跑 apply", patchPath, dshMarker)
+			"重写别人的补丁层，全案转人工；处置: 手工把 deepseek-official 渡口路由"+
+			"并入该文件（形状＝ferryman provider apply 的 dshHomePatchYAML v2，"+
+			"见 .scratch/dsh-phase2-finish/spike/jiefayi-report.md §2.3）后重跑 apply",
+			patchPath, dshMarker)
 	}
 	patch := dshFilePlan{target: targetDSHPatch, path: patchPath, exists: true}
 	if string(raw) == wantPatch {
@@ -129,32 +145,42 @@ func planDSHEnv(envPath string) []dshFilePlan {
 	return []dshFilePlan{env}
 }
 
-// dshHomePatchYAML home 级 cordis.patch.yml 的确定性全量内容。
+// dshHomePatchYAML home 级 cordis.patch.yml 的确定性全量内容（v2＝接法乙，
+// 2026-10-03 拍板；v1 pi-ai 形态已被本版取代——带标记旧版由 apply 整体重铸）。
 // 改这里＝改接管形态：幂等比对、带标记重铸、测试钉字面量三处都会盯着。
 func dshHomePatchYAML(dockBaseURL string) string {
 	return strings.Join([]string{
 		"# ferryman-takeover —— 本文件由 Ferryman provider apply 生成并整体管理。",
-		"# 作用：dsh 的模型流量经 ferryman-dock 路由走本机渡口（anthropic-messages 协议，",
-		"# 对所有 profile 生效——叠加序里 home 层最后、最高）。切供应商＝",
+		"# 作用：dsh 的模型流量经 deepseek-official 路由（llm-deepseek 适配器）走本机",
+		"# 渡口，对所有 profile 生效（叠加序里 home 层最后、最高）。接法乙 v2：每请求",
+		"# 恒带 x-deepseek-harness-session-id 会话键，渡口接住后捕获/保温/摆渡/闸门",
+		"# 全套同权。thinking disabled＋effort off＋maxTokens 钉值＝最小方言档；两个",
+		"# dsh_* 贡献者插件已 disabled（会话明文不上线，渡口另兜底剥除）。切供应商＝",
 		"# ferryman provider switch <名>（翻渡口 [dock].active，本文件不动）；",
 		"# 还原＝ferryman provider apply --restore。手改本文件会被下次 apply 重铸。",
-		"- id: llm-pi-ai",
-		"  name: '@deepseek-ai/dsh-llm-pi-ai'",
+		"- id: llm-deepseek",
+		"  name: '@deepseek-ai/dsh-llm-deepseek-api-key'",
 		"  config:",
-		"    providers:",
-		"      ferryman-dock:",
-		"        apiKeyEnv: " + DSHTokenEnv,
-		"        api: anthropic-messages",
-		"        baseURL: " + dockBaseURL,
-		"        models:",
-		"          - id: claude-opus-5",
-		"            contextWindow: 200000",
-		"          - id: claude-sonnet-5",
-		"            contextWindow: 200000",
+		"    baseURL: " + dockBaseURL,
+		"    apiKeyEnv: " + DSHTokenEnv,
+		"    thinking: disabled",
+		"    reasoningEffort: off",
+		"    maxTokens: 32768",
+		"    models:",
+		"      - id: claude-opus-5",
+		"        contextWindow: 200000",
+		"      - id: claude-sonnet-5",
+		"        contextWindow: 200000",
+		"- id: plugin-package-inventory-deepseek",
+		"  name: '@deepseek-ai/dsh-plugin-package-inventory-deepseek'",
+		"  disabled: true",
+		"- id: session-log-deepseek",
+		"  name: '@deepseek-ai/dsh-session-log-deepseek'",
+		"  disabled: true",
 		"- id: agent-default-model",
 		"  name: '@deepseek-ai/dsh-agent-default-model'",
 		"  config:",
-		"    provider: ferryman-dock",
+		"    provider: deepseek-official",
 		"    model: claude-opus-5",
 	}, "\n") + "\n"
 }

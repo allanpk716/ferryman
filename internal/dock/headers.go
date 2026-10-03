@@ -36,7 +36,14 @@ var (
 		// 票03：自产重放标记头出站剥离（渡口内部识别用，不泄漏上游）。
 		HeaderFerrymanReplay: true,
 	}
-	stripPrefixes = []string{"x-forwarded-", "cdn-"}
+	stripPrefixes = []string{
+		"x-forwarded-", "cdn-",
+		// x-deepseek-harness-：dsh 接法乙归因头（user-id/session-id/compact）出站
+		// 前缀剥离（2026-10-03 切接法乙）。归因在入站侧已消费完毕——会话键走
+		// ExtractSessionID 第三回落、agent 判定走 UA（server.go），出站只剩泄漏面
+		// （上游不该见本机归因）；入站头不受影响（本文件只动 pr.Out）。
+		"x-deepseek-harness-",
+	}
 )
 
 // sanitizeOutboundHeaders 就地清洗出站头。
