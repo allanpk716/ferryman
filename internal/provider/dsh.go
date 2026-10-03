@@ -20,6 +20,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +32,7 @@ import (
 const (
 	targetDSHPatch = "dsh-patch"
 	targetDSHEnv   = "dsh-env"
+	targetDSHHooks = "dsh-hooks"
 )
 
 // dshMarker 接管标记字面量：home patch 首行注释与 .env 注释行共用。
@@ -54,7 +56,7 @@ type dshFilePlan struct {
 	exists  bool   // 在位（改写场景；false＋changed＝新建，无备份）
 	content string // 目标内容（changed=true 时有效）
 	changed bool
-	skipped bool   // true＝本文件不参与（报告行携带 detail）
+	skipped bool // true＝本文件不参与（报告行携带 detail）
 	detail  string
 }
 
@@ -223,4 +225,98 @@ func hasDSHMarker(raw string) bool {
 		}
 	}
 	return false
+}
+
+// ---- dsh-hooks：CC 钩子桥配置单发（票01，P2-3 桥仓库侧，2026-10-03）----
+
+// dshHooksJSONName dsh 钩子桥配置文件名（落 ~/ferryman/dsh-hooks/——Ferryman
+// 自家目录；绝不写 ~/.dsh/ 任何文件，D12 红线）。
+const dshHooksJSONName = "hooks.json"
+
+// dshHooksDoc hooks.json 文档形。JSON 不能带 # 注释，接管标记以顶层键承载：
+// 桥解析器只遍历 CLAUDE_EVENTS 事件键（调研克隆 config.ts:86），多余键被忽略，
+// 标记键因此无害且落在首行（hasDSHMarker 的前 4 行判定窗口内）。字段序即
+// marshal 序——标记键必须居首。
+type dshHooksDoc struct {
+	FerrymanTakeover bool           `json:"ferryman-takeover"`
+	UserPromptSubmit []dshHookGroup `json:"UserPromptSubmit"`
+}
+
+// dshHookGroup 单匹配组（桥 MatcherGroup 形：调研克隆 hook-protocol/src/
+// types.ts:68-71）。UserPromptSubmit 无 matcher 载体——桥对该事件丢弃 matcher
+// （config.ts:109-111），生成物不写该键。
+type dshHookGroup struct {
+	Hooks []dshHookEntry `json:"hooks"`
+}
+
+// dshHookEntry 单 command 钩子（types.ts:56-61；config.ts:103-106：type 必须
+// command——其余类型被桥 skip 不跑；timeout 单位秒）。
+type dshHookEntry struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Timeout int    `json:"timeout"`
+}
+
+// planDSHHooks hooks.json 的写入计划（纯计算，不落盘）。dsh 家族第三件：
+//   - FerrymanHooksDir 空＝拒绝盲写（钩子命令无从派生）；
+//   - dsh 家目录不在位＝skip 不代建（桥配置对未装 dsh 的机器无意义）；
+//   - 在位无标记＝他人文件，全案拒绝转人工（与 patch/.env 同纪律）；
+//   - 其余按 新建/重铸/已就位 各就各位。
+func planDSHHooks(dshHome, hooksPath, hooksDir string) (dshFilePlan, error) {
+	if strings.TrimSpace(hooksDir) == "" {
+		return dshFilePlan{}, errors.New("provider: DSHHooksJSON 已设置但 FerrymanHooksDir 为空" +
+			"——钩子命令无从派生，拒绝盲写")
+	}
+	if fi, err := os.Stat(dshHome); err != nil || !fi.IsDir() {
+		return dshFilePlan{target: targetDSHHooks, path: hooksPath, skipped: true,
+			detail: "dsh 未安装——跳过（不代建）"}, nil
+	}
+	want := dshHooksJSONContent(hooksDir)
+	raw, err := os.ReadFile(hooksPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return dshFilePlan{target: targetDSHHooks, path: hooksPath,
+			content: want, changed: true,
+			detail: "新建（dsh CC 钩子桥配置——接管前不存在，无备份）"}, nil
+	case err != nil:
+		return dshFilePlan{}, fmt.Errorf("provider: %s 读取失败: %w", hooksPath, err)
+	}
+	if !hasDSHMarker(string(raw)) {
+		return dshFilePlan{}, fmt.Errorf("provider: %s 是他人文件（无 %s 标记）——不整文件"+
+			"覆盖他人的钩子配置，全案转人工；处置: 确认该文件用途后手工并入或挪走，再重跑 apply",
+			hooksPath, dshMarker)
+	}
+	if string(raw) == want {
+		return dshFilePlan{target: targetDSHHooks, path: hooksPath, exists: true,
+			detail: "已是目标形态（零写入）"}, nil
+	}
+	return dshFilePlan{target: targetDSHHooks, path: hooksPath, exists: true,
+		content: want, changed: true,
+		detail: "带接管标记的旧版本——整体重铸（脚本路径等参数变更）"}, nil
+}
+
+// dshHooksJSONContent hooks.json 的确定性全量内容：UserPromptSubmit 单组单
+// command 钩子，复用既有 CC 闸门脚本（ferryman-gate.ps1，问闸门＋block→deny
+// 语义），只指路径不复制脚本本体。命令行形与 installer.buildEntries 的 CC 侧
+// 同字面量（powershell -NoProfile -ExecutionPolicy Bypass -File "<脚本>"）；
+// timeout 3s 与 installer ccSpecs UserPromptSubmit 同值。改这里＝改桥配置形态：
+// 幂等比对、带标记重铸、测试钉字面量三处都会盯着。
+func dshHooksJSONContent(hooksDir string) string {
+	doc := dshHooksDoc{
+		FerrymanTakeover: true,
+		UserPromptSubmit: []dshHookGroup{{Hooks: []dshHookEntry{{
+			Type: "command",
+			// 命令值＝手工套引号（%q 是 Go 转义，会把路径反斜杠翻倍；JSON
+			// 转义归 marshal 管，钩子命令值里是单反斜杠原路径）。
+			Command: fmt.Sprintf("powershell -NoProfile -ExecutionPolicy Bypass -File \"%s\"",
+				filepath.Join(hooksDir, "ferryman-gate.ps1")),
+			Timeout: 3,
+		}}}},
+	}
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		// 全为可序列化字面量，不可达；防御保真不吞错。
+		panic(fmt.Sprintf("provider: dshHooksJSONContent 序列化失败: %v", err))
+	}
+	return string(b) + "\n"
 }

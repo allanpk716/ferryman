@@ -90,11 +90,18 @@ func Restore(t Targets) (ApplyReport, error) {
 			stamps[s] = true
 		}
 	}
-	// dsh 两文件同法入组（DSHHome 空＝dsh 分支从未参与，零行为）。
+	// dsh 家族同法入组（字段空＝该分支从未参与，零行为）：home patch/.env
+	// （DSHHome）＋ hooks.json（DSHHooksJSON，票01——落 Ferryman 自家目录，
+	// 选组与还原纪律同族）。
 	var dshRts []rt
 	if t.DSHHome != "" {
 		patchPath, envPath := dshPaths(t.DSHHome)
-		dshRts = []rt{{targetDSHPatch, patchPath}, {targetDSHEnv, envPath}}
+		dshRts = append(dshRts, rt{targetDSHPatch, patchPath}, rt{targetDSHEnv, envPath})
+	}
+	if t.DSHHooksJSON != "" {
+		dshRts = append(dshRts, rt{targetDSHHooks, t.DSHHooksJSON})
+	}
+	if len(dshRts) > 0 {
 		perDSH := make([]map[string]string, len(dshRts))
 		for i, r := range dshRts {
 			perDSH[i] = map[string]string{}
@@ -154,7 +161,7 @@ func Restore(t Targets) (ApplyReport, error) {
 
 // isDSHTarget 目标名是否 dsh 分支（删除还原仅适用 dsh 的新建文件）。
 func isDSHTarget(name string) bool {
-	return name == targetDSHPatch || name == targetDSHEnv
+	return name == targetDSHPatch || name == targetDSHEnv || name == targetDSHHooks
 }
 
 // restoreDSHCreated "无备份＋带标记"的 dsh 文件删除还原。返回 done=false＝
@@ -166,6 +173,14 @@ func restoreDSHCreated(name, path string) (bool, string) {
 	}
 	switch name {
 	case targetDSHPatch:
+		if !hasDSHMarker(string(raw)) {
+			return false, ""
+		}
+		if err := os.Remove(path); err != nil {
+			return false, ""
+		}
+		return true, "本组无备份＋带接管标记＝apply 新建——已删除还原（接管前无此文件）"
+	case targetDSHHooks:
 		if !hasDSHMarker(string(raw)) {
 			return false, ""
 		}

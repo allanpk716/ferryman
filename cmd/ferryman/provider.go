@@ -633,6 +633,17 @@ func providerDialectBrief(up config.DockUpstream) string {
 // 测试零触碰）。
 var osUserHomeDir = os.UserHomeDir
 
+// providerHooksDirFn CC 钩子脚本目录缝（票01 P2-3）：exe 同根 hooks/——
+// installer.repoRoot 同位惯例（build.ps1 把 exe 出到仓库根，hooks/ 与 exe
+// 同根）。测试注入临时目录，绝不触真 exe 目录。
+var providerHooksDirFn = func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "hooks"
+	}
+	return filepath.Join(filepath.Dir(exe), "hooks")
+}
+
 // providerApplyFn / providerRestoreFn 写入器缝（票05 单测已覆盖其本体；CLI 层
 // 只钉"参数透传＋逐份回显"）。
 var (
@@ -643,16 +654,20 @@ var (
 // providerTargetsFromHome 配置目标 + 渡口地址派生（纯函数）：orca 份路径
 // 与 installer doctor 同位（<Home>/AppData/Roaming/orca/codex-runtime-home/
 // home/config.toml）；dsh 份＝<Home>/.dsh（目录不在位由写入器 skip，不代建）；
-// 渡口地址走 provider.DockURLFromListen 单源（评审留话：不自造拼接、尾斜杠
-// 不在 CLI 层归一）。
+// dsh 钩子桥配置＝<Home>/ferryman/dsh-hooks/hooks.json（Ferryman 自家目录，
+// 绝不 ~/.dsh——D12；票01 P2-3）；钩子脚本目录不经本函数（exe 派生，由
+// providerApply 经 providerHooksDirFn 注入）；渡口地址走
+// provider.DockURLFromListen 单源（评审留话：不自造拼接、尾斜杠不在 CLI 层
+// 归一）。
 func providerTargetsFromHome(home, dockListen string) provider.Targets {
 	return provider.Targets{
 		CCSettings:  filepath.Join(home, ".claude", "settings.json"),
 		CodexConfig: filepath.Join(home, ".codex", "config.toml"),
 		OrcaCodexConfig: filepath.Join(home, "AppData", "Roaming", "orca",
 			"codex-runtime-home", "home", "config.toml"),
-		DSHHome:     filepath.Join(home, ".dsh"),
-		DockBaseURL: provider.DockURLFromListen(dockListen),
+		DSHHome:      filepath.Join(home, ".dsh"),
+		DSHHooksJSON: filepath.Join(home, "ferryman", "dsh-hooks", "hooks.json"),
+		DockBaseURL:  provider.DockURLFromListen(dockListen),
 	}
 }
 
@@ -693,6 +708,7 @@ func providerApply(cfgPath string, restore bool, w io.Writer) int {
 		return 1
 	}
 	targets := providerTargetsFromHome(home, cfg.Dock.Listen)
+	targets.FerrymanHooksDir = providerHooksDirFn()
 	var (
 		rep provider.ApplyReport
 	)
@@ -717,6 +733,19 @@ func providerApply(cfgPath string, restore bool, w io.Writer) int {
 			if strings.HasPrefix(r.Name, "dsh-") && r.Action == "written" {
 				fmt.Fprintf(w, "提示: dsh 配置需重启 dsh 实例生效（CLI web 实例与桌面端；"+
 					"开 HMR 的实例下一请求即生效）。\n")
+				break
+			}
+		}
+		// dsh 钩子桥（票01 P2-3）：文件已单发到位，桥插件的安装是晨间人工
+		// 步骤（本命令绝不代执行安装）。unchanged 也提示——晨间可能跑两次
+		// apply，第二次不能丢安装指引。
+		for _, r := range rep.Targets {
+			if r.Name == "dsh-hooks" && (r.Action == "written" || r.Action == "unchanged") {
+				fmt.Fprintf(w, "dsh 钩子桥配置已就绪: %s\n", r.Path)
+				fmt.Fprintf(w, "晨间人工安装（本命令不代执行安装）:\n")
+				fmt.Fprintf(w, "  1. dsh plugin --profile web add @deepseek-ai/dsh-hooks-claude-code\n")
+				fmt.Fprintf(w, "  2. 插件配置把 configPath 指向上述 hooks.json——用绝对路径"+
+					"（桥在进程加载时读一次配置，相对路径按 dsh 启动目录解析）。\n")
 				break
 			}
 		}
