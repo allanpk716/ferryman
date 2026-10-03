@@ -306,23 +306,33 @@ func blockExample(prompt string) string {
 }
 
 // machineWaiting _machine_waiting（server.py:251-277 逐字）：缺口A：机器等机器
-// 判定——子代理计数>0 / T48 异步停车窗 / 悬空 tool_use。
+// 判定——子代理计数>0 / T48 异步停车窗 / 悬空 tool_use；dsh 道（票 A 判活
+// 地基，dsh-heartbeat 规格「判活」节）：台账运行态（含族系子键）在效 → 豁免。
 //
-// 三道 OR 互为兜底：守护重启丢内存计数→悬空道兜底；泄漏期已过计数清零
+// cc/codex 三道 OR 互为兜底：守护重启丢内存计数→悬空道兜底；泄漏期已过计数清零
 // 而 tool_result 仍缺→悬空道兜底；T48 异步派发计数早归零而真身在跑→
 // 停车窗道兜底（window_wait）。上界分道（rev2 如实声明）：计数道 1h
 // 泄漏保护（ledger.py:28）；停车窗道 PARK_EXPIRE_S=1h（过期即豁免失效）；
 // 悬空道无时间上界、有内容量上界——尾部 256KB 滑窗（transcripts.py:73），
-// 悬空事件被后续内容顶出窗口即失效。
+// 悬空事件被后续内容顶出窗口即失效。dsh 道上界＝ledger.DshRunStaleS（1h，
+// 有界失效回正常闸门路径，同哲学）。
 // Python 三道 try/except（豁免判定异常不影响闸门主路径）的 Go 形：
 // SubagentActive/WindowWait/HasDanglingToolUse 各自保证不 panic（内部吞错
 // 按 false 返回），"宁可走正常闸门路径，不误豁免"由无异常源承接。
+// agent=="dsh" 跳过悬空道：cctrans 是 CC 转录语义，对 dsh 文件/事件封套是恒
+// False 的白读——不白读，判活由台账运行态承接（长任务中段不被闲置钟误判，
+// 闸门升 enforce 的前置）。
 func (d *Daemon) machineWaiting(agent, sessionID, path string) bool {
 	if d.Ledger.SubagentActive(agent, sessionID) {
 		return true
 	}
 	if d.WindowWait(agent, sessionID) { // T48 第三道：异步停车窗（停表未过期）
 		return true
+	}
+	if agent == "dsh" {
+		// dsh 判活道（票 A）：族系运行态在效（含族系子键，Ledger.DshFamilyRunning
+		// 含失效上界与过期清理）；悬空道跳过（上文头注）。
+		return d.Ledger.DshFamilyRunning(sessionID)
 	}
 	if path == "" {
 		return false

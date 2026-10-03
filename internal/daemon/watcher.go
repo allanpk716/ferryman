@@ -97,6 +97,24 @@ type Watcher struct {
 	dshDir      string
 	dsh         *dshHarvest
 	dshSessions map[string]*dshSessionRec
+	// ---- dsh 等答复窗（票03 dsh-heartbeat，规格「dsh 等答复窗」节） ----
+	// dshWindows dsh 等答复窗口表（键 (dsh, sid)）——**独立于 SessionState 的
+	// QWatch 字段族**：Ledger.Touch 的"任何新写入清 QWatch 窗"是 CC 语义
+	//（用户写入关窗），dsh 的机器侧写入（session/title、request/header、
+	// compaction、turn/end、subagent/catalog 等）不清窗——dsh 关窗只认用户侧
+	// 事件翻转或 block_s 到期，故窗态必须绕开 Touch 的自动清窗（ledger 包
+	// 票外不可改，独立表即规格允许的两载体之一，语义以规格为准）。守望单
+	// 线程读写（dshSessions 同款纪律）；心跳与 CC 共用全局 beatInFlight。
+	dshWindows map[winKey]*dshWindow
+	// dshBreaker dsh 独立断路器（熔断按 agent 隔离）：连续 MISS 只降
+	// dsh_mode（经 SetDshQWatchMode 护栏）、连续 ERROR 停本窗剩余跳——
+	// CC 的 breaker 与 mode 零影响（D5）。
+	dshBreaker beat.Breaker
+	// dshEnforceDowngraded dsh enforce＋渡口关（无 [dock]＝快照源不存在）的
+	// 启动降级位：告警一次并按 observe 演练对待（waitEnforceDowngraded 同款
+	// 语义；CC 问询守望不受此校验影响）。
+	dshEnforceDowngraded bool
+	dshDrillWarned       atomic.Bool // dsh enforce 但未注入 sender 的演练告警一次
 
 	harvest *harvest.HarvestState // Accounts 非 nil 且 HarvestUsage 时建
 
@@ -261,8 +279,17 @@ func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 		}
 	}
 	w.dshSessions = map[string]*dshSessionRec{}
+	w.dshWindows = map[winKey]*dshWindow{} // 票03：dsh 等答复窗独立窗表
 	if acc != nil && cfg.Watch.HarvestUsage {
 		w.dsh = newDshHarvest(acc)
+	}
+	// 启动校验（票03 dsh）：dsh_mode=enforce 且无 [dock]（渡口关，心跳前缀
+	// 源不存在）→ 告警一次并把 dsh 侧按 observe 演练对待。CC 问询守望与
+	// 等待窗不受此校验影响（各自独立开关）。
+	if cfg.QuestionWatch.DshMode == "enforce" && cfg.Dock == nil {
+		w.dshEnforceDowngraded = true
+		fmt.Printf("[qwatch] ⚠ [question_watch] dsh_mode=enforce 但未配置 [dock]（渡口关，心跳前缀源不存在）" +
+			"——dsh 心跳按 observe 演练对待（CC 问询守望不受影响；配置 [dock] 后重启生效）\n")
 	}
 	return w
 }
@@ -778,8 +805,10 @@ func (w *Watcher) beatPlan(t0 float64) []float64 {
 }
 
 // maybeFireBeats 心跳调度入口（守望轮询循环内，风格对齐 _maybe_qwatch）：到期
-// 跳逐发。到期先两道验（无新写入＋复 stat 新鲜度），任一不符取消本跳并作废
-// 剩余计划；"任何新写入取消剩余跳"的关窗在 Ledger.touch（清窗连着清计划）。
+// 跳逐发。cc 走 SessionState.QWatchPlan（两道验＋关窗在 Ledger.touch）；dsh 走
+// 独立 dshWindows 窗表（票03：取消判据并列两验——窗口仍开＋检测态未翻转，
+// 不复用 mtime/size 复验，机器侧写入不误伤）。"任何新写入取消剩余跳"的关窗
+// 在 Ledger.touch（清窗连着清计划；dsh 的关窗在 maybeDshQwatch）。
 // 一切异常吞掉——绝不影响守望与摆渡主路径。
 func (w *Watcher) maybeFireBeats(st *ledger.SessionState) {
 	defer func() {
@@ -787,8 +816,15 @@ func (w *Watcher) maybeFireBeats(st *ledger.SessionState) {
 			fmt.Printf("[qwatch] 心跳调度异常（忽略继续）: %v\n", r)
 		}
 	}()
-	if w.qwatchMode() == "off" || st.Agent != "cc" {
-		return // off 零开销；窗口只在 cc 侧存在
+	if st.Agent != "cc" && st.Agent != "dsh" {
+		return // 窗口只在 cc/dsh 侧存在（codex 等轨零开销）
+	}
+	if w.qwatchModeFor(st.Agent) == "off" {
+		return // off 零开销（模式按 agent 单源取值：cc→mode；dsh→dsh_mode）
+	}
+	if st.Agent == "dsh" {
+		w.maybeFireDshBeats(st) // 票03：dsh 分支（计划在独立窗表）
+		return
 	}
 	now := clock.Now()
 	found, minDue := false, 0.0
@@ -1231,23 +1267,36 @@ func (w *Watcher) defaultWaitPolicy(prefixTokens int) (policy.HeartbeatPolicy, e
 // reconcilePins 两泳道快照 Pin 对账（F4 不变式的落地）：等待窗（泳道开启时）
 // 或问询窗开着 → Pin(sessionID)；两窗皆闭且最后一跳已结算（对账点在
 // maybeFireBeats/maybeWaitBeats 之后，fire 同步结算）→ Unpin。每轮幂等；
-// 渡口关（句柄 nil）时 dockPin/dockUnpin 安全跳过。只处理 cc（快照按 CC
-// 会话归档）。锁序：windowsMu 探测与 ledgerMu 读各自独立短暂获取，绝不嵌套。
+// 渡口关（句柄 nil）时 dockPin/dockUnpin 安全跳过。cc＝快照按 CC 会话归档
+//（既有两泳道）；dsh＝等答复窗表（票03：窗开→Pin、关→Unpin——与关窗路径
+// closeDshWindow 的即时 Unpin 同一 lanePins 账，互为对账）。锁序：windowsMu
+// 探测与 ledgerMu 读各自独立短暂获取，绝不嵌套。
 func (w *Watcher) reconcilePins(st *ledger.SessionState) {
-	if w.Daemon == nil || st.Agent != "cc" {
+	if w.Daemon == nil {
+		return
+	}
+	if st.Agent != "cc" && st.Agent != "dsh" {
 		return
 	}
 	key := winKey{st.Agent, st.SessionID}
-	w.Daemon.windowsMu.Lock()
-	_, waitOpen := w.Daemon.waitWindowOpenLocked(st.Agent, st.SessionID)
-	w.Daemon.windowsMu.Unlock()
-	if waitOpen && w.Cfg.WaitWindow.Mode == "off" {
-		waitOpen = false // 泳道关＝无心跳读者，不占快照（mode 三元里 off 才免钉）
+	shouldPin := false
+	if st.Agent == "cc" {
+		w.Daemon.windowsMu.Lock()
+		_, waitOpen := w.Daemon.waitWindowOpenLocked(st.Agent, st.SessionID)
+		w.Daemon.windowsMu.Unlock()
+		if waitOpen && w.Cfg.WaitWindow.Mode == "off" {
+			waitOpen = false // 泳道关＝无心跳读者，不占快照（mode 三元里 off 才免钉）
+		}
+		w.Ledger.Mu().Lock()
+		qwatchOpen := st.QWatchOpenedTS != nil
+		w.Ledger.Mu().Unlock()
+		shouldPin = waitOpen || qwatchOpen
+	} else {
+		// dsh：窗开→Pin。dsh_mode off 时不开窗（开窗入口 off 早退），窗态即
+		// 读者态，不另判 mode（关窗路径 closeDshWindow 已即时 Unpin，本对账
+		// 幂等兜底）。
+		shouldPin = w.dshWindows[key] != nil
 	}
-	w.Ledger.Mu().Lock()
-	qwatchOpen := st.QWatchOpenedTS != nil
-	w.Ledger.Mu().Unlock()
-	shouldPin := waitOpen || qwatchOpen
 	w.stampMu.Lock()
 	pinned := w.lanePins[key]
 	if shouldPin == pinned {

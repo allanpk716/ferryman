@@ -10,11 +10,16 @@ package daemon
 //     （decision allow|block＋reason＋additional_context…），插件把 block
 //     映射为 deny（桥同款），reason 即用户可见理由。
 //   - /dsh/event：session/event 形状（turn/start、assistant/message 带 usage、
-//     compaction/*）。已知事件 Touch("dsh") 活动登记；assistant/message 带
-//     usage 时 usage 科目四列入账——字段与 P2-1 pollDsh 逐字段同构（白名单
-//     零新键，测试与守望现行行做 keyset diff 防漂移）。子会话直报
-//     （parent_session_id 非空）随父入账、不 Touch（守望同款分流，族系判活
-//     信号待 P2-5）。无文件事件没有代文件偏移/谱系：offset 恒 0、lineage_id
+//     compaction/*；判活收编（票 A，dsh-heartbeat 规格「判活」节）：
+//     agent/status（running|idle 闭集）与 agent/disposed——维护台账运行/终结
+//     态、不入账；status 闭集外按 unknown-event 收窄）。已知事件 Touch("dsh")
+//     活动登记（唯 agent/status=running 才 Touch，idle 只复位运行态；
+//     agent/disposed 恒不 Touch）；assistant/message 带 usage 时 usage 科目四列
+//     入账——字段与 P2-1 pollDsh 逐字段同构（白名单零新键，测试与守望现行行
+//     做 keyset diff 防漂移）。子会话直报
+//     （parent_session_id 非空）随父入账、不 Touch（守望同款分流）；其运行态
+//     记子键（族系判定＝父 OR 任一已知子键，票 A）。无文件事件没有代文件偏移/
+//     谱系：offset 恒 0、lineage_id
 //     取 payload（缺省空串——守望断点恢复只认非空 lineage，事件行不入断点
 //     表，与守望采集互不干扰）。Touch 路径取 payload path，缺省合成
 //     dsh-event://<键>：按会话唯一、与真转录路径不撞（台账 byPath 键不得为
@@ -91,13 +96,43 @@ func doDshReceive(d *Daemon, token string, w http.ResponseWriter, r *http.Reques
 }
 
 // DshGate 闸门问询业务口（端点与测试共用）：agent 钉 "dsh" 后交 Gate——
-// 判定入口唯一（验收：不复制阈值逻辑，测试引用同一判定入口）。
+// 判定入口唯一（验收：不复制阈值逻辑，测试引用同一判定入口）；先惰性回种
+// 族系子键（判活地基票 A，见 dshEnsureChildrenSeeded）。
 func (d *Daemon) DshGate(body map[string]any) map[string]any {
 	body["agent"] = "dsh"
+	d.dshEnsureChildrenSeeded()
 	return d.Gate(body)
 }
 
-// DshEvent 事件接收业务口：Touch("dsh") 登记＋usage 四列入账（pollDsh 同构）。
+// dshEnsureChildrenSeeded 族系子键账本回种（判活地基票 A，规格「判活」节子键
+// 来源②）：dsh usage 行 subagent 列非空者＝子会话直报随父入账的行（本文件
+// DshEvent 记账同列），session_id=父键、subagent=子键——daemon 重启后族系映射
+// 的持久恢复（dshFed.seedFromAccounts 同款的一次全量读，成本已知可收）。装配
+// 位置如实声明：NewDaemon 在 daemon.go（本票涉及路径外不可改），启动钩子不可
+// 达——回种挂 DshGate 首问惰性触发，DshChildrenSeedClaim test-and-set 防重
+//（并发首问只有一个获执行权）；live 直报的登记（DshChildSeen）不经此路、
+// 事件到达即记。锁外读账本，锁内只内存写。
+func (d *Daemon) dshEnsureChildrenSeeded() {
+	if d.Ledger == nil || !d.Ledger.DshChildrenSeedClaim() {
+		return
+	}
+	if d.Accounts == nil {
+		return
+	}
+	for _, e := range d.Accounts.Read(accounts.ReadOpts{Kind: "usage"}) {
+		if ag, _ := e["agent"].(string); ag != "dsh" {
+			continue
+		}
+		sub, _ := e["subagent"].(string)
+		sid, _ := e["session_id"].(string)
+		if sid != "" && sub != "" {
+			d.Ledger.DshChildSeen(sid, sub)
+		}
+	}
+}
+
+// DshEvent 事件接收业务口：Touch("dsh") 登记＋usage 四列入账（pollDsh 同构）；
+// 判活收编（票 A）：agent/status・agent/disposed 维护台账运行/终结态（不入账）。
 // 正常回 {"ok":true}；坏形静默收窄为 {"ok":true,"skipped":"<因>"}。
 func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 	sid := pyStr(body["session_id"])
@@ -105,14 +140,27 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 		return map[string]any{"ok": true, "skipped": "empty-session-id"}
 	}
 	ev := pyStr(body["event"])
-	if ev != "turn/start" && ev != "assistant/message" && !strings.HasPrefix(ev, "compaction/") {
+	isStatus, isDisposed := ev == "agent/status", ev == "agent/disposed"
+	if ev != "turn/start" && ev != "assistant/message" && !strings.HasPrefix(ev, "compaction/") &&
+		!isStatus && !isDisposed {
 		return map[string]any{"ok": true, "skipped": "unknown-event"}
+	}
+	// agent/status：status 闭集收形（data.status 优先、顶层 status 兜底——插件
+	// 转发层 events.ts 把 payload 平铺，两处都取）；闭集外（含缺/非字符串）按
+	// unknown-event 收窄（200＋skipped，不 5xx）。
+	status := ""
+	if isStatus {
+		status = dshStatusOf(body)
+		if status != "running" && status != "idle" {
+			return map[string]any{"ok": true, "skipped": "unknown-event"}
+		}
 	}
 	// 跨源去重（票05,策略 a 事件接管单源化）：已知事件＝该会话有插件事件流量
 	// ——标记接管,pollDsh 文件守望面让位（watcher_dsh.go dshIsFed 同表）。
 	// turn/start 即标记：接管在带 usage 的事件出现前先落（毫秒级竞窗见
 	// dsh_dedup.go 头注）。子会话直报标记子键（父键由父自身的事件标记,
-	// 不从子事件推断）。
+	// 不从子事件推断）。agent/status|disposed 同为插件事件流量——接管口径
+	// 不变（插件在位＝事件全量到）。
 	d.dshFed.mark(sid)
 	// 事件时间：native 毫秒 epoch；缺/坏 → 记账盖章 now（ts=-1 同义）、
 	// 活动钟取 now。
@@ -125,6 +173,53 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 	}
 	cwd, title := pyStr(body["cwd"]), pyStr(body["title"])
 	parent := pyStr(body["parent_session_id"])
+
+	// ---- 判活地基（票 A）：运行/终结态维护——不入账、不动 usage ----
+	if parent != "" {
+		// 子直报本身即族系证据（子键来源①；来源②＝账本 usage 行 subagent 列
+		// 回种，见 DshGate→dshEnsureChildrenSeeded）。
+		d.Ledger.DshChildSeen(parent, sid)
+	}
+	if isStatus {
+		running := status == "running"
+		if parent == "" {
+			if running {
+				// 主会话 running：Touch 活动登记（同其余活动事件路径——path
+				// 缺省合成 dsh-event://<键>，头注同规）。
+				path := pyStr(body["path"])
+				if path == "" {
+					path = "dsh-event://" + sid
+				}
+				d.Ledger.TouchFull("dsh", sid, path, mt, 0, cwd, title, 0, d.StartedAt)
+			}
+			// idle 不 Touch（活动性由同轮更早的活动事件登记；此处只复位——
+			// 规格「判活」：idle → 清运行态）。
+			d.Ledger.DshMainRunSet(sid, running, mt)
+		} else {
+			// 子会话：运行态记子键（不 Touch——父不因子事件登记，头注同规）。
+			d.Ledger.DshChildRunSet(sid, running, mt)
+		}
+		return map[string]any{"ok": true}
+	}
+	if isDisposed {
+		// 不 Touch（规格：disposed 置终结态）；终结即不在跑——运行态一并清
+		//（否则 disposed 会话仍吃豁免直至 3600s 上界）。
+		if parent == "" {
+			d.Ledger.DshMainDisposed(sid, mt)
+		} else {
+			d.Ledger.DshChildDisposed(sid, mt)
+		}
+		return map[string]any{"ok": true}
+	}
+	// 运行态刷新（规格「判活」）：同键活动事件推进运行态时间戳——fed 会话走
+	// 事件口（Ledger.DshRunRefresh）；未接管会话走文件面检测态推进——文件面
+	// 检测态本票尚无，随票 03 补（如实声明）。resume 载荷清终结态（规格：同键
+	// 后续 resume 或新 running 清除；新 running 已在 DshMain/ChildRunSet 清）。
+	if pyStr(body["source"]) == "resume" {
+		d.Ledger.DshDisposedClear(sid)
+	}
+	d.Ledger.DshRunRefresh(sid, mt)
+
 	u, hasUsage := body["usage"].(map[string]any)
 	if ev != "assistant/message" { // usage 只认 assistant/message（pollDsh 同源）
 		u, hasUsage = nil, false
@@ -192,6 +287,19 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 // CC /restore 同一套：锚定/清单/INJECT 提取/记账/MarkInjected）。
 func (d *Daemon) DshHandoff(cwd, sessionID string) map[string]any {
 	return d.Restore("dsh", cwd, sessionID)
+}
+
+// dshStatusOf agent/status 的 status 收形：data.status 优先、顶层 status 兜底
+//（插件转发层 events.ts 把 payload 平铺，两处都取）；缺/非字符串回空串＝闭集
+// 外（调用方按 unknown-event 收窄）。
+func dshStatusOf(body map[string]any) string {
+	if data, ok := body["data"].(map[string]any); ok {
+		if s, _ := data["status"].(string); s != "" {
+			return s
+		}
+	}
+	s, _ := body["status"].(string)
+	return s
 }
 
 // dshMsOr 事件毫秒时间戳的宽松收形（缺/坏/非正 → 0＝无时间）。数值口径

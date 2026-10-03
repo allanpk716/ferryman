@@ -66,6 +66,28 @@ type Child struct {
 	Label          string // 可缺省
 }
 
+// SpeakerState "最后说话人"累积态（dsh-heartbeat 票03「检测态」；同 title 的
+// 跨 chunk 携带形——调用方随 offset 一起传入传回）。
+//
+// 分类（规格「dsh 等答复窗·检测态」钉死）：
+//   - turn/start、user/message＝用户侧（协议钉死 turn/start＝认领排队输入；
+//     user/message 含合成注入回合——注入即活动、缓存刚被使用，注入算用户侧
+//     无害）；
+//   - assistant/message＝dsh 侧（**不要求带 usage**——与出行门槛分离）。
+//
+// 排序证据＝包络 seq（会话内单代文件单调唯一）；无 seq 的事件无法定序，
+// 防御式跳过（绝不以无序证据翻转说话人）。零值＝未见任何事件。
+type SpeakerState struct {
+	LastUserSeq      int64 // 最后一条用户侧事件 seq；0=未见
+	LastAssistantSeq int64 // 最后一条 assistant/message seq（不要求 usage）；0=未见
+}
+
+// DshSpokeLast "dsh 后说"＝最后一条用户侧事件早于最后一条 assistant/message
+//（等答复候选；开窗四条件之首）。
+func (s SpeakerState) DshSpokeLast() bool {
+	return s.LastAssistantSeq > 0 && s.LastAssistantSeq > s.LastUserSeq
+}
+
 // Header 会话头行（首帧/首行的 type:"session" 记录）。v0 旧头缺 isSeeded/
 // parentSession 等可选键——全部按缺省收窄，不拒读。
 type Header struct {
@@ -119,8 +141,44 @@ func ParseHeaderLine(line string) (Header, bool) {
 // 未知类型）一律跳过；坏行跳过不抛（codextrans 同纪律）。出行门槛与 CC
 // harvest 对齐：usage 四键缺必填（input/output 取不动）整行跳过，可选缓存
 // 两键缺省 0；seq 取不动（无法去重）同样跳过。
+//
+// 说话人检测态的累积形见 ParseChunkDetect（票03）——本函数是其三件套包装
+//（兼容既有调用面，行为不变）。
 func ParseChunk(text, title string) (rows []UsageRow, newTitle string, children []Child) {
-	newTitle = title
+	r := parseChunk(text, title, SpeakerState{})
+	return r.Rows, r.Title, r.Children
+}
+
+// DetectResult 检测态扩展解析产出：ParseChunk 三件＋说话人累积态＋白名单
+// 活动时刻（判活文件面刷新用，dsh-heartbeat 票03）。
+type DetectResult struct {
+	Rows     []UsageRow
+	Title    string
+	Children []Child
+	Speaker  SpeakerState
+	// LastActivityTS/HasActivity 本段白名单活动事件（turn/start、
+	// assistant/message——判活刷新口径，规格「判活」节）的最后事件时刻
+	//（毫秒→秒）；HasActivity=false=本段无白名单活动事件。
+	LastActivityTS float64
+	HasActivity    bool
+}
+
+// ParseChunkDetect ParseChunk 的检测态扩展（dsh-heartbeat 票03）：额外累积
+// "最后说话人"态（SpeakerState 跨 chunk 携带——随调用传入、随产出传回）并
+// 报出白名单活动事件的最后时刻（无 time 的活动事件不计时刻、仍计说话人）。
+// rows/title/children 语义与 ParseChunk 一致（同一内实现）。
+func ParseChunkDetect(text, title string, sp SpeakerState) DetectResult {
+	return parseChunk(text, title, sp)
+}
+
+// parseChunk 单一内实现（ParseChunk/ParseChunkDetect 共用；行为差异只在调用
+// 方取走哪些产出）。
+func parseChunk(text, title string, sp SpeakerState) DetectResult {
+	newTitle := title
+	var rows []UsageRow
+	var children []Child
+	var actTS float64
+	hasAct := false
 	for _, line := range strings.Split(text, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -130,6 +188,29 @@ func ParseChunk(text, title string) (rows []UsageRow, newTitle string, children 
 			continue
 		}
 		typ, _ := rec["type"].(string)
+		// 说话人分类（票03 检测态）：三类会话事件外全部不动说话人态。
+		switch typ {
+		case "turn/start", "user/message":
+			if seq, ok := cctrans.ToInt(rec["seq"]); ok {
+				if int64(seq) > sp.LastUserSeq {
+					sp.LastUserSeq = int64(seq)
+				}
+			}
+		case "assistant/message": // dsh 侧：不要求 usage
+			if seq, ok := cctrans.ToInt(rec["seq"]); ok {
+				if int64(seq) > sp.LastAssistantSeq {
+					sp.LastAssistantSeq = int64(seq)
+				}
+			}
+		}
+		// 白名单活动时刻（判活文件面刷新）：turn/start、assistant/message。
+		if typ == "turn/start" || typ == "assistant/message" {
+			if ms, ok := cctrans.ToInt(rec["time"]); ok {
+				if ts := float64(ms) / 1000.0; !hasAct || ts > actTS {
+					actTS, hasAct = ts, true
+				}
+			}
+		}
 		switch typ {
 		case "session/title":
 			if data, ok := rec["data"].(map[string]any); ok {
@@ -147,7 +228,8 @@ func ParseChunk(text, title string) (rows []UsageRow, newTitle string, children 
 			}
 		}
 	}
-	return rows, newTitle, children
+	return DetectResult{Rows: rows, Title: newTitle, Children: children,
+		Speaker: sp, LastActivityTS: actTS, HasActivity: hasAct}
 }
 
 // usageRow 一条 assistant/message 事件行 → UsageRow。

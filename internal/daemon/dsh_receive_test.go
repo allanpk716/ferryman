@@ -336,7 +336,7 @@ func TestDshEventDefensive(t *testing.T) {
 		wantRow bool // 应有 usage 行
 	}{
 		{"空键静默跳过", map[string]any{"event": "turn/start"}, false, false},
-		{"未知事件类型", map[string]any{"session_id": sid, "event": "agent/status"}, false, false},
+		{"未知事件类型", map[string]any{"session_id": sid, "event": "agent/nope"}, false, false},
 		{"assistant/message无usage只登记", map[string]any{"session_id": sid, "event": "assistant/message"}, true, false},
 		{"usage非对象收窄", map[string]any{"session_id": sid, "event": "assistant/message", "usage": "oops"}, true, false},
 		{"空body全缺", map[string]any{}, false, false},
@@ -506,5 +506,323 @@ func TestDshReceiveEndpointGuards(t *testing.T) {
 	hd := makeHandler(&stopDaemon{}, "tok-dsh", nil, nil)
 	if rec := dshPost(hd, "tok-dsh", "/dsh/event", `{}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("替身 = %d %q, want 404", rec.Code, rec.Body.String())
+	}
+}
+
+// ---- ④判活地基（票 A，dsh-heartbeat 规格「判活」节）：agent/status・
+// agent/disposed 收编＋运行/终结态＋闸门 dsh 豁免道 ----
+
+// dshLifeSnap 锁内快照 dsh 主会话生命态（运行/终结时间戳，nil=无态）。
+func dshLifeSnap(e *gateEnv, sid string) (run, disposed *float64) {
+	e.d.Ledger.Mu().Lock()
+	defer e.d.Ledger.Mu().Unlock()
+	st := e.d.Ledger.GetLocked("dsh", sid)
+	if st == nil {
+		return nil, nil
+	}
+	if st.DshRunningTS != nil {
+		ts := *st.DshRunningTS
+		run = &ts
+	}
+	if st.DshDisposedTS != nil {
+		ts := *st.DshDisposedTS
+		disposed = &ts
+	}
+	return run, disposed
+}
+
+func TestDshEventStatusRunIdle(t *testing.T) {
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+
+	// data.status 形（事件体主形）：Touch 登记＋运行态置位＋零 usage 行＋接管标记。
+	r := e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": e.t0 * 1000, "cwd": "C:/proj", "title": "判活会话",
+		"data": map[string]any{"status": "running"}})
+	if r["ok"] != true {
+		t.Fatalf("agent/status 应 ok: %v", r)
+	}
+	st := e.led.Get("dsh", sid)
+	if st == nil {
+		t.Fatal("running 应 Touch 登记")
+	}
+	if st.Cwd != "C:/proj" || st.Title != "判活会话" || !st.ObservedActive {
+		t.Fatalf("Touch 登记不符: %+v", st)
+	}
+	if run, disp := dshLifeSnap(e, sid); run == nil || *run != e.t0 || disp != nil {
+		t.Fatalf("运行态 = %v/%v, want %v/nil", run, disp, e.t0)
+	}
+	if !e.d.dshFed.has(sid) {
+		t.Fatal("插件事件流量应标记接管（dsh_dedup 策略 a 口径不变）")
+	}
+	if rows := dshUsageRows(t, e.d.Accounts); len(rows) != 0 {
+		t.Fatalf("判活事件不入账: %d 行", len(rows))
+	}
+
+	// 顶层 status 形（插件转发层平铺兜底）：同样收形。
+	e.advance(5)
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": *e.now * 1000, "status": "running"})
+	if run, _ := dshLifeSnap(e, sid); run == nil || *run != *e.now {
+		t.Fatalf("顶层 status 形未收形: run=%v, want %v", run, *e.now)
+	}
+
+	// idle：显式复位（规格：优先于刷新）。
+	e.advance(5)
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": *e.now * 1000, "data": map[string]any{"status": "idle"}})
+	if run, _ := dshLifeSnap(e, sid); run != nil {
+		t.Fatalf("idle 应清运行态: %v", *run)
+	}
+
+	// idle 对未登记会话：无态可清——不炸、不产生登记（规格：Touch 只随 running）。
+	r = e.d.DshEvent(map[string]any{"session_id": "nobody-idle",
+		"event": "agent/status", "data": map[string]any{"status": "idle"}})
+	if r["ok"] != true || e.led.Get("dsh", "nobody-idle") != nil {
+		t.Fatalf("idle 未登记会话应静默且不 Touch: %v", r)
+	}
+}
+
+func TestDshEventStatusInvalidNarrows(t *testing.T) {
+	// status 闭集（running|idle）外（含缺/非字符串）按 unknown-event 收窄：
+	// 200＋skipped、零登记零行（防御式收窄纪律）。
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"闭集外值", map[string]any{"session_id": dshRcvSID, "event": "agent/status",
+			"data": map[string]any{"status": "paused"}}},
+		{"缺status", map[string]any{"session_id": dshRcvSID, "event": "agent/status"}},
+		{"非字符串", map[string]any{"session_id": dshRcvSID, "event": "agent/status",
+			"data": map[string]any{"status": 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newDshRcvEnv(t, "enforce")
+			r := e.d.DshEvent(tc.body)
+			if r["ok"] != true || r["skipped"] != "unknown-event" {
+				t.Fatalf("应 unknown-event 收窄: %v", r)
+			}
+			if len(e.led.AllSessions()) != 0 || len(dshUsageRows(t, e.d.Accounts)) != 0 {
+				t.Fatal("收窄不得登记/入账")
+			}
+		})
+	}
+}
+
+func TestDshEventDisposedLifecycle(t *testing.T) {
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	// 前置：running 在跑。
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": e.t0 * 1000, "cwd": "C:/proj", "data": map[string]any{"status": "running"}})
+
+	// disposed：置终结态＋运行态清（终结即不在跑——否则仍吃豁免直至上界）。
+	e.advance(5)
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/disposed",
+		"time": *e.now * 1000})
+	if run, disp := dshLifeSnap(e, sid); run != nil || disp == nil || *disp != *e.now {
+		t.Fatalf("disposed 后 = run %v/disp %v, want nil/%v", run, disp, *e.now)
+	}
+
+	// 同键新 running 清终结态（规格：新 running 或 resume 清除）。
+	e.advance(5)
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": *e.now * 1000, "data": map[string]any{"status": "running"}})
+	if _, disp := dshLifeSnap(e, sid); disp != nil {
+		t.Fatalf("新 running 应清终结态: %v", *disp)
+	}
+
+	// 再 disposed → resume 载荷（source=resume 的活动事件）清终结态。
+	e.advance(5)
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/disposed"})
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "turn/start",
+		"time": *e.now * 1000, "source": "resume"})
+	if _, disp := dshLifeSnap(e, sid); disp != nil {
+		t.Fatalf("resume 载荷应清终结态: %v", *disp)
+	}
+
+	// disposed 对未登记会话：不 Touch、静默（规格：disposed 不 Touch）。
+	e2 := newDshRcvEnv(t, "enforce")
+	if r := e2.d.DshEvent(map[string]any{"session_id": "fresh",
+		"event": "agent/disposed"}); r["ok"] != true {
+		t.Fatalf("disposed 应 ok: %v", r)
+	}
+	if e2.led.Get("dsh", "fresh") != nil {
+		t.Fatal("disposed 不得 Touch")
+	}
+}
+
+func TestDshEventChildRunState(t *testing.T) {
+	// 子会话直报（parent 非空）：不 Touch 父（台账零登记）；运行态记子键；
+	// 族系判定经父键命中（父 OR 子）。
+	e := newDshRcvEnv(t, "enforce")
+	e.d.DshEvent(map[string]any{"session_id": dshChildID, "parent_session_id": dshMainID,
+		"event": "agent/status", "time": e.t0 * 1000,
+		"data": map[string]any{"status": "running"}})
+	if len(e.led.AllSessions()) != 0 {
+		t.Fatalf("子直报不得 Touch: %d 条登记", len(e.led.AllSessions()))
+	}
+	if !e.d.Ledger.DshFamilyRunning(dshMainID) {
+		t.Fatal("子在跑＝族系在跑（父键问询命中）")
+	}
+	// 子 idle：族系回落。
+	e.advance(5)
+	e.d.DshEvent(map[string]any{"session_id": dshChildID, "parent_session_id": dshMainID,
+		"event": "agent/status", "time": *e.now * 1000,
+		"data": map[string]any{"status": "idle"}})
+	if e.d.Ledger.DshFamilyRunning(dshMainID) {
+		t.Fatal("子 idle 后族系应回落")
+	}
+	// 子会话活动事件（assistant/message）推进子键运行态（fed 事件口刷新路径）。
+	e.d.DshEvent(map[string]any{"session_id": dshChildID, "parent_session_id": dshMainID,
+		"event": "agent/status", "time": *e.now * 1000,
+		"data": map[string]any{"status": "running"}})
+	e.advance(5)
+	e.d.DshEvent(map[string]any{"session_id": dshChildID, "parent_session_id": dshMainID,
+		"event": "assistant/message", "time": *e.now * 1000,
+		"usage": map[string]any{"input_tokens": 10, "output_tokens": 1}})
+	if !e.d.Ledger.DshFamilyRunning(dshMainID) {
+		t.Fatal("子活动事件应推进子键运行态（刷新）")
+	}
+}
+
+func TestDshEventRunRefreshAdvances(t *testing.T) {
+	// 刷新规则（规格「判活」）：同键活动事件推进运行态时间戳——fed 会话走事件
+	// 口（未接管会话的文件面检测态推进随票 03 补）。可观察行为：持续活动恒在
+	// 效；停止活动＝最后活动 +3600s 失效；idle 复位优先于刷新。
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": e.t0 * 1000, "data": map[string]any{"status": "running"}})
+	e.advance(3599)
+	if !e.d.Ledger.DshFamilyRunning(sid) {
+		t.Fatal("置位 3599s 应仍在效")
+	}
+	// 第 3600s 一条 turn/start 刷新 → 时间戳顶新，再活一个上界。
+	e.advance(1)
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "turn/start",
+		"time": *e.now * 1000})
+	e.advance(3600)
+	if !e.d.Ledger.DshFamilyRunning(sid) {
+		t.Fatal("刷新后 3600s 内应仍在效（时间戳已顶新）")
+	}
+	e.advance(1)
+	if e.d.Ledger.DshFamilyRunning(sid) {
+		t.Fatal("最后活动 +3601s 应失效（有界失效回正常闸门路径）")
+	}
+	// idle 复位优先：重新置位→idle→活动事件不得复活。
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": *e.now * 1000, "data": map[string]any{"status": "running"}})
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": *e.now * 1000, "data": map[string]any{"status": "idle"}})
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "turn/start",
+		"time": *e.now * 1000})
+	if e.d.Ledger.DshFamilyRunning(sid) {
+		t.Fatal("idle 复位优先于刷新——活动事件不得复活运行态")
+	}
+	// 从未置位：活动事件刷新不得凭空置位。
+	e2 := newDshRcvEnv(t, "enforce")
+	e2.d.DshEvent(map[string]any{"session_id": dshRcvSID, "event": "turn/start",
+		"time": e2.t0 * 1000})
+	if e2.d.Ledger.DshFamilyRunning(dshRcvSID) {
+		t.Fatal("刷新不得置位（置位只认 status=running）")
+	}
+}
+
+func TestDshGateRunStateExempts(t *testing.T) {
+	// 闸门 dsh 道（machineWaiting）：在效运行态 → machine-waiting 豁免——长任务
+	// 中段不被闲置钟误判（enforce 前置）。对照＝无运行态同形走正常路径（block）。
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
+		e.t0-testBlockS-5, 10, "C:/proj", "", testMinCtx+50, 0)
+	e.store.SaveHandoff(sid, "dsh", "C:/proj", "交接", isoUTC(e.t0-30), "fresh", "正文")
+	r := e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
+	if r["decision"] != "block" {
+		t.Fatalf("无运行态对照应走正常路径 block: %v", r)
+	}
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": e.t0 * 1000, "data": map[string]any{"status": "running"}})
+	r = e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
+	if r["decision"] != "allow" || r["reason"] != "machine-waiting" {
+		t.Fatalf("在效运行态应豁免: %v", r)
+	}
+}
+
+func TestDshGateRunStateStaleExpires(t *testing.T) {
+	// 失效上界 3600s：过期回正常闸门路径（有界失效）。
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
+		e.t0-testBlockS-5, 10, "C:/proj", "", testMinCtx+50, 0)
+	e.store.SaveHandoff(sid, "dsh", "C:/proj", "交接", isoUTC(e.t0-30), "fresh", "正文")
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": e.t0 * 1000, "data": map[string]any{"status": "running"}})
+	e.advance(3601)
+	r := e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
+	if r["decision"] != "block" {
+		t.Fatalf("过期运行态应失效回正常路径: %v", r)
+	}
+}
+
+func TestDshGateChildRunExemptsFamily(t *testing.T) {
+	// 族系豁免：父闲置在拦窗、子直报运行态在效 → 父问闸豁免。
+	e := newDshRcvEnv(t, "enforce")
+	e.led.TouchFull("dsh", dshMainID, filepath.Join(e.tmp, "m.v4.jsonl.zstd"),
+		e.t0-testBlockS-5, 10, "C:/proj", "", testMinCtx+50, 0)
+	e.store.SaveHandoff(dshMainID, "dsh", "C:/proj", "交接", isoUTC(e.t0-30), "fresh", "正文")
+	e.d.DshEvent(map[string]any{"session_id": dshChildID, "parent_session_id": dshMainID,
+		"event": "agent/status", "time": e.t0 * 1000,
+		"data": map[string]any{"status": "running"}})
+	r := e.d.DshGate(map[string]any{"session_id": dshMainID, "cwd": "C:/proj", "prompt": "继续"})
+	if r["decision"] != "allow" || r["reason"] != "machine-waiting" {
+		t.Fatalf("子在跑应豁免父: %v", r)
+	}
+}
+
+func TestDshChildrenSeededFromAccounts(t *testing.T) {
+	// 族系子键账本回种（规格：usage 行 subagent 列来源——重启恢复口径）。
+	// 回种挂 DshGate 首问惰性触发（NewDaemon 在 daemon.go 本票路径外，启动钩子
+	// 装配不可达；test-and-set 防重）。可观察面＝回种后 DshHasChild 命中。
+	e := newDshRcvEnv(t, "enforce")
+	if _, err := e.d.Accounts.Record("usage", e.t0, accounts.Fields{
+		"agent": "dsh", "session_id": dshMainID, "subagent": dshChildID,
+		"lineage_id": "", "input_tokens": 1, "cache_read_tokens": 0,
+		"cache_creation_tokens": 0, "output_tokens": 0, "offset": 0,
+		"model": "glm-5.3", "title": "回种",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 重启等价：换新台账（族系映射内存丢失）——首问闸应触发回种。
+	e.led = ledger.New()
+	e.d.Ledger = e.led
+	e.d.DshGate(map[string]any{"session_id": "probe"})
+	if !e.led.DshHasChild(dshMainID, dshChildID) {
+		t.Fatal("首问闸应回种 usage 行 subagent 列的族系子键")
+	}
+	// 防重语义（test-and-set）在台账层单测钉死（TestDshChildrenSeedClaim）；
+	// 守护侧换台账即新生命周期——重新回种是重启语义的本分，不作断言。
+}
+
+func TestDshGateDshSkipsDanglingLane(t *testing.T) {
+	// agent=dsh 不再调用 HasDanglingToolUse（悬空白读跳过——cctrans 是 CC 转录
+	// 语义，对 dsh 文件恒 False 的白读）。同形悬空文件：dsh 不豁免（回正常闸门
+	// 路径），cc 照常豁免（既有行为零回归对照）。
+	e := newDshRcvEnv(t, "enforce")
+	dangling := mkDangling(t, filepath.Join(e.tmp, "dangling.jsonl"))
+	proj := filepath.Join(e.tmp, "projD")
+	e.led.TouchFull("dsh", "dsh-dg", dangling, e.t0-testBlockS-5, 10, proj, "",
+		testMinCtx+50, 0)
+	e.store.SaveHandoff("dsh-dg", "dsh", proj, "交接", isoUTC(e.t0-30), "fresh", "正文")
+	r := e.d.DshGate(map[string]any{"session_id": "dsh-dg", "cwd": proj, "prompt": "继续"})
+	if r["decision"] != "block" {
+		t.Fatalf("dsh 不得吃悬空道豁免: %v", r)
+	}
+	e.led.TouchFull("cc", "cc-dg", dangling, e.t0-testBlockS-5, 10, proj, "",
+		testMinCtx+50, 0)
+	r2 := e.d.Gate(map[string]any{"agent": "cc", "session_id": "cc-dg",
+		"transcript_path": dangling, "cwd": proj, "prompt": "继续"})
+	if r2["decision"] != "allow" || r2["reason"] != "machine-waiting" {
+		t.Fatalf("cc 悬空道豁免应零回归: %v", r2)
 	}
 }

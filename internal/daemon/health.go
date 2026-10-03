@@ -51,6 +51,8 @@ func (d *Daemon) Health() map[string]any {
 	// 票06：漏检关联计数（账本近 24h 行现算，粗粒度 observe 期信号）
 	qw["miss_signals"] = d.qwatchMissSignals()
 	qw["mode"] = d.GetQWatchMode()
+	// 票03（dsh 等答复窗）：dsh 分档活值回显——与 CC mode 同一护栏读法。
+	qw["dsh_mode"] = d.GetDshQWatchMode()
 	var lastCallAgo, lastWriteAgo any // Python … if last_call else None
 	if lastCall != 0 {
 		lastCallAgo = mathx.Round(now-lastCall, 1)

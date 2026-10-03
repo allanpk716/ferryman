@@ -99,9 +99,14 @@ func (s *HttpBeatSender) SendAppendReplay(p AppendReplayPlan) AppendReplayResult
 	}
 	beatHeaders(req.Header, snap.Headers)
 	req.Header.Set(dock.HeaderFerrymanReplay, "same_model") // 渡口识别：不入快照
-	// 票01 会话归因头：值=目标会话 ID，渡口记账行据此按会话归集（重放不入
-	// 快照，记账不受影响——dock 科目照记）。
-	req.Header.Set(dock.HeaderClaudeCodeSessionID, p.SessionID)
+	// 会话归因头按形状分流（票 B，形状判定 dock 单源，语义与 Send 同款）：
+	// dsh 形键发 dsh 归因头（渡口对 CC 头做 UUID36 校验，塞 dsh 键被拒收——
+	// 记账行归因空）；其余形保守维持 CC 头。标记头不受分流影响（上行一行未动）。
+	if dock.KeyIsDshSessionID(p.SessionID) {
+		req.Header.Set(dock.HeaderDeepSeekHarnessSessionID, p.SessionID)
+	} else {
+		req.Header.Set(dock.HeaderClaudeCodeSessionID, p.SessionID)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return AppendReplayResult{Sent: true, OK: false, Err: transportErrCategory(err)}
