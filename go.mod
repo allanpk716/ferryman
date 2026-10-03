@@ -5,6 +5,7 @@ go 1.23.4
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/getlantern/systray v1.2.2
+	github.com/klauspost/compress v1.15.13
 	golang.org/x/sys v0.22.0
 	modernc.org/sqlite v1.34.5
 )
@@ -19,7 +20,6 @@ require (
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.15.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
