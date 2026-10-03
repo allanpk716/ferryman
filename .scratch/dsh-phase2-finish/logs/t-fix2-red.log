@@ -1,0 +1,10 @@
+# t-fix2-red: go test ./internal/daemon/ -run 'TestDshGate' -count=1
+[gate] BLOCK dsh/session- idle=2m handoff=20261003_150008_b9638b
+[gate] BLOCK dsh/session- idle=2m handoff=20261003_150008_06303c
+--- FAIL: TestDshGateReusesExistingJudgement (0.03s)
+    dsh_receive_test.go:143: dsh observe 不应入队摆渡（修复2）: [dsh/session-33333333-3333-4333-8333-333333333333]
+[gate] BLOCK dsh/session- idle=2m handoff=20261003_150008_1ee898
+FAIL
+FAIL	ferryman/internal/daemon	0.438s
+FAIL
+exit=1

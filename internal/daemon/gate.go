@@ -181,7 +181,11 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	if mode == "observe" {
 		if inWindow {
 			h := d.Store.ValidHandoff(agent, cwd, snap.coversBar())
-			if h == nil && snap.observed && snap.peak >= th.MinCtxTokens {
+			// dsh 不入队摆渡（终局修复2,票04×票06 跨票缝）：摆渡材料不可得
+			// （.scratch/dsh-phase2-finish/judge-materials.md 判定——事件口有键
+			// 无体、渡口有体无键）,入队必败→CC 提取器产空骨架→covers=0 恒不过,
+			// 循环不收敛;接法乙落地票再开接线。
+			if agent != "dsh" && h == nil && snap.observed && snap.peak >= th.MinCtxTokens {
 				d.EnqueueFerry(st)
 			}
 			d.gateWarn(agent, snap.sid, "observe", idle)
@@ -243,7 +247,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	d.Pending.Set(key)
 	d.Stats.addWarns()
 	d.gateWarn(agent, snap.sid, "enforce", idle)
-	if snap.observed && snap.peak >= th.MinCtxTokens {
+	if agent != "dsh" && snap.observed && snap.peak >= th.MinCtxTokens { // dsh 不入队（终局修复2,observe 分支同注）
 		d.EnqueueFerry(st)
 	}
 	return map[string]any{"decision": "allow",

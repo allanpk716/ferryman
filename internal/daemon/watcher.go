@@ -91,6 +91,12 @@ type Watcher struct {
 
 	ccDir  string
 	cxDirs []string
+	// dsh 面（P2-1）：dshDir 会话根（~/.dsh/sessions 或 [watch].dsh_sessions_dir
+	// /$DSH_HOME 覆盖）；dsh 用量采集器（nil=HarvestUsage 关，只登记不采集）；
+	// dshSessions 会话目录采集态（守望单线程读写，watcher_dsh.go）。
+	dshDir      string
+	dsh         *dshHarvest
+	dshSessions map[string]*dshSessionRec
 
 	harvest *harvest.HarvestState // Accounts 非 nil 且 HarvestUsage 时建
 
@@ -243,6 +249,21 @@ func NewWatcher(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 	}
 	w.ccDir = ccDir
 	w.cxDirs = CodexWatchDirs(cfg.Watch, "") // Python home=None → Path.home()
+	// dsh 面（P2-1）：根目录三源——配置 > DSH_HOME 环境覆盖 > ~/.dsh/sessions
+	// （dsh home-paths 同序）。未装 dsh 的机器根不存在，pollDsh 静默零开销。
+	w.dshDir = cfg.Watch.DshSessionsDir
+	if w.dshDir == "" {
+		if dh := os.Getenv("DSH_HOME"); dh != "" {
+			w.dshDir = filepath.Join(dh, "sessions")
+		} else {
+			home, _ := os.UserHomeDir()
+			w.dshDir = filepath.Join(home, ".dsh", "sessions")
+		}
+	}
+	w.dshSessions = map[string]*dshSessionRec{}
+	if acc != nil && cfg.Watch.HarvestUsage {
+		w.dsh = newDshHarvest(acc)
+	}
 	return w
 }
 
@@ -276,6 +297,7 @@ func (w *Watcher) pollGuarded() {
 	}()
 	w.pollCC()
 	w.pollCodex()
+	w.pollDsh() // P2-1：dsh 轨（登记+采集；测试直调形态不经此处，见 PollOnce 注）
 }
 
 // Stop 停止守望线程（threading.Event.set 的 Go 形）。

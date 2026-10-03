@@ -1,0 +1,37 @@
+=== RUN   TestScanZstdFramesMultiFrame
+--- PASS: TestScanZstdFramesMultiFrame (0.00s)
+=== RUN   TestScanZstdFramesTornTail
+--- PASS: TestScanZstdFramesTornTail (0.00s)
+=== RUN   TestScanZstdFramesBadMagic
+--- PASS: TestScanZstdFramesBadMagic (0.00s)
+=== RUN   TestTailTextZstdIncremental
+--- PASS: TestTailTextZstdIncremental (0.01s)
+=== RUN   TestTailTextZstdTornAppendNotConsumed
+--- PASS: TestTailTextZstdTornAppendNotConsumed (0.00s)
+=== RUN   TestTailTextPlainAndShrink
+--- PASS: TestTailTextPlainAndShrink (0.00s)
+=== RUN   TestEncodeSegmentPinned
+--- PASS: TestEncodeSegmentPinned (0.00s)
+=== RUN   TestDecodeSegmentRoundtrip
+--- PASS: TestDecodeSegmentRoundtrip (0.00s)
+=== RUN   TestProjectKeyPinned
+--- PASS: TestProjectKeyPinned (0.00s)
+=== RUN   TestParseGenerationFilename
+--- PASS: TestParseGenerationFilename (0.00s)
+=== RUN   TestLatestGenerationPicksHighest
+--- PASS: TestLatestGenerationPicksHighest (0.01s)
+=== RUN   TestReadHeaderLineBothEncodings
+--- PASS: TestReadHeaderLineBothEncodings (0.01s)
+=== RUN   TestParseHeaderLine
+--- PASS: TestParseHeaderLine (0.00s)
+=== RUN   TestParseChunkUsageAndTitle
+--- PASS: TestParseChunkUsageAndTitle (0.00s)
+=== RUN   TestParseChunkCatalog
+--- PASS: TestParseChunkCatalog (0.00s)
+=== RUN   TestCatalogChildrenEndToEnd
+--- PASS: TestCatalogChildrenEndToEnd (0.01s)
+=== RUN   TestRealSessions
+    real_test.go:94: 真机会话 6 个、usage 出行 5 条（四列解析通过）
+--- PASS: TestRealSessions (0.01s)
+PASS
+ok  	ferryman/internal/dshtrans	0.236s

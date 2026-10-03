@@ -1,0 +1,27 @@
+# ferryman/internal/provider [ferryman/internal/provider.test]
+internal\provider\dsh_hooks_test.go:36:4: t.DSHHooksJSON undefined (type Targets has no field or method DSHHooksJSON)
+internal\provider\dsh_hooks_test.go:37:4: t.FerrymanHooksDir undefined (type Targets has no field or method FerrymanHooksDir)
+internal\provider\dsh_hooks_test.go:79:44: dshHooksTargetsOf(fp).FerrymanHooksDir undefined (type Targets has no field or method FerrymanHooksDir)
+internal\provider\dsh_hooks_test.go:86:23: undefined: targetDSHHooks
+internal\provider\dsh_hooks_test.go:123:49: dshHooksTargetsOf(fp).FerrymanHooksDir undefined (type Targets has no field or method FerrymanHooksDir)
+internal\provider\dsh_hooks_test.go:149:44: dshHooksTargetsOf(fp).FerrymanHooksDir undefined (type Targets has no field or method FerrymanHooksDir)
+internal\provider\dsh_hooks_test.go:159:26: undefined: targetDSHHooks
+internal\provider\dsh_hooks_test.go:175:36: dshHooksTargetsOf(fp).FerrymanHooksDir undefined (type Targets has no field or method FerrymanHooksDir)
+internal\provider\dsh_hooks_test.go:197:36: dshHooksTargetsOf(fp).FerrymanHooksDir undefined (type Targets has no field or method FerrymanHooksDir)
+internal\provider\dsh_hooks_test.go:200:9: undefined: dshHooksJSONContent
+internal\provider\dsh_hooks_test.go:200:9: too many errors
+FAIL	ferryman/internal/provider [build failed]
+# ferryman/cmd/ferryman [ferryman/cmd/ferryman.test]
+cmd\ferryman\provider_dshhooks_test.go:29:8: tg.DSHHooksJSON undefined (type provider.Targets has no field or method DSHHooksJSON)
+cmd\ferryman\provider_dshhooks_test.go:30:45: tg.DSHHooksJSON undefined (type provider.Targets has no field or method DSHHooksJSON)
+cmd\ferryman\provider_dshhooks_test.go:42:17: undefined: providerHooksDirFn
+cmd\ferryman\provider_dshhooks_test.go:43:2: undefined: providerHooksDirFn
+cmd\ferryman\provider_dshhooks_test.go:44:21: undefined: providerHooksDirFn
+cmd\ferryman\provider_dshhooks_test.go:53:33: tg.DSHHooksJSON undefined (type provider.Targets has no field or method DSHHooksJSON)
+cmd\ferryman\provider_dshhooks_test.go:65:16: gotTargets.FerrymanHooksDir undefined (type provider.Targets has no field or method FerrymanHooksDir)
+cmd\ferryman\provider_dshhooks_test.go:66:57: gotTargets.FerrymanHooksDir undefined (type provider.Targets has no field or method FerrymanHooksDir)
+cmd\ferryman\provider_dshhooks_test.go:69:16: gotTargets.DSHHooksJSON undefined (type provider.Targets has no field or method DSHHooksJSON)
+cmd\ferryman\provider_dshhooks_test.go:70:53: gotTargets.DSHHooksJSON undefined (type provider.Targets has no field or method DSHHooksJSON)
+cmd\ferryman\provider_dshhooks_test.go:70:53: too many errors
+FAIL	ferryman/cmd/ferryman [build failed]
+FAIL

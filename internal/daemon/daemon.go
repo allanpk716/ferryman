@@ -184,6 +184,11 @@ type Daemon struct {
 	// "泄漏后又来 start"的路径。
 	windows map[winKey]*waitWindow
 
+	// dshFed dsh 事件接管表（票05 跨源去重,策略 a）：已有插件事件流量的会话
+	// 集合——pollDsh 文件守望面据此让位（单源化）。DshEvent 标记、NewDaemon
+	// 自账本回种（重启恢复）;守望经 w.Daemon 查询。叶子锁自带,nil 安全。
+	dshFed *dshEventFed
+
 	// Version 版本号（票02，规格 §A）：serveConfig 装配时自 main 经
 	// ServeContext 传入（显式传参不做全局单例；直接构造 Daemon 的替身不装 =
 	// 空，Health 回落 dev）。同 DockSnap 的"构造后装配赋值"先例。
@@ -200,6 +205,10 @@ func NewDaemon(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 	if startedAt <= 0 {
 		startedAt = clock.Now()
 	}
+	// dsh 事件接管表：自账本回种（事件行 lineage 恒空可辨识）——daemon 重启
+	// 后 pollDsh 对接管会话不重放文件尾（票05 跨源去重）。
+	dshFed := &dshEventFed{}
+	dshFed.seedFromAccounts(acc)
 	return &Daemon{
 		Cfg:          cfg,
 		Ledger:       lg,
@@ -210,6 +219,7 @@ func NewDaemon(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 		Pending:      &PendingTable{},
 		QWatchStats:  qs,
 		windows:      map[winKey]*waitWindow{},
+		dshFed:       dshFed,
 		StartedAt:    startedAt,
 	}
 }

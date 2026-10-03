@@ -1,0 +1,14 @@
+# ferryman/internal/daemon [ferryman/internal/daemon.test]
+internal\daemon\dsh_receive_test.go:98:13: e.d.DshGate undefined (type *Daemon has no field or method DshGate)
+internal\daemon\dsh_receive_test.go:123:11: e.d.DshGate undefined (type *Daemon has no field or method DshGate)
+internal\daemon\dsh_receive_test.go:137:7: e2.d.DshGate undefined (type *Daemon has no field or method DshGate)
+internal\daemon\dsh_receive_test.go:151:14: e.d.DshEvent undefined (type *Daemon has no field or method DshEvent)
+internal\daemon\dsh_receive_test.go:171:6: e.d.DshEvent undefined (type *Daemon has no field or method DshEvent)
+internal\daemon\dsh_receive_test.go:199:6: e.d.DshEvent undefined (type *Daemon has no field or method DshEvent)
+internal\daemon\dsh_receive_test.go:225:6: e.d.DshEvent undefined (type *Daemon has no field or method DshEvent)
+internal\daemon\dsh_receive_test.go:264:6: e.d.DshEvent undefined (type *Daemon has no field or method DshEvent)
+internal\daemon\dsh_receive_test.go:303:13: e.d.DshEvent undefined (type *Daemon has no field or method DshEvent)
+internal\daemon\dsh_receive_test.go:319:14: e.d.DshEvent undefined (type *Daemon has no field or method DshEvent)
+internal\daemon\dsh_receive_test.go:319:14: too many errors
+FAIL	ferryman/internal/daemon [build failed]
+FAIL

@@ -1,0 +1,40 @@
+=== RUN   TestApplyDSHHooksCreatesJSON
+--- PASS: TestApplyDSHHooksCreatesJSON (0.02s)
+=== RUN   TestApplyDSHHooksIdempotent
+--- PASS: TestApplyDSHHooksIdempotent (0.03s)
+=== RUN   TestApplyDSHHooksForeignRejected
+--- PASS: TestApplyDSHHooksForeignRejected (0.01s)
+=== RUN   TestApplyDSHHooksMarkerRewrite
+--- PASS: TestApplyDSHHooksMarkerRewrite (0.03s)
+=== RUN   TestApplyDSHHooksDirAbsentSkips
+--- PASS: TestApplyDSHHooksDirAbsentSkips (0.01s)
+=== RUN   TestApplyDSHHooksOnlyChangeWrites
+--- PASS: TestApplyDSHHooksOnlyChangeWrites (0.02s)
+=== RUN   TestRestoreDSHHooksCreatedDeleted
+--- PASS: TestRestoreDSHHooksCreatedDeleted (0.03s)
+=== RUN   TestRestoreDSHHooksFromBackup
+--- PASS: TestRestoreDSHHooksFromBackup (0.03s)
+=== RUN   TestRestoreDSHHooksUserFileNoBackupSkipped
+--- PASS: TestRestoreDSHHooksUserFileNoBackupSkipped (0.03s)
+=== RUN   TestDSHHooksEmptyHooksDirRejected
+--- PASS: TestDSHHooksEmptyHooksDirRejected (0.01s)
+=== RUN   TestBridgePinEventMappingAndPayload
+--- PASS: TestBridgePinEventMappingAndPayload (0.01s)
+=== RUN   TestBridgePinDenySemantics
+--- PASS: TestBridgePinDenySemantics (0.01s)
+=== RUN   TestBridgePinConfigPath
+--- PASS: TestBridgePinConfigPath (0.02s)
+=== RUN   TestBridgePinSessionKeyZeroConversion
+--- PASS: TestBridgePinSessionKeyZeroConversion (0.00s)
+PASS
+ok  	ferryman/internal/provider	0.680s
+=== RUN   TestProviderTargetsFromHomeDSHHooks
+--- PASS: TestProviderTargetsFromHomeDSHHooks (0.00s)
+=== RUN   TestProviderApplyWiresHooksDirAndHint
+--- PASS: TestProviderApplyWiresHooksDirAndHint (0.00s)
+=== RUN   TestProviderApplyHooksHintOnUnchangedToo
+--- PASS: TestProviderApplyHooksHintOnUnchangedToo (0.00s)
+=== RUN   TestProviderRestoreNoHooksHint
+--- PASS: TestProviderRestoreNoHooksHint (0.00s)
+PASS
+ok  	ferryman/cmd/ferryman	0.084s

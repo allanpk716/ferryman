@@ -45,7 +45,10 @@ type WatchCfg struct {
 	CCProjectsDir    string   // 空 = ~/.claude/projects（测试可指临时目录）
 	CodexSessionsDir string   // 空 = ~/.codex/sessions
 	CodexExtraDirs   []string // 额外 codex 会话目录（Orca 重定向的 CODEX_HOME，2026-09-17 实测）
-	HarvestUsage     bool     // 用量采集（usage 科目）：30 天清理后的审计地基，隐私敏感可关
+	// DshSessionsDir dsh 会话根（P2-1 守望＋台账）；空 = $DSH_HOME/sessions
+	// 或 ~/.dsh/sessions（DSH_HOME 环境覆盖优先，dsh home-paths 同序）。
+	DshSessionsDir string
+	HarvestUsage   bool // 用量采集（usage 科目）：30 天清理后的审计地基，隐私敏感可关
 }
 
 // ThresholdCfg 阈值组。
@@ -318,6 +321,7 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			CCProjectsDir:    pyStr(get(w, "cc_projects_dir", "")),
 			CodexSessionsDir: pyStr(get(w, "codex_sessions_dir", "")),
 			CodexExtraDirs:   dirs,
+			DshSessionsDir:   pyStr(get(w, "dsh_sessions_dir", "")),
 			HarvestUsage:     pyBool(get(w, "harvest_usage", true)),
 		}
 	}

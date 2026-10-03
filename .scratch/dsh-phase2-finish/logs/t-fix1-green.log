@@ -1,0 +1,3 @@
+# t-fix1-green: go test ./internal/provider/ -count=1
+ok  	ferryman/internal/provider	1.477s
+exit=0

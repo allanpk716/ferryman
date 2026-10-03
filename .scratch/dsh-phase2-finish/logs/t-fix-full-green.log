@@ -1,0 +1,5 @@
+# t-fix-full-green: go test ./internal/provider/ ./cmd/ferryman/ ./internal/daemon/ -count=1
+ok  	ferryman/internal/provider	1.949s
+ok  	ferryman/cmd/ferryman	3.662s
+ok  	ferryman/internal/daemon	39.092s
+exit=0

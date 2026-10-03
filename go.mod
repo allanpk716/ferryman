@@ -5,6 +5,7 @@ go 1.23.4
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/getlantern/systray v1.2.2
+	github.com/klauspost/compress v1.15.13
 	golang.org/x/sys v0.22.0
 	modernc.org/sqlite v1.34.5
 )

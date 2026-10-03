@@ -288,6 +288,7 @@ poll_interval_s = 7.5
 cc_projects_dir = "C:/cc"
 codex_sessions_dir = "C:/codex"
 codex_extra_dirs = ["D:/x", "E:/y"]
+dsh_sessions_dir = "C:/dsh-sessions"
 harvest_usage = false
 
 [server]
@@ -339,7 +340,7 @@ provider = "glm"
 	w := cfg.Watch
 	if w.PollIntervalS != 7.5 || w.CCProjectsDir != "C:/cc" || w.CodexSessionsDir != "C:/codex" ||
 		len(w.CodexExtraDirs) != 2 || w.CodexExtraDirs[0] != "D:/x" || w.CodexExtraDirs[1] != "E:/y" ||
-		w.HarvestUsage {
+		w.DshSessionsDir != "C:/dsh-sessions" || w.HarvestUsage {
 		t.Fatalf("watch = %+v", w)
 	}
 	if cfg.Server.Port != 7399 || cfg.Server.DataDir != "C:/data" {
@@ -469,7 +470,8 @@ func TestDefaultValuesVerbatim(t *testing.T) {
 		t.Fatalf("thresholds 默认 = %+v", d.Thresholds)
 	}
 	if d.Watch.PollIntervalS != 3.0 || d.Watch.CCProjectsDir != "" ||
-		d.Watch.CodexSessionsDir != "" || len(d.Watch.CodexExtraDirs) != 0 || !d.Watch.HarvestUsage {
+		d.Watch.CodexSessionsDir != "" || len(d.Watch.CodexExtraDirs) != 0 ||
+		d.Watch.DshSessionsDir != "" || !d.Watch.HarvestUsage {
 		t.Fatalf("watch 默认 = %+v", d.Watch)
 	}
 	if d.Server.Port != 15700 || d.Server.DataDir != "" {

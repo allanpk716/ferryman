@@ -1,0 +1,5 @@
+=== RUN   TestPollDshRealSessions
+    dsh_wiring_test.go:282: 真机 daemon 面：登记 6 会话、usage 5 行、四列齐全、幂等通过
+--- PASS: TestPollDshRealSessions (0.02s)
+PASS
+ok  	ferryman/internal/daemon	0.419s

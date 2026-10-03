@@ -77,6 +77,15 @@ type Targets struct {
 	// 非空但目录不在位＝两行 skip（不代建）；home patch 在位且无接管标记＝
 	// 他人文件，全案拒绝转人工（见 planDSH）。
 	DSHHome string
+	// DSHHooksJSON dsh CC 钩子桥配置落点（~/ferryman/dsh-hooks/hooks.json，
+	// 票01 P2-3）；空＝hooks 分支不参与（旧调用零变化）。落 Ferryman 自家
+	// 目录——绝不写 ~/.dsh/ 任何文件（D12 红线）；生成以 dsh 家目录在位为
+	// 前提（不在位＝skip，与 dsh 家族同判）。
+	DSHHooksJSON string
+	// FerrymanHooksDir CC 钩子脚本目录（含 ferryman-gate.ps1；CLI 层按 exe
+	// 同根 hooks/ 惯例派生）。DSHHooksJSON 已设而本字段空＝拒绝盲写（钩子
+	// 命令无从派生）。
+	FerrymanHooksDir string
 	// DockBaseURL 渡口根地址（如 http://127.0.0.1:15722）；codex 目标按 /v1
 	// 后缀惯例派生（与 wire_api="responses" 兼容为准），dsh 路由原样用作
 	// baseURL（pi-ai 自行追加 /v1/messages），pi/CC 目标用根地址
@@ -170,6 +179,13 @@ func Apply(t Targets) (ApplyReport, error) {
 			return rep, dshErr
 		}
 	}
+	if t.DSHHooksJSON != "" {
+		hp, hpErr := planDSHHooks(t.DSHHome, t.DSHHooksJSON, t.FerrymanHooksDir)
+		if hpErr != nil {
+			return rep, hpErr
+		}
+		dshPlans = append(dshPlans, hp)
+	}
 	var newContent []string // 与 plans 对齐；未在位目标为 ""
 	changed := make([]bool, len(plans))
 	exists := make([]bool, len(plans))
@@ -250,7 +266,9 @@ func Apply(t Targets) (ApplyReport, error) {
 			}
 		}
 	}
-	// ③ 幂等短路：零改动 → 零备份零写盘。
+	// ③ 幂等短路：零改动 → 零备份零写盘。改动判定含 dsh 家族（票01 修复：
+	// 此前 any 只数 cc/codex——"其余全到位、仅 dsh 需写"时短路掉 dsh 写盘，
+	// 报 written 却不落盘）。
 	any := false
 	for _, c := range changed {
 		if c {
@@ -274,7 +292,7 @@ func Apply(t Targets) (ApplyReport, error) {
 			}
 			act := ActionUnchanged
 			if p.changed {
-				act = ActionWritten // 理论不达（短路条件含 dshAny），防御保真
+				act = ActionWritten // 理论不达（短路条件含 dsh 家族与 pi），防御保真
 			}
 			rep.Targets = append(rep.Targets, TargetReport{Name: p.target, Path: p.path,
 				Action: act, Detail: p.detail})
@@ -341,6 +359,12 @@ func Apply(t Targets) (ApplyReport, error) {
 	for _, p := range dshPlans {
 		if p.skipped || !p.changed {
 			continue
+		}
+		// hooks.json 的父目录（~/ferryman/dsh-hooks/）可能尚不存在——Ferryman
+		// 自家目录，代建无碍（票01）；patch/.env 的父目录（dsh 家目录）是计划
+		// 前提，此处 MkdirAll 幂等空转。
+		if err := os.MkdirAll(filepath.Dir(p.path), 0o755); err != nil {
+			return rep, fmt.Errorf("provider: 建目录 %s 失败: %w", filepath.Dir(p.path), err)
 		}
 		perm := os.FileMode(0o644)
 		if info, err := os.Stat(p.path); err == nil {

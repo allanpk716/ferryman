@@ -538,3 +538,62 @@ func TestSessionHeaderFallbackWireAttribution(t *testing.T) {
 		t.Fatal("坏头值不得入库（绝不伪造会话 ID）")
 	}
 }
+
+// TestDshSessionHeaderWireAttribution P2-2 dsh 头第三回落线测：dsh UA＋
+// X-Deepseek-Harness-Session-Id 头（体无 metadata.session_id——pi-ai 路实测
+// 形态）→ 快照按 dsh 会话 ID 入库、记账行 session_id 同键、agent 按 UA 分岔
+// dsh；坏形头＝缺失（跳过计数、不伪造）。
+func TestDshSessionHeaderWireAttribution(t *testing.T) {
+	var up upstreamEcho
+	backend := httptest.NewServer(http.HandlerFunc(up.handler))
+	defer backend.Close()
+	srv, acc, front := newRecordingFront(t, backend.URL)
+
+	dshBody := []byte(`{"model":"claude-opus-5","max_tokens":64,"stream":true,` +
+		`"metadata":{"user_id":"u"},"messages":[]}`)
+
+	// 阶段一：dsh UA＋合法 dsh 头 → 三方同键归因
+	req := ccRequest(t, front+"/v1/messages", dshBody)
+	req.Header.Set("User-Agent", "deepseek-harness/0.2.0-rc.2")
+	req.Header.Set(HeaderDeepSeekHarnessSessionID, dshSidFixture)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("阶段一请求失败: %v", err)
+	}
+	resp.Body.Close()
+	main, ok := srv.Snapshots().Main(dshSidFixture)
+	if !ok {
+		t.Fatal("dsh 头归因失败：快照未按 dsh 会话 ID 入库")
+	}
+	if !bytes.Equal(main.Body, dshBody) {
+		t.Fatal("快照体与请求体不等")
+	}
+	rows := waitDockRows(t, acc, 1)
+	if rows[0]["session_id"] != dshSidFixture {
+		t.Fatalf("记账行 session_id = %v, want %v（dsh 头回落归因）",
+			rows[0]["session_id"], dshSidFixture)
+	}
+	if rows[0]["agent"] != "dsh" {
+		t.Fatalf("记账行 agent = %v, want dsh（UA 分岔）", rows[0]["agent"])
+	}
+	if got := srv.Snapshots().Skipped(); got != 0 {
+		t.Fatalf("dsh 头归因成功不得记跳过, Skipped() = %d", got)
+	}
+
+	// 阶段二：坏形头（无 session- 前缀）＝缺失——跳过计数、不伪造
+	before := srv.Snapshots().Skipped()
+	req2 := ccRequest(t, front+"/v1/messages", dshBody)
+	req2.Header.Set("User-Agent", "deepseek-harness/0.2.0-rc.2")
+	req2.Header.Set(HeaderDeepSeekHarnessSessionID, "not-a-dsh-sid")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("阶段二请求失败: %v", err)
+	}
+	resp2.Body.Close()
+	if got := srv.Snapshots().Skipped(); got != before+1 {
+		t.Fatalf("坏形 dsh 头应记跳过, Skipped() = %d, want %d", got, before+1)
+	}
+	if _, ok := srv.Snapshots().Main("not-a-dsh-sid"); ok {
+		t.Fatal("坏形 dsh 头值不得入库（绝不伪造会话 ID）")
+	}
+}

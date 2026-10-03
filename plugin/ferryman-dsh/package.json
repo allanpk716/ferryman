@@ -1,0 +1,20 @@
+{
+  "name": "ferryman-dsh",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Ferryman 原生 dsh 插件——闸门问询/归还播种/用量上报/判活转发/挂载自检（票05 业务对接完成）",
+  "main": "src/index.ts",
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types \"test/*.test.ts\""
+  }
+}
