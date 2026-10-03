@@ -108,6 +108,12 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 	if ev != "turn/start" && ev != "assistant/message" && !strings.HasPrefix(ev, "compaction/") {
 		return map[string]any{"ok": true, "skipped": "unknown-event"}
 	}
+	// 跨源去重（票05,策略 a 事件接管单源化）：已知事件＝该会话有插件事件流量
+	// ——标记接管,pollDsh 文件守望面让位（watcher_dsh.go dshIsFed 同表）。
+	// turn/start 即标记：接管在带 usage 的事件出现前先落（毫秒级竞窗见
+	// dsh_dedup.go 头注）。子会话直报标记子键（父键由父自身的事件标记,
+	// 不从子事件推断）。
+	d.dshFed.mark(sid)
 	// 事件时间：native 毫秒 epoch；缺/坏 → 记账盖章 now（ts=-1 同义）、
 	// 活动钟取 now。
 	ms := dshMsOr(body["time"])

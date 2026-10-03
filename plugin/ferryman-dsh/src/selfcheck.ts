@@ -1,4 +1,4 @@
-// 挂载自检（票 03 实现）——渡口健康检查＋daemon 版本对账。
+// 挂载自检——渡口健康检查＋daemon 版本对账（票03）＋dsh 三口连通性探针（票05）。
 // 目标端点事实（Ferryman 仓内现行实现,只读钉点）：
 //   - 渡口无专用健康路由：internal/dock/server.go:401 ServeHTTP 只分流 /responses* 与
 //     /v1/messages,其余一切路径原样反代上游 ⇒ 健康检查＝TCP 可达性探测
@@ -26,7 +26,7 @@ export interface SelfcheckDeps {
   minDaemonVersion: string;
 }
 
-export type CheckName = "dock" | "daemon-version";
+export type CheckName = "dock" | "daemon-version" | "dsh-ports";
 
 export interface CheckResult {
   name: CheckName;
@@ -44,8 +44,12 @@ export interface SelfcheckResult {
 
 export const DEFAULT_DOCK_URL = "http://127.0.0.1:15722";
 export const DEFAULT_DAEMON_URL = "http://127.0.0.1:15700";
-/** TODO(票05): 随发版复核最低要求版本 */
-export const MIN_DAEMON_VERSION = "0.5.2";
+// 最低 daemon 版本（票03 占位的票05 定案,留痕）:三口（/dsh/gate、/dsh/event、
+// /dsh/handoff,internal/daemon/dsh_receive.go）＋跨源去重（dsh_dedup.go）均落
+// v0.5.2 之后的夜链,首个承载发版＝v0.5.3（spec Out of Scope 预告的发版号）。
+// dev/commit 描述构建无从比较放行（既有三态语义）,由 dsh-ports 探针对账真实
+// 可达性——双保险。如实际发版号变动,此处随发版复核。
+export const MIN_DAEMON_VERSION = "0.5.3";
 
 const SELF_CHECK_TIMEOUT_MS = 3_000;
 
@@ -123,8 +127,59 @@ async function checkDaemonVersion(deps: SelfcheckDeps): Promise<CheckResult> {
   };
 }
 
+// checkDshPorts 票05 挂载自检扩展：dsh 三口连通性检查。探针走 POST
+// /dsh/handoff 空 cwd（Restore 对空 cwd 静默收窄回 context:null,internal/
+// daemon/restore.go 空收窄分支＋dsh_receive_test.go「空 cwd」钉子）——零副作用
+// （不 Touch、不记账、不占闸门计数）,又完整穿通三口共用的守门拦截面
+// （loopback→POST→Bearer→JSON 解码→dsh 分派,dsh_receive.go:59-91）。三口
+// 同拦截面,一探即三口对账;404＝daemon 版本过旧无 /dsh/* 面（版本对账的
+// 真值兜底——dev 构建无从比较时以此探针为准）。
+async function checkDshPorts(deps: SelfcheckDeps): Promise<CheckResult> {
+  let res: Response;
+  try {
+    res = await deps.fetchImpl(`${deps.daemonURL}/dsh/handoff`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${deps.daemonToken}`,
+      },
+      body: JSON.stringify({ cwd: "", session_id: "ferryman-dsh-selfcheck" }),
+      signal: AbortSignal.timeout(SELF_CHECK_TIMEOUT_MS),
+    });
+  } catch {
+    return {
+      name: "dsh-ports",
+      ok: false,
+      detail: `dsh 接收面不可达（${deps.daemonURL}/dsh/*）——daemon 未运行`,
+    };
+  }
+  await res.arrayBuffer().catch(() => {}); // 读光 body（不留悬挂流）
+  if (res.status === 401) {
+    return {
+      name: "dsh-ports",
+      ok: false,
+      detail: "daemon 鉴权失败——daemon.token 缺失或失效（须重开 dsh 会话刷新挂载）",
+    };
+  }
+  if (res.status === 404) {
+    return {
+      name: "dsh-ports",
+      ok: false,
+      detail: `daemon 无 /dsh/* 接收面（版本过旧,需 ≥ v${deps.minDaemonVersion}）——请升级 ferryman`,
+    };
+  }
+  if (res.status !== 200) {
+    return { name: "dsh-ports", ok: false, detail: `/dsh/handoff 探针返回 HTTP ${res.status}` };
+  }
+  return {
+    name: "dsh-ports",
+    ok: true,
+    detail: "dsh 接收面三口可达（gate/event/handoff 同拦截面,探针零副作用）",
+  };
+}
+
 export async function runSelfcheck(deps: SelfcheckDeps): Promise<SelfcheckResult> {
-  const checks = await Promise.all([checkDock(deps), checkDaemonVersion(deps)]);
+  const checks = await Promise.all([checkDock(deps), checkDaemonVersion(deps), checkDshPorts(deps)]);
   const failures = checks.filter((c) => !c.ok);
   return {
     ok: failures.length === 0,

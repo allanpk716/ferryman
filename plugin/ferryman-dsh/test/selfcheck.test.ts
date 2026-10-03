@@ -56,9 +56,11 @@ function jsonRoute(status: number, body: unknown): Route {
 }
 
 // 两侧默认都成功；场景只覆盖受测路由，避免未注册路由误伤另一侧检查项
+//（票05 起新增第三检查项 dsh-ports——探针走 /dsh/handoff 空 cwd,零副作用）。
 const defaultRoutes: Record<string, Route> = {
   [`${DOCK}/`]: jsonRoute(200, {}),
   [`${DAEMON}/stats`]: jsonRoute(200, { version: "v0.5.4" }),
+  [`${DAEMON}/dsh/handoff`]: jsonRoute(200, { context: null }),
 };
 
 function baseDeps(fetchImpl: typeof fetch): SelfcheckDeps {
@@ -233,4 +235,90 @@ test("runSelfcheck: /stats 请求带 Bearer token（daemon.token 对账前提）
   const result = await runSelfcheck(deps);
   assert.equal(result.ok, true);
   assert.equal(seenAuth, "Bearer tok-123");
+});
+
+// ---- 票05 · dsh-ports 三口连通性探针 ----
+
+const portScenarios: Array<{
+  name: string;
+  routes: Record<string, Route>;
+  wantOk: boolean;
+  portsOk: boolean;
+  detailIncludes?: string[];
+}> = [
+  {
+    name: "三口探针 200（空 cwd 收窄 context:null）＝可达",
+    routes: {},
+    wantOk: true,
+    portsOk: true,
+    detailIncludes: ["三口可达"],
+  },
+  {
+    name: "404＝daemon 版本过旧无 /dsh/* 面（版本对账的真值兜底）",
+    routes: { [`${DAEMON}/dsh/handoff`]: jsonRoute(404, { error: "not found" }) },
+    wantOk: false,
+    portsOk: false,
+    detailIncludes: ["版本过旧", "0.5.3"],
+  },
+  {
+    name: "401＝token 缺失/失效",
+    routes: { [`${DAEMON}/dsh/handoff`]: jsonRoute(401, { error: "unauthorized" }) },
+    wantOk: false,
+    portsOk: false,
+    detailIncludes: ["鉴权"],
+  },
+  {
+    name: "500＝探针非 200 失败",
+    routes: { [`${DAEMON}/dsh/handoff`]: jsonRoute(500, { error: "boom" }) },
+    wantOk: false,
+    portsOk: false,
+    detailIncludes: ["HTTP 500"],
+  },
+  {
+    name: "连不上＝不可达失败",
+    routes: {
+      [`${DAEMON}/dsh/handoff`]: () => Promise.reject(new TypeError("fetch failed: ECONNREFUSED")),
+    },
+    wantOk: false,
+    portsOk: false,
+    detailIncludes: ["不可达"],
+  },
+];
+
+for (const s of portScenarios) {
+  test(`runSelfcheck dsh-ports: ${s.name}`, async () => {
+    const deps = baseDeps(fakeFetch({ ...defaultRoutes, ...s.routes }));
+    const result = await runSelfcheck(deps);
+    assert.equal(result.ok, s.wantOk, `整体判定 want ${s.wantOk}`);
+    const ports = checkOf(result, "dsh-ports");
+    assert.equal(ports.ok, s.portsOk, "dsh-ports 检查项");
+    if (s.detailIncludes) {
+      for (const frag of s.detailIncludes) {
+        assert.ok(ports.detail.includes(frag), `detail 应含「${frag}」: ${ports.detail}`);
+      }
+    }
+  });
+}
+
+test("runSelfcheck dsh-ports: 探针带 Bearer＋POST＋空 cwd 零副作用形状", async () => {
+  let seen: { auth: string | null; method: string; body: unknown } | null = null;
+  const deps = baseDeps(
+    fakeFetch({
+      ...defaultRoutes,
+      [`${DAEMON}/dsh/handoff`]: (_url, init) => {
+        seen = {
+          auth: (init?.headers as Record<string, string>)?.["Authorization"] ?? null,
+          method: init?.method ?? "",
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        };
+        return Promise.resolve(new Response(JSON.stringify({ context: null }), { status: 200 }));
+      },
+    }),
+  );
+  const result = await runSelfcheck(deps);
+  assert.equal(result.ok, true);
+  assert.ok(seen, "探针已发出");
+  assert.equal(seen!.auth, "Bearer tok-123");
+  assert.equal(seen!.method, "POST");
+  assert.deepEqual(seen!.body, { cwd: "", session_id: "ferryman-dsh-selfcheck" });
 });

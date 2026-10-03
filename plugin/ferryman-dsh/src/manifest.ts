@@ -16,8 +16,8 @@
 
 /** 插件注册 id（与 package.json name、cordis.patch.yml insert.id 三处一致） */
 export const PLUGIN_ID = "ferryman-dsh";
-/** 与 package.json version 保持一致（DshPackageManifest 必填字段,types.ts:8-27） */
-export const PLUGIN_VERSION = "0.1.0";
+/** 与 package.json version 保持一致（DshPackageManifest 必填字段,types.ts:8-27;票05 业务对接＝0.2.0） */
+export const PLUGIN_VERSION = "0.2.0";
 
 /** package.json 里 dsh 键的形状（DshPackageManifest["dsh"] 子集,types.ts:30-39） */
 export interface DshKeyShape {

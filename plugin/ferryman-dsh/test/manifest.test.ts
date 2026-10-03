@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PLUGIN_ID, PLUGIN_VERSION } from "../src/manifest.ts";
 import { apply, registerHooks, selfcheckOnce } from "../src/index.ts";
+import { makeEventDeps } from "../src/events.ts";
+import type { DaemonEndpoint } from "../src/daemon.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
@@ -51,30 +53,37 @@ test("入口文件存在：main 指向的文件在盘上", () => {
   assert.ok(existsSync(join(pkgRoot, String(pkg["main"]))));
 });
 
-test("五事件位导出桩：events 模块导出五个钩子函数（骨架位）", async () => {
+test("五事件位导出：events 模块导出五个钩子函数（票05 业务实现）", async () => {
   const events = (await import("../src/events.ts")) as Record<string, unknown>;
   for (const fn of ["onPreStep", "onCreated", "onSessionEvent", "onDisposed", "onStatus"]) {
     assert.equal(typeof events[fn], "function", `缺导出 ${fn}`);
   }
 });
 
-test("pre-step 桩默认透传 next()（骨架不拦,票 05 才接闸门）", async () => {
+// 不可达 daemon 的 deps（fail-open 面专用;port 9 无监听,连接即拒）。
+const deadDeps = () =>
+  makeEventDeps(
+    { baseURL: "http://127.0.0.1:9", token: "", fetchImpl: fetch, timeoutMs: 1000 } satisfies DaemonEndpoint,
+    console,
+  );
+
+test("pre-step daemon 不可达 → fail-open 透传 next()（gate 脚本同纪律）", async () => {
   const { onPreStep } = await import("../src/events.ts");
   const decision = { kind: "enter", messages: [] } as const;
-  const out = await onPreStep({ agent: {}, messages: [], turn: 0, step: 0 }, async () => decision);
+  const out = await onPreStep(deadDeps(), { agent: {}, messages: [{ content: [] }], turn: 0, step: 0 }, async () => decision);
   assert.equal(out, decision);
 });
 
-test("created 桩可 await（agent/created 是 serial awaited 位,runtime-types.ts:261）", async () => {
+test("created 可 await 且 daemon 不可达不抛（serial awaited 位,creation 不得失败）", async () => {
   const { onCreated } = await import("../src/events.ts");
-  await assert.doesNotReject(onCreated({ agent: {} }));
+  await assert.doesNotReject(onCreated(deadDeps(), { agent: {} }));
 });
 
 test("registerHooks 挂接五事件位：事件名用 dsh 协议斜杠字符串", () => {
   // 协议事实：事件名 = 'agent/pre-step' 等斜杠串（packages/core/agent/src/runtime-types.ts:261/270/280/320;
   // session/event 见 packages/core/session/src/index.ts:77）;注册 API = ctx.on（hooks-claude-code/src/index.ts:209/225）。
   const registered: string[] = [];
-  registerHooks({ on: (event) => void registered.push(event) });
+  registerHooks({ on: (event) => void registered.push(event) }, deadDeps());
   assert.deepEqual(
     [...registered].sort(),
     ["agent/created", "agent/disposed", "agent/pre-step", "agent/status", "session/event"],
@@ -82,7 +91,7 @@ test("registerHooks 挂接五事件位：事件名用 dsh 协议斜杠字符串"
 });
 
 test("apply 不因缺 on/logger 抛错（桥先例：logged and the agent continues）", () => {
-  assert.doesNotThrow(() => apply({}, {}));
+  assert.doesNotThrow(() => apply({}, { daemonToken: "t", fetchImpl: (() => Promise.reject(new TypeError("x"))) as typeof fetch }));
 });
 
 test("selfcheckOnce 失败经 logger.error 用户可见,成功静默", async () => {

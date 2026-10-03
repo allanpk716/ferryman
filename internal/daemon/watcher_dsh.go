@@ -205,14 +205,32 @@ func (w *Watcher) pollDshSession(dir string) {
 		// 子代理会话＝独立目录但不独立守望：随父入账（CC subagents 路径
 		// 同款分流——不 Touch、不入摆渡队、不参与闲置判定；族系判活信号
 		// 待 P2-5）。
+		if w.dshIsFed(rec.header.ID) {
+			return // 已被事件面接管（票05 跨源去重,策略 a）：子目录文件面让位
+		}
 		w.harvestDshUsage(rec, info.Size(), nil)
 		return
 	}
 	st := w.Ledger.TouchFull("dsh", rec.header.ID, gen.Path,
 		statMTime(info), int(info.Size()), rec.header.Cwd, "", 0, w.StartedAt)
 	w.observeRecent(st, statMTime(info)) // 重启观察窗：存量近活会话补观察
+	if w.dshIsFed(rec.header.ID) {
+		// 跨源去重（票05,策略 a 事件接管单源化）：该会话已有插件事件流量
+		// （/dsh/event 直报）——usage 四列由事件口单源入账,文件尾读让位;
+		// Touch/观察窗照常（登记面与单源化无关,真转录路径照旧收敛进台账）。
+		// 表在 Daemon.dshFed（DshEvent 标记＋NewDaemon 账本回种）,裁定理由
+		// 与残余竞窗留痕见 dsh_dedup.go。
+		return
+	}
 	w.harvestDshUsage(rec, info.Size(), st)
 	// 不 maybeEnqueue（见文件头 P2-1 边界注）。
+}
+
+// dshIsFed 会话是否已被插件事件面接管（票05 跨源去重开关）。nil Daemon 或
+// nil 表＝未接管——旧测试直构形态 fail-safe 到文件面（生产装配 serve.go:282
+// 恒传 d,此 nil 位只在测试替身出现）。
+func (w *Watcher) dshIsFed(sid string) bool {
+	return w.Daemon != nil && w.Daemon.dshFed.has(sid)
 }
 
 // harvestDshUsage 增量尾读 + 四列入账。st 非 nil＝主会话（台账 title/peak

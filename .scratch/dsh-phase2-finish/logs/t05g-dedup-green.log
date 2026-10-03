@@ -1,0 +1,52 @@
+=== RUN   TestDshDedupDualSourceSingleRow
+--- PASS: TestDshDedupDualSourceSingleRow (0.02s)
+=== RUN   TestDshDedupSparesUnfederatedSessions
+--- PASS: TestDshDedupSparesUnfederatedSessions (0.02s)
+=== RUN   TestDshDedupSurvivesRestart
+--- PASS: TestDshDedupSurvivesRestart (0.01s)
+=== RUN   TestDshDedupChildSession
+--- PASS: TestDshDedupChildSession (0.01s)
+=== RUN   TestDshGateReusesExistingJudgement
+=== RUN   TestDshGateReusesExistingJudgement/台账miss放行
+=== RUN   TestDshGateReusesExistingJudgement/mode-off放行（非cc档开关）
+=== RUN   TestDshGateReusesExistingJudgement/enforce闲置拦截
+[gate] BLOCK dsh/session- idle=2m handoff=20261003_141516_8291c5
+=== RUN   TestDshGateReusesExistingJudgement/enforce新鲜放行
+=== RUN   TestDshGateReusesExistingJudgement/observe闲置只警告
+[gate] BLOCK dsh/session- idle=2m handoff=20261003_141516_a764d0
+--- PASS: TestDshGateReusesExistingJudgement (0.02s)
+    --- PASS: TestDshGateReusesExistingJudgement/台账miss放行 (0.00s)
+    --- PASS: TestDshGateReusesExistingJudgement/mode-off放行（非cc档开关） (0.00s)
+    --- PASS: TestDshGateReusesExistingJudgement/enforce闲置拦截 (0.01s)
+    --- PASS: TestDshGateReusesExistingJudgement/enforce新鲜放行 (0.00s)
+    --- PASS: TestDshGateReusesExistingJudgement/observe闲置只警告 (0.00s)
+=== RUN   TestDshEventTouchesAndRecordsUsage
+--- PASS: TestDshEventTouchesAndRecordsUsage (0.00s)
+=== RUN   TestDshEventUsageRowKeysMatchPollDsh
+--- PASS: TestDshEventUsageRowKeysMatchPollDsh (0.02s)
+=== RUN   TestDshEventSubagentUnderParent
+--- PASS: TestDshEventSubagentUnderParent (0.00s)
+=== RUN   TestDshEventDefensive
+=== RUN   TestDshEventDefensive/空键静默跳过
+=== RUN   TestDshEventDefensive/未知事件类型
+=== RUN   TestDshEventDefensive/assistant/message无usage只登记
+=== RUN   TestDshEventDefensive/usage非对象收窄
+=== RUN   TestDshEventDefensive/空body全缺
+--- PASS: TestDshEventDefensive (0.02s)
+    --- PASS: TestDshEventDefensive/空键静默跳过 (0.00s)
+    --- PASS: TestDshEventDefensive/未知事件类型 (0.00s)
+    --- PASS: TestDshEventDefensive/assistant/message无usage只登记 (0.00s)
+    --- PASS: TestDshEventDefensive/usage非对象收窄 (0.00s)
+    --- PASS: TestDshEventDefensive/空body全缺 (0.00s)
+=== RUN   TestDshHandoffRoutesThroughRestore
+=== RUN   TestDshHandoffRoutesThroughRestore/无候选
+=== RUN   TestDshHandoffRoutesThroughRestore/单候选注入且agent钉dsh
+=== RUN   TestDshHandoffRoutesThroughRestore/多候选列清单
+--- PASS: TestDshHandoffRoutesThroughRestore (0.02s)
+    --- PASS: TestDshHandoffRoutesThroughRestore/无候选 (0.00s)
+    --- PASS: TestDshHandoffRoutesThroughRestore/单候选注入且agent钉dsh (0.01s)
+    --- PASS: TestDshHandoffRoutesThroughRestore/多候选列清单 (0.00s)
+=== RUN   TestDshReceiveEndpointGuards
+--- PASS: TestDshReceiveEndpointGuards (0.00s)
+PASS
+ok  	ferryman/internal/daemon	0.551s
