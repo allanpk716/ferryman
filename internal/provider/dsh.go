@@ -19,9 +19,12 @@
 // x-deepseek-harness-session-id 头，值＝台账现行键 session-<uuid> 零换算，
 // 渡口第三回落现成接住）。请求仍落 {baseURL}/v1/messages，模型名走渡口
 // 六键映射（claude-opus-5/claude-sonnet-5 与 CC 同键），切上游零写盘。
-// 最小方言档：thinking disabled＋reasoningEffort off（不显式设 off 则请求档
-// 缺省 high 会带 output_config 上线；配置校验只拒「disabled＋显式非 off」）＋
-// maxTokens 钉 32768（适配器缺省 256k 超上游上限，CC 同上游实测 32k 档安全）＋
+// 思考档位解锁（2026-10-04 实证改档）：enabled＋high。依据——dsh 适配器线上
+// 发 thinking.type＋output_config.effort low/high/max（llm-deepseek wire-types.ts:30-31），
+// 智谱 Coding Plan anthropic 端点原生收这俩字段（官方 coding-plan 文档，Claude Code
+// /effort 即走它们）；GLM-5.3 系强制思考，锁 disabled 只会把 UI 钳到 off 且实际仍被
+// 上游映成 low 轻思考（白烧配额）——不如放开选档。旧最小方言档（disabled＋off）系
+// 保守起步，已被上述查证取代。maxTokens 钉 32768 不变（适配器缺省 256k 超上游上限，CC 同上游实测 32k 档安全）＋
 // models 只写 id/contextWindow（能力标志缺省关：图片/工具增删/in-history
 // system 等方言整体不上线）。两贡献者插件 disabled（dsh_plugin_packages/
 // dsh_session_log 全会话明文不上线；渡口 rewrite 剥 dsh_* 顶层键兜底）。
@@ -163,8 +166,8 @@ func dshHomePatchYAML(dockBaseURL string) string {
 		"  config:",
 		"    baseURL: " + dockBaseURL,
 		"    apiKeyEnv: " + DSHTokenEnv,
-		"    thinking: disabled",
-		"    reasoningEffort: off",
+		"    thinking: enabled",
+		"    reasoningEffort: high",
 		"    maxTokens: 32768",
 		"    models:",
 		"      - id: claude-opus-5",

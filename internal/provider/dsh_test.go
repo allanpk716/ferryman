@@ -96,7 +96,7 @@ func TestApplyDSHCreatesFiles(t *testing.T) {
 	for _, want := range []string{
 		"- id: llm-deepseek", "name: '@deepseek-ai/dsh-llm-deepseek-api-key'",
 		"baseURL: " + dockBase, "apiKeyEnv: " + DSHTokenEnv,
-		"thinking: disabled", "reasoningEffort: off", "maxTokens: 32768",
+		"thinking: enabled", "reasoningEffort: high", "maxTokens: 32768",
 		"- id: claude-opus-5", "- id: claude-sonnet-5",
 		"- id: plugin-package-inventory-deepseek", "- id: session-log-deepseek",
 		"  disabled: true",
