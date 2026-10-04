@@ -1,7 +1,8 @@
 package daemon
 
 // query_report.go — 票03：GET /report 实现（注册于 queryapi.go 的
-// queryEndpoints 分派表）。
+// queryEndpoints 分派表）；票04 追加 warm 保温盈亏节挂接（report.WarmSection
+// 结构化透传，见 handleReport 内注）。
 //
 // 公式单源红线：成效账只调 report.SavingsV1（internal/report 导出面，规格
 // 「复用 internal/report 公式单源——禁止出现第二份公式实现」）；本文件不出现
@@ -98,6 +99,12 @@ func handleReport(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	}
 	savings := report.SavingsV1(entries, books, econBook) // 公式单源
 	computable, note := savingsComputability(econBook)
+	// 保温盈亏节（票04）：report.WarmSection 结构化透传——不洗字段、不并入
+	// savings（v1 消费者零感知，formula 仍 v1）；useless_warm 单列语义不动。
+	// 两腿参数取 report 层默认（TTL 1800s / hit 80%；−2/+90 窗 / 512·2% 容差
+	// / 8192 上限）。纯查询：不写任何账本行。
+	warm := report.WarmSection(entries, econBook,
+		report.DefaultWarmEpisodeConfig(), report.DefaultWarmCostConfig())
 
 	// 四列 token（usage 科目）与无效保温（wait_close 且 useless_warm=true）
 	// 一次遍历各自汇总。
@@ -141,6 +148,7 @@ func handleReport(d *Daemon, w http.ResponseWriter, r *http.Request) {
 			"count":       uwCount,
 			"cost_actual": mathx.Round(uwCost, 6),
 		},
+		"warm":          warm, // 保温盈亏节（票04）：report.WarmSection 原样透传
 		"econ_provider": econProvider,
 	})
 }
