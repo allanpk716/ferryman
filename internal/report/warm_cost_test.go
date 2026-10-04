@@ -6,7 +6,8 @@ package report
 // 签名的真实流量 dock 行（in+cr 偏离超容差或 output 超 8192）不误配，恰一
 // 命中仍 paired 且实付取命中行；双命中才落 ambiguous）；另锁：签名容差两侧
 // （绝对 512 / 相对 2%）、output 上限两侧、候选窗边界两侧（含端点）、
-// session_id 不相等不成候选、预派发失败短路（含窗内杂行不照配）、零命中
+// session_id 不相等不成候选、预派发失败短路（含窗内杂行不照配）与派发后失败
+// 照配实付、零命中
 // wall_s 判分支、provider=local 与非 same_model handoff skip、beat 自带实付
 // 直取、价书按 dock 行时刻版本化、econBook 缺席不造数、可配参数生效、
 // 输入序即输出序。
@@ -35,6 +36,16 @@ func wcFailHandoff(sid, lid string, ts float64) map[string]any {
 		"completion_tokens": 0.0, "prompt_tokens": 0.0,
 		"provider": "智谱", "outcome": "failed", "wall_s": 0.0,
 		"err": "snapshot_missing"}
+}
+
+// wcPostFailHandoff 派发后失败行（watcher 产线实况：已发送、已扣费、仅产物
+// 不合格，如 md_structure——prompt_tokens>0 且 wall_s>0，须照配实付）。
+func wcPostFailHandoff(sid, lid string, ts, prompt, wallS float64) map[string]any {
+	return map[string]any{"kind": "handoff", "ts": ts, "agent": "cc",
+		"session_id": sid, "lineage_id": lid, "lane": "same_model",
+		"completion_tokens": 0.0, "prompt_tokens": prompt,
+		"provider": "智谱", "outcome": "failed", "wall_s": wallS,
+		"err": "md_structure"}
 }
 
 func wcDock(sid string, ts, in, cr, cc, out float64) map[string]any {
@@ -368,6 +379,36 @@ func TestWarmCosts(t *testing.T) {
 			}},
 		},
 		{
+			// 派发后失败（终局评审补：failed ∧ prompt>0 ∧ wall>0，已扣费）照配
+			// 实付——无条款授权按 outcome 整族短路，漏记即净节省虚高。
+			name: "paired·派发后失败行照配实付",
+			entries: []map[string]any{
+				wcPostFailHandoff("s1", "L1", base+100, 97393, 60),
+				wcDock("s1", base+150, 97393, 0, 0, 3994), // 签名全中
+			},
+			want: []WarmCost{{
+				Lineage: "L1", TS: base + 100, Kind: "handoff", Lane: "same_model",
+				Result: WarmCostPaired, Cost: 76.7868, // (97393×6.9 + 3994×24)/万
+				Basis:           WarmBasisActual,
+				InputTokens:     97393,
+				OutputTokens:    3994,
+				Month:           "2026-10",
+			}},
+		},
+		{
+			// 派发后失败 ∧ 零候选：重放行缺失，wall_s>0 → unpaired 回落（非
+			// zero_cost——派发已发生，成本按价书推算并标注）。
+			name: "unpaired·派发后失败零候选回落",
+			entries: []map[string]any{
+				wcPostFailHandoff("s1", "L1", base+100, 80000, 45),
+			},
+			want: []WarmCost{{
+				Lineage: "L1", TS: base + 100, Kind: "handoff", Lane: "same_model",
+				Result: WarmCostUnpaired, Cost: 55.2, // 80000×6.9/万
+				Basis: WarmBasisFallback, Month: "2026-10",
+			}},
+		},
+		{
 			// 合同条款：零候选 ∧ wall_s=0 → zero_cost（非 failed 形态同款）。
 			name: "zero_cost·零候选且wall为零",
 			entries: []map[string]any{
@@ -485,15 +526,15 @@ func TestWarmCosts(t *testing.T) {
 			}},
 		},
 		{
-			// 可配参数：output 上限与签名容差收紧 → 均未命中回落（SigTolRel 收到
-			// 0.1%——零值回落默认语义下禁用相对容差须给正小值）。
+			// 可配参数：output 上限与签名容差收紧 → 均未命中回落（SigTolRel
+			// 收紧到 0.001——零值回落默认语义下禁用相对容差须给正小值）。
 			cfg: WarmCostConfig{MaxOutTokens: 4096, SigTolRel: 0.001},
 			name: "可配参数·output上限与容差收紧生效",
 			entries: []map[string]any{
 				wcHandoff("s1", "L1", base+100, 50000, 30),
 				wcDock("s1", base+110, 0, 50000, 0, 5000), // > 4096：默认可配对，收紧后未命中
 				wcHandoff("s2", "L2", base+500, 100000, 30),
-				wcDock("s2", base+520, 98000, 0, 0, 100), // 差 2000 > 512（SigTolRel=0）
+				wcDock("s2", base+520, 98000, 0, 0, 100), // 差 2000 > 512（SigTolRel=0.001）
 			},
 			want: []WarmCost{
 				{

@@ -21,9 +21,13 @@
 //     漏记实付（ambiguous 成本 F7 前为 0），净节省系统性偏乐观——恰是本票要
 //     消灭的偏差方向。真实风险场景（同会话真实请求读了热缓存、前缀≈重放前缀
 //     致双命中）在命中数口径下仍正确落 ambiguous。
-//   - 预派发行（outcome=failed）先于候选扫描短路 zero_cost：未派发即无重放行，
-//     窗内任何 dock 行皆无关流量（失败行 prompt_tokens=0 使签名容差退化成
-//     512，照配会误记无关行实付——不配）。
+//   - 失败行分形态（终局评审 2026-10-04）：预派发失败（outcome=failed ∧
+//     (wall_s≤0 ∨ prompt_tokens≤0)）先于候选扫描短路 zero_cost——未派发即无
+//     重放行，窗内任何 dock 行皆无关流量（prompt_tokens=0 还会使签名容差退化
+//     成 512，照配会误记无关行实付——不配）；派发后失败（failed 但 wall_s>0
+//     且 prompt_tokens>0，watcher 产线实况如 md_structure：已发送、已扣费、
+//     仅产物不合格）照走候选扫描配对计价——重放已实际扣费，漏记即净节省
+//     虚高（生产月实测 8 条该形态，漏记约 447 积分 ≈ 应记支出 21.5%）。
 //   - provider=local（本地 Qwen 档）与非 same_model 的 handoff 不是保温动作
 //     （isWarmAction 同款判定，与票02 回合切分同口径），零成本不入本账（skip）。
 //   - beat 行自带 cost_actual/cache_read，直取实付（当前等待窗零跳、qwatch
@@ -170,8 +174,11 @@ func warmHandoffCost(h map[string]any, cands []map[string]any,
 		Lane:    strOr(h, "lane"),
 		Month:   warmMonthKey(numOr(h, "ts")),
 	}
-	// 预派发失败短路：未派发即无重放行，窗内杂行不参与（见文件头）。
-	if strOr(h, "outcome") == "failed" {
+	// 预派发失败短路：仅未派发形态（wall_s≤0 或 prompt_tokens≤0）才免扫描——
+	// failed 还含「已发送、已扣费、仅产物不合格」的派发后失败形态（见文件头），
+	// 那类须照走候选扫描配对计价，不得漏记实付。
+	if strOr(h, "outcome") == "failed" &&
+		(numOr(h, "wall_s") <= 0 || numOr(h, "prompt_tokens") <= 0) {
 		row.Result = WarmCostZeroCost
 		return row
 	}
@@ -245,7 +252,7 @@ func warmPairedCost(row WarmCost, d map[string]any, econBook *prices.PriceBook) 
 			per := float64(econBook.Per)
 			row.Cost = mathx.Round(
 				(row.InputTokens+row.CacheCreationTokens)*pv.PIn/per+
-					row.CacheReadTokens**pv.PCache/per+
+					row.CacheReadTokens * *pv.PCache/per+
 					row.OutputTokens*pv.POut/per, 4)
 		}
 	}
