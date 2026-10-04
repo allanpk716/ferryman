@@ -97,6 +97,7 @@ func TestApplyDSHCreatesFiles(t *testing.T) {
 		"- id: llm-deepseek", "name: '@deepseek-ai/dsh-llm-deepseek-api-key'",
 		"baseURL: " + dockBase, "apiKeyEnv: " + DSHTokenEnv,
 		"thinking: enabled", "reasoningEffort: high", "maxTokens: 32768",
+		"thinking enabled＋effort high＝思考档解锁",
 		"- id: claude-opus-5", "- id: claude-sonnet-5",
 		"- id: plugin-package-inventory-deepseek", "- id: session-log-deepseek",
 		"  disabled: true",
