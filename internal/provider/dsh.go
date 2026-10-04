@@ -157,7 +157,7 @@ func dshHomePatchYAML(dockBaseURL string) string {
 		"# 作用：dsh 的模型流量经 deepseek-official 路由（llm-deepseek 适配器）走本机",
 		"# 渡口，对所有 profile 生效（叠加序里 home 层最后、最高）。接法乙 v2：每请求",
 		"# 恒带 x-deepseek-harness-session-id 会话键，渡口接住后捕获/保温/摆渡/闸门",
-		"# 全套同权。thinking disabled＋effort off＋maxTokens 钉值＝最小方言档；两个",
+		"# 全套同权。thinking enabled＋effort high＝思考档解锁＋maxTokens 钉值；两个",
 		"# dsh_* 贡献者插件已 disabled（会话明文不上线，渡口另兜底剥除）。切供应商＝",
 		"# ferryman provider switch <名>（翻渡口 [dock].active，本文件不动）；",
 		"# 还原＝ferryman provider apply --restore。手改本文件会被下次 apply 重铸。",
