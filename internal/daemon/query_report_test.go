@@ -10,12 +10,14 @@ package daemon
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"ferryman/internal/accounts"
 	"ferryman/internal/prices"
+	"ferryman/internal/report"
 )
 
 // withPrices 注入测试价格表（用毕还原）。
@@ -222,6 +224,121 @@ func TestQueryReportSavingsNotComputableWithoutPCache(t *testing.T) {
 	tot := resp["savings"].(map[string]any)["totals"].(map[string]any)
 	if tot["blocks"] != 1.0 || tot["gross"] != 0.0 {
 		t.Fatalf("不硬算：block 计数在、毛节省为 0: %v", tot)
+	}
+}
+
+// ---- 票04：warm 节（保温盈亏）挂接——结构化透传＋v1 段零感知＋useless_warm 不混入 ----
+
+func TestQueryReportWarmSection(t *testing.T) {
+	e := newQueryEnv(t)
+	pc := 1.0
+	books := zpBook(&pc)
+	withPrices(t, books)
+	e.d.Cfg.FerryProvider = "zp"
+
+	// 回合：锚 usage（t0-300）→ same_model handoff（prompt 400，窗口内 dock
+	// 四列实付 (400×1+20×4)/10=48）→ beat（qwatch，实付 0.5）→ 回归 usage
+	// （t0-100，cr 380≥400×80% → hit 真；距锚 200s<1800 → need 假 → 白保温）。
+	// block 行只进 v1 成效账（毛 100/10×(2−1)=10）。
+	mustRec(t, e, "block", e.t0-400, "C:/proj", "LW", "w-s1",
+		accounts.Fields{"prefix_tokens": 100, "idle_s": 30})
+	mustRec(t, e, "usage", e.t0-300, "C:/proj", "LW", "w-s1",
+		accounts.Fields{"model": "glm-5.3", "title": "t", "input_tokens": 100,
+			"cache_read_tokens": 500, "cache_creation_tokens": 0, "output_tokens": 50,
+			"offset": 0, "subagent": ""})
+	mustRec(t, e, "handoff", e.t0-200, "C:/proj", "LW", "w-s1",
+		accounts.Fields{"provider": "智谱", "model": "glm-5.3", "lane": "same_model",
+			"price_ver": "zp@2026-01-01", "prompt_tokens": 400,
+			"completion_tokens": 20, "outcome": "fresh", "wall_s": 10})
+	mustRec(t, e, "dock", e.t0-190, "C:/proj", "LW", "w-s1",
+		accounts.Fields{"mode": "rewrite", "model_in": "claude-opus-5",
+			"model_out": "GLM-5.3", "input_tokens": 0, "cache_read_tokens": 400,
+			"cache_creation_tokens": 0, "output_tokens": 20, "latency_s": 10,
+			"status": 200})
+	mustRec(t, e, "beat", e.t0-150, "C:/proj", "LW", "w-s1",
+		accounts.Fields{"provider": "智谱", "model": "glm-5.3", "price_ver": nil,
+			"prefix_tokens": 390, "cache_read": 380, "outcome": "observe",
+			"cost_pred": 0.0, "cost_actual": 0.5, "lane": "qwatch"})
+	mustRec(t, e, "usage", e.t0-100, "C:/proj", "LW", "w-s1",
+		accounts.Fields{"model": "glm-5.3", "title": "t", "input_tokens": 10,
+			"cache_read_tokens": 380, "cache_creation_tokens": 0, "output_tokens": 5,
+			"offset": 0, "subagent": ""})
+	// 无效保温单列行：只进 useless_warm（count 1 / cost 0.7），不混入 warm 节。
+	mustRec(t, e, "wait_close", e.t0-50, "C:/proj", "LW", "w-s1",
+		accounts.Fields{"lane": "wait", "opened_ts": e.t0 - 100, "closed_ts": e.t0 - 50,
+			"dur_s": 50, "beats_fired": 1, "cost_actual": 0.7, "main_resumed": false,
+			"useless_warm": true, "close_reason": "window_closed"})
+
+	resp := reportGET(t, e, "?scope=project&key=C:/proj")
+
+	// v1 消费者零感知：savings 段仍是 SavingsV1 原样（formula v1）。
+	if sv := resp["savings"].(map[string]any); sv["formula"] != "v1" {
+		t.Fatalf("savings.formula = %v, want v1（v1 段零感知）", sv["formula"])
+	}
+	// useless_warm 语义不动。
+	if uw := resp["useless_warm"].(map[string]any); uw["count"] != 1.0 || uw["cost_actual"] != 0.7 {
+		t.Fatalf("useless_warm = %v, want {1, 0.7}", uw)
+	}
+
+	warm := resp["warm"].(map[string]any)
+	months := warm["months"].(map[string]any)
+	if len(months) != 1 {
+		t.Fatalf("warm.months = %v, want 单月桶", months)
+	}
+	ms := time.Unix(int64(e.t0), 0).In(time.Local)
+	monthKey := time.Date(ms.Year(), ms.Month(), 1, 0, 0, 0, 0, time.Local).Format("2006-01")
+	m, ok := months[monthKey].(map[string]any)
+	if !ok {
+		t.Fatalf("warm.months[%s] 缺失: %v", monthKey, months)
+	}
+	// 白保温 1 回合（need 假 hit 真）；无兑现无亏损 → 命中率/need 占比皆 0/1。
+	if m["realized_count"] != 0.0 || m["benign_count"] != 1.0 || m["loss_count"] != 0.0 ||
+		m["regression_count"] != 1.0 {
+		t.Fatalf("warm 回合计数: %v", m)
+	}
+	if m["hit_ratio"] != 0.0 || m["need_ratio"] != 0.0 {
+		t.Fatalf("warm 比率: %v", m)
+	}
+	if m["realized_savings"] != 0.0 || m["loss_cost"] != 0.0 {
+		t.Fatalf("warm 金额面: %v", m)
+	}
+	// 支出 = handoff paired 48 + beat 0.5 = 48.5（wait_close 的 0.7 不混入）；
+	// 净额 = 0 − 48.5。
+	if m["spend_total"] != 48.5 || m["net"] != -48.5 {
+		t.Fatalf("spend_total/net = %v/%v, want 48.5/-48.5", m["spend_total"], m["net"])
+	}
+	sp := m["spend"].(map[string]any)
+	if len(sp) != 2 {
+		t.Fatalf("spend = %v, want handoff:same_model 与 beat:qwatch 两型", sp)
+	}
+	h := sp["handoff:same_model"].(map[string]any)
+	if h["count"] != 1.0 || h["amount"] != 48.0 {
+		t.Fatalf("handoff:same_model = %v", h)
+	}
+	pr := h["results"].(map[string]any)["paired"].(map[string]any)
+	if pr["count"] != 1.0 || pr["amount"] != 48.0 {
+		t.Fatalf("handoff paired = %v", pr)
+	}
+	bq := sp["beat:qwatch"].(map[string]any)
+	if bq["count"] != 1.0 || bq["amount"] != 0.5 {
+		t.Fatalf("beat:qwatch = %v", bq)
+	}
+
+	// 结构化透传金测：warm 节与同输入 report.WarmSection 输出逐键一致
+	//（JSON 往返归一后 deep-equal——计数在 HTTP 面是 float64）。
+	eb := books["zp"]
+	want := report.WarmSection(e.acc.Read(accounts.ReadOpts{Project: "C:/proj"}), &eb,
+		report.DefaultWarmEpisodeConfig(), report.DefaultWarmCostConfig())
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantJSON map[string]any
+	if err := json.Unmarshal(raw, &wantJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resp["warm"], wantJSON) {
+		t.Fatalf("warm 节非结构化透传:\ngot:  %#v\nwant: %#v", resp["warm"], wantJSON)
 	}
 }
 
