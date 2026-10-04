@@ -1381,6 +1381,12 @@ func (w *Watcher) maybeSameModel(st *ledger.SessionState) {
 	reason := w.sameModelSkipReason(st.SessionID, upstream, now)
 	w.stampSet(&w.smSeen, key, lastWrite)
 	if reason == "" {
+		// 2026-10-04 空键事故修复:派发前懒富化。pollCC Touch 登记不带 cwd,
+		// 台账 cwd/title/peak 全靠 maybeEnqueue 过五道门后的 enrich 补——而本档
+		// 先于 25 分钟档开火,派发即记的 handed_off 又把常规路径压死,enrich
+		// 从不运行 → 交接存进空项目键,闸门按真实路径查不到(分支7放行、分支6
+		// 才拦,用户原话先出去一条)。maybeEnqueue 同款懒纪律:每写入版本一次读盘。
+		w.enrich(st)
 		// 判热+白名单+已启用 → 进同模型档:派发追加重放执行体(票03)。执行
 		// 失败按失败链交还既有调度(见 dispatchSameModel);同模型档零重试
 		// (smSeen 版本章已盖)。

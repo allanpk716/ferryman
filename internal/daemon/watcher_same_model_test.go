@@ -546,6 +546,60 @@ func TestSameModelHotExecutesAndSavesHandoff(t *testing.T) {
 	}
 }
 
+// TestSameModelEnrichesCwdBeforeDispatch 2026-10-04 空键事故回归(会话 3793e74e
+// 分支7放行案):pollCC Touch 登记不带 cwd,台账 cwd 全靠常规档 enrich 补;同模型
+// 档先于 25 分钟开火、派发即记 handed_off 又压死常规路径 → 派发前不 enrich 时
+// 交接存进空项目键,闸门按真实路径 ValidHandoff 查不到、首条消息放行(要等
+// pending 置上、第二条才拦)。本测试不手工设台账 cwd(生产形态;smSession 手工
+// 设 cwd 正是本缺陷的测试盲区成因),用真 enrichImpl,以闸门同款查询收口。
+func TestSameModelEnrichesCwdBeforeDispatch(t *testing.T) {
+	now := freezeClock(t, smBaseT)
+	led := ledger.New()
+	tmp := t.TempDir()
+	stt, err := store.New(filepath.Join(tmp, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := accounts.New(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := newTestWatcherW(smGateCfg(), led, acc, nil, nil, nil)
+	w.Store = stt
+	w.smSyncExec = true
+	w.enrich = w.enrichImpl // 真富化(newTestWatcherW 替身只填 peak,不填 cwd)
+	w.ArmVerdict = func(string) (bool, bool) { return true, true }
+	w.ReqClock.Note("sm-cwd1", *now-100)
+	fake := &smFakeSender{}
+	w.sameModelSendFn = fake.SendAppendReplay
+	// 生产形态登记:Touch 不带 cwd,也不手工补(smSession 会设——本测试特意不走)。
+	path := writeSmTranscript(t, filepath.Join(tmp, "projects"), "sm-cwd1", "C:/smproj")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := led.Touch("cc", "sm-cwd1", path, statMTime(info), int(info.Size()), 0)
+	setLastWrite(led, st, *now-7)
+	w.maybeSameModel(st)
+
+	if fake.count() != 1 {
+		t.Fatalf("判热进档应派发, got %d", fake.count())
+	}
+	led.Mu().Lock()
+	cwd := st.Cwd
+	led.Mu().Unlock()
+	if cwd == "" {
+		t.Fatal("派发路径应先 enrich:台账 cwd 仍为空")
+	}
+	// 闸门同款查询:按真实项目路径应命中(修复前存空键,此查询恒 nil)。
+	if h := stt.ValidHandoff("cc", "C:/smproj", *now-7); h == nil {
+		t.Fatal("交接存了空项目键——闸门将查不到(分支7放行→分支6才拦的事故形态)")
+	}
+	if row := smHandoffRow(t, acc, "sm-cwd1"); row["project"] != "C:/smproj" {
+		t.Fatalf("handoff 行 project = %v, want C:/smproj", row["project"])
+	}
+}
+
 func TestSameModelToolUseZeroRetryFallsToExistingChainThenSkeleton(t *testing.T) {
 	now := freezeClock(t, smBaseT)
 	led := ledger.New()
