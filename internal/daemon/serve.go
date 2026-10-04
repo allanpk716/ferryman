@@ -144,7 +144,8 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	worker.Ledger = led                               // ADR-0013：摆渡产出回写处置边界（HandledContentTS）
 	wireFerryChain(cfg.FerryChain, providers, worker) // 票03：显式链才开（见函数注释）
 	startedAt := clock.Now()
-	qwatchStats := beat.NewQWatchStats() // 票04：daemon/watcher 共享计数器
+	qwatchStats := beat.NewQWatchStats()    // 票04：daemon/watcher 共享计数器
+	dshQWatchStats := beat.NewQWatchStats() // dsh 观测面票：dsh 泳道计数器（与 CC 分账）
 	enqueue := func(s *ledger.SessionState) bool {
 		// 身份字段（Agent/SessionID/TranscriptPath）建后不变直读（watcher 记账
 		// 同纪律）；Cwd 可变 → 台账锁内快照。
@@ -159,7 +160,8 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		})
 	}
 	d := NewDaemon(cfg, led, st, enqueue, acc, startedAt, qwatchStats)
-	d.Version = version // 票02：/stats version 字段（装配显式传参）
+	d.Version = version         // 票02：/stats version 字段（装配显式传参）
+	d.DshQWatchStats = dshQWatchStats // dsh 观测面票：构造后装配赋值（同 Version 先例）
 	// /shutdown（票04，规格 §C 第5条 停旧）：子 ctx 派生——管理端点的 cancel
 	// 与 os.Interrupt 取消同一 Done 源，触发同一优雅停序：面板（srv）与守护
 	// （渡口/watcher/worker/pid）一起收。
@@ -281,6 +283,7 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// 演练＋告警一次"降级路径原样保留。
 	watcher := NewWatcher(cfg, led, st, enqueue, startedAt, acc, d,
 		newBeatSender(cfg, d.DockSnap), qwatchStats)
+	watcher.DshQWatchStats = dshQWatchStats // dsh 观测面票：守望计数与 /stats 同一实例
 	// 票03（D6）：判热钟换持久形——快照落 dataDir(reqclock.json)，构造时回种
 	// （缺/坏=空钟 fail-safe），重启后判热门按真实钟值判，重启观察窗不再把
 	// 缓存仍活的会话整批误判冷。装配在此处替换而非下沉 NewWatcher：测试直构

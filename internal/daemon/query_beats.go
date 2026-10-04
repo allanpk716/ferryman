@@ -3,17 +3,19 @@ package daemon
 // query_beats.go — 票03：GET /beats 实现（注册于 queryapi.go 的
 // queryEndpoints 分派表）。
 //
-// 在飞窗两源：等待窗（windows.go 窗口表，waitWindowOpenLocked 零副作用只读
+// 在飞窗三源：等待窗（windows.go 窗口表，waitWindowOpenLocked 零副作用只读
 // 探测——懒过期闭账留给正规路径，票01 同款）＋问询窗（台账 QWatchOpenedTS，
-// 锁内快照）。遥测逐窗聚合账本 beat 科目流水（验收口径：遥测计数与 beat 行
-// 一致；窗口内存态 waitLane/QWatchStats 是守望私有计数器，Daemon 无引用，
-// 账本行是唯一跨面只读事实源）。
+// 锁内快照）＋dsh 等答复窗（台账 DshQWatchOpenedTS 镜像——窗本体在守望
+// dshWindows 表，本面只读镜像字段；dsh 观测面票）。遥测逐窗聚合账本 beat
+// 科目流水（验收口径：遥测计数与 beat 行一致；窗口内存态 waitLane/QWatchStats
+// 是守望私有计数器，Daemon 无引用，账本行是唯一跨面只读事实源）。
 //
 // 预估 close_reason（收尾四态见 CONTEXT「等待窗口」）：活跃等待窗→
 // subagents_done（常规收口：计数归零同步闭窗；主会话提前来讯走 prompt——
 // 预估取常规路径）；停车等待窗→main_resumed（预期 async 真身完成主会话恢复；
 // 超 1h 未恢复走 expired 懒过期——已超者不在在飞清单）；问询窗→write（随任
-// 何新写入立即关闭）。
+// 何新写入立即关闭）；dsh 等答复窗→write（用户侧写入关窗为常规路径；block_s
+// 到期为兜底——预估取常规路径）。
 //
 // TTL 观测值（CONTEXT「遥测」：每次心跳实收 cacheRead 构成的线上 TTL 观测）
 // ＝本窗最强 hit 证据：hit 跳证明缓存存活至少（该跳时刻−开窗）秒，取最大深
@@ -58,15 +60,20 @@ func handleBeats(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	}
 	d.windowsMu.Unlock()
 
-	// 快照二：问询窗（台账锁内抄齐，锁外读盘——锁序纪律）。
+	// 快照二：问询窗（CC：台账 QWatchOpenedTS；dsh：DshQWatchOpenedTS 镜像）
+	//（台账锁内抄齐，锁外读盘——锁序纪律）。
 	d.Ledger.Mu().Lock()
 	for _, st := range d.Ledger.AllSessionsLocked() {
-		if st.QWatchOpenedTS == nil {
-			continue
+		if st.QWatchOpenedTS != nil {
+			snaps = append(snaps, winSnap{agent: st.Agent, sid: st.SessionID,
+				kind: "qwatch", openedTS: *st.QWatchOpenedTS, parked: false,
+				estClose: "write"})
 		}
-		snaps = append(snaps, winSnap{agent: st.Agent, sid: st.SessionID,
-			kind: "qwatch", openedTS: *st.QWatchOpenedTS, parked: false,
-			estClose: "write"})
+		if st.DshQWatchOpenedTS != nil { // dsh 观测面票：等答复窗镜像
+			snaps = append(snaps, winSnap{agent: st.Agent, sid: st.SessionID,
+				kind: "qwatch", openedTS: *st.DshQWatchOpenedTS, parked: false,
+				estClose: "write"})
+		}
 	}
 	d.Ledger.Mu().Unlock()
 

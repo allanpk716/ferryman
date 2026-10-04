@@ -157,6 +157,10 @@ type Daemon struct {
 	Stats        *GateStats
 	Pending      *PendingTable
 	QWatchStats  *beat.QWatchStats   // nil = 未接线
+	DshQWatchStats *beat.QWatchStats // nil = 未接线（dsh 泳道计数器——与 CC 的
+	//                                 QWatchStats 分账：CC /stats 面零变化的原
+	//                                 约束不动，dsh 指标在 qw["dsh"] 子块回显；
+	//                                 构造后装配赋值，同 Version 先例）
 	DockSnap     *dock.SnapshotStore // nil = 渡口未启用（票01 F11：无 [dock] 节零行为；serve 接线注入，DockSnapshot() 只读转交）
 
 	// cfgMu 骑手（票13 评审 Minor C）：question_watch.mode 运行时活值的并发

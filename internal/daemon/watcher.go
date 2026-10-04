@@ -86,8 +86,11 @@ type Watcher struct {
 	Daemon    *Daemon            // nil = 不接线（旧调用/测试零改动）；T48 票03：
 	//                            停车窗判定 + usage 行喂入闭窗；T51：两窗互斥
 	//                            探测（parking_open）与 mode 活值护栏
-	BeatSender  beat.Sender // nil = 未接真实 sender——enforce 时降级 observe 演练并告警一次
-	QWatchStats *beat.QWatchStats
+	BeatSender    beat.Sender     // nil = 未接真实 sender——enforce 时降级 observe 演练并告警一次
+	QWatchStats   *beat.QWatchStats
+	DshQWatchStats *beat.QWatchStats // nil = 未接线（dsh 泳道计数器，serve 装配
+	//                                     后赋值——同 ReqClock 先例；daemon 侧
+	//                                     DshQWatchStats 同一实例，/stats 共读）
 
 	ccDir  string
 	cxDirs []string
