@@ -29,7 +29,7 @@ func sv2Beat(lid string, ts, prefix, cost float64, lane string) map[string]any {
 //	LA 回合兑现（多跳 handoff+beat；回归 1900s>1800 → need 真、cr 95000≥80000
 //	   → hit 真；节省 10 万前缀×(6.9−1.7)/万=52.0）
 //	LB 白保温（回归 1000s<1800 → need 假、cr 45000≥40000 → hit 真；双 dock
-//	   命中签名 → ambiguous 支出 0/待 F7）
+//	   命中签名 → ambiguous 价书推算 34.5/票05）
 //	LC 回归亏损（cr 60000<64000 → ¬hit；无 dock → unpaired 回落 55.2）
 //	LD 过期亏损（等待窗心跳 beat:wait 0.25；数据末尾放任过期，终点月=10 月）
 //	LE 双回合跨月：9-30 锚 + 23:10 beat（0.125）→ 2400s 处过期（9 月亏损）；
@@ -150,8 +150,8 @@ func TestSavingsV2WarmSectionMonths(t *testing.T) {
 	approxAbs(t, "2026-10.loss_cost", anyNum(o["loss_cost"]), 55.45, 1e-9)
 	approxAbs(t, "2026-10.hit_ratio", anyNum(o["hit_ratio"]), 0.5, 1e-9)   // 2/4
 	approxAbs(t, "2026-10.need_ratio", anyNum(o["need_ratio"]), 0.5, 1e-9) // 2/4（LA 与 LE-E2）
-	approxAbs(t, "2026-10.spend_total", anyNum(o["spend_total"]), 93.1711, 1e-9)
-	approxAbs(t, "2026-10.net", anyNum(o["net"]), -9.9711, 1e-9) // 83.2−93.1711
+	approxAbs(t, "2026-10.spend_total", anyNum(o["spend_total"]), 127.6711, 1e-9)
+	approxAbs(t, "2026-10.net", anyNum(o["net"]), -44.4711, 1e-9) // 83.2−127.6711
 
 	// 支出明细按动作类型拆分：handoff:same_model / beat:qwatch / beat:wait。
 	osp := o["spend"].(map[string]any)
@@ -160,12 +160,12 @@ func TestSavingsV2WarmSectionMonths(t *testing.T) {
 	}
 	h := osp["handoff:same_model"].(map[string]any)
 	sv2Keys(t, "handoff 行", h, "count", "amount", "results")
-	sv2Count(t, "handoff:same_model", h, 4, 92.4211) // 26.7811+0+55.2+10.44
+	sv2Count(t, "handoff:same_model", h, 4, 126.9211) // 26.7811+34.5+55.2+10.44
 	hres := h["results"].(map[string]any)
 	sv2Keys(t, "handoff results", hres, "paired", "ambiguous", "zero_cost",
 		"unpaired", "beat_direct")
 	sv2Count(t, "handoff.paired", hres["paired"].(map[string]any), 2, 37.2211)
-	sv2Count(t, "handoff.ambiguous", hres["ambiguous"].(map[string]any), 1, 0)
+	sv2Count(t, "handoff.ambiguous", hres["ambiguous"].(map[string]any), 1, 34.5) // 价书推算（票05）
 	sv2Count(t, "handoff.zero_cost", hres["zero_cost"].(map[string]any), 0, 0)
 	sv2Count(t, "handoff.unpaired", hres["unpaired"].(map[string]any), 1, 55.2)
 	sv2Count(t, "handoff.beat_direct", hres["beat_direct"].(map[string]any), 0, 0)

@@ -287,8 +287,8 @@ func TestWarmCosts(t *testing.T) {
 			}},
 		},
 		{
-			// 多候选（双命中）→ ambiguous：只计数披露，成本记 0 带 pending——
-			// 成本处置是活动约束 F7，票05 落，本票不发明。
+			// 多候选（双命中）→ ambiguous：与 unpaired 同处理——价书推算
+			// （50000×6.9/万=34.5）并标注「价书回落」，不冒充实收（票05 用户确认）。
 			name: "ambiguous·双候选皆命中",
 			entries: []map[string]any{
 				wcHandoff("s1", "L1", base+100, 50000, 50),
@@ -297,7 +297,8 @@ func TestWarmCosts(t *testing.T) {
 			},
 			want: []WarmCost{{
 				Lineage: "L1", TS: base + 100, Kind: "handoff", Lane: "same_model",
-				Result: WarmCostAmbiguous, Cost: 0, Pending: true, Month: "2026-10",
+				Result: WarmCostAmbiguous, Cost: 34.5,
+				Basis: WarmBasisFallback, Month: "2026-10",
 			}},
 		},
 		{

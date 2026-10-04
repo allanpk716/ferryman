@@ -12,15 +12,14 @@
 //       恰一命中 → paired：成本 = 命中 dock 行四列 × econBook 实价（input 全价
 //       p_in、cache_read p_cache、output p_out），按 dock 行时刻取价书版本，
 //       实付四列随行透出；
-//       ≥2 命中 → ambiguous：只计数披露，成本记 0 并带 pending=true——歧义
-//       分支的成本处置是活动约束 F7（票05 落：与 unpaired 同处理价书推算），
-//       本票不发明。
+//       ≥2 命中 → ambiguous：与 unpaired 同处理——价书推算（prompt_tokens×
+//       p_in/per）并标注「价书回落」+Result=ambiguous 单列歧义计数，不冒充
+//       实收（票05/F7 用户已确认 2026-10-04）。
 //   - 并发窗按命中数判（协调者裁定 2026-10-04，spec 字面与 F1 解除条件同向）：
 //     窗内未命中签名的真实流量 dock 行（前缀已增长/输出超限）不与重放行混淆，
 //     唯一命中行即可安全配对；若按窗内候选数判，会把这类窗错打 ambiguous 而
-//     漏记实付（ambiguous 成本 F7 前为 0），净节省系统性偏乐观——恰是本票要
-//     消灭的偏差方向。真实风险场景（同会话真实请求读了热缓存、前缀≈重放前缀
-//     致双命中）在命中数口径下仍正确落 ambiguous。
+//     把实付换成推算（劣化精度）。真实风险场景（同会话真实请求读了热缓存、
+//     前缀≈重放前缀致双命中）在命中数口径下仍正确落 ambiguous。
 //   - 失败行分形态（终局评审 2026-10-04）：预派发失败（outcome=failed ∧
 //     (wall_s≤0 ∨ prompt_tokens≤0)）先于候选扫描短路 zero_cost——未派发即无
 //     重放行，窗内任何 dock 行皆无关流量（prompt_tokens=0 还会使签名容差退化
@@ -54,7 +53,7 @@ import (
 // 配对结果取值（报表拆分键，英文稳定）与口径标注（中文报表词汇）。
 const (
 	WarmCostPaired     = "paired"      // 恰一候选命中：dock 四列实付入账
-	WarmCostAmbiguous  = "ambiguous"   // 多候选/并发窗污染：计数披露，成本处置 F7（票05）
+	WarmCostAmbiguous  = "ambiguous"   // 多候选/并发窗污染：与 unpaired 同处理（价书推算+标注歧义，票05 用户已确认）
 	WarmCostZeroCost   = "zero_cost"   // 预派发失败/窗内无重放行：零成本
 	WarmCostUnpaired   = "unpaired"    // 有派发无重放行：回落价书推算并标注
 	WarmCostBeatDirect = "beat_direct" // beat 自带实付直取（非配对合同产物）
@@ -127,7 +126,7 @@ type WarmCost struct {
 	Result  string  // 配对结果：WarmCostPaired / Ambiguous / ZeroCost / Unpaired / BeatDirect
 	Cost    float64 // 成本额（econBook 单位；mathx.Round 四位；不可算/悬置记 0）
 	Basis   string  // 口径标注：「实收」/「价书回落」；无成本口径留空
-	Pending bool    // true = 成本处置悬置（ambiguous 分支；活动约束 F7，票05 落）
+	Pending bool    // 保留字段：历史上用于 F7 悬置标记；歧义分支已定价（票05，2026-10-04 用户确认），当前无置位点
 	// paired 实付四列（dock 行原值透出；beat 直取行仅 cache_read 有值）。
 	InputTokens         float64
 	CacheReadTokens     float64
@@ -216,9 +215,15 @@ func warmHandoffCost(h map[string]any, cands []map[string]any,
 			return warmFallbackCost(row, prompt, econBook, ts)
 		case hits == 1: // 恰一命中：实付配对（未命中行不混淆，见文件头裁定）
 			return warmPairedCost(row, hit, econBook)
-		default: // ≥2 命中：无法唯一指认重放行 → ambiguous（F7：票05 落成本处置）
+		default: // ≥2 命中：无法唯一指认重放行 → ambiguous。票05/F7 用户已确认
+			// （2026-10-04）：与 unpaired 同处理——价书推算并标注歧义，不冒充实收。
 			row.Result = WarmCostAmbiguous
-			row.Pending = true
+			row.Basis = WarmBasisFallback
+			if econBook != nil {
+				if pv := econBook.At(ts); pv != nil {
+					row.Cost = mathx.Round(prompt/float64(econBook.Per)*pv.PIn, 4)
+				}
+			}
 			return row
 		}
 	}
