@@ -291,6 +291,7 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// 生产家目录，不可让测试写生产数据目录。
 	watcher.ReqClock = beat.NewPersistentLastRequestClock(
 		filepath.Join(dataDir, "reqclock.json"))
+	d.HeatClock = watcher.ReqClock // 同一实例：「热缓存不拦」与判热门同钟同口径
 	// （srv.Serve 已提前至 pid 落盘后——见上；此处不再重复起服务。）
 	go watcher.Run(ctx)
 	go worker.Run(ctx)

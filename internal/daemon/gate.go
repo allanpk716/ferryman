@@ -14,12 +14,14 @@ package daemon
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"ferryman/internal/accounts"
 	"ferryman/internal/cctrans"
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
+	"ferryman/internal/ferry"
 	"ferryman/internal/ledger"
 	"ferryman/internal/mathx"
 	"ferryman/internal/notify"
@@ -176,6 +178,22 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		pok = false
 	}
 	inWindow := idle >= th.BlockS || pok
+
+	// 热缓存不拦（2026-10-04 用户拍板）：拦窗到了但判热时钟仍在必活带
+	// （同模型重放/心跳/用户自己的请求都喂钟，F3 口径）——缓存未死，这条
+	// 消息按折扣价，拦它=误拦便宜请求（35~50min 保温覆盖带的错位形态：
+	// 修好空键存键后此带会被「正确地拦」，故补本道）。放行+提示死线；
+	// pending 同强续款清掉（保温抬高了续用的经济性，拦截前提暂时不成立；
+	// 缓存再死、再长闲置则从分支7重新起圈，保护不丢）。冷/无钟/无观测
+	// → 判冷，原状态机零变动（绝不因缺数据放行）。dsh 另案（其上游/保温
+	// 不在本钟与 TTLS 口径），行为保持原样。
+	if agent != "dsh" && inWindow {
+		if hot, remain := d.cacheHot(snap.sid); hot {
+			d.Pending.Clear(key)
+			d.gateWarn(agent, snap.sid, "hot-allow", idle)
+			return allowAllow(d.hotCtx(idle, remain))
+		}
+	}
 
 	// observe：只警告不拦（验证期默认）
 	if mode == "observe" {
@@ -338,6 +356,34 @@ func (d *Daemon) machineWaiting(agent, sessionID, path string) bool {
 		return false
 	}
 	return cctrans.HasDanglingToolUse(path)
+}
+
+// cacheHot 判热（「热缓存不拦」）：判热时钟=距该会话最后一次真实上游请求
+// （喂钟口径 F3：心跳/问询/等待泳道重放、追加重放、主流量 usage 皆计）。
+// 在 ferry.PredictHot 必活带（clock_s ≤ safety·TTL，公式单源）⇒ 缓存还热，
+// 返回（true, 距缓存死线剩余秒）。无钟/无 TTL/无观测 → (false,0) 保守判冷
+// ——绝不伪造热（同模型泳道 sameModelHot 同纪律）。
+func (d *Daemon) cacheHot(sid string) (bool, float64) {
+	if d.HeatClock == nil || d.Cfg.Heartbeat.TTLS <= 0 {
+		return false, 0
+	}
+	last, ok := d.HeatClock.Last(sid)
+	if !ok {
+		return false, 0
+	}
+	clockS := clock.Now() - last
+	if !ferry.PredictHot(clockS, ferry.TTLObs{TTLS: d.Cfg.Heartbeat.TTLS}) {
+		return false, 0
+	}
+	return true, math.Max(0, d.Cfg.Heartbeat.TTLS-clockS)
+}
+
+// hotCtx 热缓存放行提示（拦窗内但判热必活带）：本条按折扣价、死线何时到。
+// RuneTrunc 同 warnCtx（提示不过长，钩子注入面有上限）。
+func (d *Daemon) hotCtx(idle, remainS float64) string {
+	return mathx.RuneTrunc(fmt.Sprintf("[Ferryman] 本会话已闲置 %.0f 分钟，但缓存仍热"+
+		"（近期保温/请求焐热），本条按折扣价，放行不拦。缓存约 %.0f 分钟后过期；"+
+		"之后再长闲置会被正常拦（交接自动备好）。", idle/60, remainS/60), WarnContextCap)
 }
 
 // warnCtx _warn_ctx（server.py:279-289 逐字）。

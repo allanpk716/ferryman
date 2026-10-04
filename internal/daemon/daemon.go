@@ -163,6 +163,12 @@ type Daemon struct {
 	//                                 构造后装配赋值，同 Version 先例）
 	DockSnap     *dock.SnapshotStore // nil = 渡口未启用（票01 F11：无 [dock] 节零行为；serve 接线注入，DockSnapshot() 只读转交）
 
+	// HeatClock 判热时钟（「热缓存不拦」2026-10-04 用户拍板）：watcher.ReqClock
+	// 同一实例，serve 装配赋值（同 DockSnap 先例）；闸门拦窗内先问钟——缓存
+	// 在 PredictHot 必活带则放行不拦。nil = 未接线（旧测试直构形态）→ 闸门
+	// 判冷走原拦截，零行为差异。
+	HeatClock *beat.LastRequestClock
+
 	// cfgMu 骑手（票13 评审 Minor C）：question_watch.mode 运行时活值的并发
 	// 护栏——QWatchStop 写（一键停）与 Health/守望读之间的读写串行化。独立小
 	// 锁，临界区只有字段读写，不嵌套其他锁（无锁序约束）。

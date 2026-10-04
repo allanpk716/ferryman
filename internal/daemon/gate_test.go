@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"ferryman/internal/accounts"
+	"ferryman/internal/beat"
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
 	"ferryman/internal/ledger"
@@ -409,6 +410,81 @@ func TestBranch5BlockWithValidHandoff(t *testing.T) {
 	}
 	if got := e.enqueuedList(); len(got) != 0 {
 		t.Fatalf("分支5 不再入队, enqueued = %v", got)
+	}
+}
+
+// ---- 「热缓存不拦」（2026-10-04 用户拍板：拦窗内先问判热钟） ----
+
+// TestGateHotCacheAllowsInBlockWindow 拦窗内但判热必活带（τ=0.8·TTL）→
+// 放行+死线提示、不置 pending（连发不进分支6跑步机）；缓存死线过后 →
+// 原状态机完整回归（分支7警告置 pending → 分支6真拦），保护不丢。
+func TestGateHotCacheAllowsInBlockWindow(t *testing.T) {
+	e := newGateEnv(t)
+	e.d.Cfg.Heartbeat.TTLS = 1800 // 必活带 = 0.8·1800 = 1440s
+	e.d.HeatClock = beat.NewLastRequestClock()
+	proj := filepath.Join(e.tmp, "proj")
+	e.reg("hot1", "C:/hot1.jsonl", proj, 2400, 99999) // 闲置 40min ≥ BlockS=30s 拦窗内
+	e.d.HeatClock.Note("hot1", e.t0-600)              // 10min 前真发（同模型重放/心跳）→ 热
+
+	r := e.d.Gate(gateBody("hot1", "C:/hot1.jsonl", proj))
+	if r["decision"] != "allow" || !strings.Contains(r["additional_context"].(string), "仍热") {
+		t.Fatalf("热缓存放行+提示: %v", r)
+	}
+	if _, pok := e.d.Pending.Get([2]string{"cc", "hot1"}); pok {
+		t.Fatal("热放行不得置 pending")
+	}
+	r = e.d.Gate(gateBody("hot1", "C:/hot1.jsonl", proj))
+	if r["decision"] != "allow" {
+		t.Fatalf("热窗内连发应放行（不进跑步机）: %v", r)
+	}
+
+	e.advance(3000) // clock_s = 3600 > 1440 判冷；idle 5400 仍拦窗
+	r = e.d.Gate(gateBody("hot1", "C:/hot1.jsonl", proj))
+	if r["decision"] != "allow" || !strings.Contains(r["additional_context"].(string), "交接生成中") {
+		t.Fatalf("冷后首条走分支7（警告+置 pending）: %v", r)
+	}
+	if _, pok := e.d.Pending.Get([2]string{"cc", "hot1"}); !pok {
+		t.Fatal("分支7应置 pending")
+	}
+	r = e.d.Gate(gateBody("hot1", "C:/hot1.jsonl", proj))
+	if r["decision"] != "block" {
+		t.Fatalf("冷后第二条应真拦（保护回归）: %v", r)
+	}
+}
+
+// TestGateHotCacheBeatsBranch5Handoff 分支5 前置判热：交接已在库（拦得住）
+// 但缓存仍热 → 放行优先，不存待续原话（本道正是 35~50min 保温覆盖带——
+// 2026-10-04 空键事故修复后此带会被「正确地拦」，拍板改为不拦便宜请求）。
+func TestGateHotCacheBeatsBranch5Handoff(t *testing.T) {
+	e := newGateEnv(t)
+	e.d.Cfg.Heartbeat.TTLS = 1800
+	e.d.HeatClock = beat.NewLastRequestClock()
+	proj := filepath.Join(e.tmp, "proj")
+	e.reg("hot5", "C:/p5.jsonl", proj, testBlockS+5, 99999)
+	e.store.SaveHandoff("hot5", "cc", proj, "t", isoUTC(e.t0), "fresh", "md")
+	e.d.HeatClock.Note("hot5", e.t0-300) // 5min 前真发 → 热
+	r := e.d.Gate(gateBody4("hot5", "C:/p5.jsonl", proj, "原话照发"))
+	if r["decision"] != "allow" || !strings.Contains(r["additional_context"].(string), "仍热") {
+		t.Fatalf("交接在库但缓存热 → 放行优先: %v", r)
+	}
+	if got := e.store.PopPendingPrompt("hot5", ""); got != "" {
+		t.Fatalf("放行不得存待续原话: %q", got)
+	}
+}
+
+// TestGateHotCacheConservativeWithoutObservation 保守沿：有钟但本会话无观测
+// （重启丢钟/从未真发）→ 绝不伪造热，分支5 照拦。未接线（HeatClock nil）
+// 形态由全部既有闸门测试钉死（夹具不接钟即旧行为）。
+func TestGateHotCacheConservativeWithoutObservation(t *testing.T) {
+	e := newGateEnv(t)
+	e.d.Cfg.Heartbeat.TTLS = 1800
+	e.d.HeatClock = beat.NewLastRequestClock() // 有钟、本 sid 无观测
+	proj := filepath.Join(e.tmp, "proj")
+	e.reg("nc1", "C:/nc.jsonl", proj, testBlockS+5, 99999)
+	e.store.SaveHandoff("nc1", "cc", proj, "t", isoUTC(e.t0), "fresh", "md")
+	r := e.d.Gate(gateBody("nc1", "C:/nc.jsonl", proj))
+	if r["decision"] != "block" {
+		t.Fatalf("无观测应照拦（不伪造热）: %v", r)
 	}
 }
 
