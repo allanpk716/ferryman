@@ -263,6 +263,10 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 				d.Ledger.Mu().Unlock()
 			}
 		}
+		// lineage_id 恒取 payload（缺省空串）——票05 去重的承重标记：事件行
+		// lineage 恒空＝接管表回种（seedFromAccounts）与守望断点表的可辨识
+		// 依据，不可填值；/session 的 dsh usage_total 因此按 session_id 聚合
+		//（query_sessions.go，与 cost_report 的 session 口径一致）。
 		if _, err := d.Accounts.Record("usage", ts, accounts.Fields{
 			"agent":                 "dsh",
 			"session_id":            acctSid,

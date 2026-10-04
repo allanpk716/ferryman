@@ -53,6 +53,20 @@ func (d *Daemon) Health() map[string]any {
 	qw["mode"] = d.GetQWatchMode()
 	// 票03（dsh 等答复窗）：dsh 分档活值回显——与 CC mode 同一护栏读法。
 	qw["dsh_mode"] = d.GetDshQWatchMode()
+	// dsh 观测面票：dsh 泳道计数器子块（与 CC 分账——上方 qw 主体仍是 CC 面，
+	// 零变化；hits 对 dsh 恒 0 如实记——dsh 无提问潮，扳机是"最后说话人"
+	// 检测态，同 qwatch_open unit_count 的口径）。nil=未接线（health 报全零
+	// 占位，与 CC 侧同形）。
+	var dshQw map[string]any
+	if d.DshQWatchStats != nil {
+		dshQw = d.DshQWatchStats.Snapshot()
+	} else {
+		dshQw = map[string]any{"hits": 0, "windows_opened": 0, "beats_fired": 0,
+			"beats_by_outcome": map[string]int{"hit": 0, "miss": 0,
+				"error": 0, "observe": 0},
+			"cost_actual": 0.0}
+	}
+	qw["dsh"] = dshQw
 	var lastCallAgo, lastWriteAgo any // Python … if last_call else None
 	if lastCall != 0 {
 		lastCallAgo = mathx.Round(now-lastCall, 1)

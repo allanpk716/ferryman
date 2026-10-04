@@ -514,8 +514,16 @@ func (w *Watcher) maybeDshQwatch(st *ledger.SessionState, rec *dshSessionRec) {
 		plan: w.beatPlan(now), rec: rec}
 	w.Ledger.Mu().Lock()
 	win.baseMTime, win.baseSize = st.LastWrite, st.Size
+	// 观测面镜像（DshQWatch* 字段族头注）：开窗清零重排——/beats、/session
+	// 只读面自此能看见本窗。
+	st.DshQWatchOpenedTS = &now
+	st.DshQWatchBeatsFired = 0
+	st.DshQWatchPlanned = len(win.plan)
 	w.Ledger.Mu().Unlock()
 	w.dshWindows[key] = win
+	if w.DshQWatchStats != nil { // dsh 泳道计数器（/stats qw["dsh"]）
+		w.DshQWatchStats.RecordWindowOpened()
+	}
 	w.dshSetPin(key, st.SessionID, true) // 窗开即 Pin（快照保活；关窗路径 Unpin）
 	// unit_count＝qwatch_open 白名单必填键的 dsh 形态：dsh 无提问潮计数
 	//（扳机是"最后说话人"检测态而非提问潮），恒 0 如实记（账本包票外不可
@@ -538,6 +546,8 @@ func (w *Watcher) closeDshWindow(st *ledger.SessionState, key winKey, reason str
 	delete(w.dshWindows, key)
 	w.dshSetPin(key, st.SessionID, false)
 	w.Ledger.Mu().Lock()
+	st.DshQWatchOpenedTS = nil // 观测面镜像：窗关即隐（BeatsFired 留终值、Planned 清零）
+	st.DshQWatchPlanned = 0
 	lastWrite := st.LastWrite
 	w.Ledger.Mu().Unlock()
 	w.stampSet(&w.qwatchSeen, key, lastWrite)
@@ -619,6 +629,12 @@ func (w *Watcher) fireOneDshBeat(st *ledger.SessionState, win *dshWindow, beatTS
 		}
 	}
 	win.beatsFired++
+	w.Ledger.Mu().Lock() // 观测面镜像：逐跳递增/递减（锁内只内存操作）
+	st.DshQWatchBeatsFired = win.beatsFired
+	if st.DshQWatchPlanned > 0 {
+		st.DshQWatchPlanned--
+	}
+	w.Ledger.Mu().Unlock()
 	w.beatInFlight.Store(true)
 	defer w.beatInFlight.Store(false) // fireOneBeat 同款（跨临界区复位，atomic 防 -race）
 	result := w.sendDshBeat(st, win, beatTS) // 网络绝不持台账锁
@@ -665,8 +681,9 @@ func (w *Watcher) sendDshBeat(st *ledger.SessionState, win *dshWindow, beatTS fl
 // settleDshBeat 结账（settleBeat 的 dsh 对位）：逐跳入账（lane=qwatch、
 // agent=dsh 自动；observe 演练零费）→ **dsh 独立断路器**（w.dshBreaker——
 // CC 的 breaker 与 mode 零影响）→ 动作：demote 只降 dsh_mode（护栏通道），
-// pause 停本窗剩余跳（窗口不关）。不记 QWatchStats（CC /stats 面零变化；
-// dsh 指标看账本行——agent=dsh 天然分账）。
+// pause 停本窗剩余跳（窗口不关）。dsh 泳道计数器（DshQWatchStats——与 CC 的
+// QWatchStats 分账，CC /stats 面零变化的原约束不动；dsh 指标在 qw["dsh"]
+// 子块回显，账本行仍是跨面事实源）。
 func (w *Watcher) settleDshBeat(st *ledger.SessionState, win *dshWindow, result beat.BeatResult) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -676,6 +693,9 @@ func (w *Watcher) settleDshBeat(st *ledger.SessionState, win *dshWindow, result 
 	w.noteUpstreamRequest(st.SessionID, result) // 票02 F3：真发重放计入判热时钟
 	outcome := beat.Classify(result)
 	w.bookBeat(st, outcome, result, "qwatch")
+	if w.DshQWatchStats != nil {
+		w.DshQWatchStats.RecordBeat(outcome, result.CostActual)
+	}
 	action := w.dshBreaker.Record(outcome)
 	if action == "demote" && w.qwatchModeFor("dsh") == "enforce" {
 		w.setDshQWatchMode("observe") // 安全降级只降 dsh_mode（CC mode 不动）；人工复核后拨回
@@ -684,6 +704,9 @@ func (w *Watcher) settleDshBeat(st *ledger.SessionState, win *dshWindow, result 
 				beat.MissLimit))
 	} else if action == "pause" {
 		win.plan = nil // 暂停本窗剩余跳（窗口本身不关）
+		w.Ledger.Mu().Lock()
+		st.DshQWatchPlanned = 0 // 观测面镜像随计划作废清零
+		w.Ledger.Mu().Unlock()
 		w.qwatchAlert(st, "dsh 问询守望错误熔断",
 			fmt.Sprintf("连续 %d 跳 ERROR，已暂停当前窗口剩余 dsh 心跳", beat.ErrorLimit))
 	}

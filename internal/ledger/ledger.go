@@ -77,6 +77,16 @@ type SessionState struct {
 	//（dsh_receive.go 随父入账分流），其态在 Ledger.dshChildRuns（键=子键）。
 	DshRunningTS  *float64
 	DshDisposedTS *float64
+	// dsh 等答复窗镜像（dsh 观测面票）：与 CC 的 QWatchOpenedTS 分立——Touch
+	// 的"任何新写入清窗"是 CC 语义（用户写入关窗），dsh 机器侧写入不清窗
+	//（关窗只认用户侧翻转或 block_s 到期，watcher_dsh.go closeDshWindow）；
+	// 本字段族只作只读面（/beats、/session）的抄表源：守望单线程写、HTTP
+	// 线程台账锁内读。BeatsFired 为当前（或刚关）窗的计数——开窗清零、逐跳
+	// 递增、关窗保留终值；Planned 为剩余计划跳数（开窗排满、逐跳递减、
+	// 关窗/熔断暂停清零）。
+	DshQWatchOpenedTS   *float64
+	DshQWatchBeatsFired int
+	DshQWatchPlanned    int
 }
 
 // subEnt T32 子代理计数值：(运行数, 最后事件时刻)。仅内存——daemon 重启丢

@@ -125,14 +125,23 @@ func handleSessionDetail(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	lastWrite, handedOff := found.LastWrite, found.HandedOffAt
 	size, peak, observed := found.Size, found.PeakCtx, found.ObservedActive
 	contentTS := found.ContentTS // 内容时钟（ADR-0013）——有效交接判定基准
-	// 问询窗（等答复窗口）挂在台账态上——快照一并抄出。
+	// 问询窗（等答复窗口）挂在台账态上——快照一并抄出。dsh 会话读
+	// DshQWatch* 镜像字段族（dsh 观测面票；窗本体在守望 dshWindows 表，
+	// 关窗语义不同——机器侧写入不清窗，故不与 CC 的 QWatch 字段共用）。
 	var qwOpen bool
 	var qwOpenedTS float64
-	if found.QWatchOpenedTS != nil {
+	var qwFired, qwPlanned int
+	if found.Agent == "dsh" {
+		if found.DshQWatchOpenedTS != nil {
+			qwOpen = true
+			qwOpenedTS = *found.DshQWatchOpenedTS
+		}
+		qwFired, qwPlanned = found.DshQWatchBeatsFired, found.DshQWatchPlanned
+	} else if found.QWatchOpenedTS != nil {
 		qwOpen = true
 		qwOpenedTS = *found.QWatchOpenedTS
+		qwFired, qwPlanned = found.QWatchBeatsFired, len(found.QWatchPlan)
 	}
-	qwFired, qwPlanned := found.QWatchBeatsFired, len(found.QWatchPlan)
 	lineage := pathsx.NormPath(path)
 	d.Ledger.Mu().Unlock()
 
@@ -172,12 +181,19 @@ func handleSessionDetail(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 四列会话总账（CONTEXT「会话总账」：主转录＋各子代理转录四列加总）。
-	// 账本 usage 科目为既有口径（internal/accounts）：按族系（lineage_id＝
-	// 归一化主转录路径）加总 input/output/缓存写/缓存读四列——主会话与（今
-	// 后按同谱系入账的）子代理流水一并覆盖。Accounts 未接线 → 全零。
+	// 账本 usage 科目为既有口径（internal/accounts）：CC 按族系（lineage_id＝
+	// 归一化主转录路径）加总——主会话与（今后按同谱系入账的）子代理流水一并
+	// 覆盖。dsh 改按会话键（session_id）聚合：事件面行 lineage 恒空是票05
+	// 去重的承重标记（不可填值，dsh_dedup.go），且两面子会话流水随父入账
+	// session_id＝父键——按 sid 聚合即族系总账，与 cost_report 的 session
+	// 口径一致，历史行（空 lineage 已落账）一并覆盖。Accounts 未接线 → 全零。
 	var in, cr, cc, outN, reqs int
 	if d.Accounts != nil {
-		for _, e := range d.Accounts.Read(accounts.ReadOpts{Kind: "usage", Lineage: lineage}) {
+		opts := accounts.ReadOpts{Kind: "usage", Lineage: lineage}
+		if agent == "dsh" {
+			opts = accounts.ReadOpts{Kind: "usage", Session: id}
+		}
+		for _, e := range d.Accounts.Read(opts) {
 			in += int(acctNum(e, "input_tokens"))
 			cr += int(acctNum(e, "cache_read_tokens"))
 			cc += int(acctNum(e, "cache_creation_tokens"))
