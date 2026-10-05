@@ -11,8 +11,9 @@ package daemon
 //   - 权限尽力收紧 0600：os.OpenFile/WriteFile 的 0600 是 POSIX 语义，
 //     Windows/部分文件系统 chmod 不生效（EnsureToken 同先例，httpapi.go）——
 //     敏感能级在 Windows 依赖用户目录 ACL（默认仅当前用户可读）。
-//   - 滚动保留 20 份：超出按 mtime 删最旧；同刻并列按文件名序（时戳→序号）
-//     兜确定性，同类最旧先删。
+//   - 滚动保留 20 份：超出按类别优先删——先删最旧 auto，auto 删尽仍超才删
+//     最旧 manual，pre-restore 末位（还原回退点）；同类别内按 mtime 删最旧，
+//     同刻并列按文件名序（时戳→序号）兜确定性。
 //   - 端点三口：POST /settings/snapshots（手动）、GET /settings/snapshots
 //     （仅元数据 id/ts/reason/bytes——绝不回文件内容，无内容下载端点）、
 //     POST /settings/snapshots/{id}/restore（还原前强制先快照当前态
@@ -264,13 +265,20 @@ func snapshotKeyLess(a, b snapshotKey) bool {
 
 // ---- 滚动保留 ----
 
-// pruneSnapshots 超 snapshotKeepN 份删最旧：mtime 主序（跨秒真实时序），
-// 同刻并列按文件名序兜确定性。删除尽力而为：失败留待下次滚动再收。
+// snapshotPrunePriority 滚动删除的类别优先序（返工定案）：auto 最先让位
+// （机器随手快照，最可再生）；auto 删尽仍超 20 才删最旧 manual（用户点名的
+// 保留意愿更高）；pre-restore 末位（还原回退点，逼到墙角才动）。
+var snapshotPrunePriority = map[string]int{"auto": 0, "manual": 1, "pre-restore": 2}
+
+// pruneSnapshots 超 snapshotKeepN 份删最旧：类别优先（auto→manual→
+// pre-restore），同类别内 mtime 主序、同刻按文件名序（时戳→序号）兜确定性。
+// 删除尽力而为：失败留待下次滚动再收。
 func pruneSnapshots(dir string) {
 	type item struct {
 		name string
 		mt   time.Time
 		key  snapshotKey
+		prio int
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -281,7 +289,7 @@ func pruneSnapshots(dir string) {
 		if en.IsDir() {
 			continue
 		}
-		key, ok := snapshotKeyOf(en.Name())
+		class, key, ok := parseSnapshotName(en.Name())
 		if !ok {
 			continue
 		}
@@ -289,26 +297,23 @@ func pruneSnapshots(dir string) {
 		if err != nil {
 			continue
 		}
-		items = append(items, item{en.Name(), info.ModTime(), key})
+		items = append(items, item{en.Name(), info.ModTime(), key, snapshotPrunePriority[class]})
 	}
 	if len(items) <= snapshotKeepN {
 		return
 	}
 	sort.Slice(items, func(i, j int) bool {
+		if items[i].prio != items[j].prio { // 类别优先：auto 先尽，再 manual，末位 pre-restore
+			return items[i].prio < items[j].prio
+		}
 		if !items[i].mt.Equal(items[j].mt) {
-			return items[i].mt.Before(items[j].mt) // 最旧在前
+			return items[i].mt.Before(items[j].mt) // 类内最旧在前
 		}
 		return snapshotKeyLess(items[i].key, items[j].key)
 	})
 	for i := 0; i < len(items)-snapshotKeepN; i++ {
 		_ = os.Remove(filepath.Join(dir, items[i].name))
 	}
-}
-
-// snapshotKeyOf 文件名 → 排序键（不要类的 prune/list 共用预筛）。
-func snapshotKeyOf(name string) (snapshotKey, bool) {
-	_, key, ok := parseSnapshotName(name)
-	return key, ok
 }
 
 // ---- 还原 ----

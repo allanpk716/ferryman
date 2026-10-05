@@ -348,7 +348,112 @@ func ssDumpDir(t *testing.T, dir string) string {
 	return b.String()
 }
 
-// ---- 守门面 ----
+// ---- 滚动保留：类别优先（返工：先删最旧 auto，auto 删尽才删最旧 manual）----
+
+// TestSnapshotPruneClassPriority 混合夹具：6 份旧 manual + 19 份新 auto
+// （共 25）→ prune 后剩 20：6 份 manual 全在，删掉的 5 份全是最旧 auto；
+// 全 manual（无 auto 让位）时删最旧 manual。
+func TestSnapshotPruneClassPriority(t *testing.T) {
+	// 混合面：先 6 份 manual（mtime 钉最旧），再 19 份 auto（经写路径 PUT
+	// 产生，mtime 钉较新）。
+	e, _ := newSettingsEnv(t)
+	dir := ssSnapDir(e)
+	base := time.Now().Add(-time.Hour)
+
+	var manualIDs, autoIDs []string
+	for i := 0; i < 6; i++ {
+		id := ssCreateManual(t, e)
+		ssStageMtime(t, dir, id, base, i)
+		manualIDs = append(manualIDs, id)
+	}
+	for i := 0; i < 19; i++ {
+		mode := "observe"
+		if i%2 == 1 {
+			mode = "enforce"
+		}
+		if code, raw := swPut(t, e, "gate", map[string]any{"cc_mode": mode}); code != http.StatusOK {
+			t.Fatalf("PUT #%d = %d %q, want 200（产生 auto 快照）", i+1, code, raw)
+		}
+		// 最新 auto = 目录里 mtime 最新且未认领者（创建序=钉距序，逐一认领）。
+		id := ssNewestAuto(t, dir, append(append([]string(nil), manualIDs...), autoIDs...))
+		ssStageMtime(t, dir, id, base, 10+i)
+		autoIDs = append(autoIDs, id)
+	}
+
+	files := ssFiles(t, dir)
+	if len(files) != 20 {
+		t.Fatalf("25 份后剩余 = %d, want 20", len(files))
+	}
+	for i, id := range manualIDs {
+		if _, present := files[id]; !present {
+			t.Fatalf("manual 第 %d 份 %q 不应被删（类别优先：auto 先让位）", i+1, id)
+		}
+	}
+	for i, id := range autoIDs {
+		_, present := files[id]
+		if i < 5 && present {
+			t.Fatalf("最旧 auto 第 %d 份 %q 应已删除（现存: %s）", i+1, id, ssDumpDir(t, dir))
+		}
+		if i >= 5 && !present {
+			t.Fatalf("auto 第 %d 份 %q 不应被删（只删最旧 5 份 auto）", i+1, id)
+		}
+	}
+
+	// 全 manual 面（独立环境，无 auto 让位）：23 份 → 剩 20，最旧 3 份先删。
+	e2, _ := newSettingsEnv(t)
+	dir2 := ssSnapDir(e2)
+	var m2 []string
+	for i := 0; i < 23; i++ {
+		id := ssCreateManual(t, e2)
+		ssStageMtime(t, dir2, id, base, i)
+		m2 = append(m2, id)
+	}
+	files2 := ssFiles(t, dir2)
+	if len(files2) != 20 {
+		t.Fatalf("全 manual 23 份后剩余 = %d, want 20", len(files2))
+	}
+	for i, id := range m2 {
+		_, present := files2[id]
+		if i < 3 && present {
+			t.Fatalf("全 manual：最旧第 %d 份 %q 应已删除", i+1, id)
+		}
+		if i >= 3 && !present {
+			t.Fatalf("全 manual：第 %d 份 %q 不应被删", i+1, id)
+		}
+	}
+}
+
+// ssNewestAuto 目录内尚不存在于 claimed 的最新 auto 快照名（mtime 最新；混合
+// 夹具逐 PUT 认领刚落的那份 auto）。
+func ssNewestAuto(t *testing.T, dir string, claimed []string) string {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, c := range claimed {
+		seen[c] = true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读快照目录: %v", err)
+	}
+	best, bestMt := "", time.Time{}
+	for _, en := range entries {
+		name := en.Name()
+		if seen[name] || !strings.HasSuffix(name, "-auto.toml") {
+			continue
+		}
+		info, err := en.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(bestMt) {
+			best, bestMt = name, info.ModTime()
+		}
+	}
+	if best == "" {
+		t.Fatalf("目录中找不到新 auto 快照: %v", claimed)
+	}
+	return best
+}
 
 // TestSnapshotGuards 无/错 Bearer 401（POST known-path 后 auth、GET 先 auth）；
 // 未知 id/穿越 id/异形子路径 404；替身（非 *Daemon）404。
