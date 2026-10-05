@@ -210,6 +210,8 @@ func doGet(d DaemonLike, token string, w http.ResponseWriter, r *http.Request) {
 			qsOr(q, "agent", "cc"),
 			qsOr(q, "cwd", ""),
 			qsOr(q, "session_id", "")))
+	case "/settings": // 设置视图读面（settings-view 票02）：settings_read.go，只读+脱敏
+		handleSettingsRead(d, w, r)
 	default:
 		// 票01接线（唯一改动点）：未命中端点先交只读查询面（queryapi.go
 		// 注册表，/sessions 等；鉴权已过），仍未命中才 404。
