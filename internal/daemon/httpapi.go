@@ -134,6 +134,13 @@ func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch
 			doProviderSwitch(onProviderSwitch, token, w, r)
 			return
 		}
+		// 设置视图票06：POST /settings/dock/switch——复用同一 provider_switch
+		// 钩子（dockState.switchTo）的热换绑核心，外包设置面单写者锁+写前快照
+		// +审计（settings_switch.go）；钩子未装（渡口未启用）＝落既有分派 404。
+		if r.RequestURI == "/settings/dock/switch" && onProviderSwitch != nil {
+			doSettingsDockSwitch(d, onProviderSwitch, token, w, r)
+			return
+		}
 		// dsh 接收面三口（dsh phase2 票04，/shutdown、/provider_switch 同族
 		// 管理端点）：方法分派前拦截；DaemonLike 替身不拦（落既有 doPost 404）。
 		if dd, ok := d.(*Daemon); ok && doDshReceive(dd, token, w, r) {
