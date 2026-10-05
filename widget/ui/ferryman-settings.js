@@ -592,7 +592,7 @@ function renderPrices() {
   if (!keys.length) {
     const tr = el('tr');
     const td = el('td', '', '价格表为空。点「新增一行」登记第一家。');
-    td.colSpan = 7;
+    td.colSpan = 6;
     tr.appendChild(td);
     tbody.appendChild(tr);
     return;
@@ -601,20 +601,18 @@ function renderPrices() {
     const book = ps[key];
     const v = latestVersion(book);
     const unitText = priceUnitText(book);
-    const slash = key.indexOf('/');
-    const prov = slash < 0 ? key : key.slice(0, slash);
-    const model = slash < 0 ? '—' : key.slice(slash + 1);
+    // 键=单段标识（对应 config 的 [prices.<key>]，如 glm）；条目无供应商/模型字段，
+    // 键本身就是全部标识。
     const tr = el('tr');
     tr.dataset.key = key;
-    tr.appendChild(el('td', 'cell-txt', prov));
-    tr.appendChild(el('td', 'cell-txt mono', model));
+    tr.appendChild(el('td', 'cell-txt mono', key));
     [['p_in', '输入价'], ['p_cache', '缓存价'], ['p_out', '输出价']].forEach(([f, lb]) => {
       const td = el('td');
       const inp = document.createElement('input');
       inp.type = 'number';
       inp.step = '0.1';
       inp.dataset.f = '1';
-      inp.dataset.label = prov + ' / ' + model + ' ' + lb;
+      inp.dataset.label = key + ' ' + lb;
       inp.dataset.unit = unitText;
       const val = v[f];
       inp.value = val == null ? '' : String(val);
@@ -634,18 +632,19 @@ function renderPrices() {
 $('#btnAddPrice').addEventListener('click', () => {
   const tr = el('tr');
   tr.dataset.new = '1';
-  const tdProv = el('td');
-  const inProv = document.createElement('input');
-  inProv.type = 'text'; inProv.placeholder = '供应商'; inProv.style.width = '80px';
-  inProv.dataset.nf = 'prov';
-  tdProv.appendChild(inProv);
-  const tdModel = el('td');
-  const inModel = document.createElement('input');
-  inModel.type = 'text'; inModel.placeholder = '模型'; inModel.style.width = '130px';
-  inModel.dataset.nf = 'model';
-  tdModel.appendChild(inModel);
-  tr.appendChild(tdProv);
-  tr.appendChild(tdModel);
+  const tdKey = el('td');
+  const inKey = document.createElement('input');
+  inKey.type = 'text'; inKey.placeholder = '键（如 glm）'; inKey.style.width = '130px';
+  inKey.dataset.nf = 'key';
+  // 键=单段标识：含斜杠会被后端路由切分错认（新增必 404），当场红字提示并拦住提交
+  const keyErr = el('div', '', '键不能包含斜杠');
+  keyErr.style.cssText = 'color:var(--red); font-size:11px; display:none';
+  inKey.addEventListener('input', () => {
+    keyErr.style.display = inKey.value.includes('/') ? '' : 'none';
+  });
+  tdKey.appendChild(inKey);
+  tdKey.appendChild(keyErr);
+  tr.appendChild(tdKey);
   ['输入价', '缓存价', '输出价'].forEach((lb) => {
     const td = el('td');
     const inp = document.createElement('input');
@@ -681,10 +680,12 @@ $('#btnSavePrices').addEventListener('click', () => {
   const diffs = collectDiffs(scope);
   const newRows = $$('#priceRows tr[data-new]');
   if (!diffs.length && !newRows.length) { toast('没有改动', null); return; }
+  const badKey = newRows.find((tr) => tr.querySelector('[data-nf=key]').value.includes('/'));
+  if (badKey) { feedback($('#fbPrices'), '新增行的键不能包含斜杠', true); return; }
   newRows.forEach((tr) => {
-    const prov = tr.querySelector('[data-nf=prov]').value.trim();
-    if (prov) {
-      const row = { lb: '新增价格行', oldV: '（无）', newV: prov, el: tr };
+    const key = tr.querySelector('[data-nf=key]').value.trim();
+    if (key) {
+      const row = { lb: '新增价格行', oldV: '（无）', newV: key, el: tr };
       diffs.push(row);
     }
   });
@@ -731,25 +732,24 @@ $('#btnSavePrices').addEventListener('click', () => {
     }
     // ③ 新增行
     for (const tr of $$('#priceRows tr[data-new]')) {
-      const prov = tr.querySelector('[data-nf=prov]').value.trim();
-      const model = tr.querySelector('[data-nf=model]').value.trim();
+      const key = tr.querySelector('[data-nf=key]').value.trim();
       const unit = tr.querySelector('[data-nf=unit]').value.trim() || '元';
-      if (!prov) { errs.push('新增行：供应商名必填'); continue; }
+      if (!key) { errs.push('新增行：键必填'); continue; }
+      if (key.includes('/')) { errs.push('新增行 ' + key + '：键不能包含斜杠'); continue; }
       const [pIn, pCache, pOut] = [...tr.querySelectorAll('[data-f]')].map((i) => i.value.trim());
       if (pIn === '' || pOut === '' || !isFinite(Number(pIn)) || !isFinite(Number(pOut))) {
-        errs.push('新增行 ' + prov + '：输入价和输出价必填且要是数字');
+        errs.push('新增行 ' + key + '：输入价和输出价必填且要是数字');
         continue;
       }
       const nv = { effective_from: today, p_in: Number(pIn), p_out: Number(pOut) };
       if (pCache !== '' && isFinite(Number(pCache))) nv.p_cache = Number(pCache);
-      const key = model ? prov + '/' + model : prov;
       try {
         await api('/settings/prices/' + encodeURIComponent(key), {
           method: 'PUT',
           body: { unit, per: 10000, versions: [nv] },
         });
         tr.remove();
-      } catch (e) { errs.push('新增行 ' + prov + '：' + e.message); }
+      } catch (e) { errs.push('新增行 ' + key + '：' + e.message); }
     }
     if (errs.length) {
       feedback(fb, '部分没存上：' + errs.join('；'), true);
