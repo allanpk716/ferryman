@@ -3,7 +3,7 @@
 > 架构决策记录（ADR）总索引。一句话主旨从各篇标题/首段提炼，细节以文件原文为准。
 > 撞号说明：0016 与 0018 各有两篇（历史编号重复），文件名不改，以文件名后缀区分；本表用别名注记消歧（见下节）。
 
-## 索引（0001–0019，共 21 篇）
+## 索引（0001–0022，共 24 篇）
 
 | 编号 | 文件 | 别名 | 一句话主旨 |
 |---|---|---|---|
@@ -28,6 +28,9 @@
 | 0018 | [0018-quiet-gate-over-edge-proxy.md](0018-quiet-gate-over-edge-proxy.md) | 0018-gate | 升级停顿对策＝静默门（空载准入停旧）；「任何时刻不拒连」的常驻代理延后（触发式） |
 | 0018 | [0018-settings-window-resident.md](0018-settings-window-resident.md) | 0018-settings | 设置窗常驻隐藏：运行时建 WebviewWindow 在真机是渲染树永不建成的僵尸——窗口声明式常驻、关闭即隐藏 |
 | 0019 | [0019-takeover-ccswitch-go-translation.md](0019-takeover-ccswitch-go-translation.md) | — | 接管 cc-switch＝渡口当总门：翻译层并入 Go 渡口、不转 Rust，pi 走 anthropic-messages 复用 CC 车道，provider 族为统一配置面 |
+| 0020 | [0020-warm-attribution-savings-v2.md](0020-warm-attribution-savings-v2.md) | — | 保温归因 v2：need×hit 四象限判兑现、按保温回合结算、report 层纯度量（v1 冻结并存） |
+| 0021 | [0021-workbench-single-desktop-shell.md](0021-workbench-single-desktop-shell.md) | — | 工作台升格：widget 为唯一桌面壳，七视图、mock-first、15900 全套平替后退役；10-05 修订＝设置视图先行分期 |
+| 0022 | [0022-settings-view-editable.md](0022-settings-view-editable.md) | — | 设置视图可编辑：写经 daemon 写入器、密钥能存不能看、风险分层、配置快照还原、写盘＋安全重启 |
 
 ## 撞号消歧与引用注意
 
