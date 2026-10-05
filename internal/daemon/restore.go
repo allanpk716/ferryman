@@ -46,8 +46,13 @@ func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPr
 		}
 	}
 	// 锚会话没有交接（生成失败/未完成）：只带原话 + 明说 + 其他线程列清单选读。
+	// 首句按 agent 分支（票01/D3）：dsh 无 /clear 命令，中性表述；cc 逐字零变化。
+	head := "[Ferryman] 你 /clear 前被拦的那条消息没有丢"
+	if agent == "dsh" {
+		head = "[Ferryman] 你被拦时输入的那条消息没有丢"
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[Ferryman] 你 /clear 前被拦的那条消息没有丢，原话如下，接着它继续即可：\n「%s」\n", pending)
+	fmt.Fprintf(&b, "%s，原话如下，接着它继续即可：\n「%s」\n", head, pending)
 	b.WriteString("\n说明：这个会话的进度交接没有生成（失败或未完成），所以没有自动交接可带；")
 	rest := make([]store.Entry, 0, len(cands))
 	for _, c := range cands {

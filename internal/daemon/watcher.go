@@ -1698,6 +1698,14 @@ func (w *Watcher) enrichImpl(st *ledger.SessionState) {
 	if enriched == lastWrite {
 		return
 	}
+	if agent == "dsh" {
+		// 票03（dsh-gate-ux）：dsh 跳过提取——下方 else 分支是 codextrans 读取
+		// 器，对 dsh 代文件（zstd）恒空转且把 PeakCtx 清零；dsh 的 title/peak
+		// 由 harvestDshUsage（文件面）与事件面（dsh_receive.go）回写，cwd 由
+		// TouchFull 自头行带入。版本章（EnrichedWrite）不盖——盖章语义是"已
+		// 提取"，dsh 无提取动作；本分支零读盘，peak 门直接读已维护值。
+		return
+	}
 	if agent == "cc" {
 		facts, _, _ := extractFacts(path)
 		w.Ledger.Mu().Lock()

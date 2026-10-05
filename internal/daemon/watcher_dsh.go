@@ -27,11 +27,11 @@ package daemon
 // apply v2 补丁），走渡口的 dsh 流量每请求发该头，渡口捕获归因自此有键
 //（此前 pi-ai 路不发，捕获归因恒空）。
 //
-// P2-1/P2-2 边界（后续票接线，本文件不预铺）：
-//   - 不 maybeEnqueue：摆渡依赖渡口快照；接法乙已切（2026-10-03）后快照键
-//     自此可得（llm-deepseek 路每请求带 x-deepseek-harness-session-id 头），
-//     但 maybeEnqueue/enrich 的 dsh 接线留给后续票（P2-5 设计面）——本文件
-//     仍不预铺；
+// P2-1/P2-2 边界（2026-10-05 票03 dsh-gate-ux 后的现状）：
+//   - maybeEnqueue 已接线（下方 pollDshSession 尾）：接法乙（2026-10-03）后
+//     快照键可得（llm-deepseek 路每请求带 x-deepseek-harness-session-id 头），
+//     摆渡材料=渡口主快照（worker.doDsh，票02）；enrich 的 dsh 跳过在
+//     watcher.go enrichImpl（dsh 的 title/peak 由 harvestDshUsage/事件面回写）；
 //   - 不喂 NoteUsage/ReqClock：停车窗/判热钟是 cc 面机制（判活运行态走
 //     ledger.Dsh* 方法组，票 A）；
 //   - 不同模型：cc-only（ADR-0015 决定一）。问询守望（等答复窗）已于票 03
@@ -245,7 +245,12 @@ func (w *Watcher) pollDshSession(dir string) {
 	w.maybeDshQwatch(st, rec) // 票03 关窗（用户侧/到期）＋开窗（四条件）
 	w.maybeFireBeats(st)      // 票03 dsh 分支：到期跳（cc+dsh 同入口）
 	w.reconcilePins(st)       // 票03 dsh 分支：Pin 对账
-	// 不 maybeEnqueue（见文件头 P2-1 边界注）。
+	// 主动摆渡接线（票03 dsh-gate-ux）：st 即上方 TouchFull 的主会话态——
+	// ObservedActive 由 observeRecent 置、peak 由 harvestDshUsage（文件面）或
+	// 事件面（fed 会话）回写、cwd 自头行带入，六道门天然吃这些字段；子代理
+	// 在本函数上方已早退，天然不进。enrich 对 dsh 是空操作（enrichImpl 内
+	// 跳过，峰值不被 codex 读取器清零）；材料=渡口主快照（worker.doDsh）。
+	w.maybeEnqueue(st)
 }
 
 // dshIsFed 会话是否已被插件事件面接管（票05 跨源去重开关）。nil Daemon 或

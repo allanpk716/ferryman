@@ -23,6 +23,7 @@ import (
 	"ferryman/internal/accounts"
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
+	"ferryman/internal/dock"
 	"ferryman/internal/ferry"
 	"ferryman/internal/notify"
 	"ferryman/internal/store"
@@ -833,5 +834,167 @@ func TestNewWorkerChainOnlyConfigNoProviderWarning(t *testing.T) {
 	NewWorker(cfg, env.st, nil, map[string]ferry.Provider{"a": {Name: "a"}}, nil)
 	if out := read(); strings.Contains(out, "未配置") || strings.Contains(out, "降级为骨架") {
 		t.Fatalf("chain-only 配置不应误报 provider 未配置: %q", out)
+	}
+}
+
+// ---- 票02：dsh 摆渡材料分支（doDsh：渡口快照替转录） ----
+//
+// 覆盖票面验收：快照在库 → dsh 分支真摆渡落 fresh（cc 路径替身恒败——误走
+// 即露馅）+ 覆盖截止命中（入队 covers 值对同时刻 coversBar 判覆盖，
+// ValidHandoff 命中形态）；Main 未命中 / 渡口关 → 骨架降级返回（无 error、
+// 无 panic、工人不死）；摆渡失败 → 骨架仍由快照体派生（末段定格带末轮原话）。
+
+// dshSnapBody dsh 渡口主快照请求体替身（最小多轮形；末条 user 原话供骨架
+// 定格断言）。
+func dshSnapBody(t *testing.T) []byte {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{
+		"system": "你是系统提示",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "修一下登录页的 bug"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "text", "text": "好的，我先看下 auth.py 的登录分支"}}},
+			map[string]any{"role": "user", "content": "继续跑一下登录回归测试"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestWorkerDshFerryFromSnapshotFreshAndCoversHit：快照替身（Capture 入库）
+// → doDsh 取 Main(sid) 请求体上模型 → fresh 落盘；覆盖截止＝入队 covers 值
+// → 对同时刻 coversBar（ValidHandoff）判"覆盖"命中。
+func TestWorkerDshFerryFromSnapshotFreshAndCoversHit(t *testing.T) {
+	env := newFerryWenv(t)
+	ok := newChainFakeUpstream(t)
+	env.providers["fake"] = ferry.Provider{Name: "fake", BaseURL: ok.srv.URL, Model: "m"}
+	snapStore := dock.NewSnapshotStore()
+	sid := "session-dshferry-0001"
+	snapStore.Capture(sid, dshSnapBody(t), nil)                         // 渡口捕获替身（主快照＝唯一体）
+	w := NewWorker(env.cfg, env.st, nil, env.providers, explodingFerry) // cc 路径恒败：dsh 误走即露馅
+	w.DockSnap = snapStore
+	runWorkerCtx(t, w)
+	coversAt := clock.Now() // 入队时刻台账 lastWrite（enqueue 闭包同口径）
+	w.Enqueue(map[string]any{
+		"transcript_path": "C:/dsh/session-dshferry-0001/session.zst", // dsh 形（不得当 CC jsonl 读）
+		"agent":           "dsh",
+		"session_id":      sid,
+		"cwd":             "C:/proj",
+		"covers_at":       coversAt,
+	})
+	waitForCond(t, 10*time.Second, func() bool {
+		for _, e := range env.st.RestoreCandidates("dsh", "C:/proj") {
+			if e.SessionID == sid && e.Status == "fresh" {
+				return true
+			}
+		}
+		return false
+	})
+	if n := atomic.LoadInt32(&ok.count); n != 1 {
+		t.Fatalf("provider 请求数 = %d, want 1（dsh 材料真上模型）", n)
+	}
+	// 覆盖截止命中：用入队时刻 covers 值生成的交接，对同时刻 coversBar 判"覆盖"
+	if h := env.st.ValidHandoff("dsh", "C:/proj", coversAt); h == nil ||
+		h.SessionID != sid || h.Status != "fresh" {
+		t.Fatalf("ValidHandoff 未命中 dsh fresh（覆盖截止断裂）: %+v", h)
+	}
+}
+
+// TestWorkerDshSnapshotMissingSkeletonDegrade：Main 未命中（未走渡口/守护
+// 重启）→ 骨架降级返回——无 error、无 panic（缺料一行日志在场、recover 兜
+// 零行）；骨架带 covers（降级形对闸门有效，同时刻 coversBar 同样命中）；
+// 渡口关（DockSnap nil）同路不炸；工人不死（cc 下一单照常）。
+func TestWorkerDshSnapshotMissingSkeletonDegrade(t *testing.T) {
+	env := newFerryWenv(t)
+	w := NewWorker(env.cfg, env.st, nil, env.providers, explodingFerry)
+	w.DockSnap = dock.NewSnapshotStore() // 空库：Main 必未命中
+	col := startStdoutCapture(t)
+	runWorkerCtx(t, w)
+	sid := "session-dshmissing-0001"
+	coversAt := clock.Now()
+	w.Enqueue(map[string]any{"transcript_path": "x.zst", "agent": "dsh",
+		"session_id": sid, "cwd": "C:/proj", "covers_at": coversAt})
+	waitForCond(t, 10*time.Second, func() bool {
+		for _, e := range env.st.RestoreCandidates("dsh", "C:/proj") {
+			if e.SessionID == sid && e.Status == "skeleton" {
+				return true
+			}
+		}
+		return false
+	})
+	col.waitContains(t, "主快照缺失", 5*time.Second) // 缺料原因一行日志（F4）
+	if strings.Contains(col.snapshot(), "[ferry] 任务异常") {
+		t.Fatalf("缺料不得 panic/上抛: %q", col.snapshot())
+	}
+	if h := env.st.ValidHandoff("dsh", "C:/proj", coversAt); h == nil || h.Status != "skeleton" {
+		t.Fatalf("缺料骨架应带 covers 命中 ValidHandoff: %+v", h)
+	}
+	// 渡口关（DockSnap nil）同路降级，不炸
+	sid2 := "session-dshmissing-0002"
+	coversAt2 := clock.Now()
+	w.DockSnap = nil
+	w.Enqueue(map[string]any{"transcript_path": "x.zst", "agent": "dsh",
+		"session_id": sid2, "cwd": "C:/proj", "covers_at": coversAt2})
+	waitForCond(t, 10*time.Second, func() bool {
+		for _, e := range env.st.RestoreCandidates("dsh", "C:/proj") {
+			if e.SessionID == sid2 && e.Status == "skeleton" {
+				return true
+			}
+		}
+		return false
+	})
+	// 工人活着：cc 下一单照常 fresh（dsh 缺料不弄死工人）
+	w.Ferry = succFerry
+	f := writeWenvSession(t, filepath.Join(env.tmp, "projects"), "dshmiss-cc-1", "C:/proj")
+	w.Enqueue(map[string]any{"transcript_path": f, "agent": "cc",
+		"session_id": "dshmiss-cc-1", "cwd": "C:/proj"})
+	waitForCond(t, 10*time.Second, func() bool {
+		for _, e := range env.st.RestoreCandidates("cc", "C:/proj") {
+			if e.SessionID == "dshmiss-cc-1" && e.Status == "fresh" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestWorkerDshFerryFailureSkeletonFromBody：摆渡真调失败（死上游）→ 骨架
+// 兜底仍由快照体派生（末段定格带末轮原话，非空骨架）+ covers 命中。
+func TestWorkerDshFerryFailureSkeletonFromBody(t *testing.T) {
+	env := newFerryWenv(t)
+	env.providers["fake"] = ferry.Provider{Name: "fake", BaseURL: closedChainURL(t), Model: "m"} // 死上游
+	snapStore := dock.NewSnapshotStore()
+	sid := "session-dshfail-0001"
+	snapStore.Capture(sid, dshSnapBody(t), nil)
+	w := NewWorker(env.cfg, env.st, nil, env.providers, explodingFerry)
+	w.DockSnap = snapStore
+	runWorkerCtx(t, w)
+	coversAt := clock.Now()
+	w.Enqueue(map[string]any{"transcript_path": "x.zst", "agent": "dsh",
+		"session_id": sid, "cwd": "C:/proj", "covers_at": coversAt})
+	var md string
+	waitForCond(t, 10*time.Second, func() bool {
+		for _, e := range env.st.RestoreCandidates("dsh", "C:/proj") {
+			if e.SessionID == sid && e.Status == "skeleton" {
+				data, err := os.ReadFile(e.Path)
+				if err != nil {
+					return false
+				}
+				md = string(data)
+				return true
+			}
+		}
+		return false
+	})
+	for _, want := range []string{"末段定格", "继续跑一下登录回归测试",
+		"（模型总结失败，本交接仅含程序化骨架）"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("dsh 失败骨架缺 %q（应含快照体派生的末段定格）:\n%s", want, md)
+		}
+	}
+	if h := env.st.ValidHandoff("dsh", "C:/proj", coversAt); h == nil || h.Status != "skeleton" {
+		t.Fatalf("失败骨架应带 covers 命中 ValidHandoff: %+v", h)
 	}
 }
