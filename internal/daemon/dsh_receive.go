@@ -12,9 +12,11 @@ package daemon
 //   - /dsh/event：session/event 形状（turn/start、assistant/message 带 usage、
 //     compaction/*；判活收编（票 A，dsh-heartbeat 规格「判活」节）：
 //     agent/status（running|idle 闭集）与 agent/disposed——维护台账运行/终结
-//     态、不入账；status 闭集外按 unknown-event 收窄）。已知事件 Touch("dsh")
-//     活动登记（唯 agent/status=running 才 Touch，idle 只复位运行态；
-//     agent/disposed 恒不 Touch）；assistant/message 带 usage 时 usage 科目四列
+//     态、不入账；status 闭集外按 unknown-event 收窄）。闲置钟锚
+//     （2026-10-05 漏拦案）：Touch 只认机器产出事件（assistant/message、
+//     compaction）与新会话首登记；turn/start 与 status=running 是本输入自己
+//     的信号，不顶新已登记会话的闲置钟（否则回流判定时刻 idle 恒≈0，凉会话
+//     永进不了拦窗）；idle/disposed 恒不 Touch；assistant/message 带 usage 时 usage 科目四列
 //     入账——字段与 P2-1 pollDsh 逐字段同构（白名单零新键，测试与守望现行行
 //     做 keyset diff 防漂移）。子会话直报
 //     （parent_session_id 非空）随父入账、不 Touch（守望同款分流）；其运行态
@@ -185,12 +187,20 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 		if parent == "" {
 			if running {
 				// 主会话 running：Touch 活动登记（同其余活动事件路径——path
-				// 缺省合成 dsh-event://<键>，头注同规）。
-				path := pyStr(body["path"])
-				if path == "" {
-					path = "dsh-event://" + sid
+				// 缺省合成 dsh-event://<键>，头注同规）。2026-10-05 漏拦案：
+				// 已登记会话只在**台账缺席**时 Touch——status=running 与
+				// turn/start 同为本输入触发的信号（用户发消息的瞬间 runtime
+				// 即发 running），照旧顶新闲置钟＝回流判定时刻 idle 恒≈0、
+				// 凉会话永进不了拦窗；闲置锚只认机器产出（assistant/message/
+				// compaction 的 Touch）。运行态本就由 DshMainRunSet 置位、
+				// 豁免受 DshRunGraceS 宽限，不依赖这次 Touch。
+				if d.Ledger.Get("dsh", sid) == nil {
+					path := pyStr(body["path"])
+					if path == "" {
+						path = "dsh-event://" + sid
+					}
+					d.Ledger.TouchFull("dsh", sid, path, mt, 0, cwd, title, 0, d.StartedAt)
 				}
-				d.Ledger.TouchFull("dsh", sid, path, mt, 0, cwd, title, 0, d.StartedAt)
 			}
 			// idle 不 Touch（活动性由同轮更早的活动事件登记；此处只复位——
 			// 规格「判活」：idle → 清运行态）。
@@ -215,10 +225,15 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 	// 事件口（Ledger.DshRunRefresh）；未接管会话走文件面检测态推进——文件面
 	// 检测态本票尚无，随票 03 补（如实声明）。resume 载荷清终结态（规格：同键
 	// 后续 resume 或新 running 清除；新 running 已在 DshMain/ChildRunSet 清）。
+	// turn/start 例外（2026-10-05 漏拦案）：它是用户输入信号不是机器活动——
+	// 用户回流的第一事件即 turn/start，刷新运行态会让闸门把凉会话当「在跑」
+	// 豁免放行（当晚 20:55/22:18 两枪真机实测漏拦）。刷新只认 assistant 侧。
 	if pyStr(body["source"]) == "resume" {
 		d.Ledger.DshDisposedClear(sid)
 	}
-	d.Ledger.DshRunRefresh(sid, mt)
+	if ev != "turn/start" {
+		d.Ledger.DshRunRefresh(sid, mt)
+	}
 
 	u, hasUsage := body["usage"].(map[string]any)
 	if ev != "assistant/message" { // usage 只认 assistant/message（pollDsh 同源）
@@ -233,19 +248,25 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 		billed = inTok + cacheRead + cacheWrite // 计费输入＝三输入列之和
 	}
 	// Touch 活动登记：主会话事件；子会话直报不 Touch（守望同款分流——子会话
-	// 不参与闲置判定）。
+	// 不参与闲置判定）。turn/start 例外（2026-10-05 漏拦案）：已登记会话的
+	// turn/start 不顶新闲置钟——闲置锚=机器侧最后活动（assistant/message/
+	// compaction/status=running），用户输入若顶新，回流的判定时刻闲置恒≈0，
+	// 凉会话永进不了拦窗；台账缺席时仍 TouchFull（新会话首登记，path/cwd/
+	// title 落账）。竞态（并发 Touch 同键）幂等无害。
 	if parent == "" {
-		path := pyStr(body["path"])
-		if path == "" {
-			path = "dsh-event://" + sid
-		}
-		st := d.Ledger.TouchFull("dsh", sid, path, mt, 0, cwd, title, 0, d.StartedAt)
-		if hasUsage { // peak 回写（pollDsh harvestDshUsage 同款，锁内只内存操作）
-			d.Ledger.Mu().Lock()
-			if billed > st.PeakCtx {
-				st.PeakCtx = billed
+		if ev != "turn/start" || d.Ledger.Get("dsh", sid) == nil {
+			path := pyStr(body["path"])
+			if path == "" {
+				path = "dsh-event://" + sid
 			}
-			d.Ledger.Mu().Unlock()
+			st := d.Ledger.TouchFull("dsh", sid, path, mt, 0, cwd, title, 0, d.StartedAt)
+			if hasUsage { // peak 回写（pollDsh harvestDshUsage 同款，锁内只内存操作）
+				d.Ledger.Mu().Lock()
+				if billed > st.PeakCtx {
+					st.PeakCtx = billed
+				}
+				d.Ledger.Mu().Unlock()
+			}
 		}
 	}
 	// usage 四列入账：字段与 pollDsh 逐字段同构（白名单零新键）；子会话直报

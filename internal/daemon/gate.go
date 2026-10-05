@@ -169,10 +169,15 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	//     不入队摆渡/不动 pending（含 observe 模式的警告与入队路径）。
 	//     与三泳道裁决对齐：机器等机器不归闸门；摆渡路径同款检查见 daemon.py:123-125。
 	if d.machineWaiting(agent, snap.sid, snap.path) {
+		// 尾句按 agent 分支（2026-10-05 漏拦案顺带）：dsh 无 Esc 中断，换
+		// 中性指引；cc 逐字零变化。
+		tail := "（不承诺生效时机）。若确认已卡死：Esc 中断后重发，" +
+			"或以「强续」开头强制继续。"
+		if agent == "dsh" {
+			tail = "（不承诺生效时机）。若确认已卡死：以「强续」开头重发强制继续。"
+		}
 		return map[string]any{"decision": "allow", "reason": "machine-waiting",
-			"additional_context": ("[Ferryman] 检测到会话仍有未完成的工具调用/子代理，已放行本次输入" +
-				"（不承诺生效时机）。若确认已卡死：Esc 中断后重发，" +
-				"或以「强续」开头强制继续。")}
+			"additional_context": ("[Ferryman] 检测到会话仍有未完成的工具调用/子代理，已放行本次输入" + tail)}
 	}
 
 	th := d.Cfg.ThresholdFor(agent)
@@ -371,9 +376,10 @@ func (d *Daemon) machineWaiting(agent, sessionID, path string) bool {
 		return true
 	}
 	if agent == "dsh" {
-		// dsh 判活道（票 A）：族系运行态在效（含族系子键，Ledger.DshFamilyRunning
-		// 含失效上界与过期清理）；悬空道跳过（上文头注）。
-		return d.Ledger.DshFamilyRunning(sessionID)
+		// dsh 判活道（票 A）：族系运行态在效（含族系子键）；悬空道跳过（上文
+		// 头注）。Gated 版＝DshRunGraceS 豁免宽限（2026-10-05 漏拦案：本输入
+		// 自己的 status=running 不得自豁免凉会话，见 ledger.go 注释）。
+		return d.Ledger.DshFamilyRunningGated(sessionID)
 	}
 	if path == "" {
 		return false

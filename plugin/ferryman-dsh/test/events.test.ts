@@ -143,6 +143,19 @@ test("pre-step：messages 空（合成上下文步）→ 不问闸门直接透�
   assert.equal(mock.requests.length, 0, "空步不应发 HTTP");
 });
 
+test("pre-step：step>1（工具循环步）→ 不问闸门直接透传（2026-10-05 案：只审用户步）", async (t) => {
+  const mock = await mockFor(t);
+  const deps = depsOver(mock, makeLogger());
+  const downstream = { kind: "enter", messages: [] } as const;
+  const out = await onPreStep(deps, {
+    agent: { session: { header: { id: SID, cwd: "C:/proj" } } },
+    messages: [{ content: [{ type: "text", text: "循环步" }] }],
+    turn: 3, step: 2,
+  }, async () => downstream);
+  assert.equal(out, downstream, "循环步原样透传下游决策");
+  assert.equal(mock.requests.length, 0, "循环步不应发 HTTP（闸门只审 step=1 用户步）");
+});
+
 // ---- ② agent/created（awaited）：交接播种 ----
 
 test("created：交接 MD 存在 → agent.inject 播种,消息形状=宿主 UserMessage", async (t) => {

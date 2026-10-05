@@ -74,8 +74,16 @@ func (d *Daemon) probeGate(agent, sid, cwd string, lastWrite, contentTS float64)
 	now := clock.Now()
 	idle := now - lastWrite
 	th := d.Cfg.ThresholdFor(agent)
+	// mode 解析与真闸门（gate.go）同构：dsh 走 gate.dsh_mode 独立档，空值回落
+	// codex_mode（2026-10-05 漏拦案排障被它误导——查询面曾误报 observe，而
+	// 真闸门实跑 enforce；f4d36b9 只改了处决点漏了这面镜子）。
 	mode := d.Cfg.GateCC
-	if agent != "cc" {
+	if agent == "dsh" {
+		mode = d.Cfg.GateDsh
+		if mode == "" {
+			mode = d.Cfg.GateCodex
+		}
+	} else if agent != "cc" {
 		mode = d.Cfg.GateCodex
 	}
 	bar := contentTS

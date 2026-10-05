@@ -32,6 +32,15 @@ const SubagentEventLeakS = 3600.0
 // SubagentEventLeakS 同哲学）。同值 3600 但独立命名：语义不同源，将来各自可调。
 const DshRunStaleS = 3600.0
 
+// DshRunGraceS dsh 豁免宽限下限（2026-10-05 漏拦案）：运行态置位/刷新距今
+// **不足此值不豁免**。用户回流时 runtime 先发 turn/start / status=running、
+// 插件才问闸——刚置的运行态是本输入自己的信号而非「机器在跑」，照旧豁免＝
+// 凉会话永拦不住（当晚 20:55/22:18 两枪实测：闲置 2h39m/67min＋fresh 交接
+// 在位仍静默放行，全量重付 68k）。长任务防误拦不受影响：单步生成超过拦截线
+// 的场景，运行态早已置位分钟级≫宽限。已知边缘（如实声明）：子代理直报间隔
+// 小于宽限的高频循环中，对父会话插话会被当凉会话审——本输入该审，强续可解。
+const DshRunGraceS = 15.0
+
 // QSnap qwatch 开窗瞬间的 (last_write, size)，供两道验新鲜度比对。
 type QSnap struct {
 	MTime float64
@@ -473,29 +482,63 @@ func (l *Ledger) DshChildrenSeedClaim() bool {
 	return true
 }
 
-// DshFamilyRunning 族系在跑判定（闸门 dsh 道，machineWaiting）：本键运行态
-// 在效 OR 任一已知子键运行态在效。在效＝置位/刷新距今 ≤ DshRunStaleS（有界
-// 失效——过期回正常闸门路径）；过期态判定即清理。
+// dshRunAgeEffective 运行态年龄在效判定（主/子两道共用）：上界＝
+// DshRunStaleS 有界失效；floor>0 时另设下限（Gated 豁免宽限）。floor=0
+// ＝原语义无下限（负 age——置位钟略超前判定钟——照旧在效，回归零变化）。
+// 调用方持锁。
+func dshRunAgeEffective(age, floor float64) bool {
+	if floor > 0 && age < floor {
+		return false
+	}
+	return age <= DshRunStaleS
+}
+
+// DshFamilyRunning 族系在跑判定（**原语义**，qwatch 开窗等处共用）：本键运行态
+// 在效 OR 任一已知子键运行态在效。在效＝置位/刷新距今 ≤ DshRunStaleS；过期
+// 态判定即清理。
 func (l *Ledger) DshFamilyRunning(sid string) bool {
+	return l.dshFamilyRunningFloor(sid, 0)
+}
+
+// DshFamilyRunningGated 闸门豁免专用（machineWaiting dsh 道）：同
+// DshFamilyRunning 但下限＝DshRunGraceS 豁免宽限（2026-10-05 漏拦案）——
+// 刚置位（距判定＜宽限）的运行态多半是本输入自己的 turn/start /
+// status=running 信号而非「机器在跑」，照旧豁免＝凉会话永拦不住。长任务
+// 防误拦不受影响（单步生成超过拦截线时运行态早已置位分钟级≫宽限）。已知
+// 边缘（如实声明）：子代理直报间隔小于宽限的高频循环中，对父会话插话会被
+// 当凉会话审——本输入该审，强续可解。宽限内（未过期）不清理运行态。
+func (l *Ledger) DshFamilyRunningGated(sid string) bool {
+	return l.dshFamilyRunningFloor(sid, DshRunGraceS)
+}
+
+// dshFamilyRunningFloor 族系在跑判定的公共实现（floor=0 即原语义；调用方
+// 无锁进入，此处持锁）。
+func (l *Ledger) dshFamilyRunningFloor(sid string, floor float64) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := clock.Now()
 	if st := l.byKey[[2]string{"dsh", sid}]; st != nil && st.DshRunningTS != nil {
-		if now-*st.DshRunningTS <= DshRunStaleS {
+		age := now - *st.DshRunningTS
+		if dshRunAgeEffective(age, floor) {
 			return true
 		}
-		st.DshRunningTS = nil // 判定即清理（有界失效）
+		if age > DshRunStaleS {
+			st.DshRunningTS = nil // 判定即清理（有界失效）
+		}
 	}
 	for child := range l.dshChildren[sid] {
 		ent, ok := l.dshChildRuns[child]
 		if !ok || ent.runningTS == nil {
 			continue
 		}
-		if now-*ent.runningTS <= DshRunStaleS {
+		age := now - *ent.runningTS
+		if dshRunAgeEffective(age, floor) {
 			return true
 		}
-		ent.runningTS = nil
-		l.dshChildPrune(child, ent)
+		if age > DshRunStaleS {
+			ent.runningTS = nil
+			l.dshChildPrune(child, ent)
+		}
 	}
 	return false
 }

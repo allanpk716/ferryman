@@ -701,10 +701,13 @@ func TestDshEventRunRefreshAdvances(t *testing.T) {
 	if !e.d.Ledger.DshFamilyRunning(sid) {
 		t.Fatal("置位 3599s 应仍在效")
 	}
-	// 第 3600s 一条 turn/start 刷新 → 时间戳顶新，再活一个上界。
+	// 第 3600s 一条 assistant/message 刷新 → 时间戳顶新，再活一个上界。
+	// （2026-10-05 漏拦案：刷新只认 assistant 侧——turn/start 是用户输入信号
+	// 不再推进运行态，TestDshTurnStartDoesNotBumpIdle 同源。）
 	e.advance(1)
-	e.d.DshEvent(map[string]any{"session_id": sid, "event": "turn/start",
-		"time": *e.now * 1000})
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "assistant/message",
+		"time": *e.now * 1000,
+		"usage": map[string]any{"input_tokens": 10, "output_tokens": 1}})
 	e.advance(3600)
 	if !e.d.Ledger.DshFamilyRunning(sid) {
 		t.Fatal("刷新后 3600s 内应仍在效（时间戳已顶新）")
@@ -735,6 +738,8 @@ func TestDshEventRunRefreshAdvances(t *testing.T) {
 func TestDshGateRunStateExempts(t *testing.T) {
 	// 闸门 dsh 道（machineWaiting）：在效运行态 → machine-waiting 豁免——长任务
 	// 中段不被闲置钟误判（enforce 前置）。对照＝无运行态同形走正常路径（block）。
+	// 运行态须过豁免宽限（DshRunGraceS）：置位时刻拨老 20s（2026-10-05 漏拦案
+	// 语义——刚置位的运行态多半是本输入自己的信号，见 TestDshGateFreshRunNotExempt）。
 	e := newDshRcvEnv(t, "enforce")
 	sid := dshRcvSID
 	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
@@ -745,10 +750,28 @@ func TestDshGateRunStateExempts(t *testing.T) {
 		t.Fatalf("无运行态对照应走正常路径 block: %v", r)
 	}
 	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
-		"time": e.t0 * 1000, "data": map[string]any{"status": "running"}})
+		"time": (e.t0 - 20) * 1000, "data": map[string]any{"status": "running"}})
 	r = e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
 	if r["decision"] != "allow" || r["reason"] != "machine-waiting" {
 		t.Fatalf("在效运行态应豁免: %v", r)
+	}
+}
+
+// TestDshGateFreshRunNotExempt 豁免宽限（2026-10-05 漏拦案）：status=running
+// 刚置位（距判定 < DshRunGraceS）不豁免——用户回流时 runtime 先发
+// turn/start / status=running 再问闸，刚置的运行态是本输入自己的信号；此时
+// 凉会话必须照常进闸门状态机（block），否则 enforce 形同虚设。
+func TestDshGateFreshRunNotExempt(t *testing.T) {
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
+		e.t0-testBlockS-5, 10, "C:/proj", "", testMinCtx+50, 0)
+	e.store.SaveHandoff(sid, "dsh", "C:/proj", "交接", isoUTC(e.t0-30), "fresh", "正文")
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": e.t0 * 1000, "data": map[string]any{"status": "running"}})
+	r := e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
+	if r["decision"] != "block" {
+		t.Fatalf("刚置位运行态（<宽限）不得豁免凉会话: %v", r)
 	}
 }
 
@@ -769,13 +792,14 @@ func TestDshGateRunStateStaleExpires(t *testing.T) {
 }
 
 func TestDshGateChildRunExemptsFamily(t *testing.T) {
-	// 族系豁免：父闲置在拦窗、子直报运行态在效 → 父问闸豁免。
+	// 族系豁免：父闲置在拦窗、子直报运行态在效 → 父问闸豁免。子运行态置位
+	// 时刻拨老 20s 过豁免宽限（同 TestDshGateRunStateExempts 语义）。
 	e := newDshRcvEnv(t, "enforce")
 	e.led.TouchFull("dsh", dshMainID, filepath.Join(e.tmp, "m.v4.jsonl.zstd"),
 		e.t0-testBlockS-5, 10, "C:/proj", "", testMinCtx+50, 0)
 	e.store.SaveHandoff(dshMainID, "dsh", "C:/proj", "交接", isoUTC(e.t0-30), "fresh", "正文")
 	e.d.DshEvent(map[string]any{"session_id": dshChildID, "parent_session_id": dshMainID,
-		"event": "agent/status", "time": e.t0 * 1000,
+		"event": "agent/status", "time": (e.t0 - 20) * 1000,
 		"data": map[string]any{"status": "running"}})
 	r := e.d.DshGate(map[string]any{"session_id": dshMainID, "cwd": "C:/proj", "prompt": "继续"})
 	if r["decision"] != "allow" || r["reason"] != "machine-waiting" {
@@ -827,5 +851,88 @@ func TestDshGateDshSkipsDanglingLane(t *testing.T) {
 		"transcript_path": dangling, "cwd": proj, "prompt": "继续"})
 	if r2["decision"] != "allow" || r2["reason"] != "machine-waiting" {
 		t.Fatalf("cc 悬空道豁免应零回归: %v", r2)
+	}
+}
+
+// TestDshGateUserReturnStillGated 用户回流漏拦回归（2026-10-05 案）：真机时序
+// ＝用户发消息 → 插件发 turn/start（事件）→ runtime 发 status=running → 插件
+// 问闸。修复前 turn/start 的 Touch+RunRefresh 把闲置钟/运行态顶新，闸门把凉
+// 会话当活跃静默放行（当晚 20:55/22:18 两枪实测：闲置 2h39m/67min＋fresh
+// 交接在位仍 allow，全量重付 68k）。修复后：turn/start 不 Touch（已登记）/
+// 不刷新运行态，status=running 刚置位不足宽限不豁免 → 照走 enforce 状态机。
+func TestDshGateUserReturnStillGated(t *testing.T) {
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	// 凉会话：闲置＞BlockS、fresh 交接在库（覆盖越过闲置锚）
+	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
+		e.t0-testBlockS-5, 10, "C:/proj", "", testMinCtx+50, 0)
+	e.store.SaveHandoff(sid, "dsh", "C:/proj", "交接", isoUTC(e.t0-30), "fresh", "正文")
+	// 用户回流的真实事件序：turn/start → status=running → 闸门问询
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "turn/start",
+		"time": e.t0 * 1000, "cwd": "C:/proj",
+		"path": filepath.Join(e.tmp, "s.v4.jsonl.zstd")})
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": e.t0 * 1000, "data": map[string]any{"status": "running"}})
+	r := e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
+	if r["decision"] != "block" {
+		t.Fatalf("用户回流（凉会话）必须照常拦截: %v", r)
+	}
+	if _, ok := r["handoff_path"]; !ok {
+		t.Fatalf("分支5应带 handoff_path: %v", r)
+	}
+}
+
+// TestDshTurnStartDoesNotBumpIdle turn/start 不顶新闲置钟（2026-10-05 漏拦案）：
+// 已登记会话的 turn/start 到达后 LastWrite 不动（闲置锚＝机器侧最后活动）；
+// 台账缺席（新会话首条）仍登记——含 title/cwd/path 落账。
+func TestDshTurnStartDoesNotBumpIdle(t *testing.T) {
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
+		e.t0-100, 10, "C:/proj", "", 0, 0)
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "turn/start",
+		"time": e.t0 * 1000, "cwd": "C:/proj", "title": "标题"})
+	if st := e.led.Get("dsh", sid); st == nil || st.LastWrite != e.t0-100 {
+		t.Fatalf("turn/start 不得顶新已登记会话的闲置钟: %+v", st)
+	}
+	e.d.DshEvent(map[string]any{"session_id": "session-new", "event": "turn/start",
+		"time": e.t0 * 1000, "cwd": "C:/proj2", "title": "新会话"})
+	st := e.led.Get("dsh", "session-new")
+	if st == nil || st.LastWrite != e.t0 || st.Title != "新会话" {
+		t.Fatalf("新会话首条 turn/start 应登记: %+v", st)
+	}
+}
+
+// TestDshMachineWaitingCopyDshBranch machineWaiting 文案 dsh 分支（2026-10-05
+// 漏拦案顺带）：dsh 无 Esc 中断，去 Esc 话术、保留强续指引；cc 侧逐字零变化
+// 由 gate_test 既有断言守。
+func TestDshMachineWaitingCopyDshBranch(t *testing.T) {
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
+		e.t0-testBlockS-5, 10, "C:/proj", "", testMinCtx+50, 0)
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": (e.t0 - 20) * 1000, "data": map[string]any{"status": "running"}})
+	r := e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
+	ctx, _ := r["additional_context"].(string)
+	if r["decision"] != "allow" || !strings.Contains(ctx, "强续") || strings.Contains(ctx, "Esc") {
+		t.Fatalf("dsh 豁免文案应无 Esc、有强续: %v / %q", r["decision"], ctx)
+	}
+}
+
+// TestProbeGateDshIndependentMode 查询面档位镜像（2026-10-05 漏拦案排障被
+// 误导）：GateDsh 独立档设置后 probeGate 须报 enforce（此前非 cc 一律回落
+// GateCodex，误报 observe）；且 enforce 档的凉会话推演走分支7（warn）。
+func TestProbeGateDshIndependentMode(t *testing.T) {
+	e := newDshRcvEnv(t, "observe") // codex=observe，与 dsh 独立档不同值
+	e.d.Cfg.GateDsh = "enforce"
+	e.led.TouchFull("dsh", dshRcvSID, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
+		e.t0-testBlockS-5, 10, "C:/proj", "", 0, 0)
+	res := e.d.probeGate("dsh", dshRcvSID, "C:/proj", e.t0-testBlockS-5, 0)
+	if res.mode != "enforce" {
+		t.Fatalf("probeGate dsh 应报独立档 enforce: %s", res.mode)
+	}
+	if res.verdict != "warn" || res.reason != "no-valid-handoff" {
+		t.Fatalf("enforce 凉会话推演应走分支7 warn: %+v", res)
 	}
 }

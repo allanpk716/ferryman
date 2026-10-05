@@ -163,6 +163,10 @@ export async function onPreStep(
   next: PreStepNext,
 ): Promise<PreStepDecision> {
   if (!payload?.messages?.length) return next();
+  // 只审用户步（step===1）：turn 内第 2+ 步是工具循环的后续模型请求，不是
+  // 用户输入——闸门语义是「审用户的回流」，循环步不问不注入（2026-10-05 案：
+  // 活跃对话每步都过闸门吃 machineWaiting 豁免＋注入兜底文案，污染上下文）。
+  if (payload.step > 1) return next();
   const gate = await askGate(deps.ep, {
     session_id: sessionIdOf(payload.agent),
     cwd: cwdOf(payload.agent),
