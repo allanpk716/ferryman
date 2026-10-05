@@ -148,15 +148,21 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	dshQWatchStats := beat.NewQWatchStats() // dsh 观测面票：dsh 泳道计数器（与 CC 分账）
 	enqueue := func(s *ledger.SessionState) bool {
 		// 身份字段（Agent/SessionID/TranscriptPath）建后不变直读（watcher 记账
-		// 同纪律）；Cwd 可变 → 台账锁内快照。
+		// 同纪律）；Cwd/LastWrite 可变 → 台账锁内快照。
 		led.Mu().Lock()
 		cwd := s.Cwd
+		lastWrite := s.LastWrite
 		led.Mu().Unlock()
 		return worker.Enqueue(map[string]any{
 			"transcript_path": s.TranscriptPath,
 			"agent":           s.Agent,
 			"session_id":      s.SessionID,
 			"cwd":             cwd,
+			// 票02（dsh 材料）：入队时台账 lastWrite（unix 秒）——dsh 摆渡的
+			// 覆盖截止（与闸门 coversBar 同口径；锁内快照钉死取值时点，防
+			// worker 执行时才读台账的漂移，F8）。新增键：cc/codex 不消费，
+			// 零行为变化。
+			"covers_at": lastWrite,
 		})
 	}
 	d := NewDaemon(cfg, led, st, enqueue, acc, startedAt, qwatchStats)
@@ -268,6 +274,10 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 			} else {
 				dockSrv = ds
 				d.DockSnap = ds.Snapshots()
+				// 票02（dsh 材料）：worker.doDsh 的渡口快照只读句柄（同一实例
+				// 只读转交——同 Daemon.DockSnap 先例）；渡口关＝保持 nil →
+				// dsh 摆渡按快照缺失走骨架降级（fail-open）。
+				worker.DockSnap = d.DockSnap
 				label := name
 				if label == "" {
 					label = "旧单值" // 无表兜底（未迁移/迁移失败回退）
