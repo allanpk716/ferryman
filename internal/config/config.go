@@ -150,6 +150,7 @@ type DockCfg struct {
 type Config struct {
 	GateCC        string // 验证期默认 observe（DESIGN §6.2）
 	GateCodex     string // E0b 后再议
+	GateDsh       string // dsh-gate-ux P3 前置：独立档；空=未设置＝闸门处决点回落 codex_mode（老配置零变化）
 	Thresholds    ThresholdCfg
 	Watch         WatchCfg
 	Server        ServerCfg
@@ -278,6 +279,9 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		}
 		if v, ok := g["codex_mode"]; ok {
 			cfg.GateCodex = pyStr(v)
+		}
+		if v, ok := g["dsh_mode"]; ok {
+			cfg.GateDsh = pyStr(v)
 		}
 	}
 	if raw, ok := data["thresholds"]; ok {
@@ -635,6 +639,11 @@ func Validate(c *Config, relaxMinGap bool) error {
 	}
 	if !slices.Contains(GateModes[:], c.GateCodex) {
 		problems = append(problems, fmt.Sprintf("gate.codex_mode 非法: %s", c.GateCodex))
+	}
+	// dsh 独立档（dsh-gate-ux P3 前置）：空=未设置＝闸门处决点回落 codex_mode
+	// （老配置零变化），此处不检不填；显式设置才检，合法值与 codex_mode 同集。
+	if c.GateDsh != "" && !slices.Contains(GateModes[:], c.GateDsh) {
+		problems = append(problems, fmt.Sprintf("gate.dsh_mode 非法: %s", c.GateDsh))
 	}
 	qw := &c.QuestionWatch
 	if !slices.Contains(QWatchModes[:], qw.Mode) {

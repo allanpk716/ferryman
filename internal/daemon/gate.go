@@ -132,7 +132,14 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	}
 
 	mode := d.Cfg.GateCC
-	if agent != "cc" {
+	if agent == "dsh" {
+		// dsh-gate-ux P3 前置：独立档 gate.dsh_mode。空值（直构 Config 绕过
+		// Load 回落的老测试/替身形态）运行时回落 codex_mode＝旧行为零变化。
+		mode = d.Cfg.GateDsh
+		if mode == "" {
+			mode = d.Cfg.GateCodex
+		}
+	} else if agent != "cc" {
 		mode = d.Cfg.GateCodex
 	}
 	if mode == "off" {

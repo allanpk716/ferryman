@@ -1639,3 +1639,47 @@ func TestGateDshCopyBranchesByAgent(t *testing.T) {
 		}
 	}
 }
+
+// TestGateDshModeIndependentKey gate.dsh_mode 独立档（dsh-gate-ux P3 前置）：
+// dsh=enforce 而 codex 仍 observe——同条件下 dsh 真拦（分支5）、codex 只警告
+// 不拦；dsh 升档不连坐 codex。
+func TestGateDshModeIndependentKey(t *testing.T) {
+	e := newGateEnv(t)
+	e.d.Cfg.GateCodex = "observe"
+	e.d.Cfg.GateDsh = "enforce"
+
+	body := func(agent, cwd, sid string) map[string]any {
+		return map[string]any{"agent": agent, "session_id": sid,
+			"transcript_path": filepath.Join(e.tmp, sid+".jsonl"),
+			"cwd":             cwd, "prompt": "继续"}
+	}
+	touch := func(agent, cwd, sid string) {
+		e.led.TouchFull(agent, sid, filepath.Join(e.tmp, sid+".jsonl"),
+			e.t0-3600, 10, cwd, "", 99999, 0)
+	}
+
+	// dsh：分支5 条件（闲置 60min+交接在库+峰值过门）→ 真拦
+	projD := filepath.Join(e.tmp, "projD")
+	touch("dsh", projD, "sd1")
+	e.store.SaveHandoff("sd1", "dsh", projD, "t", isoUTC(e.t0), "fresh", "md")
+	rd := e.d.Gate(body("dsh", projD, "sd1"))
+	if rd["decision"] != "block" {
+		t.Fatalf("dsh enforce decision = %v, want block（独立档生效）", rd["decision"])
+	}
+	if !strings.Contains(rd["reason"].(string), "新建会话") {
+		t.Fatalf("dsh block 文案应含新建会话引导: %v", rd["reason"])
+	}
+
+	// codex 同条件：observe → 只警告不拦（不连坐）
+	projC := filepath.Join(e.tmp, "projC")
+	touch("codex", projC, "sc1")
+	e.store.SaveHandoff("sc1", "codex", projC, "t", isoUTC(e.t0), "fresh", "md")
+	rc := e.d.Gate(body("codex", projC, "sc1"))
+	if rc["decision"] != "allow" {
+		t.Fatalf("codex observe decision = %v, want allow（不连坐）", rc["decision"])
+	}
+	// 交接在库时 observe 警告带"交接文档:"（willBlock 尾句被 doc 替换），断言警告在场即可。
+	if ctx, _ := rc["additional_context"].(string); !strings.Contains(ctx, "闲置") || !strings.Contains(ctx, "交接文档") {
+		t.Fatalf("codex 应走 observe 警告（闲置+交接文档）: %v", rc["additional_context"])
+	}
+}

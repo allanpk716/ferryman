@@ -584,3 +584,43 @@ func TestDshProductionParamsSatisfyBeatSpan(t *testing.T) {
 		t.Fatalf("生产参数 + dsh_mode=observe 应通过: %v", err)
 	}
 }
+
+// TestGateDshModeKey gate.dsh_mode 独立键（dsh-gate-ux P3 前置）：缺省回落
+// codex_mode（老配置零变化），显式设置独立生效（dsh 升档不连坐 codex），
+// 非法值同款校验拒绝。
+func TestGateDshModeKey(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "dshmode.toml")
+
+	// ① 缺省＝未设置：只写 codex_mode → GateDsh 留空（闸门处决点回落
+	// codex 道，行为等价旧版；回落路径由 daemon 侧旧 dsh 测试覆盖）
+	if err := os.WriteFile(f, []byte("[gate]\ncodex_mode = \"observe\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load(缺省): %v", err)
+	}
+	if cfg.GateDsh != "" || cfg.GateCodex != "observe" {
+		t.Fatalf("缺省 = %q/%q, want \"\"/observe", cfg.GateDsh, cfg.GateCodex)
+	}
+
+	// ② 显式覆盖：dsh 独立于 codex
+	if err := os.WriteFile(f, []byte("[gate]\ncodex_mode = \"observe\"\ndsh_mode = \"enforce\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(f, false)
+	if err != nil {
+		t.Fatalf("Load(覆盖): %v", err)
+	}
+	if cfg.GateDsh != "enforce" || cfg.GateCodex != "observe" {
+		t.Fatalf("独立档 = %q/%q, want enforce/observe", cfg.GateDsh, cfg.GateCodex)
+	}
+
+	// ③ 非法值：与 codex_mode 同款拒绝
+	if err := os.WriteFile(f, []byte("[gate]\ndsh_mode = \"bogus\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Load(f, false); err == nil || !strings.Contains(err.Error(), "dsh_mode") {
+		t.Fatalf("非法值 err = %v, want 含 dsh_mode", err)
+	}
+}
