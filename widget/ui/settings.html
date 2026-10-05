@@ -16,6 +16,12 @@
   <div class="note warn hidden" id="resetNotice"></div>
   <div class="note">配置存 widget 本地 JSON，daemon 不感知；改动即时生效、自动保存。</div>
 
+  <!-- Ferryman 设置（守护侧配置：供应商/闸门/心跳/价格/备份等）入口：
+       壳内 invoke 打开常驻 ferryman-settings 窗；壳外（浏览器/自测）新开标签页。 -->
+  <div class="radioline">守护侧配置（供应商、闸门、心跳、价格表、备份）：
+    <button type="button" id="btnFerrymanSettings" style="border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.05); color:inherit; border-radius:7px; padding:5px 12px; font-size:12.5px; cursor:pointer">打开 Ferryman 设置…</button>
+  </div>
+
   <h4 class="sec">外观与布局</h4>
   <div class="radioline">外观：
     <label><input type="radio" name="appearance" value="full" checked> 完整（默认）</label>
