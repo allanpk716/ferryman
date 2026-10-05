@@ -208,7 +208,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			}
 			d.gateWarn(agent, snap.sid, "observe", idle)
 			return map[string]any{"decision": "allow",
-				"additional_context": d.warnCtx(idle, h, false)}
+				"additional_context": d.warnCtx(agent, idle, h, false)}
 		}
 		return allowAllow(d.cacheInfoCtx(idle, th))
 	}
@@ -226,16 +226,23 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
 		d.Store.MarkBlocked(h.HandoffID)
 		d.notifyBlock(st, h, idle)
+		// 【推荐】段按 agent 分支（票01/D3）：dsh 无 /clear 命令，换「新建会话」
+		// 引导；cc 逐字零变化。强续段落与交接文档行两 agent 同文。
+		rec := "\n【推荐】/clear 换新会话（约 10 秒，进度和原话自动带过去）：\n" +
+			"  1. 输入 /clear\n" +
+			"  2. 随便发一个字（如「继续」）\n" +
+			"  新会话开场自动收到：本会话的进度交接 + 你这条原话，接着原话继续干。\n"
+		if agent == "dsh" {
+			rec = "\n【推荐】新建会话（桌面端点新建 / web 端 new session），" +
+				"开场自动收到：本会话的进度交接+你这条原话。\n"
+		}
 		return map[string]any{"decision": "block",
 			"reason": fmt.Sprintf("此会话已闲置 %.0f 分钟（缓存已失效）。"+
 				"你刚输入的内容没有发出去，原话已保存：%s\n"+
-				"\n【推荐】/clear 换新会话（约 10 秒，进度和原话自动带过去）：\n"+
-				"  1. 输入 /clear\n"+
-				"  2. 随便发一个字（如「继续」）\n"+
-				"  新会话开场自动收到：本会话的进度交接 + 你这条原话，接着原话继续干。\n"+
+				"%s"+
 				"\n【不想换会话】以「强续」开头重发你的内容（例：「强续 %s」），"+
 				"解除本轮拦截、留在本会话继续。\n"+
-				"交接文档: %s", idle/60, blockPreview(prompt), blockExample(prompt), h.Path),
+				"交接文档: %s", idle/60, blockPreview(prompt), rec, blockExample(prompt), h.Path),
 			"suppressOriginalPrompt": true,
 			"handoff_path":           h.Path}
 	}
@@ -245,20 +252,28 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			d.Pending.Clear(key)
 			d.gateWarn(agent, snap.sid, "enforce-degrade", idle)
 			return map[string]any{"decision": "allow",
-				"additional_context": d.warnCtx(idle, nil, true)}
+				"additional_context": d.warnCtx(agent, idle, nil, true)}
 		}
 		d.Stats.addBlocks()
 		d.Acct("block", st, "", "", "", accounts.Fields{
 			"prefix_tokens": snap.peak, "idle_s": mathx.Round(idle, 1)})
 		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
+		// 【或换会话】段同上按 agent 分支（票01/D3）：分支6语义——交接若已生成
+		// 会一并带给新会话，没好则只带回原话；cc 逐字零变化。
+		alt := "\n【或 /clear 换新会话】开场发一个字即可；本会话的交接若已生成会" +
+			"一并带给新会话，此刻还没好则新会话只会带回你这条原话（之前的进度" +
+			"需要自己简述两句）。"
+		if agent == "dsh" {
+			alt = "\n【或新建会话】（桌面端点新建 / web 端 new session）开场发一个字即可；" +
+				"本会话的交接若已生成会一并带给新会话，此刻还没好则新会话只会带回" +
+				"你这条原话（之前的进度需要自己简述两句）。"
+		}
 		return map[string]any{"decision": "block",
 			"reason": fmt.Sprintf("此会话闲置超时被拦（第 %d 次）。"+
 				"你刚输入的内容没有发出去，原话已保存：%s\n"+
 				"\n【现在就能继续】以「强续」开头重发你的内容（例：「强续 %s」），"+
 				"解除本轮拦截、留在本会话。\n"+
-				"\n【或 /clear 换新会话】开场发一个字即可；本会话的交接若已生成会"+
-				"一并带给新会话，此刻还没好则新会话只会带回你这条原话（之前的进度"+
-				"需要自己简述两句）。", n, blockPreview(prompt), blockExample(prompt)),
+				"%s", n, blockPreview(prompt), blockExample(prompt), alt),
 			"suppressOriginalPrompt": true}
 	}
 	// 分支 7：警告一次 + 置 pending + 触发摆渡
@@ -269,7 +284,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		d.EnqueueFerry(st)
 	}
 	return map[string]any{"decision": "allow",
-		"additional_context": d.warnCtx(idle, nil, true)}
+		"additional_context": d.warnCtx(agent, idle, nil, true)}
 }
 
 // allowAllow {"decision": "allow", **({"additional_context": info} if info else {})}
@@ -386,10 +401,11 @@ func (d *Daemon) hotCtx(idle, remainS float64) string {
 		"之后再长闲置会被正常拦（交接自动备好）。", idle/60, remainS/60), WarnContextCap)
 }
 
-// warnCtx _warn_ctx（server.py:279-289 逐字）。
+// warnCtx _warn_ctx（server.py:279-289；cc 逐字）。
 // observe 永不拦——"将被拦"只在 enforce 成立（2026-09-18 文案缺陷修复：
 // 两模式共用一句空头支票，用户按文案预期被拦却没拦）。
-func (d *Daemon) warnCtx(idle float64, h *store.Entry, willBlock bool) string {
+// 尾句按 agent 分支（票01/D3）：dsh 无 /clear，换「新建会话」引导；cc 逐字零变化。
+func (d *Daemon) warnCtx(agent string, idle float64, h *store.Entry, willBlock bool) string {
 	tail := "交接生成中，下次提交将被拦。"
 	if !willBlock {
 		tail = "交接生成中（observe 模式只提醒不拦；enforce 才会真拦）。"
@@ -398,9 +414,13 @@ func (d *Daemon) warnCtx(idle float64, h *store.Entry, willBlock bool) string {
 	if h != nil {
 		doc = "交接文档: " + h.Path
 	}
+	tip := "建议 /clear 后开新会话（自动注入交接）。"
+	if agent == "dsh" {
+		tip = "建议新建会话（桌面端点新建 / web 端 new session），开场自动注入交接。"
+	}
 	txt := fmt.Sprintf("[Ferryman] 本会话已闲置 %.0f 分钟，缓存大概率已失效，"+
 		"继续使用将全量重付 input。", idle/60) +
-		doc + "建议 /clear 后开新会话（自动注入交接）。"
+		doc + tip
 	return mathx.RuneTrunc(txt, WarnContextCap) // txt[:WARN_CONTEXT_CAP] 按码点
 }
 

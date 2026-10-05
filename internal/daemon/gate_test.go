@@ -1495,3 +1495,147 @@ func TestGateIdleAnchoredToContentClock(t *testing.T) {
 		t.Fatalf("新内容后不应再警告: %v", ctx)
 	}
 }
+
+// ---- 票01（D2/D3）：文案按 agent 分支——dsh 不再教 /clear ----
+//
+// dsh（DeepSeek Harness 桌面端）没有 /clear 命令：四处用户可见文案
+// （分支5 block、分支6 block、warnCtx、restore 锚定归还·无交接）对 dsh
+// 换「新建会话」引导（restore 为中性表述）；cc 逐字零变化——cc 侧四处
+// 输出整串钉死，动一个字即红；强续段落两 agent 同文，均在整串断言内。
+
+// TestGateDshCopyBranchesByAgent 两 agent × 四位点表驱动。
+func TestGateDshCopyBranchesByAgent(t *testing.T) {
+	type copyOut struct {
+		b5, b6, warn, restore, b5Path string
+	}
+	// drive 同一 env 内驱动四个位点（闲置统一 3600s=60min，整分钟无舍入歧义）：
+	//   b5 = 分支5 block reason（有效交接在库）
+	//   warn = 分支7 的 additional_context（warnCtx，nil 交接）
+	//   b6  = 随后第一次分支6 block reason
+	//   restore = 锚定归还·无交接（锚无候选）context 首段
+	drive := func(t *testing.T, agent string) copyOut {
+		t.Helper()
+		e := newGateEnv(t)
+		if agent != "cc" {
+			e.d.Cfg.GateCodex = "enforce" // 非 cc 走 codex 道，dsh 需显式开
+		}
+		out := copyOut{}
+		body := func(cwd, sid, prompt string) map[string]any {
+			return map[string]any{"agent": agent, "session_id": sid,
+				"transcript_path": filepath.Join(e.tmp, sid+".jsonl"),
+				"cwd":             cwd, "prompt": prompt}
+		}
+		touch := func(cwd, sid string) {
+			e.led.TouchFull(agent, sid, filepath.Join(e.tmp, sid+".jsonl"),
+				e.t0-3600, 10, cwd, "", 99999, 0)
+		}
+		// 位点1 分支5：有效交接 → block
+		proj := filepath.Join(e.tmp, "proj")
+		touch(proj, "b5")
+		en := e.store.SaveHandoff("b5", agent, proj, "t", isoUTC(e.t0), "fresh", "md")
+		out.b5Path = en.Path
+		r5 := e.d.Gate(body(proj, "b5", "被拦原话B5"))
+		if r5["decision"] != "block" {
+			t.Fatalf("%s 分支5 decision = %v", agent, r5["decision"])
+		}
+		out.b5 = r5["reason"].(string)
+		// 位点3+2：分支7 警告（warnCtx）→ 分支6 首拦；无交接项目
+		proj2 := filepath.Join(e.tmp, "proj2")
+		touch(proj2, "b67")
+		r7 := e.d.Gate(body(proj2, "b67", "继续"))
+		if r7["decision"] != "allow" {
+			t.Fatalf("%s 分支7 decision = %v", agent, r7["decision"])
+		}
+		out.warn = r7["additional_context"].(string)
+		r6 := e.d.Gate(body(proj2, "b67", "继续"))
+		if r6["decision"] != "block" {
+			t.Fatalf("%s 分支6 decision = %v", agent, r6["decision"])
+		}
+		out.b6 = r6["reason"].(string)
+		// 位点4 锚定归还·无交接：锚在、候选无 → 只带原话
+		e.store.SavePendingPromptFor(agent, proj2, "nohandoff-src", "原话R")
+		rr := e.d.Restore(agent, proj2, "fresh")
+		out.restore, _ = rr["context"].(string)
+		return out
+	}
+
+	for _, agent := range []string{"cc", "dsh"} {
+		out := drive(t, agent)
+		switch agent {
+		case "cc": // 逐字钉死（改动前口径；动一字即红）
+			wantB5 := "此会话已闲置 60 分钟（缓存已失效）。" +
+				"你刚输入的内容没有发出去，原话已保存：被拦原话B5\n" +
+				"\n【推荐】/clear 换新会话（约 10 秒，进度和原话自动带过去）：\n" +
+				"  1. 输入 /clear\n" +
+				"  2. 随便发一个字（如「继续」）\n" +
+				"  新会话开场自动收到：本会话的进度交接 + 你这条原话，接着原话继续干。\n" +
+				"\n【不想换会话】以「强续」开头重发你的内容（例：「强续 被拦原话B5」），" +
+				"解除本轮拦截、留在本会话继续。\n" +
+				"交接文档: " + out.b5Path
+			if out.b5 != wantB5 {
+				t.Fatalf("cc 分支5 逐字不符:\n got %q\nwant %q", out.b5, wantB5)
+			}
+			wantB6 := "此会话闲置超时被拦（第 1 次）。" +
+				"你刚输入的内容没有发出去，原话已保存：继续\n" +
+				"\n【现在就能继续】以「强续」开头重发你的内容（例：「强续 继续」），" +
+				"解除本轮拦截、留在本会话。\n" +
+				"\n【或 /clear 换新会话】开场发一个字即可；本会话的交接若已生成会" +
+				"一并带给新会话，此刻还没好则新会话只会带回你这条原话（之前的进度" +
+				"需要自己简述两句）。"
+			if out.b6 != wantB6 {
+				t.Fatalf("cc 分支6 逐字不符:\n got %q\nwant %q", out.b6, wantB6)
+			}
+			wantWarn := "[Ferryman] 本会话已闲置 60 分钟，缓存大概率已失效，" +
+				"继续使用将全量重付 input。交接生成中，下次提交将被拦。" +
+				"建议 /clear 后开新会话（自动注入交接）。"
+			if out.warn != wantWarn {
+				t.Fatalf("cc warnCtx 逐字不符:\n got %q\nwant %q", out.warn, wantWarn)
+			}
+			wantRestore := "[Ferryman] 你 /clear 前被拦的那条消息没有丢，" +
+				"原话如下，接着它继续即可：\n「原话R」\n"
+			if !strings.HasPrefix(out.restore, wantRestore) {
+				t.Fatalf("cc restore 首段逐字不符:\n got %q\nwant %q", out.restore, wantRestore)
+			}
+		case "dsh": // 评审钉死口径：无 /clear + 新建会话引导（restore 中性）
+			wantB5 := "此会话已闲置 60 分钟（缓存已失效）。" +
+				"你刚输入的内容没有发出去，原话已保存：被拦原话B5\n" +
+				"\n【推荐】新建会话（桌面端点新建 / web 端 new session），" +
+				"开场自动收到：本会话的进度交接+你这条原话。\n" +
+				"\n【不想换会话】以「强续」开头重发你的内容（例：「强续 被拦原话B5」），" +
+				"解除本轮拦截、留在本会话继续。\n" +
+				"交接文档: " + out.b5Path
+			if out.b5 != wantB5 {
+				t.Fatalf("dsh 分支5 不符:\n got %q\nwant %q", out.b5, wantB5)
+			}
+			wantB6 := "此会话闲置超时被拦（第 1 次）。" +
+				"你刚输入的内容没有发出去，原话已保存：继续\n" +
+				"\n【现在就能继续】以「强续」开头重发你的内容（例：「强续 继续」），" +
+				"解除本轮拦截、留在本会话。\n" +
+				"\n【或新建会话】（桌面端点新建 / web 端 new session）开场发一个字即可；" +
+				"本会话的交接若已生成会一并带给新会话，此刻还没好则新会话只会带回" +
+				"你这条原话（之前的进度需要自己简述两句）。"
+			if out.b6 != wantB6 {
+				t.Fatalf("dsh 分支6 不符:\n got %q\nwant %q", out.b6, wantB6)
+			}
+			wantWarn := "[Ferryman] 本会话已闲置 60 分钟，缓存大概率已失效，" +
+				"继续使用将全量重付 input。交接生成中，下次提交将被拦。" +
+				"建议新建会话（桌面端点新建 / web 端 new session），开场自动注入交接。"
+			if out.warn != wantWarn {
+				t.Fatalf("dsh warnCtx 不符:\n got %q\nwant %q", out.warn, wantWarn)
+			}
+			wantRestore := "[Ferryman] 你被拦时输入的那条消息没有丢，" +
+				"原话如下，接着它继续即可：\n「原话R」\n"
+			if !strings.HasPrefix(out.restore, wantRestore) {
+				t.Fatalf("dsh restore 首段不符:\n got %q\nwant %q", out.restore, wantRestore)
+			}
+			// 四位点整体无 /clear（含 restore 尾段等未逐字钉死的部分）
+			for name, s := range map[string]string{
+				"分支5": out.b5, "分支6": out.b6, "warnCtx": out.warn, "restore": out.restore,
+			} {
+				if strings.Contains(s, "/clear") {
+					t.Fatalf("dsh %s 不得出现 /clear: %s", name, s)
+				}
+			}
+		}
+	}
+}
