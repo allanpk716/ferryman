@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Ferryman 工作台 · 设置</title>
+<!--
+  设置视图高保真静态 mock（v1 草案）
+  · 单文件自包含：双击即可在浏览器打开，零网络请求、零外部资源，图标全内联 SVG
+  · 不接真数据：假数据内联在 HTML 与底部内联脚本里
+  · 交互演示三类风险分层：高风险=二次确认弹窗；中风险=保存前改动预览；常规=直接存+toast
+-->
+<style>
+:root{
+  --bg:#0b0d12;            /* 窗口外衬底 */
+  --wbg:#101218;           /* 窗口底色（沿用悬浮窗 --wbg） */
+  --panel:#171b26;         /* 卡片底（沿用 .sheet） */
+  --panel2:#1c2230;
+  --line:rgba(255,255,255,.09);
+  --txt:#E8EAF0;
+  --dim:rgba(232,234,240,.55);
+  --faint:rgba(232,234,240,.35);
+  --blue:#5B9BD5; --blue-t:#9CC4E8;
+  --yellow:#E8C33D; --red:#E85D5D; --green:#6BBF8A; --purple:#9B7EDE;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--txt);
+  font:13px/1.55 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
+  display:flex; align-items:center; justify-content:center; padding:20px;
+  user-select:none;
+}
+/* ── 假窗口（示意独立桌面窗口形态，900~1100px） ── */
+.window{
+  width:1024px; max-width:100%; height:720px; max-height:calc(100vh - 40px);
+  background:var(--wbg); border:1px solid var(--line); border-radius:12px;
+  box-shadow:0 18px 60px rgba(0,0,0,.6);
+  display:flex; flex-direction:column; overflow:hidden;
+}
+.titlebar{
+  height:36px; flex:none; display:flex; align-items:center; gap:8px;
+  padding:0 12px; border-bottom:1px solid var(--line);
+  background:rgba(255,255,255,.02);
+}
+.titlebar .t-title{font-size:12px; color:var(--dim)}
+.titlebar .t-title b{color:var(--txt); font-weight:600}
+.titlebar .t-gap{flex:1}
+.t-win{width:34px; height:36px; display:grid; place-items:center; color:var(--dim); cursor:default}
+.t-win:hover{background:rgba(255,255,255,.06)}
+.t-win.close:hover{background:rgba(232,93,93,.25); color:var(--red)}
+.restart-flag{
+  display:none; align-items:center; gap:5px; font-size:11px; color:var(--yellow);
+  border:1px solid rgba(232,195,61,.4); background:rgba(232,195,61,.1);
+  border-radius:9px; padding:1px 8px; margin-right:6px;
+}
+.restart-flag.show{display:inline-flex}
+
+.body{flex:1; display:flex; min-height:0}
+/* ── 左侧分组导航 ── */
+.side{
+  width:186px; flex:none; border-right:1px solid var(--line);
+  display:flex; flex-direction:column; padding:10px 8px;
+  background:rgba(255,255,255,.015);
+}
+.side nav{display:flex; flex-direction:column; gap:2px}
+.nav-it{
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:7px 10px; border:none; border-radius:8px; cursor:pointer;
+  background:none; color:var(--dim); font:13px inherit; text-align:left;
+}
+.nav-it svg{width:15px; height:15px; flex:none; opacity:.8}
+.nav-it:hover{background:rgba(255,255,255,.05); color:var(--txt)}
+.nav-it.on{background:rgba(91,155,213,.16); color:var(--blue-t)}
+.nav-it.on svg{opacity:1}
+.side .side-foot{margin-top:auto; padding-top:10px; border-top:1px solid var(--line)}
+.btn-restart{
+  width:100%; padding:7px 10px; border-radius:8px; cursor:pointer;
+  border:1px solid rgba(232,195,61,.45); background:rgba(232,195,61,.1);
+  color:var(--yellow); font:12.5px inherit;
+}
+.btn-restart:hover{background:rgba(232,195,61,.18)}
+.side-foot .cap{font-size:10.5px; color:var(--faint); line-height:1.5; margin-top:6px}
+
+/* ── 右侧内容区 ── */
+.main{flex:1; min-width:0; overflow-y:auto; padding:18px 22px 40px}
+.sec{display:none}
+.sec.on{display:block}
+.sec > h2{font-size:16px; margin-bottom:2px}
+.sec > .lead{font-size:12px; color:var(--dim); margin-bottom:14px; max-width:640px}
+.key{font:10.5px Consolas,monospace; color:var(--faint); font-weight:400}
+
+.card{
+  background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  padding:12px 14px; margin-bottom:12px;
+}
+.card h3{font-size:13px; margin-bottom:8px; display:flex; align-items:center; gap:8px}
+.card h3 .sub{font-size:11px; color:var(--faint); font-weight:400}
+.note{
+  font-size:11.5px; color:var(--dim); line-height:1.6; margin-bottom:10px;
+}
+.note.warn{
+  color:var(--yellow); border:1px solid rgba(232,195,61,.35);
+  background:rgba(232,195,61,.08); border-radius:8px; padding:6px 10px;
+}
+
+/* ── 表单行 ── */
+.frow{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 0; border-top:1px solid rgba(255,255,255,.05)}
+.frow:first-of-type{border-top:none}
+.frow .lb{width:148px; flex:none; color:var(--txt); font-size:12.5px}
+.frow .lb .key{display:block; margin-top:1px}
+.frow .hint{font-size:11px; color:var(--faint); flex-basis:100%; padding-left:148px; line-height:1.5}
+.unit{color:var(--dim); font-size:12px}
+input[type=text],input[type=number],input[type=password],select{
+  background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.14);
+  color:var(--txt); border-radius:6px; padding:4px 8px; font:12.5px inherit;
+  outline:none;
+}
+input:focus,select:focus{border-color:rgba(91,155,213,.6)}
+input[type=number]{width:76px}
+input.w-mid{width:220px}
+input.w-big{width:320px}
+select{appearance:none; padding-right:22px;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5'><path d='M0 0l4 5 4-5z' fill='%23888'/></svg>");
+  background-repeat:no-repeat; background-position:right 8px center;
+}
+select option{background:#171b26; color:#E8EAF0}
+::placeholder{color:var(--faint)}
+
+/* ── 按钮 ── */
+button{font-family:inherit}
+.btn{
+  border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.05);
+  color:var(--txt); border-radius:7px; padding:5px 12px; font-size:12.5px; cursor:pointer;
+}
+.btn:hover{background:rgba(255,255,255,.1)}
+.btn.pri{background:rgba(91,155,213,.2); border-color:rgba(91,155,213,.55); color:var(--blue-t)}
+.btn.pri:hover{background:rgba(91,155,213,.3)}
+.btn.danger{background:rgba(232,93,93,.12); border-color:rgba(232,93,93,.45); color:var(--red)}
+.btn.danger:hover{background:rgba(232,93,93,.22)}
+.btn.sm{padding:2px 9px; font-size:11.5px; border-radius:6px}
+.btn:disabled{opacity:.4; cursor:default}
+.btn:disabled:hover{background:rgba(255,255,255,.05)}
+
+/* ── 徽章 ── */
+.badge{
+  display:inline-flex; align-items:center; gap:4px;
+  font-size:10.5px; line-height:1; border-radius:9px; padding:2.5px 7px;
+  border:1px solid; white-space:nowrap;
+}
+.badge.green{color:var(--green); border-color:rgba(107,191,138,.5); background:rgba(107,191,138,.1)}
+.badge.yellow{color:var(--yellow); border-color:rgba(232,195,61,.5); background:rgba(232,195,61,.1)}
+.badge.blue{color:var(--blue-t); border-color:rgba(91,155,213,.5); background:rgba(91,155,213,.12)}
+.badge.gray{color:var(--dim); border-color:rgba(255,255,255,.18); background:rgba(255,255,255,.04)}
+.badge.red{color:var(--red); border-color:rgba(232,93,93,.5); background:rgba(232,93,93,.1)}
+
+/* ── 开关 ── */
+.sw{position:relative; display:inline-block; width:34px; height:19px; flex:none}
+.sw input{opacity:0; width:0; height:0; position:absolute}
+.sw .tr{
+  position:absolute; inset:0; border-radius:10px; cursor:pointer;
+  background:rgba(255,255,255,.14); transition:.15s;
+}
+.sw .tr::before{
+  content:''; position:absolute; left:2.5px; top:2.5px; width:14px; height:14px;
+  border-radius:50%; background:#cfd3dd; transition:.15s;
+}
+.sw input:checked + .tr{background:rgba(91,155,213,.55)}
+.sw input:checked + .tr::before{transform:translateX(15px); background:#fff}
+.sw .lb-on{margin-left:8px; font-size:12px; color:var(--dim)}
+
+/* ── 三态分段控件 ── */
+.seg{display:inline-flex; border:1px solid rgba(255,255,255,.14); border-radius:8px; overflow:hidden}
+.seg button{
+  border:none; background:none; color:var(--dim); font-size:12px;
+  padding:4px 13px; cursor:pointer; border-right:1px solid rgba(255,255,255,.09);
+}
+.seg button:last-child{border-right:none}
+.seg button:hover{background:rgba(255,255,255,.05)}
+.seg button.on{background:rgba(91,155,213,.25); color:var(--blue-t)}
+.seg button.on.v-enforce{background:rgba(232,93,93,.22); color:#F0A0A0}
+.seg button.on.v-observe{background:rgba(232,195,61,.16); color:var(--yellow)}
+
+/* ── 供应商列表 ── */
+.upstream{
+  border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.02);
+  padding:10px 12px; margin-bottom:8px;
+}
+.upstream.active{border-color:rgba(107,191,138,.45); background:rgba(107,191,138,.05)}
+.upstream .u-head{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.upstream .u-name{font-weight:600; font-size:13.5px}
+.upstream .u-url{font:11px Consolas,monospace; color:var(--dim); margin-top:3px; word-break:break-all}
+.upstream .u-meta{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:7px; font-size:11.5px; color:var(--dim)}
+.upstream .u-acts{display:flex; gap:6px; margin-left:auto}
+.u-key{font:11px Consolas,monospace; color:var(--dim)}
+
+/* ── 表格 ── */
+table.tbl{width:100%; border-collapse:collapse; font-size:12.5px}
+.tbl th{
+  text-align:left; font-weight:400; color:var(--faint); font-size:11px;
+  padding:4px 8px; border-bottom:1px solid var(--line);
+}
+.tbl td{padding:6px 8px; border-bottom:1px solid rgba(255,255,255,.05); vertical-align:middle}
+.tbl tr:last-child td{border-bottom:none}
+.tbl .mono{font:11.5px Consolas,monospace; color:var(--dim)}
+.tbl tr.pending-del td{opacity:.45}
+.tbl tr.pending-del td .cell-txt{text-decoration:line-through}
+.tbl input[type=number]{width:64px; padding:2px 6px}
+.tbl input[type=text]{padding:2px 6px}
+
+/* ── model_map 六键 ── */
+.mmap{display:grid; grid-template-columns:repeat(3, 1fr); gap:6px 12px; margin-top:6px}
+.mmap .mm{display:flex; align-items:center; gap:6px}
+.mmap .mm label{width:52px; flex:none; font:11px Consolas,monospace; color:var(--dim)}
+.mmap .mm input{flex:1; min-width:0; padding:3px 7px; font-size:12px}
+
+/* ── 保存条 / 改动预览 ── */
+.savebar{display:flex; align-items:center; gap:10px; margin-top:4px}
+.savebar .feedback{display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--dim)}
+.preview{
+  display:none; border:1px solid rgba(91,155,213,.4); background:rgba(91,155,213,.07);
+  border-radius:10px; padding:10px 12px; margin-top:10px;
+}
+.preview.show{display:block}
+.preview h4{font-size:12.5px; color:var(--blue-t); margin-bottom:6px}
+.preview .pv-row{display:flex; align-items:baseline; gap:8px; font-size:12px; padding:3px 0}
+.preview .pv-row .pv-lb{color:var(--dim); width:170px; flex:none}
+.preview .pv-old{color:var(--red); text-decoration:line-through}
+.preview .pv-arrow{color:var(--faint)}
+.preview .pv-new{color:var(--green); font-weight:600}
+.preview .pv-acts{display:flex; gap:8px; margin-top:8px}
+
+/* ── 备份列表 ── */
+.snap{
+  display:flex; align-items:center; gap:10px; padding:8px 4px;
+  border-bottom:1px solid rgba(255,255,255,.05); font-size:12.5px;
+}
+.snap:last-child{border-bottom:none}
+.snap .s-time{font:11.5px Consolas,monospace; color:var(--dim); width:138px; flex:none}
+.snap .s-why{flex:1; color:var(--txt)}
+.snap .s-why .tag{font-size:10.5px; color:var(--faint)}
+
+/* ── 二次确认弹窗 ── */
+.mask{
+  position:fixed; inset:0; z-index:90; display:none;
+  background:rgba(5,6,9,.6); align-items:center; justify-content:center;
+}
+.mask.show{display:flex}
+.modal{
+  width:420px; max-width:calc(100vw - 40px);
+  background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  padding:18px 18px 14px; box-shadow:0 20px 60px rgba(0,0,0,.65);
+}
+.modal h3{font-size:14px; margin-bottom:8px; display:flex; align-items:center; gap:8px}
+.modal h3 .warn-ic{color:var(--yellow); flex:none}
+.modal p{font-size:12.5px; color:var(--dim); line-height:1.7}
+.modal .m-acts{display:flex; justify-content:flex-end; gap:8px; margin-top:16px}
+
+/* ── toast ── */
+#toast{
+  position:fixed; top:26px; right:26px; z-index:99; display:none;
+  align-items:center; gap:8px;
+  background:rgba(23,27,38,.97); border:1px solid var(--line); border-radius:10px;
+  padding:9px 14px; font-size:12.5px; box-shadow:0 10px 30px rgba(0,0,0,.55);
+}
+#toast.show{display:inline-flex}
+
+.divider{height:1px; background:var(--line); margin:14px 0}
+</style>
+</head>
+<body>
+
+<div class="window">
+  <!-- 假标题栏（示意独立桌面窗口；真窗口标题栏由系统/Tauri 提供） -->
+  <div class="titlebar">
+    <span class="t-title"><b>Ferryman 工作台</b> · 设置</span>
+    <span class="restart-flag" id="restartFlag">● 有改动待重启后生效</span>
+    <span class="t-gap"></span>
+    <span class="t-win"><svg width="10" height="2" viewBox="0 0 10 2"><rect width="10" height="1.4" fill="currentColor"/></svg></span>
+    <span class="t-win"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.7" y="0.7" width="8.6" height="8.6" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></span>
+    <span class="t-win close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" stroke-width="1.2"/></svg></span>
+  </div>
+
+  <div class="body">
+    <!-- 左侧分组导航 -->
+    <aside class="side">
+      <nav id="nav">
+        <button class="nav-it on" data-sec="providers">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5.5h12M2 10.5h12"/><circle cx="5" cy="5.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="11" cy="10.5" r="1.6" fill="currentColor" stroke="none"/></svg>
+          供应商
+        </button>
+        <button class="nav-it" data-sec="gate">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 1.5l5.5 2v4c0 3.4-2.3 5.6-5.5 7-3.2-1.4-5.5-3.6-5.5-7v-4z"/></svg>
+          闸门与阈值
+        </button>
+        <button class="nav-it" data-sec="watch">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 8s2.6-4.2 6.5-4.2S14.5 8 14.5 8 11.9 12.2 8 12.2 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8"/></svg>
+          守望目录
+        </button>
+        <button class="nav-it" data-sec="heartbeat">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 8h3l1.5-4 3 8 1.5-4h4"/></svg>
+          心跳与保温
+        </button>
+        <button class="nav-it" data-sec="ferry">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5.5h9M8.5 3l2.5 2.5L8.5 8M14 10.5H5M7.5 8l-2.5 2.5L7.5 13"/></svg>
+          摆渡
+        </button>
+        <button class="nav-it" data-sec="prices">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6"/><path d="M8 4.5v7M5.5 6.2c0-.9 1.1-1.5 2.5-1.5s2.5.6 2.5 1.5-1 1.4-2.5 1.6-2.5.7-2.5 1.6 1.1 1.5 2.5 1.5 2.5-.6 2.5-1.5"/></svg>
+          价格表
+        </button>
+        <button class="nav-it" data-sec="notify">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 2a4.5 4.5 0 0 0-4.5 4.5c0 3-1.5 4-1.5 4h12s-1.5-1-1.5-4A4.5 4.5 0 0 0 8 2zM6.5 13a1.5 1.5 0 0 0 3 0"/></svg>
+          通知
+        </button>
+        <button class="nav-it" data-sec="service">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2.5" width="12" height="4.5" rx="1"/><rect x="2" y="9" width="12" height="4.5" rx="1"/><circle cx="4.6" cy="4.75" r=".9" fill="currentColor" stroke="none"/><circle cx="4.6" cy="11.25" r=".9" fill="currentColor" stroke="none"/></svg>
+          服务
+        </button>
+        <button class="nav-it" data-sec="backup">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 5.5v-2h11v2M2.5 5.5h11v7a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5zM6.5 8.5h3"/></svg>
+          备份与还原
+        </button>
+      </nav>
+      <div class="side-foot">
+        <button class="btn-restart" id="btnRestart">重启守护</button>
+        <div class="cap">安全重启：等在途请求跑完再重启，不打断正在进行的对话。</div>
+      </div>
+    </aside>
+
+    <!-- 右侧内容区 -->
+    <main class="main">
+
+      <!-- ════════ 1. 供应商 ════════ -->
+      <section class="sec on" id="sec-providers">
+        <h2>供应商</h2>
+        <p class="lead">渡口上游（Claude Code 发出的请求先经过本机渡口，再转给这里选中的那一家）和摆渡供应商（生成交接文档用的另一家便宜模型）是两张互不相干的表。</p>
+
+        <div class="card">
+          <h3>渡口上游 <span class="sub">同一时刻只有一家在干活 <span class="key">[dock.upstreams]</span></span></h3>
+
+          <div class="upstream active" data-name="智谱">
+            <div class="u-head">
+              <span class="u-name">智谱</span>
+              <span class="badge green">● 当前使用中</span>
+              <span class="badge blue">codex 需翻译</span>
+              <span class="u-acts">
+                <button class="btn sm" disabled>切换到这家</button>
+                <button class="btn sm danger" data-del="智谱">删除</button>
+              </span>
+            </div>
+            <div class="u-url">https://open.bigmodel.cn/api/anthropic</div>
+            <div class="u-meta">
+              <span>方言（和上游对话用的协议格式）：anthropic</span>
+              <span>密钥 <span class="u-key">••••8f3a</span></span>
+              <span>默认模型 glm-5.3</span>
+            </div>
+          </div>
+
+          <div class="upstream" data-name="kimi">
+            <div class="u-head">
+              <span class="u-name">kimi</span>
+              <span class="badge blue">codex 需翻译</span>
+              <span class="u-acts">
+                <button class="btn sm" data-switch="kimi">切换到这家</button>
+                <button class="btn sm danger" data-del="kimi">删除</button>
+              </span>
+            </div>
+            <div class="u-url">https://api.kimi.com/coding/</div>
+            <div class="u-meta">
+              <span>方言：anthropic</span>
+              <span>密钥 <span class="u-key">••••c21d</span></span>
+              <span>默认模型 kimi-for-coding</span>
+            </div>
+          </div>
+
+          <div class="upstream" data-name="deepseek">
+            <div class="u-head">
+              <span class="u-name">deepseek</span>
+              <span class="badge blue">codex 需翻译</span>
+              <span class="u-acts">
+                <button class="btn sm" data-switch="deepseek">切换到这家</button>
+                <button class="btn sm danger" data-del="deepseek">删除</button>
+              </span>
+            </div>
+            <div class="u-url">https://api.deepseek.com/anthropic</div>
+            <div class="u-meta">
+              <span>方言：anthropic</span>
+              <span>密钥 <span class="u-key">••••04be</span></span>
+              <span>默认模型 deepseek-flash</span>
+            </div>
+          </div>
+
+          <div class="upstream" data-name="pi-gateway">
+            <div class="u-head">
+              <span class="u-name">pi-gateway</span>
+              <span class="badge gray">codex 原生</span>
+              <span class="u-acts">
+                <button class="btn sm" data-switch="pi-gateway">切换到这家</button>
+                <button class="btn sm danger" data-del="pi-gateway">删除</button>
+              </span>
+            </div>
+            <div class="u-url">http://127.0.0.1:8317/v1</div>
+            <div class="u-meta">
+              <span>方言：openai_responses</span>
+              <span>密钥 <span class="u-key">未设置</span></span>
+              <span>默认模型 gpt-5-codex</span>
+            </div>
+          </div>
+
+          <div class="upstream" data-name="old-relay">
+            <div class="u-head">
+              <span class="u-name">old-relay</span>
+              <span class="badge red">codex 不支持</span>
+              <span class="u-acts">
+                <button class="btn sm" data-switch="old-relay">切换到这家</button>
+                <button class="btn sm danger" data-del="old-relay">删除</button>
+              </span>
+            </div>
+            <div class="u-url">http://127.0.0.1:15721</div>
+            <div class="u-meta">
+              <span>方言：anthropic</span>
+              <span>密钥 <span class="u-key">••••77e0</span></span>
+              <span>本地中转条目，守卫强制透传</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>新增渡口上游</h3>
+          <div class="frow">
+            <span class="lb">名字</span>
+            <input type="text" class="w-mid" placeholder="例：zhipu-backup">
+            <span class="hint">起个你认得的名字，之后「切换到这家」就用它。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">服务地址 <span class="key">base_url</span></span>
+            <input type="text" class="w-big" placeholder="https://…">
+          </div>
+          <div class="frow">
+            <span class="lb">方言 <span class="key">dialect</span></span>
+            <select><option>anthropic</option><option>openai_responses</option></select>
+            <span class="hint">这家上游说哪种协议。anthropic 的可以给 Claude Code 直接用；openai_responses 的 codex 原生可用。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">API 密钥 <span class="key">api_key</span></span>
+            <input type="password" class="w-big" placeholder="粘贴后只存不显示，之后只能看到尾四位">
+          </div>
+          <div class="frow" style="align-items:flex-start">
+            <span class="lb">模型映射 <span class="key">model_map</span></span>
+            <div style="flex:1">
+              <div class="mmap">
+                <div class="mm"><label>default</label><input type="text" placeholder="默认模型（必填）"></div>
+                <div class="mm"><label>opus</label><input type="text" placeholder="可留空"></div>
+                <div class="mm"><label>sonnet</label><input type="text" placeholder="可留空"></div>
+                <div class="mm"><label>haiku</label><input type="text" placeholder="可留空"></div>
+                <div class="mm"><label>codex</label><input type="text" placeholder="可留空"></div>
+                <div class="mm"><label>pi</label><input type="text" placeholder="可留空"></div>
+              </div>
+              <div class="hint" style="padding-left:0; margin-top:4px">编辑器里写的模型名（如 sonnet）到这家上游真实模型名的对照。default 必填，其余留空就回落到 default。</div>
+            </div>
+          </div>
+          <div class="savebar">
+            <button class="btn pri" id="btnAddUpstream">添加</button>
+            <span class="feedback" id="fbAdd"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>摆渡供应商 <span class="sub">另一张表，给「摆渡」组选用 <span class="key">[providers]</span></span></h3>
+          <table class="tbl">
+            <tr><th>名字</th><th>服务地址</th><th>模型</th><th>上下文窗口</th><th>密钥</th><th></th></tr>
+            <tr>
+              <td>deepseek</td>
+              <td class="mono">https://api.deepseek.com/v1</td>
+              <td class="mono">deepseek-v4.1-flash</td>
+              <td>105 万 token</td>
+              <td class="mono">••••9c07</td>
+              <td><button class="btn sm danger" data-del-p="deepseek">删除</button></td>
+            </tr>
+            <tr>
+              <td>glm</td>
+              <td class="mono">https://open.bigmodel.cn/api/paas/v4</td>
+              <td class="mono">glm-5.3-flash</td>
+              <td>105 万 token</td>
+              <td class="mono">••••b3e5</td>
+              <td><button class="btn sm danger" data-del-p="glm">删除</button></td>
+            </tr>
+            <tr>
+              <td>local</td>
+              <td class="mono">http://192.168.1.20:8000/v1</td>
+              <td class="mono">qwen3-32b</td>
+              <td>13 万 token</td>
+              <td class="mono">未设置</td>
+              <td><button class="btn sm danger" data-del-p="local">删除</button></td>
+            </tr>
+          </table>
+          <div class="savebar" style="margin-top:10px">
+            <button class="btn" id="btnAddProvider">新增摆渡供应商</button>
+            <span class="feedback" id="fbProvider"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════ 2. 闸门与阈值 ════════ -->
+      <section class="sec" id="sec-gate" data-preview>
+        <h2>闸门与阈值</h2>
+        <p class="lead">闸门（守在编辑器会话门口的一层拦截：会话凉透了还继续往里发消息，就会被拦下、引导你开新会话接着干，避免为已经死掉的缓存全价重付）。</p>
+
+        <div class="card">
+          <h3>闸门总开关 <span class="key">gate.mode</span></h3>
+          <div class="frow">
+            <span class="lb">总开关</span>
+            <span class="seg" id="gateMain">
+              <button data-v="off">关</button>
+              <button data-v="observe">只提醒</button>
+              <button data-v="enforce" class="on v-enforce">拦截</button>
+            </span>
+            <span class="hint" style="padding-left:0">「只提醒」= 不拦，只在旁边告诉你缓存已死；「拦截」= 直接拦下这条消息。从「拦截」往下降会弹确认。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">Claude Code</span>
+            <span class="seg gate-track">
+              <button data-v="off">关</button>
+              <button data-v="observe">只提醒</button>
+              <button data-v="enforce" class="on v-enforce">拦截</button>
+            </span>
+          </div>
+          <div class="frow">
+            <span class="lb">Codex</span>
+            <span class="seg gate-track">
+              <button data-v="off">关</button>
+              <button data-v="observe" class="on v-observe">只提醒</button>
+              <button data-v="enforce">拦截</button>
+            </span>
+          </div>
+          <div class="frow">
+            <span class="lb">DSH</span>
+            <span class="seg gate-track">
+              <button data-v="off" class="on">关</button>
+              <button data-v="observe">只提醒</button>
+              <button data-v="enforce">拦截</button>
+            </span>
+          </div>
+          <div class="note" style="margin-top:6px">三条轨道各自独立：总开关管默认，轨道上的选择覆盖总开关。三态永不自动升级，只会越调越松。</div>
+        </div>
+
+        <div class="card">
+          <h3>阈值 <span class="sub">改了先给你看对照，确认后才存</span></h3>
+          <div class="frow">
+            <span class="lb">总结阈值 <span class="key">summarize_s</span></span>
+            <input type="number" data-f data-label="总结阈值" data-old="25" data-unit="分钟" value="25">
+            <span class="unit">分钟</span>
+            <span class="hint">会话闲置到这个时长，就自动生成一份交接文档（记下干到哪了、下一步干啥），给新会话接着用。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">拦截阈值 <span class="key">block_s</span></span>
+            <input type="number" data-f data-label="拦截阈值" data-old="35" data-unit="分钟" value="35">
+            <span class="unit">分钟</span>
+            <span class="hint">会话闲置超过这个时长，新消息就会被拦下引导开新会话。要比总结阈值大。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">最小上下文门槛 <span class="key">min_context</span></span>
+            <input type="number" data-f data-label="最小上下文门槛" data-old="2" data-unit="万 token" value="2">
+            <span class="unit">万 token</span>
+            <span class="hint">会话太短就不值得摆渡——低于这个量的会话直接放行，不生成交接。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">缓存已死提醒 <span class="key">cache_warn_s</span></span>
+            <input type="number" data-f data-label="缓存已死提醒" data-old="12" data-unit="分钟" value="12">
+            <span class="unit">分钟</span>
+            <span class="hint">闲置到这个时长弹一句纯提醒：缓存已死、本条消息要按全价付。填 0 关闭。</span>
+          </div>
+
+          <div class="savebar">
+            <button class="btn pri" data-save>保存</button>
+            <span class="feedback"></span>
+          </div>
+          <div class="preview">
+            <h4>改动预览（还没保存，确认后才落盘）</h4>
+            <div class="pv-list"></div>
+            <div class="pv-acts">
+              <button class="btn pri sm" data-pv-ok>确认保存</button>
+              <button class="btn sm" data-pv-cancel>取消</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════ 3. 守望目录 ════════ -->
+      <section class="sec" id="sec-watch">
+        <h2>守望目录</h2>
+        <p class="lead">守望（Ferryman 盯着这些文件夹里的会话记录文件，靠文件的最后改动时间判断会话是热是凉）。</p>
+        <div class="card">
+          <h3>会话目录 <span class="key">[watch]</span></h3>
+          <div class="frow">
+            <span class="lb">Claude Code 目录</span>
+            <input type="text" class="w-big" data-f data-label="Claude Code 目录" data-old="C:\Users\allan716\.claude\projects" value="C:\Users\allan716\.claude\projects">
+          </div>
+          <div class="frow">
+            <span class="lb">Codex 目录</span>
+            <input type="text" class="w-big" data-f data-label="Codex 目录" data-old="C:\Users\allan716\.codex\sessions" value="C:\Users\allan716\.codex\sessions">
+            <span class="hint">经 Orca 启动的 codex 会话目录存在时会自动追加，不用手填。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">DSH 目录</span>
+            <input type="text" class="w-big" data-f data-label="DSH 目录" data-old="C:\Users\allan716\.dsh\sessions" value="C:\Users\allan716\.dsh\sessions">
+          </div>
+          <div class="frow">
+            <span class="lb">轮询间隔 <span class="key">poll_s</span></span>
+            <input type="number" data-f data-label="轮询间隔" data-old="2" data-unit="秒" value="2">
+            <span class="unit">秒</span>
+            <span class="hint">每隔几秒看一次目录。调大更省 CPU，但闲置判定会粗一点。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">用量采集 <span class="key">harvest_usage</span></span>
+            <label class="sw"><input type="checkbox" data-f-check data-label="用量采集" data-old="开" checked><span class="tr"></span></label>
+            <span class="hint">把每次会话的 token 用量记进账本，会话文件 30 天清理后账还查得到。</span>
+          </div>
+          <div class="savebar">
+            <button class="btn pri" data-save-direct>保存</button>
+            <span class="feedback"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════ 4. 心跳与保温 ════════ -->
+      <section class="sec" id="sec-heartbeat" data-preview>
+        <h2>心跳与保温</h2>
+        <p class="lead">心跳保温（缓存快过期时自动发一条不花钱的轻量请求，把缓存「拍醒」续命）。这组参数动了会先给你看改动对照。</p>
+
+        <div class="card">
+          <h3>心跳 <span class="key">[heartbeat]</span></h3>
+          <div class="frow">
+            <span class="lb">心跳开关</span>
+            <label class="sw"><input type="checkbox" data-f-check data-label="心跳开关" data-old="关"><span class="tr"></span></label>
+            <span class="hint">默认关。开之前建议先跑缓存 TTL 实测，把下面的保鲜期填成实测值。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">缓存保鲜期 <span class="key">ttl_s</span></span>
+            <input type="number" data-f data-label="缓存保鲜期" data-old="10" data-unit="分钟" value="10">
+            <span class="unit">分钟</span>
+            <span class="hint">缓存的保鲜期（TTL）：超过这个时长不动，缓存就被服务商回收。同模型摆渡判热也用这个值。</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>问询守望 <span class="key">[question_watch]</span></h3>
+          <div class="note">问询守望（你一口气抛了一串问题等答复时，帮你守住这段时间的缓存不失效）。</div>
+          <div class="frow">
+            <span class="lb">模式 <span class="key">mode</span></span>
+            <span class="seg" id="qwMode">
+              <button data-v="off" class="on">关</button>
+              <button data-v="observe">只提醒</button>
+              <button data-v="enforce">保温</button>
+            </span>
+          </div>
+          <div class="frow">
+            <span class="lb">提问潮门槛 <span class="key">min_questions</span></span>
+            <input type="number" data-f data-label="提问潮门槛" data-old="5" data-unit="条" value="5">
+            <span class="unit">条</span>
+            <span class="hint">最后一条回复里带的问题数达到这个值，才认为你在等答复。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">心跳间隔 <span class="key">beat_interval_s</span></span>
+            <input type="number" data-f data-label="心跳间隔" data-old="7" data-unit="分钟" value="7">
+            <span class="unit">分钟</span>
+          </div>
+          <div class="frow">
+            <span class="lb">每窗最多跳数 <span class="key">max_beats</span></span>
+            <input type="number" data-f data-label="每窗最多跳数" data-old="2" data-unit="跳" value="2">
+            <span class="unit">跳</span>
+            <span class="hint">等待窗（一次等答复的时间窗口）里最多拍醒几次，防止无限保温。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">摆渡死线提前量 <span class="key">ferry_deadline_lead_s</span></span>
+            <input type="number" data-f data-label="摆渡死线提前量" data-old="8" data-unit="分钟" value="8">
+            <span class="unit">分钟</span>
+            <span class="hint">赶在拦截阈值之前这么久完成摆渡，留足余量。</span>
+          </div>
+
+          <div class="savebar">
+            <button class="btn pri" data-save>保存</button>
+            <span class="feedback"></span>
+          </div>
+          <div class="preview">
+            <h4>改动预览（还没保存，确认后才落盘）</h4>
+            <div class="pv-list"></div>
+            <div class="pv-acts">
+              <button class="btn pri sm" data-pv-ok>确认保存</button>
+              <button class="btn sm" data-pv-cancel>取消</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════ 5. 摆渡 ════════ -->
+      <section class="sec" id="sec-ferry">
+        <h2>摆渡</h2>
+        <p class="lead">摆渡（会话闲置到总结阈值时，自动生成交接文档的那个动作）。这里决定用哪家供应商来写交接。</p>
+
+        <div class="card">
+          <h3>摆渡执行 <span class="key">[ferry]</span></h3>
+          <div class="frow">
+            <span class="lb">摆渡供应商 <span class="key">provider</span></span>
+            <select id="ferryProvider">
+              <option selected>deepseek</option>
+              <option>glm</option>
+              <option>local</option>
+            </select>
+            <span class="hint">候选来自「供应商」组的摆渡供应商表。当前生效：deepseek（已生效徽章见保存反馈）。</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>同模型摆渡 <span class="key">[ferry.same_model]</span></h3>
+          <div class="note">同模型摆渡（会话快凉时，用当前这家上游自己顺手生成交接——前缀还能命中缓存，比跨家便宜）。</div>
+          <div class="frow">
+            <span class="lb">开关 <span class="key">enabled</span></span>
+            <label class="sw"><input type="checkbox" id="sameModel"><span class="tr"></span></label>
+          </div>
+          <div class="frow">
+            <span class="lb">触发阈值 <span class="key">threshold_min</span></span>
+            <input type="number" value="20">
+            <span class="unit">分钟</span>
+            <span class="hint">不能高于总结阈值（25 分钟），也不能低于 10 分钟。</span>
+          </div>
+          <div class="frow" style="align-items:flex-start">
+            <span class="lb">上游白名单 <span class="key">upstreams</span></span>
+            <div>
+              <label style="display:block; padding:2px 0"><input type="checkbox" style="accent-color:#5B9BD5"> 智谱</label>
+              <label style="display:block; padding:2px 0"><input type="checkbox" style="accent-color:#5B9BD5"> kimi</label>
+              <label style="display:block; padding:2px 0"><input type="checkbox" style="accent-color:#5B9BD5"> deepseek</label>
+              <div class="hint" style="padding-left:0; margin-top:4px">勾进白名单 ≠ 启用——每家上游须先通过追加重放实验才真正启用。</div>
+            </div>
+          </div>
+          <div class="savebar">
+            <button class="btn pri" data-save-direct>保存</button>
+            <span class="feedback"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════ 6. 价格表 ════════ -->
+      <section class="sec" id="sec-prices" data-preview>
+        <h2>价格表</h2>
+        <p class="lead">账本按这里的单价算账。单位都是「每 1 万 token 的价格」，缓存价留空表示这家没有缓存价（省钱账会标成不可算）。改动保存前会先看对照。</p>
+
+        <div class="card">
+          <h3>单价 <span class="key">[prices]</span></h3>
+          <table class="tbl" id="priceTbl">
+            <tr><th>供应商</th><th>模型</th><th>输入价</th><th>缓存价</th><th>输出价</th><th>计价单位</th><th></th></tr>
+            <tr>
+              <td class="cell-txt">glm</td><td class="cell-txt mono">glm-5.3</td>
+              <td><input type="number" data-f data-label="glm / glm-5.3 输入价" data-old="6.9" data-unit="积分/万 token" value="6.9" step="0.1"></td>
+              <td><input type="number" data-f data-label="glm / glm-5.3 缓存价" data-old="1.7" data-unit="积分/万 token" value="1.7" step="0.1"></td>
+              <td><input type="number" data-f data-label="glm / glm-5.3 输出价" data-old="24" data-unit="积分/万 token" value="24" step="0.1"></td>
+              <td>智谱积分</td>
+              <td><button class="btn sm danger" data-del-row>删除</button></td>
+            </tr>
+            <tr>
+              <td class="cell-txt">glm</td><td class="cell-txt mono">glm-5.3-flash</td>
+              <td><input type="number" data-f data-label="glm / glm-5.3-flash 输入价" data-old="2.2" data-unit="积分/万 token" value="2.2" step="0.1"></td>
+              <td><input type="number" data-f data-label="glm / glm-5.3-flash 缓存价" data-old="0.6" data-unit="积分/万 token" value="0.6" step="0.1"></td>
+              <td><input type="number" data-f data-label="glm / glm-5.3-flash 输出价" data-old="8" data-unit="积分/万 token" value="8" step="0.1"></td>
+              <td>智谱积分</td>
+              <td><button class="btn sm danger" data-del-row>删除</button></td>
+            </tr>
+            <tr>
+              <td class="cell-txt">deepseek</td><td class="cell-txt mono">deepseek-v4.1-flash</td>
+              <td><input type="number" data-f data-label="deepseek / deepseek-v4.1-flash 输入价" data-old="0.8" data-unit="元/万 token" value="0.8" step="0.1"></td>
+              <td><input type="number" data-f data-label="deepseek / deepseek-v4.1-flash 缓存价" data-old="0.1" data-unit="元/万 token" value="0.1" step="0.1"></td>
+              <td><input type="number" data-f data-label="deepseek / deepseek-v4.1-flash 输出价" data-old="2.4" data-unit="元/万 token" value="2.4" step="0.1"></td>
+              <td>元</td>
+              <td><button class="btn sm danger" data-del-row>删除</button></td>
+            </tr>
+          </table>
+          <div class="savebar" style="margin-top:10px">
+            <button class="btn" id="btnAddPrice">新增一行</button>
+            <button class="btn pri" data-save>保存</button>
+            <span class="feedback"></span>
+          </div>
+          <div class="preview">
+            <h4>改动预览（还没保存，确认后才落盘）</h4>
+            <div class="pv-list"></div>
+            <div class="pv-acts">
+              <button class="btn pri sm" data-pv-ok>确认保存</button>
+              <button class="btn sm" data-pv-cancel>取消</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════ 7. 通知 ════════ -->
+      <section class="sec" id="sec-notify">
+        <h2>通知</h2>
+        <p class="lead">会话被闸门拦下时怎么喊你。凭据只存本机，界面上永远只看得到尾四位。</p>
+
+        <div class="card">
+          <h3>通知方式 <span class="key">[notify]</span></h3>
+          <div class="frow">
+            <span class="lb">通知总开关 <span class="key">enabled</span></span>
+            <label class="sw"><input type="checkbox" class="sw-live" data-name="通知总开关" checked><span class="tr"></span></label>
+          </div>
+          <div class="frow">
+            <span class="lb">Pushover（推手机） <span class="key">pushover</span></span>
+            <label class="sw"><input type="checkbox" class="sw-live" data-name="Pushover" checked><span class="tr"></span></label>
+          </div>
+          <div class="frow">
+            <span class="lb">Windows 桌面通知 <span class="key">toast</span></span>
+            <label class="sw"><input type="checkbox" class="sw-live" data-name="Windows 桌面通知" checked><span class="tr"></span></label>
+          </div>
+          <div class="frow">
+            <span class="lb">Pushover 凭据 <span class="key">pushover_token</span></span>
+            <span class="u-key">当前：••••9x2q</span>
+            <input type="password" class="w-mid" placeholder="留空则不修改">
+          </div>
+          <div class="frow">
+            <span class="lb">Pushover 用户标识 <span class="key">pushover_user</span></span>
+            <span class="u-key">当前：••••m41t</span>
+            <input type="password" class="w-mid" placeholder="留空则不修改">
+            <span class="hint">留空则回落到环境变量里的凭据（与 claude-notify 插件共用同一对）。</span>
+          </div>
+          <div class="savebar">
+            <button class="btn pri" data-save-direct>保存凭据</button>
+            <span class="feedback"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════ 8. 服务 ════════ -->
+      <section class="sec" id="sec-service" data-preview data-restart>
+        <h2>服务</h2>
+        <p class="lead">守护进程本身的运行参数。</p>
+        <div class="note warn">这一组的改动保存后不会马上生效，要重启守护才会用上。保存后右上角会出现「待重启」标记。</div>
+
+        <div class="card">
+          <h3>守护进程 <span class="key">[service]</span></h3>
+          <div class="frow">
+            <span class="lb">守护端口 <span class="key">port</span></span>
+            <input type="number" data-f data-label="守护端口" data-old="15722" data-unit="" value="15722" style="width:100px">
+            <span class="hint">渡口和状态接口都走这个端口。改它属于高风险操作，会弹确认。</span>
+          </div>
+          <div class="frow">
+            <span class="lb">数据目录 <span class="key">data_dir</span></span>
+            <input type="text" class="w-big" data-f data-label="数据目录" data-old="C:\Users\allan716\ferryman" value="C:\Users\allan716\ferryman">
+            <span class="hint">配置、账本、交接文档、备份快照都放在这里。</span>
+          </div>
+          <div class="savebar">
+            <button class="btn pri" data-save>保存</button>
+            <span class="feedback"></span>
+          </div>
+          <div class="preview">
+            <h4>改动预览（还没保存，确认后才落盘）</h4>
+            <div class="pv-list"></div>
+            <div class="pv-acts">
+              <button class="btn pri sm" data-pv-ok>确认保存</button>
+              <button class="btn sm" data-pv-cancel>取消</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════ 9. 备份与还原 ════════ -->
+      <section class="sec" id="sec-backup">
+        <h2>配置备份</h2>
+        <p class="lead">每次大动作（换供应商、改端口、升级）之前会自动留一份快照，也可以随时手动备份。</p>
+
+        <div class="card">
+          <h3>快照列表</h3>
+          <div id="snapList">
+            <div class="snap">
+              <span class="s-time">2026-10-05 12:40</span>
+              <span class="s-why">手动备份 <span class="tag">（你点的「立即备份」）</span></span>
+              <button class="btn sm" data-restore="2026-10-05 12:40">还原这份备份</button>
+            </div>
+            <div class="snap">
+              <span class="s-time">2026-10-03 09:12</span>
+              <span class="s-why">自动备份 <span class="tag">（切换活跃供应商前）</span></span>
+              <button class="btn sm" data-restore="2026-10-03 09:12">还原这份备份</button>
+            </div>
+            <div class="snap">
+              <span class="s-time">2026-09-30 21:03</span>
+              <span class="s-why">自动备份 <span class="tag">（升级到 0.2.7 前）</span></span>
+              <button class="btn sm" data-restore="2026-09-30 21:03">还原这份备份</button>
+            </div>
+          </div>
+          <div class="savebar" style="margin-top:10px">
+            <button class="btn pri" id="btnBackupNow">立即备份</button>
+            <span class="feedback" id="fbBackup"></span>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- 二次确认弹窗（高风险操作通用） -->
+<div class="mask" id="mask">
+  <div class="modal">
+    <h3>
+      <svg class="warn-ic" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8L15 13.5H1z"/><path d="M8 6v3.4"/><circle cx="8" cy="11.4" r=".8" fill="currentColor" stroke="none"/></svg>
+      <span id="mTitle">确认一下</span>
+    </h3>
+    <p id="mBody"></p>
+    <div class="m-acts">
+      <button class="btn" id="mCancel">再想想</button>
+      <button class="btn danger" id="mOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- toast -->
+<div id="toast"></div>
+
+<script>
+/* ════════ 假数据与交互（全部本地，零请求） ════════ */
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+
+/* ── 导航切换 ── */
+$$('#nav .nav-it').forEach(b => b.addEventListener('click', () => {
+  $$('#nav .nav-it').forEach(x => x.classList.toggle('on', x === b));
+  $$('.sec').forEach(s => s.classList.toggle('on', s.id === 'sec-' + b.dataset.sec));
+  $('.main').scrollTop = 0;
+}));
+
+/* ── toast（带生效徽章） ── */
+let toastTimer = null;
+function toast(msg, badge /* 'live' | 'restart' | null */) {
+  const t = $('#toast');
+  t.innerHTML = '<span>' + msg + '</span>' +
+    (badge === 'live' ? '<span class="badge green">已生效</span>' : '') +
+    (badge === 'restart' ? '<span class="badge yellow">已保存，重启守护后生效</span>' : '');
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+/* ── 高风险二次确认弹窗 ── */
+let pendingOk = null;
+function confirmRisk(title, body, okLabel, onOk) {
+  $('#mTitle').textContent = title;
+  $('#mBody').textContent = body;
+  $('#mOk').textContent = okLabel || '确定';
+  pendingOk = onOk;
+  $('#mask').classList.add('show');
+}
+$('#mCancel').addEventListener('click', () => { $('#mask').classList.remove('show'); pendingOk = null; });
+$('#mOk').addEventListener('click', () => {
+  $('#mask').classList.remove('show');
+  const f = pendingOk; pendingOk = null;
+  if (f) f();
+});
+$('#mask').addEventListener('click', e => { if (e.target.id === 'mask') { $('#mask').classList.remove('show'); pendingOk = null; } });
+
+/* ── 三态分段控件 ── */
+const MODE_TXT = { off: '关', observe: '只提醒', enforce: '拦截' };
+$$('.seg').forEach(seg => {
+  seg.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const cur = seg.querySelector('.on');
+    if (b === cur) return;
+    const apply = () => {
+      seg.querySelectorAll('button').forEach(x => x.classList.remove('on', 'v-off', 'v-observe', 'v-enforce'));
+      b.classList.add('on', 'v-' + b.dataset.v);
+      toast('已保存', 'live');
+    };
+    // 从「拦截/保温」降级 = 高风险，弹二次确认
+    if (cur && cur.dataset.v === 'enforce') {
+      const who = seg.id === 'gateMain' ? '闸门总开关' : (seg.id === 'qwMode' ? '问询守望' : '这条轨道');
+      confirmRisk(
+        '降级' + who + '？',
+        who + '从「' + MODE_TXT.enforce + '」降到「' + MODE_TXT[b.dataset.v] + '」后，凉掉的会话不会再被拦下，为死缓存全价重付的情况可能悄悄发生。确定降级？',
+        '确定降级',
+        apply
+      );
+    } else apply();
+  });
+});
+
+/* ── 中风险：保存前改动预览 ── */
+function collectDiffs(sec) {
+  const rows = [];
+  sec.querySelectorAll('[data-f]').forEach(el => {
+    if (el.closest('tr.pending-del')) return;
+    const oldV = el.dataset.old, newV = el.value;
+    if (String(oldV) !== String(newV))
+      rows.push({ lb: el.dataset.label, oldV: oldV + (el.dataset.unit ? ' ' + el.dataset.unit : ''), newV: newV + (el.dataset.unit ? ' ' + el.dataset.unit : ''), el });
+  });
+  sec.querySelectorAll('[data-f-check]').forEach(el => {
+    const newV = el.checked ? '开' : '关';
+    if (el.dataset.old !== newV) rows.push({ lb: el.dataset.label, oldV: el.dataset.old, newV, el });
+  });
+  sec.querySelectorAll('tr.pending-del').forEach(tr => {
+    const t = [...tr.querySelectorAll('.cell-txt')].map(x => x.textContent).join(' / ');
+    rows.push({ lb: '删除价格行', oldV: t, newV: '（删除）', el: tr, del: true });
+  });
+  return rows;
+}
+
+$$('[data-save]').forEach(btn => btn.addEventListener('click', () => {
+  const sec = btn.closest('section');
+  const diffs = collectDiffs(sec);
+  const fb = sec.querySelector('.savebar .feedback');
+  if (!diffs.length) { toast('没有改动', null); return; }
+
+  const doSave = () => {
+    diffs.forEach(d => {
+      if (d.del) d.el.remove();
+      else if (d.el.type === 'checkbox') d.el.dataset.old = d.el.checked ? '开' : '关';
+      else d.el.dataset.old = d.el.value;
+    });
+    const needRestart = sec.hasAttribute('data-restart');
+    if (needRestart) $('#restartFlag').classList.add('show');
+    toast('已保存 ' + diffs.length + ' 处改动', needRestart ? 'restart' : 'live');
+    sec.querySelector('.preview').classList.remove('show');
+  };
+
+  // 高风险字段（改端口）先走二次确认，再出预览
+  const portDiff = diffs.find(d => d.lb === '守护端口');
+  const showPreview = () => {
+    const list = sec.querySelector('.pv-list');
+    list.innerHTML = diffs.map(d =>
+      '<div class="pv-row"><span class="pv-lb">' + d.lb + '</span>' +
+      '<span class="pv-old">' + d.oldV + '</span><span class="pv-arrow">→</span>' +
+      '<span class="pv-new">' + d.newV + '</span></div>').join('');
+    sec.querySelector('.preview').classList.add('show');
+    sec.querySelector('[data-pv-ok]').onclick = doSave;
+    sec.querySelector('[data-pv-cancel]').onclick = () => sec.querySelector('.preview').classList.remove('show');
+  };
+  if (portDiff) {
+    confirmRisk(
+      '改守护端口？',
+      '守护端口从 ' + portDiff.oldV + ' 改成 ' + portDiff.newV + ' 后，所有指向旧端口的编辑器配置会立刻连不上渡口；重启守护后还要重新指一次。确定要改？',
+      '确定要改',
+      showPreview
+    );
+  } else showPreview();
+  void fb;
+}));
+
+/* ── 常规改动：直接保存 + toast ── */
+$$('[data-save-direct]').forEach(btn => btn.addEventListener('click', () => toast('已保存', 'live')));
+$$('.sw-live').forEach(sw => sw.addEventListener('change', () =>
+  toast(sw.dataset.name + '已' + (sw.checked ? '开启' : '关闭'), 'live')));
+
+/* ── 供应商：切换 / 删除（高风险） ── */
+$$('[data-switch]').forEach(b => b.addEventListener('click', () => {
+  const name = b.dataset.switch;
+  confirmRisk(
+    '切换到 ' + name + '？',
+    '切换活跃供应商后，Claude Code 之后的请求都会改走 ' + name + '，要重启守护才会生效；正在进行的对话不会被打断。确定切换？',
+    '切换到这家',
+    () => {
+      $('#restartFlag').classList.add('show');
+      toast('已切换到 ' + name, 'restart');
+    }
+  );
+}));
+$$('[data-del]').forEach(b => b.addEventListener('click', () => {
+  const name = b.dataset.del;
+  const active = b.closest('.upstream').classList.contains('active');
+  if (active) {
+    confirmRisk('删除「' + name + '」？',
+      name + ' 是当前使用中的供应商，删掉后 Claude Code 将无上游可用，直到你换一家或重新添加。确定删除？', '确定删除',
+      () => { b.closest('.upstream').remove(); toast('已删除 ' + name, null); });
+  } else {
+    confirmRisk('删除「' + name + '」？',
+      '删除 ' + name + ' 后，Claude Code 将无法使用这家供应商，直到你重新添加。确定？', '确定删除',
+      () => { b.closest('.upstream').remove(); toast('已删除 ' + name, null); });
+  }
+}));
+$$('[data-del-p]').forEach(b => b.addEventListener('click', () => {
+  const name = b.dataset.delP;
+  confirmRisk('删除摆渡供应商「' + name + '」？',
+    '删除后如果「摆渡」组正选着它，摆渡会降级为只写一份骨架交接（没有模型叙事）。确定删除？', '确定删除',
+    () => { b.closest('tr').remove(); toast('已删除 ' + name, null); });
+}));
+$('#btnAddUpstream').addEventListener('click', () => toast('已添加（演示：未真的入列）', 'live'));
+$('#btnAddProvider').addEventListener('click', () => toast('已添加（演示：未真的入列）', 'live'));
+
+/* ── 价格表：删行标记 + 新增行 ── */
+$$('#priceTbl [data-del-row]').forEach(b => b.addEventListener('click', () =>
+  b.closest('tr').classList.toggle('pending-del')));
+$('#btnAddPrice').addEventListener('click', () => {
+  const tr = document.createElement('tr');
+  tr.innerHTML = '<td><input type="text" placeholder="供应商" style="width:80px"></td>' +
+    '<td><input type="text" placeholder="模型" style="width:130px"></td>' +
+    '<td><input type="number" step="0.1" data-f data-label="新行输入价" data-old="" data-unit="/万 token"></td>' +
+    '<td><input type="number" step="0.1" data-f data-label="新行缓存价" data-old="" data-unit="/万 token"></td>' +
+    '<td><input type="number" step="0.1" data-f data-label="新行输出价" data-old="" data-unit="/万 token"></td>' +
+    '<td>元</td><td><button class="btn sm danger">删除</button></td>';
+  tr.querySelector('[data-del-row], .danger').addEventListener('click', () => tr.classList.toggle('pending-del'));
+  $('#priceTbl').appendChild(tr);
+});
+
+/* ── 备份与还原 ── */
+$('#btnBackupNow').addEventListener('click', () => {
+  const now = new Date();
+  const p = n => String(n).padStart(2, '0');
+  const ts = now.getFullYear() + '-' + p(now.getMonth() + 1) + '-' + p(now.getDate()) + ' ' + p(now.getHours()) + ':' + p(now.getMinutes());
+  const div = document.createElement('div');
+  div.className = 'snap';
+  div.innerHTML = '<span class="s-time">' + ts + '</span>' +
+    '<span class="s-why">手动备份 <span class="tag">（你点的「立即备份」）</span></span>' +
+    '<button class="btn sm">还原这份备份</button>';
+  div.querySelector('button').addEventListener('click', () => askRestore(ts));
+  $('#snapList').prepend(div);
+  toast('已备份到快照库', 'live');
+});
+function askRestore(ts) {
+  confirmRisk(
+    '还原到 ' + ts + ' 的快照？',
+    '还原后当前配置会被这份快照整体替换。放心：还原前会先自动备份当前配置，随时可以再换回来。',
+    '还原这份备份',
+    () => toast('已还原，当前配置已自动另存一份', 'restart')
+  );
+}
+$$('[data-restore]').forEach(b => b.addEventListener('click', () => askRestore(b.dataset.restore)));
+
+/* ── 重启守护（固定入口） ── */
+$('#btnRestart').addEventListener('click', () => {
+  confirmRisk(
+    '现在重启守护？',
+    '安全重启：会等在途请求跑完再重启，不打断正在进行的对话；渡口会有几秒钟不可用。',
+    '重启守护',
+    () => { $('#restartFlag').classList.remove('show'); toast('守护已重启，待生效改动已全部生效', 'live'); }
+  );
+});
+</script>
+</body>
+</html>
