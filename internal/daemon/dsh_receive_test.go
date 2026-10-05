@@ -6,8 +6,9 @@ package daemon
 //   - POST /dsh/gate 闸门问询：判定走既有 Gate 入口——台账 miss 放行、非 cc
 //     档开关（gate.codex_mode）、observe 只警告、enforce 拦截＋交接＋原话
 //     保存，全套既有语义原样生效（「不复制阈值逻辑」的验收＝Stats/决策/副作用
-//     全部按 Gate 出，本文件不另写一分判定）；唯摆渡入队对 dsh 关闭（终局
-//     修复2——材料不可得,入队必败循环不收敛,见 gate.go observe/分支7 守卫）；
+//     全部按 Gate 出，本文件不另写一分判定）；摆渡入队与 cc 同机制（票03
+//     dsh-gate-ux 解锁——旧"终局修复2"排除随接法乙＋worker.doDsh 材料分支
+//     作废）；
 //   - POST /dsh/event 事件接收：Touch("dsh") 登记＋usage 四列入账；行字段与
 //     P2-1 pollDsh 现行行做 keyset 直接 diff（逐字段一致，pollDsh 改字段即红）；
 //     子会话直报随父入账不 Touch；坏形静默收窄（空键/未知事件/usage 非对象/
@@ -132,23 +133,25 @@ func TestDshGateReusesExistingJudgement(t *testing.T) {
 		t.Fatalf("原话未按既有语义保存: %q", p.Prompt)
 	}
 
-	// observe 案摆渡入队：dsh 不入队（终局修复2,票04×票06 跨票缝——摆渡材料
-	// 不可得,入队必败→CC 提取器产空骨架→covers=0 恒不过,循环不收敛；接法乙
-	// 落地票再开接线）；cc 会话照常入队（守护既有 observe 语义不回归）。
+	// observe 案摆渡入队（票03 dsh-gate-ux 解锁）：dsh 与 cc 同机制入队——
+	// 旧"终局修复2"排除（摆渡材料不可得，入队必败循环不收敛）随接法乙
+	//（2026-10-03，快照键可得）＋票02 材料分支（worker.doDsh）作废；cc 会话
+	// 照常入队（既有 observe 语义不回归）。
 	e2 := newDshRcvEnv(t, "observe")
 	e2.d.Cfg.GateCC = "observe" // cc 对照显式走 observe（不靠 Default 缺省）
 	reg(e2, 120)
 	e2.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
-	if got := e2.enqueuedList(); len(got) != 0 {
-		t.Fatalf("dsh observe 不应入队摆渡（修复2）: %v", got)
+	if got := e2.enqueuedList(); len(got) != 1 || got[0] != "dsh/"+sid {
+		t.Fatalf("dsh observe 应照常入队摆渡（接线后同机制）: %v", got)
 	}
 	ccSID := "cc-observe-contrast-0000000000000000"
 	ccPath := filepath.Join(e2.tmp, "cc-session.jsonl")
 	e2.led.TouchFull("cc", ccSID, ccPath, e2.t0-120, 10, "C:/proj", "",
 		testMinCtx+50, 0)
 	e2.d.Gate(gateBody(ccSID, ccPath, "C:/proj"))
-	if got := e2.enqueuedList(); len(got) != 1 || got[0] != "cc/"+ccSID {
-		t.Fatalf("cc observe 应照常入队（既有语义不回归）: %v", got)
+	if got := e2.enqueuedList(); len(got) != 2 || got[0] != "dsh/"+sid ||
+		got[1] != "cc/"+ccSID {
+		t.Fatalf("dsh/cc observe 均应入队（接线后同机制）: %v", got)
 	}
 }
 
