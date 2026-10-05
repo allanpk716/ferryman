@@ -920,6 +920,33 @@ func TestDshMachineWaitingCopyDshBranch(t *testing.T) {
 	}
 }
 
+// TestDshGateStaleRunResidueNotExempt running 残留豁免（2026-10-05 第二洞）：
+// status=running 置位后若无 idle 清除，残留可活到 DshRunStaleS（1h）——
+// 35min~1h 闲置段的回流全吃豁免漏拦。Gated 效期上界 DshRunGateCapS(600s)：
+// 残留（>10min）不再豁免，凉会话照走状态机；窗口内（如 5min，长生成中途）
+// 豁免保留。
+func TestDshGateStaleRunResidueNotExempt(t *testing.T) {
+	e := newDshRcvEnv(t, "enforce")
+	sid := dshRcvSID
+	e.led.TouchFull("dsh", sid, filepath.Join(e.tmp, "s.v4.jsonl.zstd"),
+		e.t0-testBlockS-5, 10, "C:/proj", "", testMinCtx+50, 0)
+	e.store.SaveHandoff(sid, "dsh", "C:/proj", "交接", isoUTC(e.t0-30), "fresh", "正文")
+	// 残留：40min 前置位 running（之后无 idle 清除、无产出）。
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": (e.t0 - 2400) * 1000, "data": map[string]any{"status": "running"}})
+	r := e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
+	if r["decision"] != "block" {
+		t.Fatalf("running 残留（40min 无产出）不得豁免凉会话: %v", r)
+	}
+	// 窗口内对照：5min 前置位（长生成中途形态）→ 豁免。
+	e.d.DshEvent(map[string]any{"session_id": sid, "event": "agent/status",
+		"time": (e.t0 - 300) * 1000, "data": map[string]any{"status": "running"}})
+	r2 := e.d.DshGate(map[string]any{"session_id": sid, "cwd": "C:/proj", "prompt": "继续"})
+	if r2["decision"] != "allow" || r2["reason"] != "machine-waiting" {
+		t.Fatalf("窗口内（5min）应豁免: %v", r2)
+	}
+}
+
 // TestProbeGateDshIndependentMode 查询面档位镜像（2026-10-05 漏拦案排障被
 // 误导）：GateDsh 独立档设置后 probeGate 须报 enforce（此前非 cc 一律回落
 // GateCodex，误报 observe）；且 enforce 档的凉会话推演走分支7（warn）。

@@ -36,10 +36,17 @@ const DshRunStaleS = 3600.0
 // **不足此值不豁免**。用户回流时 runtime 先发 turn/start / status=running、
 // 插件才问闸——刚置的运行态是本输入自己的信号而非「机器在跑」，照旧豁免＝
 // 凉会话永拦不住（当晚 20:55/22:18 两枪实测：闲置 2h39m/67min＋fresh 交接
-// 在位仍静默放行，全量重付 68k）。长任务防误拦不受影响：单步生成超过拦截线
-// 的场景，运行态早已置位分钟级≫宽限。已知边缘（如实声明）：子代理直报间隔
-// 小于宽限的高频循环中，对父会话插话会被当凉会话审——本输入该审，强续可解。
+// 在位仍静默放行，全量重付 68k）。
 const DshRunGraceS = 15.0
+
+// DshRunGateCapS dsh 豁免效期上界（闸门 Gated 判定专用，2026-10-05 漏拦案
+// 第二洞）：status=running 是「agent 有活动」不是「机器在产出」——用户点开
+// 会话/上轮开始都会置位，残留可活到 DshRunStaleS（1h），期间（35min~1h 闲置
+// 段）任何回流都会吃豁免漏拦。闸门豁免的真正保护域＝「凉会话且近处有机器
+// 活动」＝长生成中途/多步循环；单步生成超此窗无产出的事件断流极罕见，且
+// 闲置<拦截线时豁免与否同为 allow（not-in-window），收紧无副作用。
+// DshRunStaleS（1h）保留为运行态本体上界（qwatch 开窗等原语义用途不变）。
+const DshRunGateCapS = 600.0
 
 // QSnap qwatch 开窗瞬间的 (last_write, size)，供两道验新鲜度比对。
 type QSnap struct {
@@ -482,44 +489,45 @@ func (l *Ledger) DshChildrenSeedClaim() bool {
 	return true
 }
 
-// dshRunAgeEffective 运行态年龄在效判定（主/子两道共用）：上界＝
-// DshRunStaleS 有界失效；floor>0 时另设下限（Gated 豁免宽限）。floor=0
-// ＝原语义无下限（负 age——置位钟略超前判定钟——照旧在效，回归零变化）。
+// dshRunAgeEffective 运行态年龄在效判定（主/子两道共用）：floor≤age≤cap。
+// 原语义（floor=0/cap=DshRunStaleS）：负 age——置位钟略超前判定钟——照旧
+// 在效，回归零变化。Gated（floor=DshRunGraceS/cap=DshRunGateCapS）：宽限
+// 下限防本输入信号自豁免＋效期上界防 running 残留（见两常量注释）。
 // 调用方持锁。
-func dshRunAgeEffective(age, floor float64) bool {
+func dshRunAgeEffective(age, floor, cap float64) bool {
 	if floor > 0 && age < floor {
 		return false
 	}
-	return age <= DshRunStaleS
+	return age <= cap
 }
 
 // DshFamilyRunning 族系在跑判定（**原语义**，qwatch 开窗等处共用）：本键运行态
 // 在效 OR 任一已知子键运行态在效。在效＝置位/刷新距今 ≤ DshRunStaleS；过期
 // 态判定即清理。
 func (l *Ledger) DshFamilyRunning(sid string) bool {
-	return l.dshFamilyRunningFloor(sid, 0)
+	return l.dshFamilyRunningWindow(sid, 0, DshRunStaleS)
 }
 
 // DshFamilyRunningGated 闸门豁免专用（machineWaiting dsh 道）：同
-// DshFamilyRunning 但下限＝DshRunGraceS 豁免宽限（2026-10-05 漏拦案）——
-// 刚置位（距判定＜宽限）的运行态多半是本输入自己的 turn/start /
-// status=running 信号而非「机器在跑」，照旧豁免＝凉会话永拦不住。长任务
-// 防误拦不受影响（单步生成超过拦截线时运行态早已置位分钟级≫宽限）。已知
-// 边缘（如实声明）：子代理直报间隔小于宽限的高频循环中，对父会话插话会被
-// 当凉会话审——本输入该审，强续可解。宽限内（未过期）不清理运行态。
+// DshFamilyRunning 但窗口＝DshRunGraceS ≤ 距今 ≤ DshRunGateCapS（2026-10-05
+// 漏拦案两洞：①下限——刚置位的运行态多半是本输入自己的 turn/start /
+// status=running 信号，不得自豁免凉会话；②上界——running 残留可活到 1h，
+// 35min~1h 闲置段的回流全吃豁免漏拦）。豁免真正的保护域＝「凉会话且近处有
+// 机器活动」（长生成中途/多步循环，步内产出间隔≪600s）。宽限内与上界外
+// （未过 DshRunStaleS）不清理运行态。
 func (l *Ledger) DshFamilyRunningGated(sid string) bool {
-	return l.dshFamilyRunningFloor(sid, DshRunGraceS)
+	return l.dshFamilyRunningWindow(sid, DshRunGraceS, DshRunGateCapS)
 }
 
-// dshFamilyRunningFloor 族系在跑判定的公共实现（floor=0 即原语义；调用方
-// 无锁进入，此处持锁）。
-func (l *Ledger) dshFamilyRunningFloor(sid string, floor float64) bool {
+// dshFamilyRunningWindow 族系在跑判定的公共实现（窗口参数化；调用方无锁
+// 进入，此处持锁）。
+func (l *Ledger) dshFamilyRunningWindow(sid string, floor, cap float64) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := clock.Now()
 	if st := l.byKey[[2]string{"dsh", sid}]; st != nil && st.DshRunningTS != nil {
 		age := now - *st.DshRunningTS
-		if dshRunAgeEffective(age, floor) {
+		if dshRunAgeEffective(age, floor, cap) {
 			return true
 		}
 		if age > DshRunStaleS {
@@ -532,7 +540,7 @@ func (l *Ledger) dshFamilyRunningFloor(sid string, floor float64) bool {
 			continue
 		}
 		age := now - *ent.runningTS
-		if dshRunAgeEffective(age, floor) {
+		if dshRunAgeEffective(age, floor, cap) {
 			return true
 		}
 		if age > DshRunStaleS {
