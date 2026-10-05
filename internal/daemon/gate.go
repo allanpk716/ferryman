@@ -185,9 +185,10 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	// 修好空键存键后此带会被「正确地拦」，故补本道）。放行+提示死线；
 	// pending 同强续款清掉（保温抬高了续用的经济性，拦截前提暂时不成立；
 	// 缓存再死、再长闲置则从分支7重新起圈，保护不丢）。冷/无钟/无观测
-	// → 判冷，原状态机零变动（绝不因缺数据放行）。dsh 另案（其上游/保温
-	// 不在本钟与 TTLS 口径），行为保持原样。
-	if agent != "dsh" && inWindow {
+	// → 判冷，原状态机零变动（绝不因缺数据放行）。dsh 同道（票03
+	// dsh-gate-ux 解锁）：现状 dsh 无钟数据恒判冷、行为零差异——解锁是为
+	// 将来 dsh 心跳真发喂钟后不误拦（判热钟两 agent 共用同一实例）。
+	if inWindow {
 		if hot, remain := d.cacheHot(snap.sid); hot {
 			d.Pending.Clear(key)
 			d.gateWarn(agent, snap.sid, "hot-allow", idle)
@@ -199,11 +200,11 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	if mode == "observe" {
 		if inWindow {
 			h := d.Store.ValidHandoff(agent, cwd, snap.coversBar())
-			// dsh 不入队摆渡（终局修复2,票04×票06 跨票缝）：摆渡材料不可得
-			// （.scratch/dsh-phase2-finish/judge-materials.md 判定——事件口有键
-			// 无体、渡口有体无键）,入队必败→CC 提取器产空骨架→covers=0 恒不过,
-			// 循环不收敛;接法乙落地票再开接线。
-			if agent != "dsh" && h == nil && snap.observed && snap.peak >= th.MinCtxTokens {
+			// dsh 摆渡已接线（票03 dsh-gate-ux）：材料=渡口主快照
+			//（worker.doDsh；接法乙 2026-10-03 后快照键可得）——旧"终局修复2"
+			// 排除（材料不可得，入队必败→空骨架→covers=0 循环不收敛）随其
+			// 作废，两 agent 同机制入队。
+			if h == nil && snap.observed && snap.peak >= th.MinCtxTokens {
 				d.EnqueueFerry(st)
 			}
 			d.gateWarn(agent, snap.sid, "observe", idle)
@@ -280,7 +281,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	d.Pending.Set(key)
 	d.Stats.addWarns()
 	d.gateWarn(agent, snap.sid, "enforce", idle)
-	if agent != "dsh" && snap.observed && snap.peak >= th.MinCtxTokens { // dsh 不入队（终局修复2,observe 分支同注）
+	if snap.observed && snap.peak >= th.MinCtxTokens { // dsh 已接线（票03 dsh-gate-ux；observe 分支同注）
 		d.EnqueueFerry(st)
 	}
 	return map[string]any{"decision": "allow",
