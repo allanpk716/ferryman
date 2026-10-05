@@ -142,6 +142,8 @@ func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch
 		switch r.Method {
 		case http.MethodPost:
 			doPost(d, token, w, r)
+		case http.MethodPut:
+			doPost(d, token, w, r) // 票03：PUT 一并落 doPost 分派（设置写面唯一 PUT 端点在彼处早退）
 		case http.MethodGet:
 			doGet(d, token, w, r)
 		case http.MethodOptions:
@@ -164,6 +166,10 @@ func doPost(d DaemonLike, token string, w http.ResponseWriter, r *http.Request) 
 	// 先读光 body 再回话：401/404 路径若留未读数据就关连接，Windows 会发 RST
 	// 而非 FIN → 客户端读到 10053 连接中断而非状态码（server.py:749-751 注释搬运）。
 	bodyRaw, _ := io.ReadAll(r.Body)
+	if r.Method == http.MethodPut { // 票03：设置写面分派（PUT /settings/{section} → settings_write.go），auth 随既有 POST 端点
+		handleSettingsPut(d, token, w, r, bodyRaw)
+		return
+	}
 	// Python self.path 是 request-target 原文（带 query 即不匹配 → 404），
 	// 故用 RequestURI 精确匹配而非 r.URL.Path。
 	if r.RequestURI != "/gate" && r.RequestURI != "/subagent" && r.RequestURI != "/qwatch_stop" {
