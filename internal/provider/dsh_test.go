@@ -99,6 +99,7 @@ func TestApplyDSHCreatesFiles(t *testing.T) {
 		"thinking: enabled", "reasoningEffort: high", "maxTokens: 32768",
 		"thinking enabled＋effort high＝思考档解锁",
 		"- id: claude-opus-5", "- id: claude-sonnet-5",
+		"contextWindow: 1048576",
 		"- id: plugin-package-inventory-deepseek", "- id: session-log-deepseek",
 		"  disabled: true",
 		"provider: deepseek-official", "model: claude-opus-5",

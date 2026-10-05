@@ -32,8 +32,11 @@
 // （包名 dsh-llm-deepseek-api-key 是 name 不是 id）；路由 id＝deepseek-official
 // （适配器 index.ts 硬编码）；disabled: true 是 dsh 原生补丁机制（base 层关
 // hmr/tool-plugin-manager 同款）；.env 令牌走 credentials-local 的
-// $DSH_HOME/.env 只读回落，解析路径在案。contextWindow 200000 镜像 CC 对
-// 同名档的信念（claude-opus-5=200k；只影响 dsh 本地压缩规划，不上线）。
+// $DSH_HOME/.env 只读回落，解析路径在案。contextWindow 1048576＝渡口 model_map
+// 两档上游的真实窗口（claude-opus-5→GLM-5.3、claude-sonnet-5→glm-5.3-flash，
+// 智谱官方均 1M=1048576；旧值 200000 镜像 CC 对 claude-opus-5=200k 的信念，
+// 2026-10-04 用户发现 dsh 显示 200K、本地压缩提前约 5 倍而修正；此值只影响
+// dsh 本地压缩规划，不上线）。
 package provider
 
 import (
@@ -171,9 +174,9 @@ func dshHomePatchYAML(dockBaseURL string) string {
 		"    maxTokens: 32768",
 		"    models:",
 		"      - id: claude-opus-5",
-		"        contextWindow: 200000",
+		"        contextWindow: 1048576",
 		"      - id: claude-sonnet-5",
-		"        contextWindow: 200000",
+		"        contextWindow: 1048576",
 		"- id: plugin-package-inventory-deepseek",
 		"  name: '@deepseek-ai/dsh-plugin-package-inventory-deepseek'",
 		"  disabled: true",
