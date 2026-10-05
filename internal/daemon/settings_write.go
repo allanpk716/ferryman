@@ -13,8 +13,8 @@ package daemon
 //     → 复用票01 config.SetSectionTOML（写前 Load 全量校验+原子写+写后自校验，
 //     校验失败=原文件字节不动）→ 写后审计。白名单=spec 写面九节；dock/
 //     providers/prices 实体集合走票04 实体端点，不经节级整写。
-//   - 写前快照：snapshotBeforeWrite 桩（票05 接线点——调用序已定死在锁内、
-//     合并/渲染/落盘之前，现仅预留，不落盘）。
+//   - 写前快照：snapshotBeforeWrite 已接真实现（票05——调用序定死在锁内、
+//     合并/渲染/落盘之前；目录/滚动/还原见 settings_snapshot.go）。
 //   - F3 密钥合并（spec 全局规则）：body 中凡毒名单密钥字段——省略、等于
 //     读面掩码占位串、空串、读面对象形 {masked,has_key} → 落盘保留盘上现值；
 //     仅显式非空新值覆盖（清钥走删除整条目）。合并发生在 JSON 渲染 TOML
@@ -54,21 +54,43 @@ import (
 // 并发写排队不交错。F7（restart 编排入锁）待票07 拍板后同锁接续。
 var settingsWriteMu sync.Mutex
 
-// settingsWritableSections 节级 PUT 白名单（spec 写面九节）。ferry/providers/
-// prices/dock 等不在列：实体与引用语义由票04 实体端点处理，节级整写不碰。
+// settingsWritableSections 节级 PUT 白名单（spec 写面九节 + 票04④ ferry）。
+// ferry 走自键层变体（settingsOwnKeySections 分派，same_model 子表不经节级
+// 写）；providers/prices/dock 实体集合走票04 实体端点，节级整写不碰。
 var settingsWritableSections = map[string]bool{
 	"gate": true, "thresholds": true, "watch": true, "notify": true,
 	"heartbeat": true, "question_watch": true, "wait_window": true,
-	"tuning": true, "server": true,
+	"tuning": true, "server": true, "ferry": true,
 }
 
-// snapshotBeforeWrite 写前快照（票05 接线点）：当前为桩——不落盘、恒 nil；
-// var 形=测试缝（appendLineBestEffort 同惯例）。票05 落地后在此接
-// <data_dir>/backups/config/ 滚动 20 份（reason 形如 "settings-ui:gate"，
-// 含入口与节，供快照元数据 reason=auto 溯源）。
-var snapshotBeforeWrite = func(reason string) error {
-	_ = reason // TODO(settings-view 票05): 真快照——写前当前 config.toml 备份
+// settingsOwnKeySections 含子表的节（票04④）：节级 PUT 自动走 config.
+// SetSectionOwnKeys 自键层变体——只替换该节自身键层（span=节头到第一个子表
+// 头），[ferry.same_model] 等子表逐字节保留；纯块节仍走 SetSectionTOML 整写
+// （整写原语对带子表节会因子表残留在整树自校验中保守拒——变体即为此）。
+var settingsOwnKeySections = map[string]bool{
+	"ferry": true,
+}
+
+// settingsRejectOwnKeyTables 自键层写只收标量/数组键：body 里带对象值键
+// （如 same_model 子表形）明确拒写——否则内联表渲染后与既有子表头撞键，
+// 报错文案难懂；子表不经节级端点（spec 写面：ferry 自键=provider/chain）。
+func settingsRejectOwnKeyTables(section string, body map[string]any) error {
+	for k, v := range body {
+		if _, isTable := v.(map[string]any); isTable {
+			return fmt.Errorf("节 %s 的键 %q 为对象：自键层写只收标量/数组（子表不经本端点）", section, k)
+		}
+	}
 	return nil
+}
+
+// snapshotBeforeWrite 写前快照（票05 已接线）：真实现 takeSnapshot("auto")
+// ——<data_dir>/backups/config/ 整文件字节快照、滚动 20 份
+// （settings_snapshot.go）。reason 细节（"settings-ui:<节>"）入口与节随审计
+// 行溯源，快照文件名类恒 auto。var 形=测试缝（appendLineBestEffort 同惯例）。
+// 调用点已在 settingsWriteMu 临界区内，实现不取锁（重入即死锁）。
+var snapshotBeforeWrite = func(_ string) error {
+	_, err := takeSnapshot("auto")
+	return err
 }
 
 // ---- PUT /settings/{section} ----
@@ -115,10 +137,19 @@ func (d *Daemon) settingsPutSection(section string, body map[string]any) (map[st
 	cfgPath := config.ResolveConfigPath("")
 	before := settingsDiskSection(cfgPath, section) // 审计 before/合并基线=盘上现值（写面改的是盘；内存换挡在重启）
 
-	// 写前快照（票05 接线点；调用序定死：合并/渲染/落盘之前）。
+	// 写前快照（票05 真实现；调用序定死：合并/渲染/落盘之前）。
 	if err := snapshotBeforeWrite("settings-ui:" + section); err != nil {
 		auditSettingsWrite(d, section, "rejected", before, body, err)
 		return nil, fmt.Errorf("写前快照失败: %w", err)
+	}
+
+	// 票04④：含子表的节只收标量/数组自键（子表不经节级端点），在快照后、
+	// 合并前明确拒（对齐 merge 失败的审计面）。
+	if settingsOwnKeySections[section] {
+		if err := settingsRejectOwnKeyTables(section, body); err != nil {
+			auditSettingsWrite(d, section, "rejected", before, body, err)
+			return nil, err
+		}
 	}
 
 	// F3 密钥合并：省略/掩码占位/空串 → 保留盘上现值；仅显式非空新值覆盖。
@@ -133,7 +164,13 @@ func (d *Daemon) settingsPutSection(section string, body map[string]any) (map[st
 		auditSettingsWrite(d, section, "rejected", before, merged, err)
 		return nil, err
 	}
-	if err := config.SetSectionTOML(cfgPath, section, tomlBody); err != nil {
+	// 票04④ 分派：含子表的节走自键层变体（子表逐字节保留），纯块节整写。
+	if settingsOwnKeySections[section] {
+		err = config.SetSectionOwnKeys(cfgPath, section, tomlBody)
+	} else {
+		err = config.SetSectionTOML(cfgPath, section, tomlBody)
+	}
+	if err != nil {
 		auditSettingsWrite(d, section, "rejected", before, merged, err)
 		return nil, err
 	}

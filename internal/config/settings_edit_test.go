@@ -455,3 +455,140 @@ func TestSettingsEditMissingFileErrors(t *testing.T) {
 		t.Error("配置不存在应报错: RemovePriceEntry")
 	}
 }
+
+// seOwnKeysCfgSrc 自键层变体（票04④）夹具：[ferry] 带自键 provider/chain +
+// 子表 [ferry.same_model]（内含更深一层 ceiling 子表）——SetSectionOwnKeys
+// 只动自键层的验收面；chain 引用的 providers 都在（Load 校验前提）。
+const seOwnKeysCfgSrc = `# 顶层注释
+
+[server]
+port = 15700
+
+[thresholds]
+summarize_s = 1500
+block_s = 2100
+
+[providers.glm]
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+model = "glm-5.3"
+api_key = "sk-glm-1"
+window = 131072
+
+[providers.kimi]
+base_url = "https://api.moonshot.cn/v1"
+model = "kimi-for-coding"
+api_key = "sk-kimi-1"
+window = 131072
+
+[ferry]
+provider = "glm"
+chain = ["glm"]
+
+[ferry.same_model]
+enabled = true
+upstreams = ["glm"]
+threshold_min = 20
+
+[ferry.same_model.ceiling]
+kimi = 15
+
+[notify]
+enabled = true
+`
+
+// seCut 把 src 切成（[ferry] 前，[ferry] 自键段，[ferry.same_model] 起）三段，
+// 供自键层改写的逐字节期望值拼接。
+func seCut(src string) (pre, own, post string) {
+	pre, rest, _ := strings.Cut(src, "[ferry]\n")
+	own, post, _ = strings.Cut(rest, "[ferry.same_model]\n")
+	return pre, "[ferry]\n" + own + "[ferry.same_model]\n", post
+}
+
+// TestSettingsSectionOwnKeysRewritesOnlyOwnKeyLayer 自键层变体主钉子：
+// [ferry] 自键改写后——自键段=新值、[ferry.same_model] 子树（含 ceiling）
+// 逐字节不动、其余节逐字节不动；回读 provider/chain 换新、same_model 原值。
+func TestSettingsSectionOwnKeysRewritesOnlyOwnKeyLayer(t *testing.T) {
+	f := writeCfg(t, seOwnKeysCfgSrc)
+	if err := SetSectionOwnKeys(f, "ferry", "provider = \"kimi\"\nchain = [\"kimi\", \"glm\"]\n"); err != nil {
+		t.Fatalf("SetSectionOwnKeys: %v", err)
+	}
+	pre, _, post := seCut(seOwnKeysCfgSrc)
+	want := pre + "[ferry]\nprovider = \"kimi\"\nchain = [\"kimi\", \"glm\"]\n\n[ferry.same_model]\n" + post
+	if after := readFileEdit(t, f); after != want {
+		t.Errorf("自键层改写不符：\n--got--\n%s\n--want--\n%s", after, want)
+	}
+	cfg := mustLoadEdit(t, f)
+	if cfg.FerryProvider != "kimi" || len(cfg.FerryChain) != 2 ||
+		cfg.FerryChain[0] != "kimi" || cfg.FerryChain[1] != "glm" {
+		t.Errorf("ferry 自键回读不符: provider=%q chain=%v", cfg.FerryProvider, cfg.FerryChain)
+	}
+	if !cfg.SameModel.Enabled || len(cfg.SameModel.Upstreams) != 1 ||
+		cfg.SameModel.Upstreams[0] != "glm" || cfg.SameModel.ThresholdMin != 20 ||
+		cfg.SameModel.CeilingMin["kimi"] != 15 {
+		t.Errorf("same_model 子表回读不符: %+v", cfg.SameModel)
+	}
+}
+
+// TestSettingsSectionOwnKeysOmittedKeyCleared 自键层整写语义：body 省略的自键
+// （chain）被清除（provider 单键兜底等价单元素链）、子表照旧逐字节保留。
+func TestSettingsSectionOwnKeysOmittedKeyCleared(t *testing.T) {
+	f := writeCfg(t, seOwnKeysCfgSrc)
+	if err := SetSectionOwnKeys(f, "ferry", "provider = \"kimi\"\n"); err != nil {
+		t.Fatalf("SetSectionOwnKeys: %v", err)
+	}
+	cfg := mustLoadEdit(t, f)
+	if cfg.FerryProvider != "kimi" || len(cfg.FerryChain) != 0 {
+		t.Errorf("省略自键应清除: provider=%q chain=%v", cfg.FerryProvider, cfg.FerryChain)
+	}
+	pre, _, post := seCut(seOwnKeysCfgSrc)
+	want := pre + "[ferry]\nprovider = \"kimi\"\n\n[ferry.same_model]\n" + post
+	if after := readFileEdit(t, f); after != want {
+		t.Errorf("省略自键改写不符：\n--got--\n%s\n--want--\n%s", after, want)
+	}
+}
+
+// TestSettingsSectionOwnKeysRejectsInvalid 拒写面：body 引用未定义 provider
+// （Load 期 chain 校验）/坏 TOML 正文 → 报错且原文件逐字节不动（子表不殃及）。
+func TestSettingsSectionOwnKeysRejectsInvalid(t *testing.T) {
+	cases := []struct {
+		name, body, wantErr string
+	}{
+		{"chain 引用未定义 provider", "provider = \"glm\"\nchain = [\"ghost\"]\n", "未定义的 provider"},
+		{"坏TOML正文", "= broken\n", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := writeCfg(t, seOwnKeysCfgSrc)
+			before := readFileEdit(t, f)
+			err := SetSectionOwnKeys(f, "ferry", tc.body)
+			if err == nil {
+				t.Fatal("非法自键层写应被拒")
+			}
+			if tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("拒绝信息应含 %q: %v", tc.wantErr, err)
+			}
+			if after := readFileEdit(t, f); after != before {
+				t.Error("拒写路径原文件不得动")
+			}
+			assertNoSettingsTmp(t, f)
+		})
+	}
+}
+
+// TestSettingsSectionOwnKeysCreateWhenMissing 缺节创建：EOF 追加（与整写
+// 原语同形）；带子表节先自键层创建、子表照常后续经点分节名单独写。
+func TestSettingsSectionOwnKeysCreateWhenMissing(t *testing.T) {
+	src := strings.ReplaceAll(seOwnKeysCfgSrc,
+		"[ferry]\nprovider = \"glm\"\nchain = [\"glm\"]\n\n", "")
+	f := writeCfg(t, src)
+	if err := SetSectionOwnKeys(f, "ferry", "provider = \"glm\"\n"); err != nil {
+		t.Fatalf("SetSectionOwnKeys(缺节): %v", err)
+	}
+	want := src + "\n[ferry]\nprovider = \"glm\"\n"
+	if after := readFileEdit(t, f); after != want {
+		t.Errorf("缺节创建不符：\n--got--\n%s\n--want--\n%s", after, want)
+	}
+	if cfg := mustLoadEdit(t, f); cfg.FerryProvider != "glm" {
+		t.Errorf("回读 provider = %q, want glm", cfg.FerryProvider)
+	}
+}

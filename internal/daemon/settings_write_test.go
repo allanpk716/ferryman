@@ -562,9 +562,10 @@ func TestSettingsWriteGuards(t *testing.T) {
 	if c, _ := swReqNF(http.MethodPut, e.port, "wrong", "/settings/gate", b); c != http.StatusUnauthorized {
 		t.Fatalf("错 Bearer PUT = %d, want 401", c)
 	}
-	// 未知节/实体路径（票04 面）404 在 auth 前（无 token 也 404 非 401）。
-	for _, p := range []string{"/settings/unknown", "/settings/dock/upstreams/glm",
-		"/settings/providers/glm", "/settings/prices/glm", "/settings/gate/deeper"} {
+	// 未知节/路径 404 在 auth 前（无 token 也 404 非 401）。票04 起实体路径
+	// （dock/upstreams/{名} 等）为已知路由——守门转 401，见 settings_entities_test。
+	for _, p := range []string{"/settings/unknown", "/settings/gate/deeper",
+		"/settings/dock", "/settings/providers", "/settings/prices", "/settings/dock/upstreams"} {
 		if c, _ := swReqNF(http.MethodPut, e.port, "", p, b); c != http.StatusNotFound {
 			t.Fatalf("PUT %s = %d, want 404（auth 前）", p, c)
 		}

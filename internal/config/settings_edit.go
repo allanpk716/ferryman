@@ -72,7 +72,24 @@ func SetSectionTOML(path, name, body string) error {
 	}
 	return settingsEditSubtree(path, segs, false, false, func(nl string) (string, error) {
 		return "[" + joinHeaderKey(segs) + "]" + nl + normalizeBlockText(body, nl), nil
-	})
+	}, verifySubtreeEdit)
+}
+
+// SetSectionOwnKeys 票04④：只整写节 name 的**自身键层**——文本跨度与
+// SetSectionTOML 同（节头行到下一任意表头行），但自校验只比自身键层：
+// 盘上子表（如 [ferry.same_model] 及更深的 ceiling）逐键与新全文解码相等
+// ＝原样保留（逐字节不动），自身键层须与渲染 body 全等（多键少键都拒）。
+// 带子表的节走 SetSectionTOML 整写会因子表残留在整树比对中保守拒——本变体
+// 即为此（daemon 对 ferry 节的节级 PUT 分派到彼）；写前 Load 全量校验、
+// 原子写与写后自校验同引擎同纪律。
+func SetSectionOwnKeys(path, name, body string) error {
+	segs, err := splitDottedKey(name)
+	if err != nil {
+		return fmt.Errorf("config: 节名 %q 非法: %w", name, err)
+	}
+	return settingsEditSubtree(path, segs, false, false, func(nl string) (string, error) {
+		return "[" + joinHeaderKey(segs) + "]" + nl + normalizeBlockText(body, nl), nil
+	}, verifySubtreeOwnKeys)
 }
 
 // SetProviderEntry 原子写入/替换一条 [providers.<名>] 条目（整条覆盖，含
@@ -83,7 +100,7 @@ func SetProviderEntry(path, name string, e ProviderEntry) error {
 	}
 	return settingsEditSubtree(path, []string{"providers", name}, true, false, func(nl string) (string, error) {
 		return renderProviderEntry(name, e, nl)
-	})
+	}, verifySubtreeEdit)
 }
 
 // RemoveProviderEntry 原子删除一条 [providers.<名>] 条目。被 [ferry].chain /
@@ -95,7 +112,7 @@ func RemoveProviderEntry(path, name string) error {
 	if err := guardProviderRefs(path, name); err != nil {
 		return err
 	}
-	return settingsEditSubtree(path, []string{"providers", name}, true, true, nil)
+	return settingsEditSubtree(path, []string{"providers", name}, true, true, nil, verifySubtreeEdit)
 }
 
 // SetPriceEntry 原子写入/替换一条 [prices.<key>]（含 versions 子表整组覆盖）。
@@ -105,7 +122,7 @@ func SetPriceEntry(path, key string, e PriceEntry) error {
 	}
 	return settingsEditSubtree(path, []string{"prices", key}, true, false, func(nl string) (string, error) {
 		return renderPriceEntry(key, e, nl)
-	})
+	}, verifySubtreeEdit)
 }
 
 // RemovePriceEntry 原子删除一条 [prices.<key>]（versions 子表随之整树摘除）。
@@ -114,7 +131,7 @@ func RemovePriceEntry(path, key string) error {
 	if key == "" {
 		return fmt.Errorf("config: 价表键为空（原文件未动）")
 	}
-	return settingsEditSubtree(path, []string{"prices", key}, true, true, nil)
+	return settingsEditSubtree(path, []string{"prices", key}, true, true, nil, verifySubtreeEdit)
 }
 
 // guardProviderRefs 删除守卫：目标条目被 [ferry].chain 或 [ferry].provider
@@ -149,9 +166,10 @@ func guardProviderRefs(path, name string) error {
 
 // settingsEditSubtree 增删一体引擎：keySegs＝目标子树的段键名（providers.<名>
 // 等）；consumeSubtree＝条目语义（吞并子表头）还是节语义（到下一任意表头）；
-// remove＝删除（build 须为 nil）；build＝新块渲染器（入参为文件主流行尾）。
-// 全拒或全成，无部分写。
-func settingsEditSubtree(path string, keySegs []string, consumeSubtree, remove bool, build func(nl string) (string, error)) error {
+// remove＝删除（build 须为 nil）；build＝新块渲染器（入参为文件主流行尾）；
+// verify＝rename 前自校验器（整树比对=verifySubtreeEdit，自键层比对=
+// verifySubtreeOwnKeys）。全拒或全成，无部分写。
+func settingsEditSubtree(path string, keySegs []string, consumeSubtree, remove bool, build func(nl string) (string, error), verify func(oldData map[string]any, newRaw []byte, keySegs []string, want any) error) error {
 	p := resolveConfigPath(path)
 	raw, err := os.ReadFile(p)
 	if err != nil {
@@ -180,7 +198,7 @@ func settingsEditSubtree(path string, keySegs []string, consumeSubtree, remove b
 		}
 		want = getSubtree(sm, keySegs)
 	}
-	if err := verifySubtreeEdit(oldData, newRaw, keySegs, want); err != nil {
+	if err := verify(oldData, newRaw, keySegs, want); err != nil {
 		return err
 	}
 	if err := validateFullLoad(newRaw); err != nil {
@@ -263,6 +281,55 @@ func verifySubtreeEdit(oldData map[string]any, newRaw []byte, keySegs []string, 
 		return fmt.Errorf("config: 写回产物与预期不符（不落盘）: %s got=%v want=%v",
 			strings.Join(keySegs, "."), got, want)
 	}
+	deleteSubtree(oldData, keySegs)
+	deleteSubtree(m2, keySegs)
+	if !reflect.DeepEqual(oldData, m2) {
+		return fmt.Errorf("config: 写回改动了 %s 之外的节（不落盘）", strings.Join(keySegs, "."))
+	}
+	return nil
+}
+
+// verifySubtreeOwnKeys 自键层自校验（SetSectionOwnKeys 专用）：目标子树解码
+// 后，盘上子表键（预期 body 未涉及的表值键）逐键与新全文解码相等＝原样
+// 保留；剩余自身键层须与渲染预期全等（多键少键都拒）；其余节（目标子树
+// 整树摘除后比对）解码等价。任何不符即拒写，原文件字节不动。
+func verifySubtreeOwnKeys(oldData map[string]any, newRaw []byte, keySegs []string, want any) error {
+	var m2 map[string]any
+	if err := toml.Unmarshal(newRaw, &m2); err != nil {
+		return fmt.Errorf("config: 写回产物非合法 TOML（不落盘）: %w", err)
+	}
+	oldSub, _ := getSubtree(oldData, keySegs).(map[string]any)
+	got, _ := getSubtree(m2, keySegs).(map[string]any)
+	wantM, _ := want.(map[string]any)
+	if got == nil || wantM == nil {
+		return fmt.Errorf("config: 自键层写回产物/渲染预期非表（不落盘）: got=%T want=%T", got, wantM)
+	}
+	// 盘上子表键＝自键层之外的保留域：body 未涉及（预期不含同名键）即须逐键
+	// 解码相等——[ferry.same_model] 及更深的 ceiling 子树都在此网内。
+	for k, ov := range oldSub {
+		if _, isTab := ov.(map[string]any); !isTab {
+			continue // 非子表键＝自键层旧值，整写语义下随 body 走
+		}
+		if _, inBody := wantM[k]; inBody {
+			continue // body 以内联表覆盖同名键＝自键层语义（渲染后与残留子表头撞
+			// 键会在此后的解码比对里炸出——保守拒，不另设特判）
+		}
+		nv, ok := got[k]
+		if !ok {
+			return fmt.Errorf("config: 写回产物丢失子表 %s.%s（不落盘）", strings.Join(keySegs, "."), k)
+		}
+		if !reflect.DeepEqual(nv, ov) {
+			return fmt.Errorf("config: 写回产物改动子表 %s.%s（不落盘）", strings.Join(keySegs, "."), k)
+		}
+		delete(got, k)
+	}
+	// 剩余＝自身键层：须与渲染预期全等（省略的自键被清除、body 外不多键）。
+	if !reflect.DeepEqual(got, wantM) {
+		return fmt.Errorf("config: 写回产物自键层与预期不符（不落盘）: %s got=%v want=%v",
+			strings.Join(keySegs, "."), got, wantM)
+	}
+	// 其余节：目标子树整树从新旧两侧摘除后解码等价（子表已在上文单独钉过，
+	// 此处兜其余节的零殃及）。
 	deleteSubtree(oldData, keySegs)
 	deleteSubtree(m2, keySegs)
 	if !reflect.DeepEqual(oldData, m2) {
