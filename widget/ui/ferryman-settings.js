@@ -81,13 +81,15 @@ function confirmRisk(title, body, okLabel, onOk) {
   pendingOk = onOk;
   $('#mask').classList.add('show');
 }
-$('#mCancel').addEventListener('click', () => { $('#mask').classList.remove('show'); pendingOk = null; });
+/** 关掉确认弹窗并清掉挂起的回调（取消/遮罩/进保护态共用）。 */
+function closeConfirm() { $('#mask').classList.remove('show'); pendingOk = null; }
+$('#mCancel').addEventListener('click', closeConfirm);
 $('#mOk').addEventListener('click', () => {
-  $('#mask').classList.remove('show');
-  const f = pendingOk; pendingOk = null;
+  const f = pendingOk;
+  closeConfirm();
   if (f) f();
 });
-$('#mask').addEventListener('click', (e) => { if (e.target.id === 'mask') { $('#mask').classList.remove('show'); pendingOk = null; } });
+$('#mask').addEventListener('click', (e) => { if (e.target.id === 'mask') closeConfirm(); });
 
 // ── 导航切换 ──
 $$('#nav .nav-it').forEach((b) => b.addEventListener('click', () => {
@@ -933,7 +935,9 @@ const RESTART_POLL_MS = 2000;             // 回连轮询间隔
 const RESTART_BUDGET_MS = 6 * 60 * 1000;  // 回连总预算 6 分钟
 function setAllDisabled(on) {
   $$('.main input, .main select, .main button').forEach((elm) => { elm.disabled = on; });
+  $$('#nav .nav-it').forEach((elm) => { elm.disabled = on; }); // 导航不发包，禁用/恢复一起做完整
   $('#btnRestart').disabled = on;
+  if (on) closeConfirm(); // 进禁用态时把可能开着的确认弹窗一并关掉，防挂起的动作再被点
 }
 /** 探一次：任何 HTTP 应答（含 401）都算守护回来了；网络层抛错=还没起来。 */
 async function probeDaemon(base) {
@@ -952,16 +956,29 @@ function enterRestarting(candidates) {
   $('#btnRestart').textContent = '正在重启…';
   setAllDisabled(true);
   const deadline = Date.now() + RESTART_BUDGET_MS;
-  const pollRound = async () => {
-    if (Date.now() > deadline) {
-      // 超时：保持禁用，留人话指引（回滚与重试由守护侧负责，这里只指认通知渠道）
-      banner.textContent = '守护 6 分钟没回来。失败时守护会自动回滚到上次健康配置并重试；若仍失败会停在安全状态，请看系统通知或 Pushover 的「Ferryman 安全重启失败」提示，按提示手动恢复后重开本窗。';
+  const timeoutGiveUp = () => {
+    // 超时：保持禁用，留人话指引（回滚与重试由守护侧负责，这里只指认通知渠道）
+    banner.textContent = '守护 6 分钟没回来。失败时守护会自动回滚到上次健康配置并重试；若仍失败会停在安全状态，请看系统通知或 Pushover 的「Ferryman 安全重启失败」提示，按提示手动恢复后重开本窗。';
+  };
+  // 探活命中只代表「有 HTTP 进程在应答」：读到全量配置（GET /settings 成功）才算真回来。
+  // 读不到就保持禁用与横幅，隔 2 秒重试，预算沿用同一个 6 分钟（从 enterRestarting 起算）。
+  const confirmRead = async () => {
+    if (Date.now() > deadline) { timeoutGiveUp(); return; }
+    banner.textContent = '守护已回来，正在读取最新配置…页面上的保存与操作先不可用，读到后自动恢复。';
+    try {
+      S = await api('/settings');
+    } catch {
+      setTimeout(confirmRead, RESTART_POLL_MS);
       return;
     }
+    recoverFromRestart();
+  };
+  const pollRound = async () => {
+    if (Date.now() > deadline) { timeoutGiveUp(); return; }
     for (const base of candidates) {
       if (await probeDaemon(base)) {
         BASE = base; // 端口可能变了：换回连上的那个地址
-        await recoverFromRestart();
+        confirmRead();
         return;
       }
     }
@@ -969,12 +986,13 @@ function enterRestarting(candidates) {
   };
   setTimeout(pollRound, RESTART_POLL_MS);
 }
-async function recoverFromRestart() {
-  setAllDisabled(false); // 先解禁：refreshData 重建的动态控件会各自重设 disabled
+/** 读取确认成功后的收尾：解禁、重渲染、撤横幅与「待重启」标记、报成功。 */
+function recoverFromRestart() {
+  setAllDisabled(false); // 先解禁：fillAll 重建的动态控件会各自重设 disabled
+  fillAll();
   $('#btnRestart').textContent = '重启守护';
   $('#errBanner').classList.remove('show');
   $('#restartFlag').classList.remove('show'); // 撤掉「待重启」标记
-  try { await refreshData(); } catch { /* 数据面偶发失败：结构已在，用户重开本窗即可 */ }
   loadSnapshots();
   toast('守护已重启，待生效的改动现在生效了', 'live');
 }
@@ -984,6 +1002,9 @@ $('#btnRestart').addEventListener('click', () => {
     '守护会先应答本请求，随后优雅停机（有在途请求会先等它跑完）再自动拉起；万一新配置起不来，会自动换回上一次正常运行的配置再拉起一次。这期间本窗口与守护的连接会断开，回来后自动接上。确定重启？',
     '确定重启',
     async () => {
+      // 一进回调就进保护态：禁用重启按钮 + 关掉可能开着的确认弹窗，POST 在途期间防手滑
+      $('#btnRestart').disabled = true;
+      closeConfirm();
       try {
         const r = await api('/settings/restart', { method: 'POST', body: {} });
         const candidates = [];
@@ -991,7 +1012,8 @@ $('#btnRestart').addEventListener('click', () => {
         candidates.push(BASE); // 再回落当前地址
         enterRestarting(candidates);
       } catch (e) {
-        // 400=重启前检查没过，守护没动过：红字报人话原因，按钮保持可点
+        // 400=重启前检查没过，守护没动过：红字报人话原因，按钮恢复可点
+        $('#btnRestart').disabled = false;
         toast('重启没批下来：' + e.message, null, true);
       }
     }
@@ -1020,7 +1042,7 @@ function fatal(msg) {
   const b = $('#errBanner');
   b.textContent = msg + '。页面结构照常显示，但数据为空、所有保存与操作不可用；守护恢复后重开本窗即可。';
   b.classList.add('show');
-  $$('.main input, .main select, .main button').forEach((elm) => { elm.disabled = true; });
+  setAllDisabled(true); // 含侧栏导航与重启按钮：横幅声称所有操作不可用，按钮也该不可点
 }
 (async function boot() {
   const ok = await resolveTarget();
