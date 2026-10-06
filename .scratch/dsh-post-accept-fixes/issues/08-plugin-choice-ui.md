@@ -1,33 +1,33 @@
-# 票08 · 对话区选择框(spike 四验 → 实现)
+# 票08 · 对话区选择框·F1 双面包实施(D11 定案,mock 已过目 2026-10-06)
+
+> 状态更新:spike 四验已完成(①不过→路线拍板后本票即 F1 扩票);D11 两步走的 F2 由票10 承担(已落地);本票=F1 正餐。mock 已过目(.scratch/dsh-post-accept-fixes/mock-choice-box.html,视觉参照只读)。
 
 ## What to build
-dsh 用户消息被闸门拦下时,对话区直接出现一个选择框:「强续重发」(把被拦原话以「强续 」前缀代发,走既有 bypass 放行)和「新会话」(一键建新会话并自动收到交接+原话)。手机远控也能走完两条路。**先做 spike 四验,全过才实现;任一验不过,票停靠并把结论与 fallback 选项写清楚,不擅自改已定 UX(对话区选择框;Toast 已被否决)。**
-
-## spike 四验(实现前必须全过)
-1. 插件能在对话区渲染可交互元素(两按钮);能力事实从 DSH 宿主插件 API 面查证——线索:`~/.dsh/profiles/desktop/node_modules`(宿主插件 SDK/类型)与本仓 plugin/ferryman-dsh/src/*.ts 既有协议注释(runtime-types 等);只读取证,不改宿主。
-2. 强续重发:插件代发「强续+原话」复用 bypass 语义(daemon 零改动)。原话主径=拦截现场本地缓存(payload.messages,拦截时插件本就持有);宿主重启丢缓存→降级为用户重打(已知取舍);daemon 只读 pending 端点=可选验项。
-3. create({seed}) API 存在性 + followup 队列(开场交接+原话归还链路已在生产验证过)。
-4. followup 自动派发是否经过 agent/pre-step 用户步(决定票05 的晚到重问在一键新会话场景是否天然生效);若不经,验"注入前能否主动查询一次交接"。
+dsh 消息被闸门拦下时,对话区出现选择框卡片(mock 形态):标题"这条消息被 Ferryman 闸门拦下"+一句原因+被拦原话引用+两按钮「强续重发」(留在本会话)「新会话继续」(一键新建,开场自动收交接+原话)+底部小字;点过按钮后卡片塌缩为"✓ 已按…——原话:…"一行记录。实现走浏览器侧插件面(双面包,ADR-0023):宿主插件拦截时缓存原话并经 Remote 供浏览器侧拉取;浏览器侧注册对话区卡片渲染器;按钮动作回落宿主面执行。
 
 ## 验收标准
-- [ ] spike 四验结论落 .scratch/dsh-post-accept-fixes/spike-b1.md(每验:结论/证据出处/过或不过)
-- [ ] 四验全过:实现选择框——被拦时对话区出现两按钮;点强续重发=原话以强续前缀发出并被放行(不重拦);点新会话=新会话开场收交接+原话
-- [ ] 任一验不过:本票停靠,spike-b1.md 写明 fallback 选项待用户,不实现任何替代 UI
-- [ ] 插件测试基线不破,新增用例覆盖拦截→呈现→两条按钮路径(mock 宿主面)
-- [ ] daemon 侧零改动
+- [ ] package.json 声明 `dsh.client:{platform:'web'}`+`exports["./client"]`;分发形态保持零依赖(client 半面手写 React.createElement,不引构建链;spike-b1 验①证据链的 roster 机制复用)
+- [ ] 宿主侧:拦截现场缓存原话+会话键(与票05/票10 同源 payload.messages);经 Remote(typert,先例 plugin-manager)暴露被拦事件拉取面;浏览器卡片数据来自该面
+- [ ] 浏览器侧:对话区卡片渲染按 mock 信息结构(待处理态+已处理塌缩态);多条被拦各自成卡
+- [ ] 「强续重发」→宿主侧 agent.followup("强续 "+原话);「新会话继续」→宿主侧 create 同 cwd 新会话(开场交接+原话由 daemon 归还链带回,不自带);动作后卡片转塌缩态
+- [ ] 手机 web UI 真机可用——**用户晨间真机验收项,自动化只验逻辑**
+- [ ] daemon 零改动;插件既有测试基线 82 不破;新增用例(mock 宿主替身):拦截→缓存→Remote 暴露→卡片数据→两按钮动作→塌缩态
+- [ ] spike 结论与实现期事实冲突时以事实为准,回写 spike-b1.md 留档一行
 
 ## Blocked by
-票05(同文件先后落地)。
+无(spike 已完成、mock 已过目、票05/票10 同文件前序已落地)。
 
 ## 涉及路径
+plugin/ferryman-dsh/package.json
+plugin/ferryman-dsh/client.js(新)
 plugin/ferryman-dsh/src/events.ts
 plugin/ferryman-dsh/src/index.ts
 plugin/ferryman-dsh/src/usermessage.ts
-plugin/ferryman-dsh/test/(或既有测试目录)
-.scratch/dsh-post-accept-fixes/spike-b1.md(spike 结论,新文件)
+plugin/ferryman-dsh/test/(既有布局)
+.scratch/dsh-post-accept-fixes/spike-b1.md(仅冲突回写)
 
 ## 副作用声明
-插件测试命令(按仓库既有插件测试跑法);spike 只读取证不改宿主、不联网。
+插件测试命令(plugin/ferryman-dsh/ 既有跑法);spike 事实源只读;不联网、不改宿主、不装依赖。
 
-## decision_refs: D5、D6、F4、F8
-## review_blocks: 无(spike 不过→按 D6 停靠,不算阻断)
+## decision_refs: D5、D11、F4、F8、ADR-0023
+## review_blocks: 无
