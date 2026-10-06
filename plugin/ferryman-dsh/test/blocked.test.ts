@@ -358,6 +358,24 @@ test("registerBlockedRemote：ctx.provide 注册 ferrymanBlocked 服务;无 prov
   assert.doesNotThrow(() => registerBlockedRemote({}, { blocked: new BlockedStore() }), "裸 ctx 不炸（非 cordis 宿主）");
 });
 
+test("registerBlockedRemote：cordis 代理对未声明 inject 的服务属性读取抛错时容错——服务照常注册（真机 web 实例激活事故回归钉）", () => {
+  const provided = new Map<string, unknown>();
+  const ctx = {
+    provide: (name: string, value: unknown) => void provided.set(name, value),
+    get agents(): never {
+      // cordis Context.handler 执法形态：Reflect.has 不中且不在 inject 清单 → 读即抛
+      throw new Error('cannot get property "agents" without inject');
+    },
+    get workspaceRegistry(): never {
+      throw new Error('cannot get property "workspaceRegistry" without inject');
+    },
+  };
+  assert.doesNotThrow(() => registerBlockedRemote(ctx, { blocked: new BlockedStore() }), "注入执法抛错不再炸激活");
+  assert.ok(provided.has(BLOCKED_SERVICE_KEY), "服务仍注册（list/resend/拦截不受影响）");
+  const svc = provided.get(BLOCKED_SERVICE_KEY) as { typertRemote: unknown };
+  assert.ok(svc.typertRemote, "注册的是带 SRC 面的服务对象");
+});
+
 test("apply 集成：挂接的 pre-step 拦下后,经 provide 出的 Remote 服务可拉到卡片", async (t) => {
   const mock = await mockFor(t);
   mock.route("/", () => ({ status: 200, json: {} }));

@@ -213,13 +213,32 @@ export function buildBlockedService(deps: BlockedRemoteDeps): BlockedRemoteServi
  * 把被拦反馈 Remote 服务 provide 进 cordis（网关经 reflect.props SRC 扫描发现,
  * claims 缓存随服务注册失效——时序天然安全）。无 provide 面（裸 ctx/非 cordis
  * 宿主）静默跳过:拦截与票10 文案不受影响,只是无浏览器卡面。
+ *
+ * ctx.agents/ctx.workspaceRegistry 是宿主服务属性——cordis Context 代理对未声明
+ * 进 inject 的服务属性**读取即抛**（"cannot get property without inject"）,而声明
+ * 进 inject 在缺服务的宿主上会整插件加载失败（官方桥语义）,与零宿主依赖设计冲突。
+ * 故经 optionalHostFace 容错取用:取不到时服务照常注册,「新会话继续」走
+ * events.ts 既有的手工指引兜底（真机 web 实例 10-06 激活事故根因）。
  */
 export function registerBlockedRemote(ctx: PluginContext, deps: { blocked: BlockedStore }): void {
   if (typeof ctx.provide !== "function") return;
   ctx.provide(
     BLOCKED_SERVICE_KEY,
-    buildBlockedService({ store: deps.blocked, agents: ctx.agents, workspaces: ctx.workspaceRegistry }),
+    buildBlockedService({
+      store: deps.blocked,
+      agents: optionalHostFace(() => ctx.agents),
+      workspaces: optionalHostFace(() => ctx.workspaceRegistry),
+    }),
   );
+}
+
+/** 宿主服务面 best-effort 取用:读抛错（inject 执法）或缺面都归 undefined,不炸激活。 */
+function optionalHostFace<T>(get: () => T | undefined): T | undefined {
+  try {
+    return get();
+  } catch {
+    return undefined;
+  }
 }
 
 /**
