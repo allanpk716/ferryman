@@ -27,6 +27,7 @@ import {
   usageToDaemon,
   type EventDeps,
   type LoggerLike,
+  type PreStepDecision,
 } from "../src/events.ts";
 import { sendEvent } from "../src/daemon.ts";
 import { injectedMessage, type UserMessageLike } from "../src/usermessage.ts";
@@ -85,6 +86,78 @@ test("pre-step：daemon block → reject,理由经 logger.warn 用户可见（�
   assert.equal(body["cwd"], "C:/proj");
   assert.equal(body["prompt"], "继续干活");
   assert.equal(body["transcript_path"], "");
+});
+
+// 票10（F2 止血）：block 文案 = 拦截理由＋被拦原话（截断）＋两行指路。
+test("pre-step block 文案止血：warn 含被拦原话与两行指路（理由保留）", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/gate", () => ({
+    status: 200,
+    json: { decision: "block", reason: "此会话已闲置 40 分钟（缓存已失效）" },
+  }));
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+
+  const decision = await onPreStep(deps, {
+    agent: { session: { header: { id: SID, cwd: "C:/proj" } } },
+    messages: [{ content: [{ type: "text", text: "帮我把部署脚本再跑一遍" }] }],
+    turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [] }));
+
+  assert.equal(decision.kind, "reject");
+  assert.equal(logger.warns.length, 1, "仍恰 warn 一条（多行文案合在一条内）");
+  const line = logger.warns[0]!;
+  assert.ok(line.includes("闲置 40 分钟"), "拦截理由保留（不替换 reason）");
+  assert.ok(line.includes("帮我把部署脚本再跑一遍"), "含被拦原话（blocksToText 同源,零新增 daemon 依赖）");
+  assert.ok(line.includes("强续") && line.includes("重发"), "指路①：留在本会话「强续 重发你的内容」强制继续");
+  assert.ok(line.includes("新建会话") && line.includes("自动收到"), "指路②：新建会话（同目录）开场自动收到交接+原话");
+});
+
+test("pre-step block 文案截断：原话超 120 码点 → 头 120 码点＋省略号,尾部不出现", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/gate", () => ({
+    status: 200,
+    json: { decision: "block", reason: "拦截" },
+  }));
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  const head = "前".repeat(120);
+  const tail = "后".repeat(80);
+
+  const decision = await onPreStep(deps, {
+    agent: { session: { header: { id: SID, cwd: "C:/proj" } } },
+    messages: [{ content: [{ type: "text", text: head + tail }] }],
+    turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [] }));
+
+  assert.equal(decision.kind, "reject");
+  const line = logger.warns[0]!;
+  assert.ok(line.includes(head), "头 120 码点完整保留");
+  assert.ok(line.includes("…"), "截断尾标（省略号）在");
+  assert.ok(!line.includes(tail), "尾部 80 码点不出现在文案里");
+});
+
+test("pre-step block 文案截断：码点计数（增补平面字符按 1 计,不按 UTF-16 单元）", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/gate", () => ({
+    status: 200,
+    json: { decision: "block", reason: "拦截" },
+  }));
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  // 119 个 BMP 码点＋1 个增补平面码点（𝄞=U+1D11E,UTF-16 占 2 单元）=120 码点
+  //（121 UTF-16 单元）：按码点截断恰好全保;按 UTF-16 单元会把 𝄞 腰斩。
+  const text = "前".repeat(119) + "𝄞" + "后".repeat(50);
+
+  await onPreStep(deps, {
+    agent: { session: { header: { id: SID, cwd: "C:/proj" } } },
+    messages: [{ content: [{ type: "text", text }] }],
+    turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [] }));
+
+  const line = logger.warns[0]!;
+  assert.ok(line.includes("𝄞"), "第 120 个码点（𝄞）完整保留,不被 UTF-16 腰斩");
+  assert.ok(!line.includes("后".repeat(50)), "尾部不出现");
 });
 
 test("pre-step：allow → 透传 next() 决策（不拦截）", async (t) => {
@@ -392,6 +465,188 @@ test("判活转发：agent/status 带 status;agent/disposed 同款（并发到�
   for (const b of bodies) {
     assert.equal(b["session_id"], SID);
     assert.ok(typeof b["time"] === "number");
+  }
+});
+
+// ---- ⑤ 晚到交接注入（A4②：created 空交接 → 记欠账 → 用户步持续重问） ----
+
+test("晚到交接：created 空交接 → 记欠账;首个用户步重问拿到 → 注入当前步并清账", async (t) => {
+  const mock = await mockFor(t);
+  let handoffCalls = 0;
+  mock.route("/dsh/handoff", () => {
+    handoffCalls++;
+    return handoffCalls === 1
+      ? { status: 200, json: { context: null } } // created 时交接还没铸好
+      : { status: 200, json: { context: "# 交接（晚到）\n上一会话精华…" } };
+  });
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  const injected: UserMessageLike[] = [];
+  const agent = {
+    session: { header: { id: SID, cwd: "C:/proj" } },
+    inject: (m: UserMessageLike) => void injected.push(m),
+  };
+  await onCreated(deps, { agent });
+  assert.equal(injected.length, 0, "created 时无交接不注入");
+  assert.equal(handoffCalls, 1);
+  assert.equal(logger.warns.length, 0, "空交接置欠账静默,不 warn");
+
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const out = await onPreStep(deps, {
+    agent,
+    messages: [{ content: [{ type: "text", text: "第一条消息" }] }],
+    turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+
+  assert.equal(out.kind, "enter", "重问不阻塞用户消息");
+  assert.equal(handoffCalls, 2, "首个用户步恰好重问一次");
+  if (out.kind !== "enter") return;
+  assert.equal(out.messages.length, 2, "用户消息保留＋晚到交接追加在末尾");
+  const appended = out.messages[1] as UserMessageLike;
+  assert.equal(appended.role, "user");
+  assert.equal((appended.content[0] as { type: string }).type, "text");
+  assert.ok((appended.content[0] as { text: string }).text.includes("晚到"));
+  assert.equal(appended.source.kind, "ferryman-dsh");
+  assert.equal(injected.length, 0, "重问走下游注入,不走 agent.inject");
+
+  // 清账：拿到后后续用户步不再重问、不再追加
+  const out2 = await onPreStep(deps, {
+    agent,
+    messages: [{ content: [{ type: "text", text: "第二条消息" }] }],
+    turn: 2, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  assert.equal(handoffCalls, 2, "拿到交接即清账,不再重问");
+  if (out2.kind === "enter") assert.equal(out2.messages.length, 1, "清账后不再追加");
+});
+
+test("晚到交接：连续空 → 保持欠账持续重问（每个用户步都问）;step>1 循环步不问", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/handoff", () => ({ status: 200, json: { context: null } }));
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } }, inject: () => {} };
+  await onCreated(deps, { agent });
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const down = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [userMsg] });
+  for (const [i, text] of ["m1", "m2", "m3"].entries()) {
+    const out = await onPreStep(deps, {
+      agent, messages: [{ content: [{ type: "text", text }] }], turn: i + 1, step: 1,
+    }, down);
+    assert.equal(out.kind, "enter", `第 ${i + 1} 条消息不因欠账被阻`);
+    if (out.kind === "enter") assert.equal(out.messages.length, 1, "没拿到不注入");
+  }
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 4, "created 1 次＋每用户步重问 1 次×3");
+  await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "循环步" }] }], turn: 3, step: 2,
+  }, down);
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 4, "step>1 工具循环步不重问");
+  assert.equal(logger.warns.length, 0, "持续欠账静默,不刷 warn");
+});
+
+test("晚到交接：欠账按会话键隔离,多会话互不串", async (t) => {
+  const mock = await mockFor(t);
+  const SID_A = "session-aaaaaaaa-1111-4111-8111-111111111111";
+  const SID_B = "session-bbbbbbbb-2222-4222-8222-222222222222";
+  const callsBy = new Map<string, number>();
+  mock.route("/dsh/handoff", (rec) => {
+    const sid = (rec.body as Record<string, unknown>)["session_id"] as string;
+    const n = (callsBy.get(sid) ?? 0) + 1;
+    callsBy.set(sid, n);
+    if (sid === SID_A && n === 1) return { status: 200, json: { context: null } }; // A 首问空
+    if (sid === SID_A) return { status: 200, json: { context: "# 只欠 A 的交接" } };
+    return { status: 200, json: { context: "# B 自带交接" } };
+  });
+  const deps = depsOver(mock, makeLogger());
+  const agentA = { session: { header: { id: SID_A, cwd: "C:/proj" } }, inject: () => {} };
+  const agentB = { session: { header: { id: SID_B, cwd: "C:/proj" } }, inject: () => {} };
+  await onCreated(deps, { agent: agentA }); // A 欠账
+  await onCreated(deps, { agent: agentB }); // B 拿到,不欠
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const down = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [userMsg] });
+
+  const outB = await onPreStep(deps, {
+    agent: agentB, messages: [{ content: [{ type: "text", text: "B 的消息" }] }], turn: 1, step: 1,
+  }, down);
+  assert.equal(callsBy.get(SID_B), 1, "B 无欠账,用户步不重问");
+  if (outB.kind === "enter") assert.equal(outB.messages.length, 1, "B 对话不被 A 的欠账污染");
+
+  const outA = await onPreStep(deps, {
+    agent: agentA, messages: [{ content: [{ type: "text", text: "A 的消息" }] }], turn: 1, step: 1,
+  }, down);
+  assert.equal(callsBy.get(SID_A), 2, "A 欠账,用户步重问");
+  const retry = mock.requestsFor("/dsh/handoff").find((r) => (r.body as Record<string, unknown>)["session_id"] === SID_A && callsBy.get(SID_A) === 2);
+  assert.ok(retry, "A 的重问请求在");
+  if (outA.kind === "enter") {
+    assert.equal(outA.messages.length, 2, "A 的对话收到注入");
+    assert.ok(((outA.messages[1] as UserMessageLike).content[0] as { text: string }).text.includes("只欠 A"));
+  }
+});
+
+test("晚到交接：dispose 清欠账,不跨会话泄漏", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/handoff", () => ({ status: 200, json: { context: null } }));
+  const deps = depsOver(mock, makeLogger());
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } }, inject: () => {} };
+  await onCreated(deps, { agent });
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 1);
+  onDisposed(deps, { agent });
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "dispose 之后" }] }], turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 1, "欠账已随 dispose 清除,不再重问");
+});
+
+test("晚到交接：重问遇 daemon 故障 → 静默放行不阻塞,欠账保留待下步再试", async (t) => {
+  const mock = await mockFor(t);
+  let daemonDown = true;
+  mock.route("/dsh/handoff", () =>
+    daemonDown ? { status: 500, json: { error: "down" } } : { status: 200, json: { context: "# 恢复后的交接" } });
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } }, inject: () => {} };
+  await onCreated(deps, { agent }); // 故障→空→欠账成立
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const down = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [userMsg] });
+  const out = await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "m1" }] }], turn: 1, step: 1,
+  }, down);
+  assert.equal(out.kind, "enter", "重问失败不阻塞用户消息");
+  if (out.kind === "enter") assert.equal(out.messages.length, 1, "失败不注入");
+  assert.equal(logger.warns.length, 0, "重问失败静默（fail-open）");
+  daemonDown = false;
+  const out2 = await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "m2" }] }], turn: 2, step: 1,
+  }, down);
+  assert.equal(out2.kind, "enter");
+  if (out2.kind === "enter") {
+    assert.equal(out2.messages.length, 2, "daemon 恢复后下一用户步注入");
+    assert.ok(((out2.messages[1] as UserMessageLike).content[0] as { text: string }).text.includes("恢复后"));
+  }
+});
+
+test("晚到交接：gate block 步不重问（reject 无下游可注入）,欠账保留待放行步", async (t) => {
+  const mock = await mockFor(t);
+  let handoffReady = false;
+  mock.route("/dsh/handoff", () => ({ status: 200, json: { context: handoffReady ? "# 交接已铸好" : null } }));
+  const deps = depsOver(mock, makeLogger());
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } }, inject: () => {} };
+  await onCreated(deps, { agent }); // 交接未铸好 → 欠账
+  mock.route("/dsh/gate", () => ({ status: 200, json: { decision: "block", reason: "拦截" } }));
+  const d1 = await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "被拦" }] }], turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [] }));
+  assert.equal(d1.kind, "reject");
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 1, "block 步无下游,不重问");
+  handoffReady = true;
+  mock.unroute("/dsh/gate");
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const d2 = await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "放行" }] }], turn: 2, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  assert.equal(d2.kind, "enter");
+  if (d2.kind === "enter") {
+    assert.equal(d2.messages.length, 2, "欠账跨 block 步保留,放行步重问并注入");
   }
 });
 

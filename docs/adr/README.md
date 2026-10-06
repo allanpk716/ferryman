@@ -31,6 +31,7 @@
 | 0020 | [0020-warm-attribution-savings-v2.md](0020-warm-attribution-savings-v2.md) | — | 保温归因 v2：need×hit 四象限判兑现、按保温回合结算、report 层纯度量（v1 冻结并存） |
 | 0021 | [0021-workbench-single-desktop-shell.md](0021-workbench-single-desktop-shell.md) | — | 工作台升格：widget 为唯一桌面壳，七视图、mock-first、15900 全套平替后退役；10-05 修订＝设置视图先行分期 |
 | 0022 | [0022-settings-view-editable.md](0022-settings-view-editable.md) | — | 设置视图可编辑：写经 daemon 写入器、密钥能存不能看、风险分层、配置快照还原、写盘＋安全重启 |
+| 0023 | [0023-blocked-feedback-browser-face.md](0023-blocked-feedback-browser-face.md) | — | 被拦反馈（选择框）住在浏览器侧插件面（双面包）；宿主侧插件零 UI 是生态现状，0021/0022 已被工作台夜链占用故跳号 |
 
 ## 撞号消歧与引用注意
 

@@ -60,6 +60,9 @@ export interface SessionRef {
 export interface AgentRef {
   session?: SessionRef;
   inject?: (message: UserMessageLike) => void;
+  /** followup 代发面（runtime-types.ts:218-222,入队即唤醒开新 turn）——票08
+   *  「强续重发」用;可选鸭子面,缺省走降级文案（spike 验②:拦截现场可直接捕获） */
+  followup?: (message: UserMessageLike) => void;
 }
 
 // ---- agent/pre-step（waterfall） ----
@@ -121,12 +124,17 @@ export interface EventDeps {
   logger: LoggerLike;
   /** session/title 跟踪的最近标题（键=会话头行 id;随后续上报带出） */
   titles: Map<string, string>;
+  /** 欠交接账本（键=会话头行 id,多会话互不串）：created 问空记一笔,
+   *  用户步重问拿到即清;dispose 终局清（A4② 持续重试,2026-10-06 票05） */
+  handoffPending: Map<string, boolean>;
+  /** 被拦事件仓（票08：拦截现场缓存,浏览器卡片数据源;宿主进程生命周期） */
+  blocked: BlockedStore;
   /** 时钟注入面（判活转发的时间戳）;缺省 Date.now */
   now?: () => number;
 }
 
 export function makeEventDeps(ep: DaemonEndpoint, logger: LoggerLike): EventDeps {
-  return { ep, logger, titles: new Map(), now: () => Date.now() };
+  return { ep, logger, titles: new Map(), handoffPending: new Map(), blocked: new BlockedStore(), now: () => Date.now() };
 }
 
 // ---- 共用小件 ----
@@ -148,6 +156,170 @@ export function blocksToText(messages: MessageInput[]): string {
     .join("");
 }
 
+// ---- block 文案（票10 · F2 止血） ----
+
+/**
+ * block 文案里被拦原话的截断上限：120 码点（Code Point,增补平面字符按 1 计,
+ * 不按 UTF-16 单元——emoji 等不会被腰斩）。插件侧此前无截断工具,本 helper 为
+ * 本票新增;daemon 侧先例是 token 估算 cap=500（store.go pendingPromptCap）,
+ * 日志面板一行摘要用码点上限更直观,不照搬。已知取舍：宿主日志面板手机端
+ * 不可见的根治在票08（F1 对话区选择框）,本票是过渡止血。
+ */
+const blockPromptCap = 120;
+
+/** 按码点截断：超 cap 取头 cap 个码点加省略号;不超原样返回 */
+export function truncateCodePoints(text: string, cap: number): string {
+  const cps = Array.from(text);
+  if (cps.length <= cap) return text;
+  return cps.slice(0, cap).join("") + "…";
+}
+
+// ---- 被拦事件缓存（票08 · F1 双面包,宿主半面数据源） ----
+
+/** daemon bypass 前缀（internal/daemon/gate.go:106 strings.HasPrefix(prompt,"强续")） */
+export const BYPASS_PREFIX = "强续";
+
+/**
+ * 宿主侧完整被拦事件（含 agent 活引用——只活在本进程,绝不外泄出宿主面;
+ * 被拒消息本身从 durable inbox 消失不进会话日志,runtime-types.ts:291,
+ * 拦截时缓存是原话唯一主径——spike 验②）。
+ */
+export interface BlockedEvent {
+  id: string;
+  sessionId: string;
+  cwd: string;
+  reason: string;
+  prompt: string;
+  time: number;
+  agent: AgentRef;
+  done: boolean;
+  doneAction: BlockedAction | null;
+}
+
+/** 动作记录（塌缩行文案的判别键） */
+export type BlockedAction = "resend" | "new-session";
+
+/** 浏览器拉取面 wire 形状（JSON 安全;键白名单,无 agent） */
+export interface BlockedCard {
+  id: string;
+  reason: string;
+  prompt: string;
+  time: number;
+  done: boolean;
+  doneAction: BlockedAction | null;
+}
+
+export interface BlockedRecordInput {
+  sessionId: string;
+  cwd: string;
+  reason: string;
+  prompt: string;
+  time: number;
+  agent: AgentRef;
+}
+
+/** 会话内缓存上限（FIFO 逐出最老;宿主内存有界,丢失面=降级手打,票10 文案兜底） */
+const BLOCKED_SESSION_CAP = 20;
+/** wire 面原话截断（码点;防御面——原话可能极长,浏览器只需预览与身份比对） */
+const BLOCKED_PROMPT_WIRE_CAP = 2000;
+
+/**
+ * 被拦事件仓：拦截现场 record,Remote 面拉取/动作落账。宿主重启即失
+ * （ADR-0023 取舍）——已知且接受:强续降级为用户手打,新会话本来就不依赖缓存。
+ */
+export class BlockedStore {
+  private seq = 0;
+  private readonly bySession = new Map<string, BlockedEvent[]>();
+
+  /** 拦截现场落账（同会话 FIFO 封顶;返回完整事件供调用方续用） */
+  record(input: BlockedRecordInput): BlockedEvent {
+    const events = this.bySession.get(input.sessionId) ?? [];
+    if (events.length >= BLOCKED_SESSION_CAP) events.shift();
+    const ev: BlockedEvent = {
+      id: `b${++this.seq}`,
+      sessionId: input.sessionId,
+      cwd: input.cwd,
+      reason: input.reason,
+      prompt: input.prompt,
+      time: input.time,
+      agent: input.agent,
+      done: false,
+      doneAction: null,
+    };
+    events.push(ev);
+    this.bySession.set(input.sessionId, events);
+    return ev;
+  }
+
+  /** wire 面（prompt 截断;不含 agent）;空会话空数组 */
+  list(sessionId: string): BlockedCard[] {
+    return (this.bySession.get(sessionId) ?? []).map((ev) => ({
+      id: ev.id,
+      reason: ev.reason,
+      prompt: truncateCodePoints(ev.prompt, BLOCKED_PROMPT_WIRE_CAP),
+      time: ev.time,
+      done: ev.done,
+      doneAction: ev.doneAction,
+    }));
+  }
+
+  get(id: string): BlockedEvent | undefined {
+    for (const events of this.bySession.values()) {
+      const hit = events.find((ev) => ev.id === id);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+
+  markDone(id: string, action: BlockedAction): BlockedEvent | undefined {
+    const ev = this.get(id);
+    if (ev === undefined || ev.done) return ev;
+    ev.done = true;
+    ev.doneAction = action;
+    return ev;
+  }
+
+  /**
+   * 会话终局清空该会话的全部被拦条目（与 handoffPending 同纪律:dispose 即清,
+   * 不跨会话泄漏）。死会话的卡片无处渲染也无从动作——原话全文（≤20 条）不再
+   * 长跑缓占内存;清后 Remote 面对该会话回空数组。
+   */
+  clearSession(sessionId: string): void {
+    this.bySession.delete(sessionId);
+  }
+
+  /**
+   * 手打强续对账：用户绕过卡片手敲「强续 <原话>」放行时,把精确同文的待处理卡
+   * 转 done(resend)——卡片不留假待办。精确匹配（去前缀+trim 后全等）,不做模糊
+   * 归并;未命中不动（另一句被拦的原话没被重发,卡片保持真状态）。
+   */
+  markDoneByPrompt(sessionId: string, prompt: string, action: BlockedAction): boolean {
+    const events = this.bySession.get(sessionId);
+    if (events === undefined) return false;
+    let hit = false;
+    for (const ev of events) {
+      if (!ev.done && ev.prompt === prompt) {
+        ev.done = true;
+        ev.doneAction = action;
+        hit = true;
+      }
+    }
+    return hit;
+  }
+}
+
+/** 代发文本：「强续 」+原话;原话本身以强续开头时去重避免「强续 强续 …」 */
+export function withBypassPrefix(prompt: string): string {
+  return prompt.startsWith(BYPASS_PREFIX) ? prompt : `${BYPASS_PREFIX} ${prompt}`;
+}
+
+/** 手打对账的比对键：强续前缀剥掉+两端 trim;无前缀返回 null（普通消息不对账） */
+export function stripBypassPrefix(text: string): string | null {
+  if (!text.startsWith(BYPASS_PREFIX)) return null;
+  return text.slice(BYPASS_PREFIX.length).trim();
+}
+
+
 // ---- ① agent/pre-step：闸门问询 ----
 
 /**
@@ -156,6 +328,15 @@ export function blocksToText(messages: MessageInput[]): string {
  * 上下文消息后放行（官方桥 :225-241 同款）;一切故障 fail-open 放行（
  * ferryman-gate-codex.ps1:73 同纪律）。空步（合成上下文步）不问——官方桥
  * :226 同位短路。
+ *
+ * 晚到交接重问（A4②）：created 记了欠账的会话,每个用户步（step===1）在此
+ * 独立补问一次（不依赖闸门结果,allow/fail-open 都问）;拿到 → injectedMessage
+ * 追加进当前步 downstream.messages（additional_context 同位先例）并清账;
+ * 没拿到 → 账留着静默放行,绝不阻塞用户消息。block 步无下游可注入,不问
+ * 不清账;循环步（step>1）照旧短路。
+ *
+ * 票08（F1）：block 落账被拦事件仓（浏览器选择框卡片数据源）;allow 的
+ * 「强续 <原话>」做手打对账（精确同文 → 待处理卡转 done）。
  */
 export async function onPreStep(
   deps: EventDeps,
@@ -167,31 +348,72 @@ export async function onPreStep(
   // 用户输入——闸门语义是「审用户的回流」，循环步不问不注入（2026-10-05 案：
   // 活跃对话每步都过闸门吃 machineWaiting 豁免＋注入兜底文案，污染上下文）。
   if (payload.step > 1) return next();
+  const sid = sessionIdOf(payload.agent);
+  const text = blocksToText(payload.messages);
   const gate = await askGate(deps.ep, {
-    session_id: sessionIdOf(payload.agent),
+    session_id: sid,
     cwd: cwdOf(payload.agent),
-    prompt: blocksToText(payload.messages),
+    prompt: text,
   });
   if (gate?.decision === "block") {
     const reason = gate.reason ?? "会话闲置被闸门拦截";
-    deps.logger.warn(`[ferryman-dsh] 本条输入被 Ferryman 闸门拦截：${reason}`);
+    // 票10（F2 止血）：reason 之后追加被拦原话与两行指路,不替换 reason。
+    // 原话来源=拦截现场 payload.messages,与闸门 prompt 同走 blocksToText,
+    // 零新增 daemon 依赖;无文本块时省略原话行（无话可示,不给空行）。
+    const promptLine = text ? `被拦原话：${truncateCodePoints(text, blockPromptCap)}\n` : "";
+    deps.logger.warn(
+      `[ferryman-dsh] 本条输入被 Ferryman 闸门拦截：${reason}\n` +
+      `${promptLine}` +
+      `留在本会话：发送「强续 重发你的内容」可强制继续；\n` +
+      `新建会话（同目录）：开场自动收到交接与本条原话，无需重打。`,
+    );
+    // 票08（F1）：被拒消息从 durable inbox 消失不进会话日志（runtime-types.ts:291）
+    // ——拦截时缓存是原话唯一主径;agent 活引用只留宿主侧供「强续重发」代发。
+    deps.blocked.record({
+      sessionId: sid,
+      cwd: cwdOf(payload.agent),
+      reason,
+      prompt: text,
+      time: (deps.now ?? Date.now)(),
+      agent: payload.agent,
+    });
     return { kind: "reject" };
   }
-  const downstream = await next();
-  if (gate?.additional_context && downstream.kind === "enter") {
-    return {
-      ...downstream,
-      messages: [...downstream.messages, injectedMessage(gate.additional_context)],
-    };
+  // 手打强续对账（票08）：用户绕过卡片手敲「强续 <原话>」过闸——把精确同文的
+  // 待处理卡转 done(resend),卡片不留假待办;普通放行消息不参与对账。
+  const stripped = stripBypassPrefix(text);
+  if (sid && stripped !== null) {
+    deps.blocked.markDoneByPrompt(sid, stripped, "resend");
   }
-  return downstream;
+  const downstream = await next();
+  if (downstream.kind !== "enter") return downstream;
+  const extras: UserMessageLike[] = [];
+  if (sid && deps.handoffPending.get(sid)) {
+    let md: string | null = null;
+    try {
+      md = await askHandoff(deps.ep, { cwd: cwdOf(payload.agent), session_id: sid });
+    } catch {
+      md = null; // 防御带：askHandoff 契约不抛;真抛等同没拿到,放行不阻不噪
+    }
+    if (md) {
+      deps.handoffPending.delete(sid);
+      extras.push(injectedMessage(md));
+    }
+  }
+  if (gate?.additional_context) {
+    extras.push(injectedMessage(gate.additional_context));
+  }
+  if (extras.length === 0) return downstream;
+  return { ...downstream, messages: [...downstream.messages, ...extras] };
 }
 
 // ---- ② agent/created（awaited）：交接播种 ----
 
 /**
  * 同 Agent＋cwd 的交接 MD 经 agent.inject() 播种（赶首请求——serial awaited
- * 位保证,见文件头钉点）。无交接/无键/daemon 故障 → 静默返回;永不抛
+ * 位保证,见文件头钉点）。askHandoff 空（交接还没铸好,含 daemon 暂不可达）→
+ * 记欠账 handoffPending,此后每个用户步重问补注（A4② 持续重试）;置账静默。
+ * 无键/抛错 → 不置账（fail-open:欠账只在「确实问过且确实空」时记）;永不抛
  *（throw 会弄失败 agent creation,runtime-types.ts:253-254）。
  */
 export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promise<void> {
@@ -200,9 +422,14 @@ export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promi
     const sid = sessionIdOf(agent);
     if (!sid || typeof agent?.inject !== "function") return;
     const md = await askHandoff(deps.ep, { cwd: cwdOf(agent), session_id: sid });
-    if (md) agent.inject(injectedMessage(md));
+    if (md) {
+      agent.inject(injectedMessage(md));
+    } else {
+      deps.handoffPending.set(sid, true);
+    }
   } catch (e) {
-    // 防御带：inject 抛错等宿主侧意外——creation 不因插件失败
+    // 防御带：inject 抛错等宿主侧意外——creation 不因插件失败;
+    // askHandoff 若真抛同落此处,不置欠账。
     deps.logger.warn(`[ferryman-dsh] 交接播种失败（忽略继续）: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -326,5 +553,10 @@ export function onStatus(deps: EventDeps, payload: StatusPayload): void {
 }
 
 export function onDisposed(deps: EventDeps, payload: DisposedPayload): void {
+  const sid = sessionIdOf(payload?.agent);
+  if (sid) {
+    deps.handoffPending.delete(sid); // 会话终局清欠账,不跨会话泄漏
+    deps.blocked.clearSession(sid); // 会话终局清被拦缓存（票08 返工:原话全文不缓跑累积）
+  }
   forwardLifecycle(deps, payload?.agent, "agent/disposed", {});
 }

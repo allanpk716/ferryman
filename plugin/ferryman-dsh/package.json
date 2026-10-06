@@ -3,8 +3,13 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Ferryman 原生 dsh 插件——闸门问询/归还播种/用量上报/判活转发/挂载自检（票05 业务对接完成）",
+  "description": "Ferryman 原生 dsh 插件——闸门问询/归还播种/用量上报/判活转发/挂载自检 + 被拦反馈双面包（票08 对话区选择框）",
   "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
   "engines": {
     "node": ">=22"
   },
@@ -12,6 +17,9 @@
     "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "scripts": {

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,12 +213,13 @@ func TestDoctorToolRejectsUnknownArg(t *testing.T) {
 	}
 }
 
-// TestDoctorToolVersionField 版本字段（票02，规格 §A）：doctor 响应 JSON 顶层
-// 带 version——值经装配参数注入（cmd/ferryman 的 main.version → mcp.Run →
-// New），进程内不自行推导（不做全局单例）。
+// TestDoctorToolVersionField 版本字段（票07 修订）：doctor 顶层 version 数据
+// 源＝Server.daemonVersion 注入缝（daemon /stats 自报版本），不再取本进程装
+// 配版本（旧缺陷：MCP exe 可能是旧版，报它误导排障）。
 func TestDoctorToolVersionField(t *testing.T) {
 	e := newEnv(t, false, false)
 	s := New(e.cfg, testVersion)
+	s.daemonVersion = func() string { return "daemon-injected-ver" }
 	s.doctor = func() []installer.CheckResult {
 		return []installer.CheckResult{{Name: "daemon_liveness",
 			Status: installer.StatusFail, Detail: "daemon 未运行（钩子自举会拉起，或手动 start-daemon.cmd）"}}
@@ -229,9 +231,117 @@ func TestDoctorToolVersionField(t *testing.T) {
 	}
 	var raw map[string]any
 	mustJSON(t, text, &raw)
-	if v, _ := raw["version"].(string); v != testVersion {
-		t.Fatalf("doctor 响应 version = %v, want %q: %s", raw["version"], testVersion, text)
+	if v, _ := raw["version"].(string); v != "daemon-injected-ver" {
+		t.Fatalf("doctor version 应取 daemonVersion 注入缝, got %v: %s", raw["version"], text)
 	}
+}
+
+// serveStatsOn 在既定空闲口起最小 /stats 替身（只答 GET /stats 一个 JSON 体，
+// 非该路径 404），测试结束收线——把 DaemonClient 指到受控替身（口经
+// assertNotProdPort 钉死非生产口）。
+func serveStatsOn(t *testing.T, port int, body string) {
+	t.Helper()
+	assertNotProdPort(t, port)
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/stats" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+}
+
+// TestFetchDaemonVersion fetchDaemonVersion 表驱动（票07）：可达→报 daemon
+// /stats 自报 version；不可达→「daemon 不可达（版本未知）」；响应不可解析或
+// 未自报 version→「daemon 版本未知」——如实标注，绝不回退本进程版本。
+func TestFetchDaemonVersion(t *testing.T) {
+	const daemonVer = "v9.8.7-daemon-fixture"
+	const unreachable = "daemon 不可达（版本未知）"
+	const unknown = "daemon 版本未知（/stats 未自报或不可解析）"
+	cases := []struct {
+		name  string
+		stats string // 空＝不起替身（端口无人听→不可达）
+		want  string
+	}{
+		{"可达报 daemon 自报版本", `{"version":"` + daemonVer + `"}`, daemonVer},
+		{"不可达如实标注", "", unreachable},
+		{"响应不可解析如实标注", `not-json`, unknown},
+		{"未自报 version 如实标注", `{"other":1}`, unknown},
+		{"version 空串如实标注", `{"version":""}`, unknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, false, true)
+			if tc.stats != "" {
+				serveStatsOn(t, e.port, tc.stats)
+			}
+			got := fetchDaemonVersion(NewDaemonClient(e.cfg))
+			if got != tc.want {
+				t.Fatalf("fetchDaemonVersion = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDoctorToolVersionFromDaemonStats 票07 E2E（可达）：doctor 顶层 version
+// 经既有 /stats 通道报 daemon 自报版本，响应不再出现进程装配版本（testVersion
+// ——旧缺陷行为）。
+func TestDoctorToolVersionFromDaemonStats(t *testing.T) {
+	e := newEnv(t, false, true)
+	const daemonVer = "v0.8.11-daemon-fixture"
+	serveStatsOn(t, e.port, `{"version":"`+daemonVer+`"}`)
+	s := New(e.cfg, testVersion)
+	s.doctor = func() []installer.CheckResult {
+		return []installer.CheckResult{{Name: "daemon_liveness",
+			Status: installer.StatusPass, Detail: "daemon 活着"}}
+	}
+	p := startPipesServer(t, s)
+	text, isErr, _ := p.callTool("doctor", nil)
+	if isErr {
+		t.Fatalf("doctor 不应 isError: %s", text)
+	}
+	var raw map[string]any
+	mustJSON(t, text, &raw)
+	if v, _ := raw["version"].(string); v != daemonVer {
+		t.Fatalf("doctor version = %v, want daemon 自报 %q: %s", raw["version"], daemonVer, text)
+	}
+	if strings.Contains(text, testVersion) {
+		t.Fatalf("响应不得再出现进程装配版本 %q（旧缺陷）: %s", testVersion, text)
+	}
+	noSecrets(t, e, "doctor-version-online", text)
+}
+
+// TestDoctorToolVersionUnknownWhenDaemonUnreachable 票07 E2E（不可达）：
+// version 如实标注「daemon 不可达（版本未知）」，不回退进程装配版本；doctor
+// 例外语义不动——仍返回完整结构化结果（非工具错误）。
+func TestDoctorToolVersionUnknownWhenDaemonUnreachable(t *testing.T) {
+	e := newEnv(t, false, true) // token 在、端口无人听——不可达而非 token 缺失
+	s := New(e.cfg, testVersion)
+	s.doctor = func() []installer.CheckResult {
+		return []installer.CheckResult{{Name: "daemon_liveness",
+			Status: installer.StatusFail, Detail: "daemon 未运行（钩子自举会拉起，或手动 start-daemon.cmd）"}}
+	}
+	p := startPipesServer(t, s)
+	text, isErr, _ := p.callTool("doctor", nil)
+	if isErr {
+		t.Fatalf("daemon 不可达 doctor 仍不应 isError（例外语义）: %s", text)
+	}
+	var raw map[string]any
+	mustJSON(t, text, &raw)
+	if v, _ := raw["version"].(string); v != "daemon 不可达（版本未知）" {
+		t.Fatalf("不可达时 version 应如实标注, got %v: %s", raw["version"], text)
+	}
+	if strings.Contains(text, testVersion) {
+		t.Fatalf("不可达时不得回退进程装配版本 %q（不伪造）: %s", testVersion, text)
+	}
+	noSecrets(t, e, "doctor-version-offline", text)
 }
 
 // realDepsDoctor 真实装配面向临时环境：临时 HOME/空 repo/夹具临时 config

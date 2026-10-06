@@ -3,7 +3,8 @@
 //
 // doctor 例外语义（规格「错误面」节 + D10）：daemon 不可达/超时 → 照常返回
 // 结构化体检结果，daemon 活性项＝fail；不缓存（注入的检查函数每次调用真跑，
-// 独立重算）、不伪造、不自举 daemon。
+// 独立重算）、不伪造、不自举 daemon。顶层 version 字段同纪律（票07）：经既有
+// /stats 通道现读守护自报版本，不可达时如实标注。
 //
 // 检查函数经 Server.doctor 注入（New 装配真实面：HOME/exe 目标 + config 解析
 // 的 daemon 活性目标 + 常驻保障两查真探测；测试替换为临时目标——绝不读真实
@@ -33,6 +34,31 @@ func defaultDoctorFunc(cfg *config.Config) func() []installer.CheckResult {
 	}
 }
 
+// daemon 版本如实标注（票07，A5②/D9）：不可达/HTTP 错误与「响应读不出
+// version」分列——不伪造、不回退本进程版本。
+const (
+	daemonVersionUnreachable = "daemon 不可达（版本未知）"
+	daemonVersionUnknown     = "daemon 版本未知（/stats 未自报或不可解析）"
+)
+
+// fetchDaemonVersion 守护自报版本取值（票07 真实装配）：经既有 daemon 通信面
+// （DaemonClient.Get /stats——五件转发工具同一条只读 GET 通道）读守护版本。
+// 每次 doctor 调用现连（不缓存，同本工具既有纪律）；任何失败如实标注（见上
+// 两常量），绝不回退本进程版本——MCP exe 可能是旧版，报它会误导排障。
+func fetchDaemonVersion(c *DaemonClient) string {
+	body, err := c.Get("/stats", nil)
+	if err != nil {
+		return daemonVersionUnreachable
+	}
+	var stats struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &stats); err != nil || stats.Version == "" {
+		return daemonVersionUnknown
+	}
+	return stats.Version
+}
+
 // doctorSummary 体检汇总（从逐项结论推导的计数，非第二事实源）。
 type doctorSummary struct {
 	Total      int `json:"total"`
@@ -59,12 +85,14 @@ func (s *Server) handleInProcessTool(id json.RawMessage, tool *Tool, args map[st
 		checks = []installer.CheckResult{}
 	}
 	resp := struct {
-		// Version 版本号（票02，规格 §A）：装配时经 Run→New 注入（Server.version），
-		// 顶层随 checks/summary 一起下发。
+		// Version 版本号（票07 修订）：daemon（守护）自报版本——经既有 /stats
+		// 通道现读（Server.daemonVersion 注入缝，每次调用独立重算），不再取本
+		// 进程装配版本（MCP exe 可能是旧版，报它误导排障）；daemon 不可达时
+		// 如实标注，不伪造。
 		Version string                 `json:"version"`
 		Checks  []installer.CheckResult `json:"checks"`
 		Summary doctorSummary           `json:"summary"`
-	}{Version: s.version, Checks: checks}
+	}{Version: s.daemonVersionOrUnknown(), Checks: checks}
 	for _, c := range checks {
 		resp.Summary.Total++
 		switch c.Status {
@@ -93,4 +121,13 @@ func argKeys(args map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// daemonVersionOrUnknown 守护版本注入缝取值（nil 防线：未装配时如实标注——
+// 不 panic、不回退本进程版本，票07 不伪造红线同缝）。
+func (s *Server) daemonVersionOrUnknown() string {
+	if s.daemonVersion == nil {
+		return daemonVersionUnknown
+	}
+	return s.daemonVersion()
 }

@@ -8,6 +8,9 @@ package store
 //     （含 MarkBlocked 落盘回读与 ReadHandoff 基线）；
 //   - TestNewBadOrMissingIndexStartsEmpty：index.json 坏/缺 → 空索引；
 //   - TestSaveHandoffOverwritesSameSessionAgent：同 (session,agent) 覆盖。
+// 另加票01（2026-10-06 强续消耗）专测 4 例：消耗→供出链拿不到 + 闸门判无
+// 覆盖；同 (agent,cwd) 其他会话不受影响；重启（重开 store）后标记仍在；
+// 标记范围（只标 fresh/skeleton）/幂等返回数/落盘载体（consumed_at null 语义）。
 
 import (
 	"encoding/json"
@@ -405,5 +408,144 @@ func TestLatestPendingForAnchor(t *testing.T) {
 	st.mu.Unlock()
 	if _, ok := st.LatestPendingFor("cc", "C:/Proj"); ok {
 		t.Fatal("坏 BlockedAt 不应给锚")
+	}
+}
+
+// ---------- 票01（2026-10-06 强续消耗）：store 层交接消耗标记 ----------
+//
+// 语义：bypass 一经使用，被强续会话自己的旧交接立即作废——供出链
+//（RestoreCandidates）与闸门覆盖判定（ValidHandoff，去重/boot 补记共用）
+// 均不认；同 (agent,cwd) 其他会话不受影响；标记持久化于 index.json
+//（consumed_at，与 pending 同载体），重启后仍在。agent 限定（仅 dsh 消耗）
+// 由票02 接线面执行，store 层只做能力与过滤。
+
+func TestConsumeHandoffsInvalidatesForRestoreAndGate(t *testing.T) {
+	st := mk(t)
+	proj := filepath.Join(t.TempDir(), "proj")
+	save(t, st, "s1", "dsh", proj, nil, "fresh")
+	if len(st.RestoreCandidates("dsh", proj)) != 1 {
+		t.Fatal("消耗前供出链应能拿到")
+	}
+	if st.ValidHandoff("dsh", proj, 0) == nil {
+		t.Fatal("消耗前闸门应判覆盖命中")
+	}
+	if n := st.ConsumeHandoffs("dsh", "s1"); n != 1 {
+		t.Fatalf("应消耗 1 条: %d", n)
+	}
+	if len(st.RestoreCandidates("dsh", proj)) != 0 {
+		t.Fatal("消耗后供出链不应再拿到")
+	}
+	if st.ValidHandoff("dsh", proj, 0) != nil {
+		t.Fatal("消耗后闸门应判无覆盖")
+	}
+}
+
+func TestConsumeHandoffsLeavesSameDirOtherSessions(t *testing.T) {
+	st := mk(t)
+	proj := filepath.Join(t.TempDir(), "proj")
+	now := clock.Now()
+	save(t, st, "old", "dsh", proj, fptr(now-3600), "fresh")
+	save(t, st, "new", "dsh", proj, fptr(now-60), "fresh")
+	if h := st.ValidHandoff("dsh", proj, now-7200); h == nil || h.SessionID != "new" {
+		t.Fatalf("消耗前闸门应取 covers 最大: %+v", h)
+	}
+	if n := st.ConsumeHandoffs("dsh", "new"); n != 1 {
+		t.Fatalf("应消耗 1 条: %d", n)
+	}
+	// 被消耗会话出列；同目录其他会话照常供给/认定。lastWrite=now-7200 时
+	// old 的 60s 容差判定本就通过——new 出列只能因消耗，非容差假象。
+	if h := st.ValidHandoff("dsh", proj, now-7200); h == nil || h.SessionID != "old" {
+		t.Fatalf("同目录其他会话应不受影响: %+v", h)
+	}
+	cands := st.RestoreCandidates("dsh", proj)
+	if len(cands) != 1 || cands[0].SessionID != "old" {
+		t.Fatalf("供出链应只剩 old: %+v", cands)
+	}
+	// agent/session 不匹配 → 0 条，不动别人
+	if n := st.ConsumeHandoffs("cc", "old"); n != 0 {
+		t.Fatalf("agent 不同不应消耗: %d", n)
+	}
+	if n := st.ConsumeHandoffs("dsh", "s9"); n != 0 {
+		t.Fatalf("session 不存在不应消耗: %d", n)
+	}
+	if h := st.ValidHandoff("dsh", proj, now-7200); h == nil || h.SessionID != "old" {
+		t.Fatalf("空消耗调用后 old 应仍有效: %+v", h)
+	}
+}
+
+func TestConsumeHandoffsPersistsAcrossReopen(t *testing.T) {
+	base := t.TempDir()
+	data := filepath.Join(base, "data")
+	st, err := New(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(base, "proj")
+	save(t, st, "s1", "dsh", proj, nil, "fresh")
+	save(t, st, "s2", "dsh", proj, nil, "fresh")
+	if n := st.ConsumeHandoffs("dsh", "s1"); n != 1 {
+		t.Fatalf("应消耗 1 条: %d", n)
+	}
+	st2, err := New(data) // 重开 store（模拟重启重载 index.json）
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := st2.ValidHandoff("dsh", proj, 0); h == nil || h.SessionID != "s2" {
+		t.Fatalf("重启后 s1 应仍被闸门拒认、s2 照常: %+v", h)
+	}
+	cands := st2.RestoreCandidates("dsh", proj)
+	if len(cands) != 1 || cands[0].SessionID != "s2" {
+		t.Fatalf("重启后供出链应只剩 s2: %+v", cands)
+	}
+}
+
+func TestConsumeHandoffsScopeCountAndCarrier(t *testing.T) {
+	st := mk(t)
+	proj := filepath.Join(t.TempDir(), "proj")
+	save(t, st, "sOld", "dsh", proj, nil, "stale") // 非 fresh/skeleton：不标
+	save(t, st, "sSkel", "dsh", proj, nil, "skeleton")
+	save(t, st, "sNew", "dsh", proj, nil, "fresh")
+	if n := st.ConsumeHandoffs("dsh", "sOld"); n != 0 {
+		t.Fatalf("stale 本就不供给，不应标记: %d", n)
+	}
+	if n := st.ConsumeHandoffs("dsh", "sSkel"); n != 1 {
+		t.Fatalf("skeleton 应消耗: %d", n)
+	}
+	if n := st.ConsumeHandoffs("dsh", "sNew"); n != 1 {
+		t.Fatalf("fresh 应消耗: %d", n)
+	}
+	if n := st.ConsumeHandoffs("dsh", "sNew"); n != 0 {
+		t.Fatalf("重复消耗应幂等返回 0: %d", n)
+	}
+	// 落盘载体：已消耗条目 consumed_at 为时间串，未标记条目保持 null
+	//（snake_case 键名，与 blocked_at/consumed_by 载体纪律同形）。
+	raw, err := os.ReadFile(st.indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, hi := range m["handoffs"].([]any) {
+		h := hi.(map[string]any)
+		sid, _ := h["session_id"].(string)
+		seen[sid] = true
+		switch sid {
+		case "sNew", "sSkel":
+			if _, ok := h["consumed_at"].(string); !ok {
+				t.Fatalf("已消耗条目 consumed_at 应为时间串: %v", h)
+			}
+		case "sOld":
+			if v, ok := h["consumed_at"]; !ok || v != nil {
+				t.Fatalf("未标记条目 consumed_at 应为 null: %v", h["consumed_at"])
+			}
+		}
+	}
+	for _, sid := range []string{"sOld", "sSkel", "sNew"} {
+		if !seen[sid] {
+			t.Fatalf("落盘 index 缺 %s", sid)
+		}
 	}
 }

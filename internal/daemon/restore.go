@@ -28,7 +28,10 @@ import (
 	"ferryman/internal/store"
 )
 
-// Restore 归还：新会话开场取回上下文。
+// Restore 归还：新会话开场取回上下文。dsh 另有播种新鲜度校验（票03）：过期
+// 交接不供（covers 落后基准会话 last_write 超 60s 容差，与闸门覆盖判据
+// ValidHandoff 同口径；基准=有锚取锚会话、无锚取候选源会话），cc/codex 逐字
+// 零变化。
 func (d *Daemon) Restore(agent, cwd, sessionID string) map[string]any {
 	if p, ok := d.Store.LatestPendingFor(agent, cwd); ok {
 		return d.restoreAnchored(agent, cwd, sessionID, p)
@@ -42,6 +45,12 @@ func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPr
 	cands := d.Store.RestoreCandidates(agent, cwd)
 	for _, c := range cands {
 		if c.SessionID == p.SessionID {
+			// 票03 播种新鲜度（仅 dsh）：锚会话（=该候选源会话）交接过期不供
+			// ——continue 落入下方"锚会话没有交接"同款降级（带原话）。
+			// cc/codex 不经此分支，供出行为逐字零变化。
+			if agent == "dsh" && !d.coversFreshForDsh(agent, c) {
+				continue
+			}
 			return d.injectHandoff(agent, cwd, sessionID, c, pending)
 		}
 	}
@@ -89,6 +98,17 @@ func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPr
 // 无候选不注入。
 func (d *Daemon) restoreNewest(agent, cwd, sessionID string) map[string]any {
 	cands := d.Store.RestoreCandidates(agent, cwd)
+	if agent == "dsh" { // 票03 播种新鲜度（仅 dsh）：候选逐个按其源会话台账
+		// last_write 验 covers（60s 容差），过期不供；全过期 → 空集，落既有
+		// "无交接"形态。cc/codex 不过滤，供出行为逐字零变化。
+		fresh := make([]store.Entry, 0, len(cands))
+		for _, c := range cands {
+			if d.coversFreshForDsh(agent, c) {
+				fresh = append(fresh, c)
+			}
+		}
+		cands = fresh
+	}
 	if len(cands) == 0 {
 		return map[string]any{"context": nil}
 	}
@@ -118,6 +138,22 @@ func (d *Daemon) restoreNewest(agent, cwd, sessionID string) map[string]any {
 	newest := cands[0]
 	pending := d.Store.PopPendingPrompt(newest.SessionID, sessionID) // consume_for
 	return d.injectHandoff(agent, cwd, sessionID, newest, pending)
+}
+
+// coversFreshForDsh 票03 播种新鲜度（调用方已按 agent=="dsh" 收窄）：交接
+// covers_until ≥ 源会话台账 last_write（60s 容差，复用 store.CoversToleranceS，
+// 与闸门覆盖判据 ValidHandoff 同口径）才算新鲜——强续后的旧快照不供新会话。
+// 源会话不在台账（无基线可验）按新鲜放行：无证据不拦，与 injectHandoff
+// lineage 的台账缺失退化同款取舍；last_write 锁内抄写（共享引用纪律）。
+func (d *Daemon) coversFreshForDsh(agent string, h store.Entry) bool {
+	st := d.Ledger.Get(agent, h.SessionID)
+	if st == nil {
+		return true
+	}
+	d.Ledger.Mu().Lock()
+	lw := st.LastWrite
+	d.Ledger.Mu().Unlock()
+	return h.CoversUntilS+store.CoversToleranceS >= lw
 }
 
 // injectHandoff 注入单份交接（锚定/最新两路共用）：INJECT 层提取 + 头部免责 +
