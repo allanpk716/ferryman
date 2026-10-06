@@ -1683,3 +1683,107 @@ func TestGateDshModeIndependentKey(t *testing.T) {
 		t.Fatalf("codex 应走 observe 警告（闲置+交接文档）: %v", rc["additional_context"])
 	}
 }
+
+// ---- 票02（D2 消耗语义/D4 保守面/A5① idle 口径） ----
+//
+// dsh 强续（bypass）即消耗该会话现行交接——之后新会话要么拿到含最新进展的
+// 新交接、要么明说没有，绝不端旧快照（用户原话案：强续后新会话收到 11 小时
+// 前旧快照）。cc/codex 永不消耗，行为逐字零变化（本节负例 + 既有断言双护栏）。
+
+// gateBodyAgent 自由 agent 的 gate body（gateBody4 钉死 cc，dsh/codex 用例用此）。
+func gateBodyAgent(agent, sid, path, cwd, prompt string) map[string]any {
+	return map[string]any{"agent": agent, "session_id": sid, "transcript_path": path,
+		"cwd": cwd, "prompt": prompt}
+}
+
+// findHandoff 从 index.json 取 (agent,sid) 的交接行（消耗断言读持久化面）。
+func findHandoff(t *testing.T, dataDir, agent, sid string) map[string]any {
+	t.Helper()
+	for _, h := range indexHandoffs(t, dataDir) {
+		if h["agent"] == agent && h["session_id"] == sid {
+			return h
+		}
+	}
+	t.Fatalf("index 缺 (%s,%s) 交接", agent, sid)
+	return nil
+}
+
+// TestGateDshBypassConsumesHandoff dsh 强续放行的同一刻，其现行交接被标记
+// 已消耗（持久化面 consumed_at 落库 + 供给面 ValidHandoff 随即不认）。
+func TestGateDshBypassConsumesHandoff(t *testing.T) {
+	e := newGateEnv(t)
+	proj := filepath.Join(e.tmp, "proj")
+	path := filepath.Join(e.tmp, "sd1.jsonl")
+	e.led.TouchFull("dsh", "sd1", path, e.t0-3600, 10, proj, "", 99999, 0)
+	e.store.SaveHandoff("sd1", "dsh", proj, "t", isoUTC(e.t0), "fresh", "md")
+
+	rb := e.d.Gate(gateBodyAgent("dsh", "sd1", path, proj, "强续 我就要留在这"))
+	if rb["decision"] != "allow" || rb["reason"] != "bypass" {
+		t.Fatalf("bypass = %v", rb)
+	}
+	if got := findHandoff(t, e.tmp, "dsh", "sd1")["consumed_at"]; got == nil {
+		t.Fatalf("dsh 强续后交接应已消耗（consumed_at 落库）: %v", got)
+	}
+	if h := e.store.ValidHandoff("dsh", proj, e.t0); h != nil {
+		t.Fatalf("消耗后 ValidHandoff 应不供给: %+v", h)
+	}
+}
+
+// TestGateCCCodexBypassKeepsHandoff cc/codex 强续不消耗交接（D4 保守面：
+// 消耗调用只挂 dsh 道；供给面原样＝行为零变化的可观测锚）。
+func TestGateCCCodexBypassKeepsHandoff(t *testing.T) {
+	for _, agent := range []string{"cc", "codex"} {
+		t.Run(agent, func(t *testing.T) {
+			e := newGateEnv(t)
+			proj := filepath.Join(e.tmp, "proj")
+			path := filepath.Join(e.tmp, "sx.jsonl")
+			e.led.TouchFull(agent, "sx", path, e.t0-3600, 10, proj, "", 99999, 0)
+			e.store.SaveHandoff("sx", agent, proj, "t", isoUTC(e.t0), "fresh", "md")
+			rb := e.d.Gate(gateBodyAgent(agent, "sx", path, proj, "强续 留下"))
+			if rb["decision"] != "allow" || rb["reason"] != "bypass" {
+				t.Fatalf("%s bypass = %v", agent, rb)
+			}
+			if got := findHandoff(t, e.tmp, agent, "sx")["consumed_at"]; got != nil {
+				t.Fatalf("%s 强续不得消耗交接: %v", agent, got)
+			}
+			if h := e.store.ValidHandoff(agent, proj, e.t0); h == nil {
+				t.Fatalf("%s 交接供给不得受 bypass 影响", agent)
+			}
+		})
+	}
+}
+
+// TestGateBlockAcctIdleAnchoredToDecisionAnchor 票02/A5① 回归钉：block 记账
+// 的 idle_s 与闸门判定锚同源（内容时钟），不被顶新的台账 last_write 稀释。
+// 场景＝ADR-0013 幻影写形态（2026-10-06 08:12:51 账本 16.5s vs 判定 8.8h 的
+// 构造版）：last_write 被顶到当下、内容时钟停在 630s 前——记账若取台账
+// last_write 口径会记 ≈0，取判定锚口径才记 ≈630。
+func TestGateBlockAcctIdleAnchoredToDecisionAnchor(t *testing.T) {
+	w := newWenv(t)
+	proj := filepath.Join(w.tmp, "proj")
+	path := filepath.Join(w.tmp, "ac1.jsonl")
+	tsFmt := "2006-01-02T15:04:05.000Z"
+	old := time.Unix(int64(w.t0-(testBlockS+600)), 0).UTC().Format(tsFmt)
+	// 内容：最后带时间戳记录停在 t0-630；尾部混一条幻影写（无 timestamp 字段）
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(
+		`{"type":"user","timestamp":%q,"message":{"content":"早"}}`+"\n"+
+			`{"type":"mode","mode":"default"}`+"\n", old)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 文件时钟被幻影写顶新到现在（last_write=t0 → 台账口径 idle≈0）
+	w.led.TouchFull("cc", "ac1", path, w.t0, 10, proj, "", 99999, 0)
+	w.store.SaveHandoff("ac1", "cc", proj, "t", isoUTC(w.t0), "fresh", "md")
+
+	if r := w.d.Gate(gateBody4("ac1", path, proj, "原话")); r["decision"] != "block" {
+		t.Fatalf("decision = %v, want block（判定走内容时钟）", r["decision"])
+	}
+	rows := w.acc.Read(accounts.ReadOpts{Kind: "block", Session: "ac1"})
+	if len(rows) != 1 {
+		t.Fatalf("block 行数 = %d, want 1", len(rows))
+	}
+	idle, _ := rows[0]["idle_s"].(float64)
+	if math.Abs(idle-(testBlockS+600)) >= 1 {
+		t.Fatalf("idle_s = %v, want ≈ %v（判定锚口径，非被顶新的台账 last_write≈0）",
+			idle, testBlockS+600)
+	}
+}

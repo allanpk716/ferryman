@@ -117,6 +117,19 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			d.Pending.Clear([2]string{agent, stB.SessionID})
 		}
 		d.Pending.Clear([2]string{agent, sessionID})
+		// 票02（D2 消耗语义/D4 保守面）：dsh 强续即消耗该会话现行交接——之后
+		// 新会话要么拿到含最新进展的新交接、要么明说没有，绝不端旧快照。消耗
+		// 键=会话自身的交接（Entry.SessionID），不动同 (agent,cwd) 其他会话；
+		// cc/codex 永不消耗（行为逐字零变化）。会话键与分支内 stB 同源解析：
+		// 命中取其 SessionID（建后不可变字段，直读同 Acct 纪律）；台账 miss
+		// 回落原始 session_id（与 Acct 的覆盖参数同口径）。
+		if agent == "dsh" && d.Store != nil {
+			sid := sessionID
+			if stB != nil {
+				sid = stB.SessionID
+			}
+			d.Store.ConsumeHandoffs(agent, sid)
+		}
 		d.Acct("bypass", stB, agent, sessionID, "",
 			accounts.Fields{"prefix_tokens": peak})
 		return map[string]any{"decision": "allow", "reason": "bypass"}
