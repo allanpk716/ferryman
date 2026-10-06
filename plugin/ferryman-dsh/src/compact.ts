@@ -33,6 +33,7 @@ import {
   type PollCommand,
 } from "./daemon.ts";
 import type { LoggerLike } from "./events.ts";
+import type { BannerStore } from "./banner.ts";
 import type { PluginContext } from "./index.ts";
 
 // ---- 常量（spec 钉点） ----
@@ -165,6 +166,9 @@ export interface PollDeps {
   clearImpl?: (handle: unknown) => void;
   /** 新前缀读取注入面;缺省经 sessionProjections 投影尽力读 */
   readPrefixTokens?: (agent: unknown) => number | undefined;
+  /** 压缩成功横幅仓（票06,src/banner.ts）:ok:true 上报送达即置位,浏览器经
+   *  ferrymanBlocked list 信封 banner 布尔拉取;缺省=不置位（纯测试驱动/老接线） */
+  banner?: BannerStore;
 }
 
 export interface PollLoopHandle {
@@ -307,9 +311,10 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
   /** 执行单条 compact 指令：复查→compactNow→上报。fire-and-forget,内吞一切异常。 */
   async function executeCommand(cmd: PollCommand): Promise<void> {
     const sid = cmd.session_id as string;
-    const report = async (body: { ok: boolean; reason?: string; prefix_tokens?: number }): Promise<void> => {
+    const report = async (body: { ok: boolean; reason?: string; prefix_tokens?: number }): Promise<boolean> => {
       const delivered = await reportCompacted(deps.ep, { session_id: sid, source: COMPACT_SOURCE, ...body });
       if (!delivered) logger.warn(`[ferryman-dsh] 压缩结果上报失败（daemon 不可达?）: ${sid}`);
+      return delivered;
     };
     try {
       // N1 双重复查：agent 空闲 ∧ 闲置 < TTL 热窗;任一不过 → expired-or-busy 不执行。
@@ -334,7 +339,12 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
         const prefix = deps.readPrefixTokens !== undefined
           ? deps.readPrefixTokens(entry.agent)
           : readPrefixFromProjections(lazy.projections, entry.agent);
-        await report(prefix === undefined ? { ok: true } : { ok: true, prefix_tokens: prefix });
+        const delivered = await report(prefix === undefined ? { ok: true } : { ok: true, prefix_tokens: prefix });
+        // 票06 横幅触发源（src/banner.ts 头注克隆钉点）：compactNow 解析即
+        // compaction/end 已落（compaction/src/index.ts:147 锁语义 + types.ts:104
+        // endSeq）;上报送达=daemon 侧 compressed 标记已立——「直接继续」承诺
+        // 成立才亮;ok:false/上报终败一律不亮
+        if (delivered && deps.banner !== undefined) deps.banner.set(sid);
       } catch (e) {
         if (isBusyError(e)) {
           await report({ ok: false, reason: "busy" });

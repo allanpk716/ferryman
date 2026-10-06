@@ -38,6 +38,7 @@
 
 import { askGate, askHandoff, sendEvent, type DaemonEndpoint } from "./daemon.ts";
 import { SessionRegistry } from "./compact.ts";
+import { BannerStore } from "./banner.ts";
 import { injectedMessage, type UserMessageLike } from "./usermessage.ts";
 
 export interface LoggerLike {
@@ -133,6 +134,10 @@ export interface EventDeps {
   /** 会话注册表（票05 热压缩）：五事件位维护 sid→{agent 活引用,闲置时钟,忙位};
    *  轮询执行臂（compact.ts）据此报宿主会话清单并做执行前双重复查 */
   registry: SessionRegistry;
+  /** 压缩完成横幅仓（票06,src/banner.ts）：compact.ts 成功路径置位,此处用户步
+   *  （下次发消息）与 dispose 清位;浏览器经 ferrymanBlocked list 信封 banner
+   *  布尔拉取显示 */
+  banner: BannerStore;
   /** 时钟注入面（判活转发与注册表闲置钟的时间戳）;缺省 Date.now */
   now?: () => number;
 }
@@ -147,6 +152,7 @@ export function makeEventDeps(ep: DaemonEndpoint, logger: LoggerLike): EventDeps
     blocked: new BlockedStore(),
     now,
     registry: new SessionRegistry(now),
+    banner: new BannerStore(),
   };
 }
 
@@ -364,6 +370,9 @@ export async function onPreStep(
   const sid = sessionIdOf(payload.agent);
   // 会话注册表（票05）：用户步=活动,闲置钟归零（agent 活引用同步登记/刷新）
   if (sid) deps.registry.touch(sid, cwdOf(payload.agent), payload.agent);
+  // 票06：用户步=横幅的「下次发消息」——压缩横幅展示一次即撤（允许/拦截都撤:
+  // 用户已回流,横幅使命结束,滞留反成假承诺）;循环步（step>1）不算用户回流
+  if (sid) deps.banner.clear(sid);
   const text = blocksToText(payload.messages);
   const gate = await askGate(deps.ep, {
     session_id: sid,
@@ -583,6 +592,7 @@ export function onDisposed(deps: EventDeps, payload: DisposedPayload): void {
   if (sid) {
     deps.handoffPending.delete(sid); // 会话终局清欠账,不跨会话泄漏
     deps.blocked.clearSession(sid); // 会话终局清被拦缓存（票08 返工:原话全文不缓跑累积）
+    deps.banner.clear(sid); // 会话终局清横幅（票06;与 blocked/handoffPending 同纪律）
     deps.registry.remove(sid); // 会话终局出注册表（票05:不再进 poll 会话清单）
   }
   forwardLifecycle(deps, payload?.agent, "agent/disposed", {});

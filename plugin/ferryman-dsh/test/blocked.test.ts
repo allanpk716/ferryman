@@ -229,7 +229,10 @@ test("list：返回 wire 卡片（与 store 同形）;空会话空数组不抛",
   assert.equal(out.ok, true);
   assert.equal(out.cards.length, 1);
   assert.equal(out.cards[0]!.prompt, "原话");
-  assert.deepEqual(await service.list("session-unknown"), { ok: true, sessionId: "session-unknown", cards: [] });
+  assert.deepEqual(await service.list("session-unknown"), { ok: true, sessionId: "session-unknown", cards: [], banner: false });
+  // 票06：信封层扩 banner 布尔（压缩完成横幅数据通道,src/banner.ts）——上方
+  // cards[] 元素键白名单（「wire 键白名单外的键」断言）不动,扩的是信封键;
+  // banner 语义与状态机钉在 test/banner.test.ts。
 });
 
 test("resend：followup 代发「强续 +原话」UserMessage（ferryman-dsh source）,卡片转 done(resend)", async () => {

@@ -31,6 +31,7 @@ import {
 import type { DaemonEndpoint } from "./daemon.ts";
 import { resolveConfig, type FerrymanPluginRawConfig } from "./config.ts";
 import { startPollLoop, type CompactionLike, type SessionProjectionsLike } from "./compact.ts";
+import type { BannerStore } from "./banner.ts";
 import { injectedMessage, type UserMessageLike } from "./usermessage.ts";
 
 export const name = "ferryman-dsh";
@@ -107,15 +108,24 @@ export interface WorkspaceRegistryLike {
 
 export interface BlockedRemoteDeps {
   store: BlockedStore;
+  /** 压缩完成横幅仓（票06,src/banner.ts）——list 信封 banner 布尔的数据源;
+   *  缺省=回 false（老构造面/直调测试兼容,横幅面静默缺席） */
+  banner?: BannerStore;
   agents?: AgentsLike;
   workspaces?: WorkspaceRegistryLike;
 }
 
-/** list 回话（wire 卡片数组;浏览器卡片数据源） */
+/** list 回话（wire 卡片数组;浏览器卡片数据源）。票06 信封层扩 banner 布尔——
+ *  cards[] 元素键白名单（test/blocked.test.ts「wire 键白名单外的键」断言）不动,
+ *  扩的是信封键;状态机钉在 test/banner.test.ts */
 export interface BlockedListResult {
   ok: boolean;
   sessionId: string;
   cards: BlockedCard[];
+  /** 压缩完成横幅位：宿主在「compactNow 成功+上报送达」置位、用户步（下次发
+   *  消息）/会话终局清位（src/banner.ts 触发源克隆钉点）;true=浏览器显示横幅,
+   *  下轮拉到 false 即隐藏 */
+  banner: boolean;
 }
 
 /** 动作回话（失败不抛——错误走 ok:false + 中文指路文案,浏览器就地提示） */
@@ -150,7 +160,12 @@ export function buildBlockedService(deps: BlockedRemoteDeps): BlockedRemoteServi
   // eslint 姿态说明：三方法刻意收窄为纯标识符参数,勿加默认值/解构/剩余参数。
   const proto = {
     async list(sessionId: string): Promise<BlockedListResult> {
-      return { ok: true, sessionId, cards: deps.store.list(sessionId) };
+      return {
+        ok: true,
+        sessionId,
+        cards: deps.store.list(sessionId),
+        banner: deps.banner?.has(sessionId) === true, // 票06：缺仓（老构造面）回 false
+      };
     },
     async resend(id: string): Promise<BlockedActionResult> {
       const ev = deps.store.get(id);
@@ -241,10 +256,12 @@ export function buildBlockedService(deps: BlockedRemoteDeps): BlockedRemoteServi
  * 故经 optionalHostFace 容错取用:取不到时服务照常注册,「新会话继续」走
  * events.ts 既有的手工指引兜底（真机 web 实例 10-06 激活事故根因）。
  */
-export function registerBlockedRemote(ctx: PluginContext, deps: { blocked: BlockedStore }): void {
+export function registerBlockedRemote(ctx: PluginContext, deps: { blocked: BlockedStore; banner?: BannerStore }): void {
   if (typeof ctx.provide !== "function") return;
   const serviceDeps: BlockedRemoteDeps = {
     store: deps.blocked,
+    // 横幅仓（票06）：apply 的 makeEventDeps 产物经此上 wire;直调测试不带=缺省
+    banner: deps.banner,
     // 惰性初取（inject 执法环境取不到=undefined）,懒注入到位后覆盖
     agents: optionalHostFace(() => ctx.agents),
     workspaces: optionalHostFace(() => ctx.workspaceRegistry),
@@ -322,8 +339,9 @@ export function apply(ctx: PluginContext, config: FerrymanPluginConfig = {}): vo
   const deps = makeEventDeps(ep, ctx.logger ?? console);
   registerHooks(ctx, deps);
   registerBlockedRemote(ctx, deps);
-  // 票05：热压缩轮询执行臂（与五事件位共用同一 deps/注册表——会话清单与复查同源）
-  const loop = startPollLoop({ ep, logger: deps.logger, registry: deps.registry, ctx });
+  // 票05：热压缩轮询执行臂（与五事件位共用同一 deps/注册表——会话清单与复查同源）;
+  // 票06：banner 仓随臂递入——压缩成功+上报送达置位,横幅经上方 Remote list 上浏览器
+  const loop = startPollLoop({ ep, logger: deps.logger, registry: deps.registry, ctx, banner: deps.banner });
   void selfcheckOnce(ctx, { ...resolved, fetchImpl: config.fetchImpl });
   return () => loop.stop();
 }

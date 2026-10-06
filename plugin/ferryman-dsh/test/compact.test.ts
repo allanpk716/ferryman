@@ -36,6 +36,7 @@ import {
   type EventDeps,
   type LoggerLike,
 } from "../src/events.ts";
+import { BannerStore } from "../src/banner.ts";
 import { apply, inject as pluginInject, type PluginContext } from "../src/index.ts";
 import {
   startMockDaemon,
@@ -66,7 +67,7 @@ async function mockFor(t: { after: (fn: () => void) => void }): Promise<MockDaem
 
 /** 手工 deps（registry/now 可注入;EventDeps 为纯数据面,测试直构造合法） */
 function makeDeps(mock: MockDaemon, logger: LoggerLike, registry: SessionRegistry, now: () => number = Date.now): EventDeps {
-  return { ep: epOf(mock), logger, titles: new Map(), handoffPending: new Map(), blocked: new BlockedStore(), now, registry };
+  return { ep: epOf(mock), logger, titles: new Map(), handoffPending: new Map(), blocked: new BlockedStore(), now, registry, banner: new BannerStore() };
 }
 
 /** compactNow 记录替身：抓 receiver/agent/signal,可编程回话 */
