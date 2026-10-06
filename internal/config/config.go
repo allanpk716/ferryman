@@ -165,6 +165,7 @@ type Config struct {
 	FerryChain    []string      // 票02
 	SameModel     SameModelCfg  // [ferry.same_model]（票01，ADR-0015：默认 off）
 	Tuning        TuningCfg     // [tuning]（票01，D10：默认 recommend）
+	DshCompact    DshCompactCfg // [dsh_compact]（票02，dsh-hot-compaction：默认全开）
 	Dock          *DockCfg      // nil=[dock] 节缺失＝渡口不启动（F11 opt-in）
 }
 
@@ -209,6 +210,15 @@ func Default() *Config {
 			CeilingMin:   map[string]float64{},
 		},
 		Tuning: TuningCfg{Mode: "recommend", WindowDays: TuningWindowDays, MinEvents: TuningMinEvents},
+		// 票02（dsh-hot-compaction）：压缩适配默认全开（spec 钉死六键缺省）。
+		DshCompact: DshCompactCfg{
+			Enabled:                true,
+			TriggerRatio:           0.8,
+			MinPeakTokens:          20000,
+			CommandTTLRatio:        0.2,
+			PollHintS:              30.0,
+			CompressedFlagTTLRatio: 2.0,
+		},
 	}
 }
 
@@ -419,6 +429,43 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		cfg.WaitWindow = WaitWindowCfg{
 			Mode:           pyStr(get(ww, "mode", cfg.WaitWindow.Mode)),
 			ManualWaitCapS: capS,
+		}
+	}
+	// [dsh_compact]（票02，dsh-hot-compaction）：节存在才整节重建，缺字段回落
+	// 默认（节内 .get 语义，question_watch 同款）。负值不在解析层拦——守门归
+	// Validate（tuning/dock 同分工）。
+	if raw, ok := data["dsh_compact"]; ok {
+		dc, err := asTable(raw, "dsh_compact")
+		if err != nil {
+			return err
+		}
+		tr, err := pyFloat(get(dc, "trigger_ratio", cfg.DshCompact.TriggerRatio))
+		if err != nil {
+			return err
+		}
+		mpt, err := pyInt(get(dc, "min_peak_tokens", cfg.DshCompact.MinPeakTokens))
+		if err != nil {
+			return err
+		}
+		ctr, err := pyFloat(get(dc, "command_ttl_ratio", cfg.DshCompact.CommandTTLRatio))
+		if err != nil {
+			return err
+		}
+		phs, err := pyFloat(get(dc, "poll_hint_s", cfg.DshCompact.PollHintS))
+		if err != nil {
+			return err
+		}
+		cfr, err := pyFloat(get(dc, "compressed_flag_ttl_ratio", cfg.DshCompact.CompressedFlagTTLRatio))
+		if err != nil {
+			return err
+		}
+		cfg.DshCompact = DshCompactCfg{
+			Enabled:                pyBool(get(dc, "enabled", cfg.DshCompact.Enabled)),
+			TriggerRatio:           tr,
+			MinPeakTokens:          mpt,
+			CommandTTLRatio:        ctr,
+			PollHintS:              phs,
+			CompressedFlagTTLRatio: cfr,
 		}
 	}
 	// Python: cfg.ferry_provider = str(data.get("ferry", {}).get("provider", cfg.ferry_provider))
@@ -683,6 +730,29 @@ func Validate(c *Config, relaxMinGap bool) error {
 	if ww.ManualWaitCapS < 0 {
 		problems = append(problems, fmt.Sprintf("wait_window.manual_wait_cap_s 须 ≥ 0（当前 %gs；0=未配置）",
 			ww.ManualWaitCapS))
+	}
+	// [dsh_compact]（票02）：比例/间隔/阈值键负值守门（0 的语义归使用点——TTL
+	// 不可得时指令不派发、标记恒无效，保守面；wait_window 同口径）。
+	dc := &c.DshCompact
+	if dc.TriggerRatio < 0 {
+		problems = append(problems, fmt.Sprintf("dsh_compact.trigger_ratio 须 >= 0（当前 %g）",
+			dc.TriggerRatio))
+	}
+	if dc.MinPeakTokens < 0 {
+		problems = append(problems, fmt.Sprintf("dsh_compact.min_peak_tokens 须 >= 0（当前 %d）",
+			dc.MinPeakTokens))
+	}
+	if dc.CommandTTLRatio < 0 {
+		problems = append(problems, fmt.Sprintf("dsh_compact.command_ttl_ratio 须 >= 0（当前 %g）",
+			dc.CommandTTLRatio))
+	}
+	if dc.PollHintS < 0 {
+		problems = append(problems, fmt.Sprintf("dsh_compact.poll_hint_s 须 >= 0（当前 %g）",
+			dc.PollHintS))
+	}
+	if dc.CompressedFlagTTLRatio < 0 {
+		problems = append(problems, fmt.Sprintf("dsh_compact.compressed_flag_ttl_ratio 须 >= 0（当前 %g）",
+			dc.CompressedFlagTTLRatio))
 	}
 	// [tuning]（票01，D10）：三态枚举恒校验（枚举键与 gate 同款无条件）；
 	// 窗/样本门槛须为正（护栏④的样本比较依赖正数语义）。

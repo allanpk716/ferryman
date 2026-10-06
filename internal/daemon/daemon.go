@@ -199,6 +199,14 @@ type Daemon struct {
 	// 自账本回种（重启恢复）;守望经 w.Daemon 查询。叶子锁自带,nil 安全。
 	dshFed *dshEventFed
 
+	// compactMu dsh 压缩指令槽锁（票02，dsh-hot-compaction）：守望线程（入槽，
+	// 票03）与 HTTP 线程（poll 读清）双头读写串行化——独立小锁，临界区纯内存，
+	// 不嵌套其他锁（无锁序约束，cfgMu 同款）。
+	compactMu sync.Mutex
+	// dshCompactSlot 压缩指令槽：sid → 指令（票02，spec「架构与契约」）。仅内
+	// 存——重启丢槽＝该轮不压缩（触发面下轮重判重入槽，无害，同 PendingTable）。
+	dshCompactSlot map[string]*dshCompactCmd
+
 	// Version 版本号（票02，规格 §A）：serveConfig 装配时自 main 经
 	// ServeContext 传入（显式传参不做全局单例；直接构造 Daemon 的替身不装 =
 	// 空，Health 回落 dev）。同 DockSnap 的"构造后装配赋值"先例。
@@ -220,17 +228,18 @@ func NewDaemon(cfg *config.Config, lg *ledger.Ledger, st *store.Store,
 	dshFed := &dshEventFed{}
 	dshFed.seedFromAccounts(acc)
 	return &Daemon{
-		Cfg:          cfg,
-		Ledger:       lg,
-		Store:        st,
-		EnqueueFerry: enqueue,
-		Accounts:     acc,
-		Stats:        &GateStats{ByAgent: map[string]int{}},
-		Pending:      &PendingTable{},
-		QWatchStats:  qs,
-		windows:      map[winKey]*waitWindow{},
-		dshFed:       dshFed,
-		StartedAt:    startedAt,
+		Cfg:            cfg,
+		Ledger:         lg,
+		Store:          st,
+		EnqueueFerry:   enqueue,
+		Accounts:       acc,
+		Stats:          &GateStats{ByAgent: map[string]int{}},
+		Pending:        &PendingTable{},
+		QWatchStats:    qs,
+		windows:        map[winKey]*waitWindow{},
+		dshFed:         dshFed,
+		dshCompactSlot: map[string]*dshCompactCmd{},
+		StartedAt:      startedAt,
 	}
 }
 

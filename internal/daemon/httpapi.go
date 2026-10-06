@@ -121,8 +121,9 @@ func ListenAndServeWithShutdown(d DaemonLike, port int, token string, onShutdown
 // make_server 构造器捕获，do_POST/do_GET 落到两个分派函数。票04 起带停机
 // 钩子、票02 起带热切换钩子：管理端点在方法分派前拦截——管理端点自带守门
 // 序（loopback → 方法 → 鉴权），与 POST/GET 面的 auth 顺序无关；钩子
-// nil＝旧行为原样（落未知路径）。dsh 接收面三口（/dsh/gate、/dsh/event、
-// /dsh/handoff，dsh phase2 票04）同族拦截，仅真 Daemon 生效（替身落既有
+// nil＝旧行为原样（落未知路径）。dsh 接收面五口（/dsh/gate、/dsh/event、
+// /dsh/handoff，dsh phase2 票04；/dsh/poll、/dsh/compacted，票02
+// dsh-hot-compaction）同族拦截，仅真 Daemon 生效（替身落既有
 // 分派＝未知路径 404）。
 func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch ProviderSwitchFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

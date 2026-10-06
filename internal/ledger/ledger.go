@@ -54,6 +54,15 @@ type QSnap struct {
 	Size  int
 }
 
+// DshCompressMark dsh 压缩标记值（dsh-hot-compaction 票02）：TS＝压缩上报
+// 时刻（「流量作废」比较基准——标记后会话再有机器产出流量（LastWrite 越过
+// TS）即作废，压缩红利只领一次）；Expires＝死线（now + compressed_flag_ttl_ratio
+// ×TTL，置位时钉死——不再续期；TTL 不可得即 Expires=TS，读侧恒无效，保守面）。
+type DshCompressMark struct {
+	TS      float64
+	Expires float64
+}
+
 // SessionState 一条会话的台账状态（Python SessionState 1:1）。
 //
 // 共享可变引用：**读写均须持锁**（经 Ledger.Mu 或本包公共方法）。
@@ -103,6 +112,12 @@ type SessionState struct {
 	DshQWatchOpenedTS   *float64
 	DshQWatchBeatsFired int
 	DshQWatchPlanned    int
+	// dsh 热缓存压缩标记（dsh-hot-compaction 票02）：nil=无标记。置位点＝
+	// daemon /dsh/compacted 上报 ok=true 且带 prefix_tokens（compact.go 整体
+	// 换指针）；有效判定（死线＋流量作废）单源在 daemon DshCompressedActive
+	// ——TTL 比例是配置值，台账只存值不识语义。仅内存：daemon 重启归零＝
+	// 标记丢失（同 DshRunningTS 纪律，无害——重启观察窗内会话本就未被拦）。
+	DshCompressed *DshCompressMark
 }
 
 // subEnt T32 子代理计数值：(运行数, 最后事件时刻)。仅内存——daemon 重启丢

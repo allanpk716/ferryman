@@ -84,6 +84,11 @@ var kindFields = map[string][]string{
 	// 读数/TTL 观测/生效阈值（分钟）；clock_s=-1 = 无最后请求观测。
 	"same_model_skip": {"reason", "upstream", "idle_s", "clock_s", "ttl_s",
 		"threshold_min"},
+	// dsh 会话热缓存压缩上报（票02，Go 版新增科目——wait_close/same_model_skip
+	// 同款追加先例）：每条 /dsh/compacted 上报一行全量字段（spec「架构与契约」：
+	// 落账本 kind=compacted 含全部字段）。只记元数据与结果标记（隐私铁律，
+	// 消息内容永不入账）。
+	"compacted": {"ok", "reason", "prefix_tokens", "source"},
 }
 
 // kindOptional 科目可选字段：白名单放行（未知字段照拒的隐私铁律不动）、
@@ -98,14 +103,18 @@ var kindFields = map[string][]string{
 var kindOptional = map[string][]string{
 	"handoff": {"lane", "chain_pos", "err"},
 	"dock":    {"truncated"},
+	// compacted（票02）：reason/source/prefix_tokens 上报方可省（插件读不到新
+	// 前缀时省略 prefix_tokens）；ok 为上报核心字段恒必填。
+	"compacted": {"reason", "prefix_tokens", "source"},
 }
 
 // kindOrder 科目顺序 = Python dict 插入序（KINDS 元组），未知科目报错文案用。
 // wait_close 为 Go 版新增（票04），列于 qwatch 系之后；same_model_skip 为
-// Go 版新增（票03），列于末位。
+// Go 版新增（票03），列于末位；compacted 为 Go 版新增（票02
+// dsh-hot-compaction），列于末位。
 var kindOrder = []string{"handoff", "beat", "block", "inject", "bypass", "window",
 	"qwatch_hit", "qwatch_open", "qwatch_close", "wait_close", "dock", "usage",
-	"same_model_skip"}
+	"same_model_skip", "compacted"}
 
 // commonFields 公共字段（模块盖章；白名单校验不拒，但不随传入 Fields 覆盖）。
 var commonFields = map[string]bool{
