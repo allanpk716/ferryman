@@ -54,6 +54,9 @@ export interface PluginContext {
   /** 宿主工作区注册表鸭子面（ctx.workspaceRegistry）——新会话挂靠 best-effort
    *  （先例 session-controller/src/commands.ts:569-570 forkWorkspace） */
   workspaceRegistry?: WorkspaceRegistryLike;
+  /** cordis 懒注入面:宿主运行期把服务面递进来（dsh-ios-control fork-session.ts:60-64
+   *  真机 web 宿主实证可用的先例）;老宿主无此 API → 调用方须 try/catch 兜底 */
+  inject?(services: readonly string[], callback: (scoped: PluginContext) => void): unknown;
 }
 
 /** 五事件位接线（票05 业务实现在 events.ts;deps 注入 daemon 端点/logger/标题跟踪） */
@@ -165,20 +168,28 @@ export function buildBlockedService(deps: BlockedRemoteDeps): BlockedRemoteServi
       if (ev === undefined) {
         return { ok: false, error: "被拦记录已不在（宿主重启会丢缓存）。请在侧栏新建会话（同目录）,开场会自动收到交接与原话。" };
       }
-      const create = deps.agents?.create;
+      // 方法必须带着 agents receiver 调（10-06 真机:摘下来裸调 this=undefined →
+      // create 内 this.ctx 崩 "reading 'ctx'"——fork-session.ts:97 是整体调用）
+      const create = deps.agents?.create?.bind(deps.agents);
       if (typeof create !== "function") {
         return { ok: false, error: "宿主无 agents 服务。请在侧栏新建会话（同目录）,开场会自动收到交接与原话。" };
       }
       // session-<uuid> 同形（session-controller commands.ts:109/266 先例）;同 cwd
       // ——交接+原话由 daemon 归还链按 cwd 锚定带回（restore.go:35-95,零自带）。
+      // meta 形状对齐 fork-session.ts:88-92 可运行先例（parentSession/agentPreset）:
+      // 10-06 真机裸 {cwd} 在 agents.create 内部崩（reading 'ctx'）,补齐即愈。
       const sessionId = `session-${randomUUID()}`;
+      const header = (ev.agent as { session?: { header?: Record<string, unknown> } } | undefined)
+        ?.session?.header;
+      const meta: Record<string, unknown> = { parentSession: ev.sessionId, cwd: ev.cwd };
+      if (typeof header?.["agentPreset"] === "string") meta["agentPreset"] = header["agentPreset"];
       try {
-        await create({ sessionId, meta: { cwd: ev.cwd } });
+        await create({ sessionId, meta });
       } catch (e) {
         return { ok: false, error: `新建会话失败：${e instanceof Error ? e.message : String(e)}。请在侧栏手动新建（同目录）,开场自动收到交接与原话。` };
       }
       // 工作区挂靠 best-effort（失败不回滚创建;会话已在,侧栏按注册表可见）
-      const ws = deps.workspaces?.list().find((w) => w.sessionIds.includes(ev.sessionId));
+      const ws = deps.workspaces?.list?.bind(deps.workspaces)().find((w) => w.sessionIds.includes(ev.sessionId));
       if (ws !== undefined) {
         try {
           await ws.attachSession(sessionId);
@@ -223,14 +234,25 @@ export function buildBlockedService(deps: BlockedRemoteDeps): BlockedRemoteServi
  */
 export function registerBlockedRemote(ctx: PluginContext, deps: { blocked: BlockedStore }): void {
   if (typeof ctx.provide !== "function") return;
-  ctx.provide(
-    BLOCKED_SERVICE_KEY,
-    buildBlockedService({
-      store: deps.blocked,
-      agents: optionalHostFace(() => ctx.agents),
-      workspaces: optionalHostFace(() => ctx.workspaceRegistry),
-    }),
-  );
+  const serviceDeps: BlockedRemoteDeps = {
+    store: deps.blocked,
+    // 惰性初取（inject 执法环境取不到=undefined）,懒注入到位后覆盖
+    agents: optionalHostFace(() => ctx.agents),
+    workspaces: optionalHostFace(() => ctx.workspaceRegistry),
+  };
+  ctx.provide(BLOCKED_SERVICE_KEY, buildBlockedService(serviceDeps));
+  // 懒注入正道（fork-session.ts:60-64 同款,真机 web 宿主实证可用）:「新会话继续」
+  // 要 agents.create 真建会话;老宿主无此 API/服务缺席 → 保持初取结果,走手工指引兜底
+  try {
+    ctx.inject?.(["agents"], (scoped) => {
+      if (scoped.agents !== undefined) serviceDeps.agents = scoped.agents;
+    });
+  } catch { /* 老宿主无懒注入 API */ }
+  try {
+    ctx.inject?.(["workspaceRegistry"], (scoped) => {
+      if (scoped.workspaceRegistry !== undefined) serviceDeps.workspaces = scoped.workspaceRegistry;
+    });
+  } catch { /* 老宿主无懒注入 API */ }
 }
 
 /** 宿主服务面 best-effort 取用:读抛错（inject 执法）或缺面都归 undefined,不炸激活。 */
