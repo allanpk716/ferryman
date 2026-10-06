@@ -58,7 +58,9 @@
     // ---- 样式（平台 design token 优先,fallback 为 mock 占位色） ----
 
     var S = {
-      dock: { display: 'flex', flexDirection: 'column', gap: '8px' },
+      // 10-06 真机反馈二:窄屏卡面横宽超界看不全——全链 100% 宽+防内容撑宽
+      // （flex 子项 min-content 大于容器时不会自动缩,须显式约束）
+      dock: { display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', maxWidth: '100%', boxSizing: 'border-box' },
       card: {
         background: 'var(--dsw-alias-bg-layer-2, #1d2030)',
         border: '1px solid var(--dsw-alias-border-l2, #3a4160)',
@@ -68,8 +70,10 @@
         // 自限高+内部滚动,任何屏都完整可读
         maxHeight: '45vh',
         overflowY: 'auto',
+        overflowX: 'hidden',
         position: 'relative',
         zIndex: 3,
+        width: '100%', maxWidth: '100%', boxSizing: 'border-box',
       },
       head: {
         display: 'flex', alignItems: 'center', gap: '8px',
@@ -85,6 +89,7 @@
         fontSize: '12.5px', lineHeight: 1.5, marginBottom: '9px',
         color: 'var(--dsw-alias-label-secondary, #9aa0b5)',
         display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        wordBreak: 'break-word',
       },
       quote: {
         borderLeft: '3px solid var(--dsw-alias-border-l2, #3a4160)',
@@ -234,6 +239,14 @@
       var errPair = React.useState('');
       var err = errPair[0];
       var setErr = errPair[1];
+      // 窄容器探测（10-06 真机反馈二:手机版式下 dock 容器只有 ~71px 宽,卡面被压成
+      // 窄条不可读——容器 <240px 时转 fixed 全宽浮层,仍贴输入区）
+      var rootElPair = React.useState(null);
+      var rootEl = rootElPair[0];
+      var setRootEl = rootElPair[1];
+      var narrowPair = React.useState(false);
+      var narrow = narrowPair[0];
+      var setNarrow = narrowPair[1];
 
       function refresh() {
         return face.list().then(function (r) {
@@ -259,6 +272,24 @@
           global.clearInterval(timer);
         };
       }, []);
+
+      React.useEffect(function () {
+        var host = rootEl && rootEl.parentElement;
+        if (!host) return;
+        var check = function () { setNarrow(host.clientWidth < 240); };
+        check();
+        // ResizeObserver 跟容器（窗口 resize 抓不到容器宽变化/初测太早布局未稳——
+        // 桌面真机曾因此误判窄）;无 RO 的环境回落窗口 resize
+        if (typeof global.ResizeObserver === 'function') {
+          var ro = new global.ResizeObserver(check);
+          ro.observe(host);
+          return function () { ro.disconnect(); };
+        }
+        if (typeof global.addEventListener === 'function') global.addEventListener('resize', check);
+        return function () {
+          if (typeof global.removeEventListener === 'function') global.removeEventListener('resize', check);
+        };
+      }, [rootEl]);
 
       if (!cards.ready || cards.cards.length === 0) return null;
 
@@ -288,7 +319,21 @@
       if (err) {
         children.push(h('div', { key: 'ferryman-err', style: S.err, role: 'alert' }, err));
       }
-      return h('div', { style: S.dock, 'data-ferryman-blocked-dock': face.sessionId }, children);
+      var wrapStyle = narrow ? {
+        position: 'fixed', left: '12px', right: '12px', bottom: '88px', zIndex: 9999,
+        maxHeight: '45vh', overflowY: 'auto', overflowX: 'hidden',
+        display: 'flex', flexDirection: 'column', gap: '8px',
+        background: 'var(--dsw-alias-bg-layer-2, #1d2030)',
+        border: '1px solid var(--dsw-alias-border-l2, #3a4160)',
+        borderRadius: '14px', padding: '6px', boxSizing: 'border-box',
+        boxShadow: '0 10px 36px rgba(0,0,0,0.5)',
+      } : S.dock;
+      return h('div', {
+        ref: function (el) { setRootEl(el); },
+        style: wrapStyle,
+        'data-ferryman-blocked-dock': face.sessionId,
+        'data-ferryman-overlay': narrow ? '1' : undefined,
+      }, children);
     }
 
     // ---- 插件体 ----
