@@ -939,16 +939,18 @@ function setAllDisabled(on) {
   $('#btnRestart').disabled = on;
   if (on) closeConfirm(); // 进禁用态时把可能开着的确认弹窗一并关掉，防挂起的动作再被点
 }
-/** 探一次：任何 HTTP 应答（含 401）都算守护回来了；网络层抛错=还没起来。 */
-async function probeDaemon(base) {
-  try {
-    const headers = {};
-    if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
-    await fetch(base + '/stats', { headers, signal: AbortSignal.timeout(4000) });
-    return true;
-  } catch { return false; }
+/** 直接向某候选地址读全量配置：成功=守护真回来了。
+ *  任何 HTTP 应答（含 404/401）只代表「有 HTTP 进程占着这个口」——旧口被别家
+ *  服务占住时探活会假命中，所以回连判定必须以「哪个候选口 GET /settings
+ *  成功」为准，端口锁死在读取成功的那个候选上（R1 复审高件修法）。 */
+async function readSettings(base) {
+  const headers = {};
+  if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
+  const r = await fetch(base + '/settings', { headers, signal: AbortSignal.timeout(6000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
 }
-/** 200 之后：禁用全部控件 + 重启专属横幅，轮询候选地址直到守护回来或超时。 */
+/** 200 之后：禁用全部控件 + 重启专属横幅，轮询候选地址直到读到配置或超时。 */
 function enterRestarting(candidates) {
   const banner = $('#errBanner');
   banner.textContent = '守护正在重启…有在途请求时会先等它跑完，最长几分钟。页面上的保存与操作先不可用，守护回来后自动恢复。';
@@ -960,27 +962,18 @@ function enterRestarting(candidates) {
     // 超时：保持禁用，留人话指引（回滚与重试由守护侧负责，这里只指认通知渠道）
     banner.textContent = '守护 6 分钟没回来。失败时守护会自动回滚到上次健康配置并重试；若仍失败会停在安全状态，请看系统通知或 Pushover 的「Ferryman 安全重启失败」提示，按提示手动恢复后重开本窗。';
   };
-  // 探活命中只代表「有 HTTP 进程在应答」：读到全量配置（GET /settings 成功）才算真回来。
-  // 读不到就保持禁用与横幅，隔 2 秒重试，预算沿用同一个 6 分钟（从 enterRestarting 起算）。
-  const confirmRead = async () => {
-    if (Date.now() > deadline) { timeoutGiveUp(); return; }
-    banner.textContent = '守护已回来，正在读取最新配置…页面上的保存与操作先不可用，读到后自动恢复。';
-    try {
-      S = await api('/settings');
-    } catch {
-      setTimeout(confirmRead, RESTART_POLL_MS);
-      return;
-    }
-    recoverFromRestart();
-  };
+  // 每轮按候选顺序（新口在前）逐个试 GET /settings：读到才算真回来——不因
+  // 某个口「有 HTTP 应答」就锁死它，防旧口被别家服务占用时错过新守护。
+  // 全候选未就绪隔 2 秒再来，预算 6 分钟共用；成功即换 BASE 并收尾。
   const pollRound = async () => {
     if (Date.now() > deadline) { timeoutGiveUp(); return; }
     for (const base of candidates) {
-      if (await probeDaemon(base)) {
-        BASE = base; // 端口可能变了：换回连上的那个地址
-        confirmRead();
+      try {
+        S = await readSettings(base);
+        BASE = base; // 端口可能变了：换到读取成功的那个地址
+        recoverFromRestart();
         return;
-      }
+      } catch { /* 该候选还没就绪（或不是本守护），试下一个 */ }
     }
     setTimeout(pollRound, RESTART_POLL_MS);
   };
