@@ -376,6 +376,31 @@ test("registerBlockedRemote：cordis 代理对未声明 inject 的服务属性�
   assert.ok(svc.typertRemote, "注册的是带 SRC 面的服务对象");
 });
 
+test("registerBlockedRemote 懒注入:宿主运行期递 agents 面 →「新会话」真建会话（fork-session.ts:60-64 正道,真机 web 宿主改钉）", async (t) => {
+  const mock = await mockFor(t);
+  blockRoute(mock);
+  const deps = depsOver(mock, makeLogger());
+  await intercept(deps, "懒注入后新会话可点", SID);
+  const provided = new Map<string, unknown>();
+  const created: Array<Record<string, unknown>> = [];
+  const fakeAgents = { create: async (opts: Record<string, unknown>) => { created.push(opts); } };
+  const ctx = {
+    provide: (name: string, value: unknown) => void provided.set(name, value),
+    get agents(): never { throw new Error('cannot get property "agents" without inject'); },
+    inject: (services: readonly string[], cb: (scoped: unknown) => void) => {
+      if (services.includes("agents")) cb({ agents: fakeAgents });
+    },
+  };
+  registerBlockedRemote(ctx as never, deps);
+  const svc = provided.get(BLOCKED_SERVICE_KEY) as { newSession(id: string): Promise<{ ok: boolean; sessionId?: string }> };
+  const card = deps.blocked.list(SID)[0]!;
+  const r = await svc.newSession(card.id);
+  assert.equal(r.ok, true, "懒注入的 agents 面被用上——新会话真建了");
+  assert.match(r.sessionId ?? "", /^session-/, "回话带新会话键");
+  assert.equal(created.length, 1, "agents.create 恰调一次");
+  assert.equal((created[0]!.meta as Record<string, unknown>).cwd, "C:/proj", "同目录建会话（交接按 cwd 锚定带回）");
+});
+
 test("apply 集成：挂接的 pre-step 拦下后,经 provide 出的 Remote 服务可拉到卡片", async (t) => {
   const mock = await mockFor(t);
   mock.route("/", () => ({ status: 200, json: {} }));
