@@ -71,6 +71,10 @@ type dshSessionRec struct {
 	// 检测不走 harvest——检测偏移独立推进，规格「接入点」钉死） ----
 	detOff int64                 // 检测专用尾读偏移
 	spk    dshtrans.SpeakerState // "最后说话人"累积态（跨 chunk 携带）
+	// bootReplayed 票06 重启贫血修复：账本回放已做过一次（dsh_boot_replay.go
+	// ——peak==0 的账本回放＋title 补缺，每采集态恰一次；账本无条目的情形
+	// 也不重复扫盘）。
+	bootReplayed bool
 }
 
 // dshHarvest dsh 用量采集器（harvest.HarvestState 的 dsh 形；不共用其
@@ -233,6 +237,10 @@ func (w *Watcher) pollDshSession(dir string) {
 	st := w.Ledger.TouchFull("dsh", rec.header.ID, gen.Path,
 		statMTime(info), int(info.Size()), rec.header.Cwd, "", 0, w.StartedAt)
 	w.observeRecent(st, statMTime(info)) // 重启观察窗：存量近活会话补观察
+	// 票06 重启贫血修复：peak==0 → 账本回放重建峰值（＋title 补缺）。接线点
+	// 在 harvest/fed 分流之前——fed 会话同享；历史峰值先落位，增量采集与事
+	// 件面回写只增不减（dsh_boot_replay.go 头注）。
+	w.dshBootReplay(st, rec)
 	w.dshDetect(rec, info.Size())        // 票03 检测（fed 也跑；判活文件面刷新）
 	if !w.dshIsFed(rec.header.ID) {
 		// 非 fed：文件面 usage 采集先行（peak 的文件面来源——开窗条件④要
