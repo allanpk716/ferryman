@@ -280,6 +280,15 @@ export class BlockedStore {
   }
 
   /**
+   * 会话终局清空该会话的全部被拦条目（与 handoffPending 同纪律:dispose 即清,
+   * 不跨会话泄漏）。死会话的卡片无处渲染也无从动作——原话全文（≤20 条）不再
+   * 长跑缓占内存;清后 Remote 面对该会话回空数组。
+   */
+  clearSession(sessionId: string): void {
+    this.bySession.delete(sessionId);
+  }
+
+  /**
    * 手打强续对账：用户绕过卡片手敲「强续 <原话>」放行时,把精确同文的待处理卡
    * 转 done(resend)——卡片不留假待办。精确匹配（去前缀+trim 后全等）,不做模糊
    * 归并;未命中不动（另一句被拦的原话没被重发,卡片保持真状态）。
@@ -545,6 +554,9 @@ export function onStatus(deps: EventDeps, payload: StatusPayload): void {
 
 export function onDisposed(deps: EventDeps, payload: DisposedPayload): void {
   const sid = sessionIdOf(payload?.agent);
-  if (sid) deps.handoffPending.delete(sid); // 会话终局清欠账,不跨会话泄漏
+  if (sid) {
+    deps.handoffPending.delete(sid); // 会话终局清欠账,不跨会话泄漏
+    deps.blocked.clearSession(sid); // 会话终局清被拦缓存（票08 返工:原话全文不缓跑累积）
+  }
   forwardLifecycle(deps, payload?.agent, "agent/disposed", {});
 }

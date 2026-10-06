@@ -30,7 +30,7 @@
 //       透传 parse 即合法）,调用面 ctx.remote.<ns>.<method>（:749-754 服务键）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -680,4 +680,49 @@ test("package.json 双面包声明：dsh.client{platform:'web'} + exports['./cli
   const exports = pkg["exports"] as Record<string, unknown>;
   assert.equal(asString(exports["./client"]), "./client.js", "clientExportOf 解析出 client.js（modules/src/index.ts:194-205）");
   assert.ok(readFileSync(join(here, "..", "client.js"), "utf8").includes("__ModuleLoader__"), "client.js 自注册（懒 CJS 模型）");
+});
+
+test("exports 门契约：'.' 与 './package.json' 必须在列（文件路径 import 永远撞不上的门）", () => {
+  // 返工钉点（2026-10-06 评审）：exports 字段一旦存在,Node 只放行声明路径——
+  // 宿主以裸包名 import 插件（repo patch insert 行 name: ferryman-dsh）走 ".",
+  // 模块扫描器 locatePkgJson 走 createRequire.resolve('<pkg>/package.json')
+  // （client/modules/src/index.ts:885-886）——缺任一条即 ERR_PACKAGE_PATH_NOT_EXPORTED,
+  // 插件整体失活/客户端行被静默丢弃。生态四个双面包包（ui-goal/ui-conversation/
+  // ui-approval/ui-chat）exports 均含 "."＋"./package.json"。本包测试全走相对
+  // 路径 import,实测不到这扇门,故以静态契约断言钉死。
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgRoot = join(here, "..");
+  const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")) as {
+    main?: string;
+    exports?: Record<string, unknown>;
+  };
+  assert.ok(pkg.exports, "exports 字段在（双面包声明）");
+  const dotEntry = pkg.exports["."];
+  assert.ok(dotEntry !== undefined, "exports['.'] 在列——裸包名 import 的唯一放行门");
+  // "." 指向既有真实入口,与 main 一致（宿主两条加载路径在此汇合;别臆造）
+  const dotTarget = typeof dotEntry === "string"
+    ? dotEntry
+    : asString((dotEntry as Record<string, unknown>)["default"]);
+  assert.ok(dotTarget, "exports['.'] 形态可解析（字符串或 {default}）");
+  // exports 目标强制 "./" 前缀、main 惯用裸相对——比解析后的落盘路径,不比字串
+  assert.ok(pkg.main, "main 声明在（老解析路径与裸名解析的汇合入口）");
+  assert.equal(join(pkgRoot, dotTarget), join(pkgRoot, pkg.main!), "exports['.'] 与 main 指向同一入口（宿主裸名解析=main）");
+  assert.ok(existsSync(join(pkgRoot, dotTarget)), `exports['.'] 目标真实在盘: ${dotTarget}`);
+  // 扫描器的 package.json 解析门
+  assert.equal(asString(pkg.exports["./package.json"]), "./package.json", "exports['./package.json'] 在列（locatePkgJson 解析门）");
+});
+
+test("dispose 清 blocked：会话终局清被拦缓存,不跨会话泄漏（与 handoffPending 同纪律）", async (t) => {
+  const mock = await mockFor(t);
+  blockRoute(mock);
+  const deps = depsOver(mock, makeLogger());
+  await intercept(deps, "死会话的被拦原话");
+  await intercept(deps, "别家会话的原话", SID_B);
+  assert.equal(deps.blocked.list(SID).length, 1);
+
+  const { onDisposed } = await import("../src/events.ts");
+  onDisposed(deps, { agent: agentOf(SID) });
+
+  assert.equal(deps.blocked.list(SID).length, 0, "死会话条目清空（≤20 条原话全文不缓跑累积）");
+  assert.equal(deps.blocked.list(SID_B).length, 1, "他 会话不受牵连");
 });
