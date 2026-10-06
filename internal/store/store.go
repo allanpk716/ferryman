@@ -3,12 +3,12 @@
 //
 // DESIGN §6.15：{handoffs: [{handoff_id, session_id, agent, cwd, title,
 // created_at, covers_until, status: fresh|skeleton|stale|pending, path,
-// blocked_at, injected: []}], pending_prompts: [...]}；同 session 新交接覆盖；
-// 30 天归档（TODO：定期清理任务）。
+// blocked_at, consumed_at, injected: []}], pending_prompts: [...]}；同 session
+// 新交接覆盖；30 天归档（TODO：定期清理任务）。
 //
 // 对齐纪律：
 //   - Entry/PendingPrompt 的 json tag 显式钉死 snake_case——直接序列化不得输出
-//     CamelCase；*string nil ≡ Python None（blocked_at/consumed_by）；
+//     CamelCase；*string nil ≡ Python None（blocked_at/consumed_by/consumed_at）；
 //   - 落盘 json.dumps(ensure_ascii=False, indent=2) 等价：SetEscapeHTML(false)
 //     非 ASCII 直出、两空格缩进、无尾随换行；
 //   - _atomic_write = 同后缀 .tmp + os.replace ≡ tmp + os.Rename；
@@ -70,7 +70,15 @@ type Entry struct {
 	Status       string   `json:"status"`
 	Path         string   `json:"path"`
 	BlockedAt    *string  `json:"blocked_at"` // nil ≡ Python None
-	Injected     []string `json:"injected"`
+	// ConsumedAt 消耗标记（2026-10-06 强续消耗）：bypass 一经使用，被强续
+	// 会话自己的旧交接立即作废——供出链（RestoreCandidates）与闸门覆盖判定
+	//（ValidHandoff，去重/boot 补记共用）一律不认已消耗交接。消耗=永久
+	//（无解除）；只按会话标记（同 (agent,cwd) 其他会话不受影响），仅对
+	// status∈{fresh,skeleton} 有意义（其余状态本就不供给）。agent 限定
+	//（仅 dsh 消耗）由闸门接线面执行，store 层只做能力与过滤。
+	// nil ≡ 未消耗；非 nil 为消耗时刻（本地时间串，与 blocked_at 同构）。
+	ConsumedAt *string  `json:"consumed_at"`
+	Injected   []string `json:"injected"`
 }
 
 // PendingPrompt 待续 prompt（单源：index 内嵌，DESIGN §6.7）。
@@ -255,6 +263,8 @@ func (s *Store) SaveHandoff(sessionID, agent, cwd, title, coversUntilISO, status
 
 // ValidHandoff DESIGN §6.10-5：同 agent+cwd、status∈{fresh,skeleton}、
 // covers_until ≥ last_write（含 60s 容差）、在新鲜度窗口内；取 covers 最大。
+// 已消耗交接（ConsumedAt 非 nil，2026-10-06 强续消耗）不认——闸门覆盖判定、
+// 摆渡去重、boot 补记共用此函数，一处改三处生效。
 // 命中返回条目副本（Python 返回共享 dict，Go 副本防跨锁读改写 -race）。
 func (s *Store) ValidHandoff(agent, cwd string, lastWrite float64) *Entry {
 	if cwd == "" {
@@ -268,6 +278,9 @@ func (s *Store) ValidHandoff(agent, cwd string, lastWrite float64) *Entry {
 	for i := range s.index.Handoffs {
 		e := &s.index.Handoffs[i]
 		if e.Agent != agent || (e.Status != "fresh" && e.Status != "skeleton") {
+			continue
+		}
+		if e.ConsumedAt != nil {
 			continue
 		}
 		if strings.ToLower(e.Cwd) != norm {
@@ -349,6 +362,37 @@ func (s *Store) MarkBlocked(handoffID string) {
 		}
 	}
 	s.flush()
+}
+
+// ConsumeHandoffs 按会话消耗交接（2026-10-06 强续消耗地基）：把 (agent,
+// sessionID) 名下 status∈{fresh,skeleton} 的交接标记已消耗——供出链与
+// ValidHandoff 随即不再供给/认定（同 (agent,cwd) 其他会话不受影响；stale/
+// pending 本就不供给，不标）。消耗=永久，无解除。返回本次新消耗条数
+//（已消耗/不匹配跳过，重复调用幂等返回 0）；有变化才 flush（PruneOlderThan
+// 同款守卫）。agent 限定（仅 dsh 消耗）由闸门接线面执行。
+func (s *Store) ConsumeHandoffs(agent, sessionID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for i := range s.index.Handoffs {
+		e := &s.index.Handoffs[i]
+		if e.Agent != agent || e.SessionID != sessionID {
+			continue
+		}
+		if e.Status != "fresh" && e.Status != "skeleton" {
+			continue
+		}
+		if e.ConsumedAt != nil {
+			continue
+		}
+		cat := time.Now().Format(dispTimeFmt)
+		e.ConsumedAt = &cat
+		n++
+	}
+	if n > 0 {
+		s.flush()
+	}
+	return n
 }
 
 // ---------- 待续 prompt（单源：index 内嵌，DESIGN §6.7） ----------
@@ -438,7 +482,8 @@ func (s *Store) PopPendingPrompt(sessionID, consumeFor string) string {
 // ---------- 归还 ----------
 
 // RestoreCandidates DESIGN §6.9：agent+cwd 双键过滤，covers 降序（最新在前），
-// 24h 新鲜窗内且 status∈{fresh,skeleton}。
+// 24h 新鲜窗内且 status∈{fresh,skeleton}；已消耗交接不供给（强续消耗过滤，
+// 与 ValidHandoff 同口径）。
 func (s *Store) RestoreCandidates(agent, cwd string) []Entry {
 	if cwd == "" {
 		return []Entry{}
@@ -448,6 +493,9 @@ func (s *Store) RestoreCandidates(agent, cwd string) []Entry {
 	s.mu.Lock()
 	cands := []Entry{}
 	for _, e := range s.index.Handoffs {
+		if e.ConsumedAt != nil {
+			continue
+		}
 		if e.Agent == agent && strings.ToLower(e.Cwd) == norm &&
 			e.CoversUntilS > now-FreshWindowS &&
 			(e.Status == "fresh" || e.Status == "skeleton") {
