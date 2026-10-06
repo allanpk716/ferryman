@@ -1787,3 +1787,93 @@ func TestGateBlockAcctIdleAnchoredToDecisionAnchor(t *testing.T) {
 			idle, testBlockS+600)
 	}
 }
+
+// ---- 票04（dsh-hot-compaction）gate 联动：已压缩短前缀不拦 ----
+//
+// 命中拦截条件（拦窗内）先查 compressed 标记（判定单源票02 DshCompressedActive，
+// gate 只消费不重复实现）：标记有效 ∧ 当前前缀 < [dsh_compact].min_peak_tokens
+// → 放行（reason="compacted-short-prefix"，gate.log 落 mode=compacted-short-
+// prefix 可 grep 行，pending 同 hot-allow 款清掉）；标记过期 / 被流量作废 /
+// 无标记 / 前缀不短 → 照旧拦（分支5，不放宽任何其他判定）。夹具复用票02
+// compactEnv（真 Accounts＋TTL 可配），gate 档显式钉 enforce（compactEnv 沿
+// Default：dsh 空→回落 GateCodex=off，非本票面）。
+
+func TestGateCompactedShortPrefix(t *testing.T) {
+	cases := []struct {
+		name         string
+		compact      bool    // 经 /dsh/compacted 置标记（ok=true＋prefix 覆盖）
+		prefix       int     // 上报 prefix_tokens（=标记后 PeakCtx 现值）
+		minPeak      int     // >0 时改配 min_peak_tokens（阈值同配可验）
+		advanceS     float64 // 置标记后推进秒数（标记过期态）
+		voidByWriter bool    // 置标记后 Touch 推进 LastWrite（流量作废态）
+		wantDecision string
+		wantReason   string
+	}{
+		{"有效标记+短前缀→放行", true, 1234, 0, 0, false, "allow", "compacted-short-prefix"},
+		{"标记过期→照拦", true, 1234, 0, 201, false, "block", ""},
+		{"标记被流量作废→照拦", true, 1234, 0, testBlockS + 600, true, "block", ""},
+		{"无标记→照拦", false, 0, 0, 0, false, "block", ""},
+		{"标记有效但前缀不短→照拦", true, 25000, 0, 0, false, "block", ""},
+		{"阈值同配min_peak=1000→照拦", true, 1234, 1000, 0, false, "block", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newCompactEnv(t, 100) // 标记有效期 2.0×100=200s
+			e.d.Cfg.GateDsh = "enforce"
+			// 阈值钉 gate 套件常量（compactEnv 沿 Default：block=2100s，会淹掉
+			// 流量作废态的 620s 闲置——不进拦窗就走不到分支5）。
+			e.d.Cfg.Thresholds = config.ThresholdCfg{
+				SummarizeS: testSummarizeS, BlockS: testBlockS, MinCtxTokens: testMinCtx,
+				CacheWarnS: 720,
+			}
+			if tc.minPeak > 0 {
+				e.d.Cfg.DshCompact.MinPeakTokens = tc.minPeak
+			}
+			proj := filepath.Join(e.tmp, "proj")
+			path := filepath.Join(e.tmp, compactSID+".jsonl.zstd")
+			e.regCompact(compactSID, testBlockS+3600, 50000) // 闲置 61min 拦窗内
+			if tc.compact {
+				e.d.DshCompacted(map[string]any{"session_id": compactSID,
+					"ok": true, "prefix_tokens": tc.prefix})
+			}
+			if tc.voidByWriter { // 标记后新流量：LastWrite 越过标记时刻即作废
+				e.led.TouchFull("dsh", compactSID, path, e.t0+10, 10, proj, "", 50001, 0)
+			}
+			if tc.advanceS > 0 {
+				e.advance(tc.advanceS)
+			}
+			// 交接在库（"照拦"的分支5 基座）；covers 统一取 t0+30——各态
+			// coversBar（t0-3630，流量作废态 t0+10）都落在容差内，分支5 恒可达。
+			e.store.SaveHandoff(compactSID, "dsh", proj, "t", isoUTC(e.t0+30), "fresh", "md")
+
+			r := e.d.Gate(gateBodyAgent("dsh", compactSID, path, proj, "继续"))
+			if r["decision"] != tc.wantDecision {
+				t.Fatalf("decision = %v, want %v", r["decision"], tc.wantDecision)
+			}
+			if tc.wantReason == "" { // 照拦四态：decision 即全部断言面
+				return
+			}
+			if r["reason"] != tc.wantReason {
+				t.Fatalf("reason = %v, want %q", r["reason"], tc.wantReason)
+			}
+			if ctx, _ := r["additional_context"].(string); ctx == "" {
+				t.Fatal("放行应带 additional_context 说明（为何不拦＋红利边界）")
+			}
+			if _, pok := e.d.Pending.Get([2]string{"dsh", compactSID}); pok {
+				t.Fatal("压缩放行不得置 pending（hot-allow 同款清除）")
+			}
+			if got := e.store.PopPendingPrompt(compactSID, ""); got != "" {
+				t.Fatalf("放行不得存待续原话: %q", got)
+			}
+			// 红利期内连发不再被拦（无分支6跑步机）
+			if r2 := e.d.Gate(gateBodyAgent("dsh", compactSID, path, proj, "再发一条")); r2["decision"] != "allow" {
+				t.Fatalf("红利期内连发应放行: %v", r2)
+			}
+			// gate.log 落 mode=compacted-short-prefix 行（allow 痕 reason 可 grep）
+			data, err := os.ReadFile(filepath.Join(e.tmp, "data", "gate.log"))
+			if err != nil || !strings.Contains(string(data), "mode=compacted-short-prefix") {
+				t.Fatalf("gate.log 缺 compacted-short-prefix 痕: %q err=%v", string(data), err)
+			}
+		})
+	}
+}
