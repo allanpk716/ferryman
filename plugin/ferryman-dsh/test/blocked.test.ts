@@ -23,7 +23,7 @@
 //       （client/manifest.ts:16-21 懒 CJS 模型）。
 //     - factory 返回 {name, inject, apply}（vendor/cordis/src/registry.ts:222-228）;
 //       react/ui-slots 走平台共享模块表（client/web/src/platform.ts:8-14）。
-//     - 对话区卡面 = conversation.input.dock 列表位（QueueDock 同位,spike F1 定
+//     - 对话区卡面 = conversation.composer.dock 列表位（InputBar 渲染,真槽名见 client.js 头注
 //       路;ui-goal/src/client/index.ts:92-144 注册先例,inject 回调按会话发面）。
 //     - 浏览器侧拉取走 ctx.remote.$mount(手写 strict 描述符;api/gateway/src/
 //       client/index.ts:202-210 $mount,:790-805 要求 strict 编解码器——手写
@@ -481,25 +481,18 @@ async function loadClientModule(reactStub: unknown): Promise<Record<string, unkn
   });
 }
 
-test("client 注册与导出：factory 返回 {name, inject[remote,slots], apply}", async () => {
+test("client 注册与导出：factory 返回 {name, inject[slots], apply}（10-06 事故三后:零宿主服务依赖）", async () => {
   const { react } = makeFakeReact();
   const mod = (await loadClientModule(react)) as unknown as { name: string; inject: string[]; apply: unknown };
   assert.equal(mod.name, "ferryman-dsh");
-  assert.deepEqual([...mod.inject].sort(), ["remote", "slots"], "等两服务就位再激活（cordis inject 声明）");
+  assert.deepEqual(mod.inject, ["slots"], "只依赖 slots（remote.<ns> 命名空间经 inject 执法不可达,调用走裸 RPC——真机事故三改钉）");
   assert.equal(typeof mod.apply, "function");
 });
 
-test("client apply：$mount 手写描述符（namespace/方法/参数 wire 名与宿主 SRC 解析一致）＋dock 注册", async () => {
+test("client apply：dock 注册进 conversation.composer.dock（无 remote 面也不炸）", async () => {
   const { react } = makeFakeReact();
   const mod = (await loadClientModule(react)) as unknown as { apply: (ctx: unknown) => void };
-  const mounted: unknown[] = [];
   const registered: Array<{ options: Record<string, unknown>; component: unknown }> = [];
-  const remote = {
-    $mount: async (contribution: unknown) => {
-      mounted.push(contribution);
-      return async () => {};
-    },
-  };
   const slots = {
     inject: (_slot: string, factory: () => unknown) => factory(),
     register: (options: Record<string, unknown>, component: unknown) => {
@@ -507,69 +500,54 @@ test("client apply：$mount 手写描述符（namespace/方法/参数 wire 名�
       return () => {};
     },
   };
-  mod.apply({ remote, slots });
-
-  const contribution = mounted[0] as { package: string; descriptors: Array<Record<string, unknown>> };
-  assert.equal(contribution.package, "ferryman-dsh");
-  assert.deepEqual(
-    contribution.descriptors.map((d) => String(d["namespace"]) + "/" + String(d["method"])).sort(),
-    ["ferrymanBlocked/list", "ferrymanBlocked/newSession", "ferrymanBlocked/resend"],
-    "描述符覆盖三方法",
-  );
-  // wire 名与宿主 SRC 解析对齐（断了即 RPC 参数错位——跨半面一致性钉点）
-  const wires = new Map(contribution.descriptors.map((d) => [String(d["method"]), d["parameters"] as Array<Record<string, unknown>>]));
-  assert.deepEqual(wires.get("list")!.map((p) => p["wire"]), ["sessionId"]);
-  assert.deepEqual(wires.get("resend")!.map((p) => p["wire"]), ["id"]);
-  assert.deepEqual(wires.get("newSession")!.map((p) => p["wire"]), ["id"]);
-  for (const d of contribution.descriptors) {
-    assert.equal((d["invocation"] as Record<string, unknown>)["kind"], "direct");
-    const codecs = [
-      ...(d["parameters"] as Array<Record<string, unknown>>).map((p) => p["codec"]),
-      d["result"],
-    ];
-    for (const codec of codecs) {
-      assert.equal((codec as Record<string, unknown>)["mode"], "strict", "客户端 $mount 要求 strict 编解码器（透传 parse 合法）");
-    }
-  }
+  assert.doesNotThrow(() => mod.apply({}), "无 slots 面静默降级");
+  assert.equal(registered.length, 0, "无 slots 不注册");
+  mod.apply({ slots });
 
   assert.equal(registered.length, 1, "恰一个 dock 条目");
-  assert.equal(registered[0]!.options["name"], "conversation.input.dock", "QueueDock 同位列表位（spike F1）");
+  assert.equal(registered[0]!.options["name"], "conversation.composer.dock", "真槽名（装机版 InputBar 渲染锚点;调研克隆无此键但装机版双锚并存,composer.dock 为 stats 同位先例;10-06 真机事故改钉）");
   assert.equal(registered[0]!.options["id"], "ferryman-blocked");
   assert.equal(typeof registered[0]!.options["inject"], "function", "按会话发业务面");
   assert.equal(typeof registered[0]!.component, "function", "组件为函数组件");
 });
 
-test("client face：动作经 mount 完成后转调 remote 命名空间,携带会话键/卡片 id", async () => {
+test("client face：动作走裸网关 RPC（client-request 信封,方法/参数名与宿主端点一致）", async () => {
   const { react } = makeFakeReact();
   const mod = (await loadClientModule(react)) as unknown as { apply: (ctx: unknown) => void };
-  const calls: Array<{ method: string; args: unknown[] }> = [];
-  const ns = new Proxy({}, {
-    get: (_t, method: string) => (...args: unknown[]) => {
-      calls.push({ method, args });
-      if (method === "list") return Promise.resolve({ ok: true, cards: [] });
-      return Promise.resolve({ ok: true });
-    },
-  });
-  const remote = {
-    $mount: async () => async () => {},
-    ferrymanBlocked: ns,
-  };
-  const registered: Array<{ options: Record<string, unknown> }> = [];
-  const slots = {
-    inject: (_s: string, f: () => unknown) => { f(); return () => {}; },
-    register: (options: Record<string, unknown>) => { registered.push({ options }); return () => {}; },
-  };
-  mod.apply({ remote, slots });
-  const injected = registered[0]!.options["inject"] as (sessionId: string) => { ferrymanBlocked: Record<string, unknown> };
-  const f = injected(SID).ferrymanBlocked; // 注入面收敛在 ferrymanBlocked 一键下（与平台运行时 props 不撞名）
-  assert.equal(f["sessionId"], SID);
-  await (f["list"] as () => Promise<unknown>)();
-  await (f["resend"] as (id: string) => Promise<unknown>)("b1");
-  await (f["newSession"] as (id: string) => Promise<unknown>)("b2");
-  assert.deepEqual(calls.map((c) => c.method), ["list", "resend", "newSession"]);
-  assert.deepEqual(calls[0]!.args, [SID], "list 带会话键");
-  assert.deepEqual(calls[1]!.args, ["b1"]);
-  assert.deepEqual(calls[2]!.args, ["b2"]);
+  const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (((url: RequestInfo | URL, init?: RequestInit) => {
+    posts.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+    const body = posts.at(-1)!.body;
+    const method = String(body.method);
+    const value = method.endsWith("/list")
+      ? { ok: true, sessionId: SID, cards: [] }
+      : { ok: true };
+    return Promise.resolve(new Response(JSON.stringify({ type: "server-response", rpcId: String(body.rpcId), result: { ok: true, value } }), { status: 200 }));
+  }) as typeof fetch);
+  try {
+    const registered: Array<{ options: Record<string, unknown> }> = [];
+    const slots = {
+      inject: (_s: string, f: () => unknown) => { f(); return () => {}; },
+      register: (options: Record<string, unknown>) => { registered.push({ options }); return () => {}; },
+    };
+    mod.apply({ slots });
+    const injected = registered[0]!.options["inject"] as (sessionId: string) => { ferrymanBlocked: Record<string, unknown> };
+    const f = injected(SID).ferrymanBlocked;
+    assert.equal(f["sessionId"], SID);
+    const l = await (f["list"] as () => Promise<unknown>)() as { ok: boolean; cards: unknown[] };
+    assert.equal(l.ok, true, "list 解包 result.value");
+    await (f["resend"] as (id: string) => Promise<unknown>)("b1");
+    await (f["newSession"] as (id: string) => Promise<unknown>)("b2");
+    assert.deepEqual(posts.map((p) => p.url.split("/api/")[1]), ["ferrymanBlocked/list", "ferrymanBlocked/resend", "ferrymanBlocked/newSession"], "三方法打到网关端点");
+    assert.deepEqual(posts[0]!.body.method, "ferrymanBlocked/list", "信封 method=ns/method");
+    assert.deepEqual(posts[0]!.body.payload, { args: { sessionId: SID } }, "list 带会话键");
+    assert.deepEqual(posts[1]!.body.payload, { args: { id: "b1" } });
+    assert.deepEqual(posts[2]!.body.payload, { args: { id: "b2" } });
+    assert.equal(posts.every((p) => p.body.type === "client-request" && typeof p.body.rpcId === "string"), true, "client-request 信封齐");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 function installDock(react: unknown): Array<{ options: Record<string, unknown>; component: (props: unknown) => unknown }> {

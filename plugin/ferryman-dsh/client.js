@@ -11,15 +11,15 @@
 //   - factory(require) 收模块表 require:react 走平台共享模块
 //     （client/web/src/platform.ts:8-14 PLATFORM_MODULES）;返回
 //     {name, inject, apply}（vendor/cordis/src/registry.ts:222-228 加载器收形）。
-//   - Remote 面：宿主插件经 typert SRC 路暴露 ferrymanBlocked/{list,resend,
-//     newSession}（见 src/index.ts buildBlockedService 钉点）;浏览器侧
-//     ctx.remote.$mount(手写描述符)（api/gateway/src/client/index.ts:202-210;
-//     :269-311 校验要求 strict 编解码器——透传 parse 即合法,:790-805）,
-//     调用面 ctx.remote.ferrymanBlocked.<method>（:749-754 remote.<ns> 服务键）。
-//     描述符参数 wire 名必须与宿主方法的 Function.toString 参数名一一对应
-//     （gateway/src/index.ts:1434-1468 SRC 解析）——两半面一致性由
+//   - 调用面：宿主插件经 typert SRC 路暴露 ferrymanBlocked/{list,resend,
+//     newSession}（见 src/index.ts buildBlockedService 钉点）;浏览器侧走应用
+//     自己的网关 RPC（POST /api/ferrymanBlocked/<method>,client-request 信封,
+//     同源 cookie 鉴权）。10-06 真机事故三:typert 客户端面（$mount +
+//     remote.<ns> 命名空间）在装机宿主全 bundle 零先例、命名空间服务经
+//     cordis inject 执法不可达（声明进 inject 又成死锁——服务恰由 $mount 建）,
+//     裸 RPC 为实测可用面;方法/参数名与宿主端点的一致性由
 //     test/blocked.test.ts 跨面钉死。
-//   - 卡面位置：conversation.input.dock 列表位（kind:'list', scope:'session',
+//   - 卡面位置：conversation.composer.dock 列表位（kind:'list', scope:'session',
 //     ui-conversation/src/client/contract/slots.ts:195）——QueueDock 同位
 //     （spike F1 定路;注册先例 ui-goal/src/client/index.ts:92-144,按会话
 //     inject 回调发业务面）。被拦事件不是会话日志事件,无对话流内嵌节点可挂,
@@ -42,36 +42,14 @@
   target.load({ id: 'ferryman-dsh', factory: factory });
 
   var NAMESPACE = 'ferrymanBlocked';
-  var DOCK_SLOT = 'conversation.input.dock';
+  // 真槽名 = conversation.composer.dock（dsh 源码 ui-conversation/src/client/apply.ts:432
+  // 声明 { kind:'list', scope:'session' },InputBar.tsx:501 渲染;ui-chat 的 stats 药丸同位先例）。
+  // 10-06 真机事故:此前误用 spike 猜名 conversation.input.dock——app 无此槽,注册即沉海,
+  // 模块/服务/RPC 全通但卡面永不渲染。
+  var DOCK_SLOT = 'conversation.composer.dock';
   var POLL_MS = 4000;
   var PREVIEW_CAP = 120; // 原话预览码点上限（mock 说明:超长截断）
 
-  /** 透传 strict 编解码器（client $mount 校验只看形状,parse 恒原值） */
-  var PASS_CODEC = {
-    mode: 'strict',
-    typeSymbol: 'ferryman-dsh/json',
-    create: function () { return { parse: function (v) { return v; } }; },
-  };
-
-  function param(name) {
-    return { name: name, wire: name, source: 'json', codec: PASS_CODEC };
-  }
-
-  /** 与宿主 buildBlockedService 三方法一一同构（wire 名=宿主参数名） */
-  var DESCRIPTORS = [
-    {
-      id: 'ferryman-dsh#list', service: NAMESPACE, namespace: NAMESPACE, method: 'list',
-      invocation: { kind: 'direct' }, parameters: [param('sessionId')], result: PASS_CODEC,
-    },
-    {
-      id: 'ferryman-dsh#resend', service: NAMESPACE, namespace: NAMESPACE, method: 'resend',
-      invocation: { kind: 'direct' }, parameters: [param('id')], result: PASS_CODEC,
-    },
-    {
-      id: 'ferryman-dsh#newSession', service: NAMESPACE, namespace: NAMESPACE, method: 'newSession',
-      invocation: { kind: 'direct' }, parameters: [param('id')], result: PASS_CODEC,
-    },
-  ];
 
   function factory(require) {
     var React = require('react');
@@ -161,25 +139,31 @@
 
     // ---- 业务面（按会话经 dock inject 回调发出） ----
 
-    function makeFace(remote, mount, sessionId) {
-      function call(method, arg) {
-        return mount.then(function (mounted) {
-          if (!mounted) return { ok: false, error: 'Remote 面未挂上' };
-          var ns = remote[NAMESPACE];
-          var fn = ns && ns[method];
-          if (typeof fn !== 'function') {
-            return { ok: false, error: '宿主未暴露 ferrymanBlocked 面（宿主侧插件需同版升级）' };
-          }
-          return fn(arg);
-        }).catch(function (e) {
-          return { ok: false, error: (e && e.message) ? e.message : String(e) };
-        });
-      }
+    // 调用通道 = 应用自己的网关 RPC（POST /api/<ns>/<method>,client-request 信封,
+    // 同源 cookie 鉴权）。10-06 真机事故三:typert 客户端面（$mount + remote.<ns>）
+    // 在装机宿主全 bundle 无先例、命名空间服务经 inject 执法不可达——裸 RPC 为
+    // 实测可用面（真机页面 fetch 实证往返真卡数据）。
+    var rpcSeq = 0;
+    function rpc(method, args) {
+      return fetch('/api/' + NAMESPACE + '/' + method, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId: 'ferryman-dsh-' + (++rpcSeq), method: NAMESPACE + '/' + method, payload: { args: args } }),
+      }).then(function (r) { return r.json(); }).then(function (env) {
+        var res = env && env.result;
+        if (res && res.ok) return res.value;
+        return { ok: false, error: (res && res.error && res.error.message) || '网关拒绝' };
+      }).catch(function (e) {
+        return { ok: false, error: (e && e.message) ? e.message : String(e) };
+      });
+    }
+
+    function makeFace(sessionId) {
       return {
         sessionId: sessionId,
-        list: function () { return call('list', sessionId); },
-        resend: function (id) { return call('resend', id); },
-        newSession: function (id) { return call('newSession', id); },
+        list: function () { return rpc('list', { sessionId: sessionId }); },
+        resend: function (id) { return rpc('resend', { id: id }); },
+        newSession: function (id) { return rpc('newSession', { id: id }); },
       };
     }
 
@@ -302,18 +286,11 @@
     // ---- 插件体 ----
 
     function apply(ctx) {
-      var remote = ctx && ctx.remote;
       var slots = ctx && ctx.slots;
-      if (!remote || typeof remote.$mount !== 'function' || !slots
-        || typeof slots.inject !== 'function' || typeof slots.register !== 'function') {
+      if (!slots || typeof slots.inject !== 'function' || typeof slots.register !== 'function') {
         // 非 web 壳或老宿主缺面:本半面自降级（宿主侧拦截/票10 文案不受影响）
         return;
       }
-      var mount = remote.$mount({ package: 'ferryman-dsh', descriptors: DESCRIPTORS })
-        .then(function () { return true; }, function (e) {
-          (console.warn || function () {}).call(console, 'ferryman-dsh client: $mount 失败', e);
-          return false;
-        });
 
       function registerDock() {
         return slots.inject(DOCK_SLOT, function () {
@@ -322,7 +299,7 @@
             id: 'ferryman-blocked',
             order: 15, // TodoDock(0) / GoalBar(10) 之下、QueueDock(20) 之上
             inject: function (sessionId) {
-              return { ferrymanBlocked: makeFace(remote, mount, sessionId) };
+              return { ferrymanBlocked: makeFace(sessionId) };
             },
           }, BlockedDock);
         });
@@ -340,6 +317,6 @@
       }
     }
 
-    return { name: 'ferryman-dsh', inject: ['remote', 'slots'], apply: apply };
+    return { name: 'ferryman-dsh', inject: ['slots'], apply: apply };
   }
 })(typeof window !== 'undefined' ? window : globalThis);
