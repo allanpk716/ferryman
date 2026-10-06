@@ -53,6 +53,7 @@ import (
 	"ferryman/internal/beat"
 	"ferryman/internal/clock"
 	"ferryman/internal/dshtrans"
+	"ferryman/internal/jsonl"
 	"ferryman/internal/ledger"
 	"ferryman/internal/mathx"
 	"ferryman/internal/pathsx"
@@ -203,13 +204,14 @@ func (w *Watcher) pollDsh() {
 	})
 }
 
-// pollDshSession 单个会话目录：选代→stat→采集态→（子代理？随父入账：
-// Touch 登记观察）→检测→窗机→心跳→Pin→用量采集。
+// pollDshSession 单个会话目录：选代→stat→采集态→（子代理？随父入账）→检测
+// （机器产出判定）→闲置锚 Touch/首登记→观察窗→boot 回放→窗机→心跳→Pin→
+// 用量采集。
 //
 // 票03 接入序（对齐 pollCC 的 maybeQwatch→maybeFireBeats→reconcilePins）：
-// 检测在 Touch＋观察窗之后、fed 早退之前跑（fed 会话必须也检测——fed 是
-// 常态）；窗机/心跳/Pin 同样在 fed 早退之前（fed 只让位 usage 文件面采集，
-// 不让位窗机）；harvest 偏移与检测偏移（detOff）互不相干。
+// 检测与窗机/心跳/Pin 都在 fed 早退之前（fed 会话必须也检测、也有窗机——
+// fed 是常态）；harvest 偏移与检测偏移（detOff）互不相干。票09 起检测先行：
+// 闲置锚的机器产出判定须在 TouchFull 之前得出（本函数检测段返回值）。
 func (w *Watcher) pollDshSession(dir string) {
 	gen, ok := dshtrans.LatestGeneration(dir)
 	if !ok {
@@ -234,14 +236,24 @@ func (w *Watcher) pollDshSession(dir string) {
 		w.harvestDshUsage(rec, info.Size(), nil)
 		return
 	}
-	st := w.Ledger.TouchFull("dsh", rec.header.ID, gen.Path,
-		statMTime(info), int(info.Size()), rec.header.Cwd, "", 0, w.StartedAt)
+	st := w.Ledger.Get("dsh", rec.header.ID)
+	// 票09 文件面闲置锚（事件面 v0.8.10 同款语义落地）：只有机器产出增量
+	//（assistant/message、compaction/*）或台账缺席（首登记，path/cwd 落账）
+	// 才 TouchFull——被拦回合/用户侧的落盘写（turn/start、inbox splice、
+	// turn/end 等）不顶新闲置锚。dsh 无内容钟（gate coversBar 回落
+	// lastWrite），锚被顶新＝凉会话被当"刚活跃"（2026-10-06 晨间事故：8.8h
+	// 被显示 16.5s、分支5 错过、账本假数）。纯用户侧增量也推进检测游标
+	//（detOff 在检测段无条件推进），下轮不重复解析。
+	machine := w.dshDetect(rec, info.Size())
+	if machine || st == nil {
+		st = w.Ledger.TouchFull("dsh", rec.header.ID, gen.Path,
+			statMTime(info), int(info.Size()), rec.header.Cwd, "", 0, w.StartedAt)
+	}
 	w.observeRecent(st, statMTime(info)) // 重启观察窗：存量近活会话补观察
 	// 票06 重启贫血修复：peak==0 → 账本回放重建峰值（＋title 补缺）。接线点
 	// 在 harvest/fed 分流之前——fed 会话同享；历史峰值先落位，增量采集与事
 	// 件面回写只增不减（dsh_boot_replay.go 头注）。
 	w.dshBootReplay(st, rec)
-	w.dshDetect(rec, info.Size())        // 票03 检测（fed 也跑；判活文件面刷新）
 	if !w.dshIsFed(rec.header.ID) {
 		// 非 fed：文件面 usage 采集先行（peak 的文件面来源——开窗条件④要
 		// peak，与 pollCC 的 harvestUsage→maybeQwatch 同序）。fed 会话的
@@ -430,14 +442,19 @@ func (w *Watcher) dshEffectiveMode() string {
 
 // dshDetect 文件面"最后说话人"检测（票03 规格「检测态」）：独立偏移
 //（detOff）尾读 → SpeakerState 累积推进。只更新态，不清窗不取消跳——
-// 关窗判定在 maybeDshQwatch。顺带做两件事：
+// 关窗判定在 maybeDshQwatch。返回本段增量是否含机器产出事件
+//（assistant/message、compaction/*——票09 闲置锚推进判据，与事件面 DshEvent
+// 的 Touch 口径同源；panic 按 false 收口＝不顶新，保守面正确）。顺带做两件
+// 事：
 //   - 未接管会话的运行态刷新（ledger.DshRunRefresh 头注"票03 补"）：白名单
 //     活动事件（turn/start、assistant/message）推进运行态时间戳——fed 会话
 //     走事件口（dsh_receive.go），本路径覆盖文件面；两口幂等，双跑无害；
 //   - 标题携带（rec.title，harvest 同字段——同文本重复解析结果幂等）。
 //
-// 一切异常吞掉（harvestDshUsage 同纪律）；无新增字节时 TailText 零读零推进。
-func (w *Watcher) dshDetect(rec *dshSessionRec, size int64) {
+// 增量游标（detOff）无条件推进——纯用户侧增量也消费掉，下轮不重复解析
+//（票09：游标推进与闲置锚推进解耦）。一切异常吞掉（harvestDshUsage 同纪
+// 律）；无新增字节时 TailText 零读零推进。
+func (w *Watcher) dshDetect(rec *dshSessionRec, size int64) bool {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Printf("[qwatch] dsh 检测异常（忽略继续）: %s: %v\n",
@@ -463,6 +480,27 @@ func (w *Watcher) dshDetect(rec *dshSessionRec, size int64) {
 		fmt.Printf("[qwatch] dsh 检测尾读异常（已消费到坏点前，下轮重试）: %s: %v\n",
 			filepath.Base(rec.gen.Path), res.Err)
 	}
+	return dshChunkHasProduction(res.Text)
+}
+
+// dshChunkHasProduction 增量段是否含机器产出事件（assistant/message、
+// compaction/*）。与事件面 DshEvent 的闲置锚 Touch 口径同源（dsh_receive.go：
+// 闲置锚只认机器产出；turn/start、user/message、session/title、request/header、
+// turn/end、subagent/catalog 等用户侧/机器侧杂写一律不算）。逐行 JSON 收形
+//（jsonl.DecodeDict，坏行跳过——dshtrans parseChunk 同纪律）；坏输入恒
+// false＝不顶新（保守面）。
+func dshChunkHasProduction(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		rec, ok := jsonl.DecodeDict(line)
+		if !ok {
+			continue
+		}
+		typ, _ := rec["type"].(string)
+		if typ == "assistant/message" || strings.HasPrefix(typ, "compaction/") {
+			return true
+		}
+	}
+	return false
 }
 
 // maybeDshQwatch dsh 等答复窗开窗/关窗判定（maybeQwatch 的 dsh 对位；pollDsh
