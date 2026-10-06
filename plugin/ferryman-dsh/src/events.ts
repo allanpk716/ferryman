@@ -37,6 +37,7 @@
 // daemon 收口。
 
 import { askGate, askHandoff, sendEvent, type DaemonEndpoint } from "./daemon.ts";
+import { SessionRegistry } from "./compact.ts";
 import { injectedMessage, type UserMessageLike } from "./usermessage.ts";
 
 export interface LoggerLike {
@@ -129,12 +130,24 @@ export interface EventDeps {
   handoffPending: Map<string, boolean>;
   /** 被拦事件仓（票08：拦截现场缓存,浏览器卡片数据源;宿主进程生命周期） */
   blocked: BlockedStore;
-  /** 时钟注入面（判活转发的时间戳）;缺省 Date.now */
+  /** 会话注册表（票05 热压缩）：五事件位维护 sid→{agent 活引用,闲置时钟,忙位};
+   *  轮询执行臂（compact.ts）据此报宿主会话清单并做执行前双重复查 */
+  registry: SessionRegistry;
+  /** 时钟注入面（判活转发与注册表闲置钟的时间戳）;缺省 Date.now */
   now?: () => number;
 }
 
 export function makeEventDeps(ep: DaemonEndpoint, logger: LoggerLike): EventDeps {
-  return { ep, logger, titles: new Map(), handoffPending: new Map(), blocked: new BlockedStore(), now: () => Date.now() };
+  const now = () => Date.now();
+  return {
+    ep,
+    logger,
+    titles: new Map(),
+    handoffPending: new Map(),
+    blocked: new BlockedStore(),
+    now,
+    registry: new SessionRegistry(now),
+  };
 }
 
 // ---- 共用小件 ----
@@ -349,6 +362,8 @@ export async function onPreStep(
   // 活跃对话每步都过闸门吃 machineWaiting 豁免＋注入兜底文案，污染上下文）。
   if (payload.step > 1) return next();
   const sid = sessionIdOf(payload.agent);
+  // 会话注册表（票05）：用户步=活动,闲置钟归零（agent 活引用同步登记/刷新）
+  if (sid) deps.registry.touch(sid, cwdOf(payload.agent), payload.agent);
   const text = blocksToText(payload.messages);
   const gate = await askGate(deps.ep, {
     session_id: sid,
@@ -420,7 +435,10 @@ export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promi
   try {
     const agent = payload?.agent;
     const sid = sessionIdOf(agent);
-    if (!sid || typeof agent?.inject !== "function") return;
+    if (!sid) return;
+    // 会话注册表（票05）：created 即登记（闲置时钟起点）,agent 活引用留给执行臂
+    deps.registry.touch(sid, cwdOf(agent), agent);
+    if (typeof agent?.inject !== "function") return;
     const md = await askHandoff(deps.ep, { cwd: cwdOf(agent), session_id: sid });
     if (md) {
       agent.inject(injectedMessage(md));
@@ -509,6 +527,8 @@ export function buildEventBody(
 export function onSessionEvent(deps: EventDeps, session: SessionRef, event: SessionEventRef): void {
   const sid = session?.header?.id ?? "";
   if (!sid) return;
+  // 会话注册表（票05）：会话活动流刷新闲置钟（无 agent 引用,不覆盖既有引用）
+  deps.registry.touch(sid, session?.header?.cwd ?? "");
   if (event?.type === "session/title") {
     const t = titleOf(event);
     if (t) deps.titles.set(sid, t);
@@ -548,6 +568,12 @@ function forwardLifecycle(
 }
 
 export function onStatus(deps: EventDeps, payload: StatusPayload): void {
+  const sid = sessionIdOf(payload?.agent);
+  if (sid) {
+    // 会话注册表（票05）：先登记（status 可能先于 created 到）,再置忙位
+    deps.registry.touch(sid, cwdOf(payload?.agent), payload?.agent);
+    deps.registry.setStatus(sid, payload?.status);
+  }
   forwardLifecycle(deps, payload?.agent, "agent/status",
     payload?.status ? { status: payload.status } : {});
 }
@@ -557,6 +583,7 @@ export function onDisposed(deps: EventDeps, payload: DisposedPayload): void {
   if (sid) {
     deps.handoffPending.delete(sid); // 会话终局清欠账,不跨会话泄漏
     deps.blocked.clearSession(sid); // 会话终局清被拦缓存（票08 返工:原话全文不缓跑累积）
+    deps.registry.remove(sid); // 会话终局出注册表（票05:不再进 poll 会话清单）
   }
   forwardLifecycle(deps, payload?.agent, "agent/disposed", {});
 }

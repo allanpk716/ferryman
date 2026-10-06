@@ -30,6 +30,7 @@ import {
 } from "./events.ts";
 import type { DaemonEndpoint } from "./daemon.ts";
 import { resolveConfig, type FerrymanPluginRawConfig } from "./config.ts";
+import { startPollLoop, type CompactionLike, type SessionProjectionsLike } from "./compact.ts";
 import { injectedMessage, type UserMessageLike } from "./usermessage.ts";
 
 export const name = "ferryman-dsh";
@@ -57,6 +58,14 @@ export interface PluginContext {
   /** cordis 懒注入面:宿主运行期把服务面递进来（dsh-ios-control fork-session.ts:60-64
    *  真机 web 宿主实证可用的先例）;老宿主无此 API → 调用方须 try/catch 兜底 */
   inject?(services: readonly string[], callback: (scoped: PluginContext) => void): unknown;
+  /** 宿主 compaction 服务鸭子面（compaction/src/index.ts:88-91 Context 声明合并,
+   *  CompactionEngine:119 Service）——票05 热压缩执行臂用;cordis 对未声明
+   *  inject 的服务属性读取即抛,一律经 compact.ts 的 optionalFace 容错取用,
+   *  勿在本插件顶层直接读 */
+  compaction?: CompactionLike;
+  /** 宿主会话投影注册表鸭子面（session-projection/src/index.ts:182+
+   *  SessionProjectionRegistry.stateOf）——压缩后新前缀尽力读（票05） */
+  sessionProjections?: SessionProjectionsLike;
 }
 
 /** 五事件位接线（票05 业务实现在 events.ts;deps 注入 daemon 端点/logger/标题跟踪） */
@@ -296,10 +305,13 @@ export function selfcheckOnce(
 /**
  * 插件入口：解析配置（token 读取接线,FERRYMAN_* 环境约定与自家钩子脚本对齐
  * ——config.ts 钉点）→ FERRYMAN_DISABLE 短路 → 挂五事件位 → 提供被拦反馈
- * Remote 面（票08;provide 由宿主重启加载）→ 触发挂载自检（非阻塞,自检失败
- * 仅 logger 可见）。
+ * Remote 面（票08;provide 由宿主重启加载）→ 起热压缩轮询执行臂（票05:立即
+ * 首轮＋setInterval 节律;返回卸载 disposer 清 interval——cordis 约定 apply
+ * 返回函数即卸载 disposer,vendor/cordis/src/fiber.ts:359-362 typeof function
+ * → collect）→ 触发挂载自检（非阻塞,自检失败仅 logger 可见）。
+ * 返回值：宿主卸载时调用的清理函数（disabled 短路时为 undefined）。
  */
-export function apply(ctx: PluginContext, config: FerrymanPluginConfig = {}): void {
+export function apply(ctx: PluginContext, config: FerrymanPluginConfig = {}): void | (() => void) {
   const resolved = resolveConfig(config, process.env);
   if (resolved.disabled) return; // FERRYMAN_DISABLE=1 / config.disable（ferryman-gate-codex.ps1:9 同款总开关）
   const ep: DaemonEndpoint = {
@@ -310,7 +322,10 @@ export function apply(ctx: PluginContext, config: FerrymanPluginConfig = {}): vo
   const deps = makeEventDeps(ep, ctx.logger ?? console);
   registerHooks(ctx, deps);
   registerBlockedRemote(ctx, deps);
+  // 票05：热压缩轮询执行臂（与五事件位共用同一 deps/注册表——会话清单与复查同源）
+  const loop = startPollLoop({ ep, logger: deps.logger, registry: deps.registry, ctx });
   void selfcheckOnce(ctx, { ...resolved, fetchImpl: config.fetchImpl });
+  return () => loop.stop();
 }
 
 // 类型再导出（下游/测试引用面）。
