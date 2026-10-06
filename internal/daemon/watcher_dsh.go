@@ -76,6 +76,12 @@ type dshSessionRec struct {
 	// ——peak==0 的账本回放＋title 补缺，每采集态恰一次；账本无条目的情形
 	// 也不重复扫盘）。
 	bootReplayed bool
+	// regenFiredTS 票04 重铸防重闸（守望单线程读写；纯内存章——重启丢章＝
+	// 按持久面推导重算，语义见 dsh_regen.go 头注）：已入队过重铸的 bypass 账痕
+	// 时刻。同一条 bypass 账痕至多入队一次——工人慢（墙钟 8min）而用户持续
+	// 写入时，HandedOffAt 章会被新 lastWrite 顶开，无此章会逐轮重复入队重复
+	// 上模型。入队失败（队满）不盖此章＝下轮重试。
+	regenFiredTS float64
 }
 
 // dshHarvest dsh 用量采集器（harvest.HarvestState 的 dsh 形；不共用其
@@ -271,6 +277,12 @@ func (w *Watcher) pollDshSession(dir string) {
 	// 在本函数上方已早退，天然不进。enrich 对 dsh 是空操作（enrichImpl 内
 	// 跳过，峰值不被 codex 读取器清零）；材料=渡口主快照（worker.doDsh）。
 	w.maybeEnqueue(st)
+	// 票04（dsh-post-accept-fixes A4①）：强续后重铸触发——强续交换完成后的
+	// 下一次 dock 记账入队重铸（全持久面推导、重启按同推导重算；peak 门/材料/
+	// 覆盖截止口径全复用不另造摆渡路径，入队即记 HandedOffAt 与常规线互斥；
+	// 仅 dsh——本函数即 dsh 专属路径，谓词面另有 agent 收窄）。排在 maybeEnqueue
+	// 之后＝同轮常规线优先。
+	w.maybeDshRegen(st, rec)
 }
 
 // dshIsFed 会话是否已被插件事件面接管（票05 跨源去重开关）。nil Daemon 或

@@ -29,7 +29,7 @@
 - **bypass 接线**:gate bypass 分支(仅 dsh)调消耗标记;同分支顺手把 block 账本 idle_s 改用闸门判定锚(A5①)。
 - **播种新鲜度**:dsh 供出前校验 covers_until ≥ 基准会话 last_write(60s 容差,与闸门覆盖判据同口径);基准会话=有被拦锚取锚会话(LatestPendingFor),无锚取候选源会话;落空走既有降级(原话+中性缺交接文案,restore 无交接分支已在)。仅 dsh。
 - **重启贫血修复**:boot 重建台账时,对 peak==0 的 dsh 会话从**最近两个账本月文件**回放 usage/dock 条目(键=条目 session_id/lineage_id)重建 peak(=各请求计费输入三列之和的最大值);title 从最近交接文档头行取,无则留空;boot 补记/去重 handed_off 只认"未消耗交接真覆盖 last_write"。
-- **A4① 强续后重铸(review_blocks F9/F10,票 paused 待措辞确认)**:**仅 dsh 生效**;触发=**强续交换完成(assistant 回复落账)后,该会话下一次渡口请求(dock 记账)时**入队重铸(此时快照 Main(sid) 已含完整强续交换,覆盖截止=入队时 last_write);触发条件从持久面推导:该会话存在晚于其最新未消耗交接 covers 的 bypass 账痕(重启按同推导重算,零新增内存态);兜底=强续后无后续请求的长闲置走既有摆渡线(宽松口径为前战役已记档取舍,不修不扩)。
+- **A4① 强续后重铸(review_blocks F9/F10 已解除;票04 已实施)**:**仅 dsh 生效**;触发=**强续交换完成(assistant 回复落账)后,该会话下一次渡口请求(dock 记账)时**入队重铸(此时快照 Main(sid) 已含完整强续交换,覆盖截止=入队时 last_write);触发条件从持久面推导:**该会话存在 bypass 账痕 B(最新)且不存在未消耗交接其 covers≥B**(2026-10-06 实施期修正:空集——强续消耗后/从未有交接——恰是待重铸,原 F12"空集不成立"为方向笔误;重铸产物 covers>B 自然熄火;重启按同推导重算,零新增内存态);兜底=强续后无后续请求的长闲置走既有摆渡线(宽松口径为前战役已记档取舍,不修不扩)。
 - **A4② 晚到注入(插件)**:askHandoff 返回空时置 handoffPending;**拿到交接前不清除**——每个用户步(step===1)重问一次,拿到即注入(injectedMessage 机制现成)并清除。
 - **A5**:block 账本 idle_s 用闸门判定锚;doctor 面 version 改报 daemon 版本(不报 MCP 进程自己的 exe)。
 - **B1 选择框(插件,先 spike 四验)**:①对话区可交互元素渲染能力;②强续重发=插件代发「强续+原话」(原话主径=拦截现场本地缓存 payload.messages;宿主重启丢缓存降级=用户重打,记为已知取舍);③create({seed})+followup 存在性;④followup 自动派发是否经 agent/pre-step 用户步(若不经,验"注入前主动查询一次")。任一验不过→票停靠记 fallback 待用户,不擅改已定 UX(对话区选择框,否决 Toast)。
