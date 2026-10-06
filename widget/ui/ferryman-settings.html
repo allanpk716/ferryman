@@ -65,9 +65,10 @@
         </button>
       </nav>
       <div class="side-foot">
-        <!-- 安全重启的后端定案未落地：按钮恒禁用，不调用任何重启端点 -->
-        <button class="btn-restart" id="btnRestart" disabled title="安全重启等待后端定案，暂不可用">重启守护</button>
-        <div class="cap">安全重启等待后端定案，暂不可用。改动保存后需重启守护才生效的，会在上方出现「待重启」标记。</div>
+        <!-- 安全重启：POST /settings/restart（票 07 端点）。响应先于守护停止到达；
+             起不来守护侧自动回滚到上次健康配置再拉起一次。 -->
+        <button class="btn-restart" id="btnRestart" title="安全重启守护：有在途请求会先等它跑完；起不来会自动换回上一份能正常跑的配置再试一次">重启守护</button>
+        <div class="cap">保存过的改动要重启守护才会用上。点这里安全重启：有在途请求会先等它跑完；万一新配置起不来，会自动换回上一份能正常跑的配置，再拉起一次。</div>
       </div>
     </aside>
 

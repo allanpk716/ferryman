@@ -849,7 +849,7 @@ $('#btnSaveService').addEventListener('click', () => {
   if (portDiff) {
     confirmRisk(
       '改守护端口？',
-      '守护端口从 ' + portDiff.oldV + ' 改成 ' + portDiff.newV + ' 后，所有指向旧端口的编辑器配置会立刻连不上渡口；重启守护后还要重新指一次。确定要改？',
+      '守护端口从 ' + portDiff.oldV + ' 改成 ' + portDiff.newV + ' 后，所有指向旧端口的编辑器配置会立刻连不上渡口；重启守护后还要重新指一次。重启失败会自动回滚到改端口前的那份健康配置，不会把守护弄丢。确定要改？',
       '确定要改',
       doPreview
     );
@@ -923,6 +923,79 @@ $('#btnBackupNow').addEventListener('click', async () => {
   } catch (e) {
     feedback(fb, '备份失败：' + e.message, true);
   }
+});
+
+// ════════ 安全重启守护（POST /settings/restart，票 07 契约） ════════
+// 契约：200 {"restarting":true[,"new_port":N]}——响应先于守护停止到达，随后守护优雅
+// 停机再自动拉起，起不来自动回滚到上次健康配置重试；400 {"error":"…"}=重启前检查
+// 没过，守护没动过。回 200 后本窗口与守护的连接会断开再恢复。
+const RESTART_POLL_MS = 2000;             // 回连轮询间隔
+const RESTART_BUDGET_MS = 6 * 60 * 1000;  // 回连总预算 6 分钟
+function setAllDisabled(on) {
+  $$('.main input, .main select, .main button').forEach((elm) => { elm.disabled = on; });
+  $('#btnRestart').disabled = on;
+}
+/** 探一次：任何 HTTP 应答（含 401）都算守护回来了；网络层抛错=还没起来。 */
+async function probeDaemon(base) {
+  try {
+    const headers = {};
+    if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
+    await fetch(base + '/stats', { headers, signal: AbortSignal.timeout(4000) });
+    return true;
+  } catch { return false; }
+}
+/** 200 之后：禁用全部控件 + 重启专属横幅，轮询候选地址直到守护回来或超时。 */
+function enterRestarting(candidates) {
+  const banner = $('#errBanner');
+  banner.textContent = '守护正在重启…有在途请求时会先等它跑完，最长几分钟。页面上的保存与操作先不可用，守护回来后自动恢复。';
+  banner.classList.add('show');
+  $('#btnRestart').textContent = '正在重启…';
+  setAllDisabled(true);
+  const deadline = Date.now() + RESTART_BUDGET_MS;
+  const pollRound = async () => {
+    if (Date.now() > deadline) {
+      // 超时：保持禁用，留人话指引（回滚与重试由守护侧负责，这里只指认通知渠道）
+      banner.textContent = '守护 6 分钟没回来。失败时守护会自动回滚到上次健康配置并重试；若仍失败会停在安全状态，请看系统通知或 Pushover 的「Ferryman 安全重启失败」提示，按提示手动恢复后重开本窗。';
+      return;
+    }
+    for (const base of candidates) {
+      if (await probeDaemon(base)) {
+        BASE = base; // 端口可能变了：换回连上的那个地址
+        await recoverFromRestart();
+        return;
+      }
+    }
+    setTimeout(pollRound, RESTART_POLL_MS);
+  };
+  setTimeout(pollRound, RESTART_POLL_MS);
+}
+async function recoverFromRestart() {
+  setAllDisabled(false); // 先解禁：refreshData 重建的动态控件会各自重设 disabled
+  $('#btnRestart').textContent = '重启守护';
+  $('#errBanner').classList.remove('show');
+  $('#restartFlag').classList.remove('show'); // 撤掉「待重启」标记
+  try { await refreshData(); } catch { /* 数据面偶发失败：结构已在，用户重开本窗即可 */ }
+  loadSnapshots();
+  toast('守护已重启，待生效的改动现在生效了', 'live');
+}
+$('#btnRestart').addEventListener('click', () => {
+  confirmRisk(
+    '重启守护？',
+    '守护会先应答本请求，随后优雅停机（有在途请求会先等它跑完）再自动拉起；万一新配置起不来，会自动换回上一次正常运行的配置再拉起一次。这期间本窗口与守护的连接会断开，回来后自动接上。确定重启？',
+    '确定重启',
+    async () => {
+      try {
+        const r = await api('/settings/restart', { method: 'POST', body: {} });
+        const candidates = [];
+        if (r && r.new_port) candidates.push('http://127.0.0.1:' + r.new_port); // 改了端口：先试新口
+        candidates.push(BASE); // 再回落当前地址
+        enterRestarting(candidates);
+      } catch (e) {
+        // 400=重启前检查没过，守护没动过：红字报人话原因，按钮保持可点
+        toast('重启没批下来：' + e.message, null, true);
+      }
+    }
+  );
 });
 
 // ════════ 全量装载 ════════
