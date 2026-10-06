@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>选择框 mock · Ferryman 闸门被拦反馈(对话区卡片 · 2026-10-06)</title>
+<style>
+  :root{
+    --bg:#141419; --bubble-user:#2b3a55; --bubble-ai:#232330;
+    --card:#1d2030; --card-border:#3a4160;
+    --accent:#5b8cff; --accent-press:#4771d6;
+    --green:#3f9e6e; --text:#e8eaf2; --muted:#9aa0b5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0c0c10;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--text);display:flex;flex-direction:column;align-items:center;gap:36px;padding:28px 0 60px}
+  .phone{width:390px;background:var(--bg);border-radius:18px;border:1px solid #26262e;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+  .phone .titlebar{padding:10px 16px;font-size:13px;color:var(--muted);border-bottom:1px solid #26262e;display:flex;justify-content:space-between}
+  .chat{padding:14px 12px 18px;display:flex;flex-direction:column;gap:10px}
+  .msg{max-width:82%;padding:9px 12px;border-radius:14px;font-size:14px;line-height:1.55}
+  .msg.user{align-self:flex-end;background:var(--bubble-user);border-bottom-right-radius:4px}
+  .msg.ai{align-self:flex-start;background:var(--bubble-ai);border-bottom-left-radius:4px}
+  .time{font-size:11px;color:var(--muted);align-self:center;margin-top:-4px}
+
+  /* ===== 选择框卡片 ===== */
+  .choice{align-self:stretch;background:var(--card);border:1px solid var(--card-border);border-radius:14px;padding:13px 14px;margin:6px 0 2px}
+  .choice .head{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;margin-bottom:7px}
+  .choice .head .dot{width:8px;height:8px;border-radius:50%;background:#e0b34a;flex:none}
+  .choice .reason{font-size:12.5px;color:var(--muted);line-height:1.5;margin-bottom:9px}
+  .choice .quote{border-left:3px solid var(--card-border);background:rgba(255,255,255,.03);padding:7px 10px;border-radius:0 8px 8px 0;font-size:13px;color:var(--text);margin-bottom:11px;word-break:break-all}
+  .choice .quote .lbl{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
+  .choice .btns{display:flex;flex-direction:column;gap:8px}
+  .choice .btn{display:block;width:100%;padding:11px 0;border-radius:10px;font-size:14.5px;font-weight:600;text-align:center;cursor:pointer;user-select:none}
+  .choice .btn.primary{background:var(--accent);color:#fff}
+  .choice .btn.primary:active{background:var(--accent-press)}
+  .choice .btn.ghost{background:transparent;border:1px solid var(--card-border);color:var(--text)}
+  .choice .btn .sub{display:block;font-size:11px;font-weight:400;color:inherit;opacity:.72;margin-top:2px}
+  .choice .foot{font-size:11px;color:var(--muted);margin-top:9px;text-align:center}
+
+  /* ===== 已处理态 ===== */
+  .choice.done{opacity:.72;padding:9px 14px}
+  .choice.done .row{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+  .choice.done .tick{width:16px;height:16px;border-radius:50%;background:var(--green);color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;flex:none}
+
+  .caption{font-size:12.5px;color:var(--muted);width:390px;text-align:center;line-height:1.6}
+  .caption b{color:var(--text)}
+</style>
+</head>
+<body>
+
+<div class="caption"><b>状态一 · 待处理</b>——被拦原话就地出现选择框卡片(与平台提问卡同形,不挡输入框)</div>
+<div class="phone">
+  <div class="titlebar"><span>research_things</span><span>DSH</span></div>
+  <div class="chat">
+    <div class="msg user">帮我把昨天的实验数据整理成表格</div>
+    <div class="msg ai">好的,已整理完毕。表格已写入 summary.csv,共 47 行……</div>
+    <div class="time">昨天 23:23</div>
+
+    <div class="choice">
+      <div class="head"><span class="dot"></span>这条消息被 Ferryman 闸门拦下</div>
+      <div class="reason">会话已闲置 8.8 小时,缓存大概率已失效——直接继续会全量重付(约 6.8 万 token)。</div>
+      <div class="quote"><span class="lbl">你刚发的原话(没有丢)</span>再按同样的分组算一遍方差</div>
+      <div class="btns">
+        <div class="btn primary">强续重发<span class="sub">留在本会话 · 以「强续」开头重发这句话(接受全量重付)</span></div>
+        <div class="btn ghost">新会话继续<span class="sub">一键新建 · 开场自动收到进度交接 + 这句原话</span></div>
+      </div>
+      <div class="foot">也可以无视此卡,手动输入任意「强续 …」或新建会话</div>
+    </div>
+  </div>
+</div>
+
+<div class="caption"><b>状态二 · 已处理</b>——点过按钮后卡片塌缩成一行记录,留在对话流里</div>
+<div class="phone">
+  <div class="titlebar"><span>research_things</span><span>DSH</span></div>
+  <div class="chat">
+    <div class="msg user">帮我把昨天的实验数据整理成表格</div>
+    <div class="msg ai">好的,已整理完毕。表格已写入 summary.csv,共 47 行……</div>
+    <div class="time">昨天 23:23</div>
+
+    <div class="choice done">
+      <div class="row"><span class="tick">✓</span>已按「强续」重发——原话:再按同样的分组算一遍方差</div>
+    </div>
+
+    <div class="msg user">强续 再按同样的分组算一遍方差</div>
+    <div class="msg ai">收到,按昨天的分组口径重算方差如下……</div>
+  </div>
+</div>
+
+<div class="caption">
+  说明:这是<b>形态确认 mock</b>(布局/信息结构/按钮行为),非最终视觉——配色与圆角随 DSH web UI 主题适配。<br>
+· 卡片位置=被拦消息在对话流中的位置(内嵌,非弹窗、非常驻条) · 原话预览超长截断<br>
+· 「强续重发」=插件代发「强续 + 原话」,走既有 bypass · 「新会话继续」=一键新建(同目录),交接+原话由 daemon 归还链带回
+</div>
+
+</body>
+</html>

@@ -28,6 +28,7 @@
 | 0018 | [0018-quiet-gate-over-edge-proxy.md](0018-quiet-gate-over-edge-proxy.md) | 0018-gate | 升级停顿对策＝静默门（空载准入停旧）；「任何时刻不拒连」的常驻代理延后（触发式） |
 | 0018 | [0018-settings-window-resident.md](0018-settings-window-resident.md) | 0018-settings | 设置窗常驻隐藏：运行时建 WebviewWindow 在真机是渲染树永不建成的僵尸——窗口声明式常驻、关闭即隐藏 |
 | 0019 | [0019-takeover-ccswitch-go-translation.md](0019-takeover-ccswitch-go-translation.md) | — | 接管 cc-switch＝渡口当总门：翻译层并入 Go 渡口、不转 Rust，pi 走 anthropic-messages 复用 CC 车道，provider 族为统一配置面 |
+| 0023 | [0023-blocked-feedback-browser-face.md](0023-blocked-feedback-browser-face.md) | — | 被拦反馈（选择框）住在浏览器侧插件面（双面包）；宿主侧插件零 UI 是生态现状，0021/0022 已被工作台夜链占用故跳号 |
 
 ## 撞号消歧与引用注意
 
