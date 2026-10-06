@@ -154,7 +154,8 @@ export function buildBlockedService(deps: BlockedRemoteDeps): BlockedRemoteServi
       try {
         followup(injectedMessage(withBypassPrefix(ev.prompt)));
       } catch (e) {
-        return { ok: false, error: `代发失败（会话可能已结束）：${e instanceof Error ? e.message : String(e)}。请手动输入「强续 <原话>」重发。` };
+        // 10-06 真机反馈:裸异常文案（Cannot read properties of undefined…）不面向用户——只留动作指引
+        return { ok: false, error: "代发失败（会话可能已结束，原话就保存在卡片上）。请手动输入「强续 + 原话」重发。" };
       }
       deps.store.markDone(id, "resend");
       return { ok: true };

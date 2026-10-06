@@ -64,6 +64,12 @@
         border: '1px solid var(--dsw-alias-border-l2, #3a4160)',
         borderRadius: '14px',
         padding: '13px 14px',
+        // 10-06 真机反馈:窄屏/错误态下卡片高过可视区、底端被输入坞区盖住——
+        // 自限高+内部滚动,任何屏都完整可读
+        maxHeight: '45vh',
+        overflowY: 'auto',
+        position: 'relative',
+        zIndex: 3,
       },
       head: {
         display: 'flex', alignItems: 'center', gap: '8px',
@@ -78,6 +84,7 @@
       reason: {
         fontSize: '12.5px', lineHeight: 1.5, marginBottom: '9px',
         color: 'var(--dsw-alias-label-secondary, #9aa0b5)',
+        display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
       },
       quote: {
         borderLeft: '3px solid var(--dsw-alias-border-l2, #3a4160)',
@@ -85,6 +92,7 @@
         padding: '7px 10px', borderRadius: '0 8px 8px 0',
         fontSize: '13px', marginBottom: '11px', wordBreak: 'break-all',
         color: 'var(--dsw-alias-label-primary, #e8eaf2)',
+        display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden',
       },
       quoteLabel: {
         display: 'block', fontSize: '11px', marginBottom: '3px',

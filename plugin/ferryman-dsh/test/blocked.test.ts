@@ -339,7 +339,7 @@ test("动作宿主侧抛错 → {ok:false} 不抛（RPC 面错误即回话,卡�
   const cards = store.list(SID);
   const r1 = await service.resend(cards.find((c) => c.prompt === "原话A")!.id);
   assert.equal(r1.ok, false);
-  assert.ok(r1.error!.includes("agent gone"), "错误文案带宿主原因");
+  assert.ok(r1.error!.includes("请手动输入"), "失败文案只留动作指引（裸异常不面向用户,10-06 真机反馈改钉）");
   const r2 = await service.newSession(cards.find((c) => c.prompt === "原话B")!.id);
   assert.equal(r2.ok, false);
   assert.ok(r2.error!.includes("quota"));
