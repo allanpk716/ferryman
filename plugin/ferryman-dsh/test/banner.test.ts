@@ -1,7 +1,11 @@
 // 票06 · 压缩完成横幅 TDD（先红后绿）。两半面同测：
 //   宿主半面（src/banner.ts 状态仓 + src/compact.ts 触发 + src/events.ts 清位 +
 //   src/index.ts list wire）——触发源克隆查证（只读 dsh-research 克隆）钉点：
-//     - 「压缩完成」= compactNow(agent, signal) 成功解析：契约钉点
+//     - 「压缩完成」= 执行道成功点（两道同义,2026-10-07 返工扩命令道,src/
+//       compact.ts 头注「执行」节全锚点）：命令道 commands.execute('/compact')
+//       解析（command-compact/src/index.ts:67 handler 直 await compactNow +
+//       commands/src/index.ts:424-425 execute await settle）,或服务面
+//       compactNow(agent, signal) 成功解析：契约钉点
 //       packages/compaction/compaction/src/index.ts:147（append standalone
 //       `compaction/start` … 「That durable marker is the compaction lock until
 //       one `compaction/end` attempt」——锁标记直到一次 compaction/end 尝试）+
@@ -105,13 +109,14 @@ function dispatchRoute(mock: MockDaemon): { flag: { on: boolean } } {
   return { flag };
 }
 
-/** 起循环并等立即首轮落定（compact.test.ts 同款;再让 30ms 让应答处理完） */
+/** 起循环并等立即首轮落定（compact.test.ts 同款;再让 30ms 让应答处理完）。
+ *  成功上报前的落盘稳定窗（REPORT_SETTLE_MS,生产 2s）压到 5ms。 */
 async function startSettled(
   t: { after: (fn: () => void) => void },
   mock: MockDaemon,
   deps: Omit<PollDeps, "ep"> & { ep?: PollDeps["ep"] },
 ): Promise<PollLoopHandle> {
-  const handle = startPollLoop({ ep: { baseURL: mock.url, token: "tok-b6", fetchImpl: fetch }, ...deps } as PollDeps);
+  const handle = startPollLoop({ ep: { baseURL: mock.url, token: "tok-b6", fetchImpl: fetch }, reportSettleMs: 5, ...deps } as PollDeps);
   t.after(() => handle.stop());
   await waitUntil(() => mock.requestsFor("/dsh/poll").length >= 1);
   await new Promise((r) => setTimeout(r, 30));
@@ -154,6 +159,32 @@ test("触发源：compactNow 成功+上报送达 → banner 置位（ok:true 路
   flag.on = false;
   assert.equal(rec.calls.length, 1);
   assert.equal(banner.has(SID), true, "压缩成功+上报送达=横幅亮（banner.ts 头注克隆钉点）");
+});
+
+test("触发源·命令道：execute('/compact') success+上报送达 → banner 置位（两执行道同义成功点,返工票钉点）", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", agentOf(SID));
+  // 命令注册表替身：execute 解析即压缩收口（command-compact/src/index.ts:67
+  // handler 直 await compactNow;commands/src/index.ts:424-425 await settle）
+  const commands = {
+    execute: async () => ({ commandId: "cmd-b7", result: { kind: "success", text: "Compacted 2 history items (~800 tokens)." } }),
+  };
+  const banner = new BannerStore();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, banner, ctx: ctxWithServices(logger, new Map([["commands", commands]])) as never,
+  });
+  assert.equal(banner.has(SID), false, "未执行压缩不亮横幅");
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
+  await waitUntil(() => banner.has(SID), 1000);
+  flag.on = false;
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["ok"], true);
+  assert.equal(banner.has(SID), true, "命令道成功+上报送达=横幅亮（与 compactNow 路径同一置位门）");
 });
 
 test("上报终败不置位：/dsh/compacted 500 两败 → warn 但横幅不亮（承诺不立）", async (t) => {
@@ -303,7 +334,7 @@ test("apply 端到端：压缩成功 → list banner:true → 用户步清位 �
     },
   };
   const { apply } = await import("../src/index.ts");
-  const disposer = apply(ctx as never, { daemonURL: mock.url, daemonToken: "tok-b6", dockURL: mock.url, fetchImpl: fetch });
+  const disposer = apply(ctx as never, { daemonURL: mock.url, daemonToken: "tok-b6", dockURL: mock.url, fetchImpl: fetch, reportSettleMs: 5 });
   const stop = () => { if (typeof disposer === "function") disposer(); };
   t.after(stop);
   await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1 && rec.calls.length >= 1);

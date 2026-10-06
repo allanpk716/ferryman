@@ -500,24 +500,46 @@ const TOPICS = [
   record('d1', '⑤ 交接文件落盘（handoffs/ 有本 run 新文件）', hFiles.length > 0, hFiles.slice(0, 3).join(', '));
 
   // ---- P7 降级链回归·甲：压缩红利失效后照旧拦（选择卡兜底） ----
-  // 消息③（或灌上下文末轮）之后无 compressed 标记/已被流量作废；闲置过线后走
-  // legacy 链：无新鲜交接→分支7 警告放行+摆渡 → 紧接再发→分支5/6 拦截→选择卡出现
-  log('降级甲：等闲置过线（进入 legacy 拦窗）');
-  await waitFor('闲置≥block_s（legacy 拦窗）', async () =>
-    nowS() - mtimeS(state.sessFile) >= BLOCK_S + 5, { timeoutMs: (BLOCK_S + 180) * 1000, intervalMs: 3000 });
+  // 前提=「压缩红利失效」：等闲置过线 ∧ 最后一条 ok 压缩上报的 compressed 标记
+  // （mark_ratio×TTL）已过期。返工注记（2026-10-07）：上报加 2s 落盘稳定窗后
+  // 标记不再自杀,④ 回合后的 watcher 二次压缩会以新鲜标记盖住本幕——只等
+  // 闲置会把「照旧拦」测成「红利仍在、正确放行」（第二发无 pending 必不拦,
+  // 30s 超时崩）,与本断言命题不符;两发序内再遇标记落地的窄竞态以重试收口。
+  const markLapsed = async () => {
+    const comps = rowsFor(state.sid, 'compacted').filter((r) => r.ok === true && typeof r.ts === 'number');
+    const last = comps.at(-1);
+    return last === undefined || nowS() >= last.ts + MARK_RATIO * TTL_S + 6;
+  };
+  const waitLegacyWindow = (label) =>
+    waitFor(`${label}（闲置≥block_s ∧ 压缩标记已失效）`, async () =>
+      nowS() - mtimeS(state.sessFile) >= BLOCK_S + 5 && markLapsed(),
+      { timeoutMs: (MARK_RATIO * TTL_S + BLOCK_S + 120) * 1000, intervalMs: 3000 });
+  log('降级甲：等闲置过线+压缩标记失效（进入 legacy 拦窗）');
+  await waitLegacyWindow('legacy 拦窗');
   const statsP7a = engineDead ? await daemonStats().catch(() => null) : null;
-  const sizeA = fstat(state.sessFile).size;
   const blockMarker = `E2E被拦标记${RUNSTAMP.slice(-6)}`;
-  await sendMsg(`${blockMarker}：随便回一句话。`);
-  const r5 = await waitFor('降级甲第一发归宿', async () =>
-    (await cardCount()) > 0 ? 'blocked' : fstat(state.sessFile).size >= sizeA + 1000 ? 'allowed' : false,
-    { timeoutMs: 180000, intervalMs: 1500 });
-  let blocked = r5 === 'blocked';
-  if (!blocked) {
-    await waitTurnDone(sizeA, { label: '分支7放行回合' });
+  let blocked = false;
+  for (let attempt = 1; attempt <= 3 && !blocked; attempt++) {
+    const sizeA = fstat(state.sessFile).size;
+    const gateLen0 = gateLogLines().length; // 只看本发新增行——④ 幕的旧放行行不误判
+    await sendMsg(`${blockMarker}${attempt > 1 ? `-${attempt}` : ''}：随便回一句话。`);
+    const r5 = await waitFor('降级甲第一发归宿', async () =>
+      (await cardCount()) > 0 ? 'blocked' : fstat(state.sessFile).size >= sizeA + 1000 ? 'allowed' : false,
+      { timeoutMs: 180000, intervalMs: 1500 });
+    blocked = r5 === 'blocked';
+    if (blocked) break;
+    await waitTurnDone(sizeA, { label: '放行回合' });
+    const gateNewText = gateLogLines().slice(gateLen0).join(' ');
+    if (gateNewText.includes('compacted-short-prefix')) {
+      // 放行回合自身可能再触发一次热压缩（peak 回升过线）→ 新鲜标记落地——
+      // 等它失效后重试两发序（标记窗口内「照旧拦」本就不成立,非剧本目标）
+      log(`第 ${attempt} 发撞上在效压缩标记（gate 放行）——等标记失效后重试`);
+      await waitLegacyWindow('legacy 拦窗·重试');
+      continue;
+    }
     log('第一发=分支7 警告放行（无新鲜交接）——紧接第二发验拦截');
     const sizeB = fstat(state.sessFile).size;
-    await sendMsg(`${blockMarker}-2：再随便回一句话。`);
+    await sendMsg(`${blockMarker}${attempt > 1 ? `-${attempt}` : ''}-2：再随便回一句话。`);
     await waitFor('降级甲第二发被拦（选择卡出现）', async () => (await cardCount()) > 0, { timeoutMs: 30000, intervalMs: 1500 });
     blocked = true;
     void sizeB;

@@ -30,7 +30,7 @@ import {
 } from "./events.ts";
 import type { DaemonEndpoint } from "./daemon.ts";
 import { resolveConfig, type FerrymanPluginRawConfig } from "./config.ts";
-import { startPollLoop, type CompactionLike, type SessionProjectionsLike } from "./compact.ts";
+import { startPollLoop, type CommandsLike, type CompactionLike, type SessionProjectionsLike } from "./compact.ts";
 import type { BannerStore } from "./banner.ts";
 import { injectedMessage, type UserMessageLike } from "./usermessage.ts";
 
@@ -41,6 +41,9 @@ export const inject: string[] = [];
 export interface FerrymanPluginConfig extends FerrymanPluginRawConfig {
   /** 测试注入面——生产留空用全局 fetch */
   fetchImpl?: typeof fetch;
+  /** 成功上报前落盘稳定窗 ms 覆盖（compact.ts REPORT_SETTLE_MS 头注:标记
+   *  自杀竞态闭窗）;测试/沙箱压秒级用,生产留空用缺省 2000 */
+  reportSettleMs?: number;
 }
 
 /** 结构化的宿主 context 子集（cordis Context 真型的鸭子面;logger/on 为本插件实际用到面） */
@@ -60,10 +63,18 @@ export interface PluginContext {
    *  真机 web 宿主实证可用的先例）;老宿主无此 API → 调用方须 try/catch 兜底 */
   inject?(services: readonly string[], callback: (scoped: PluginContext) => void): unknown;
   /** 宿主 compaction 服务鸭子面（compaction/src/index.ts:88-91 Context 声明合并,
-   *  CompactionEngine:119 Service）——票05 热压缩执行臂用;cordis 对未声明
-   *  inject 的服务属性读取即抛,一律经 compact.ts 的 optionalFace 容错取用,
-   *  勿在本插件顶层直接读 */
+   *  CompactionEngine:119 Service）——票05 热压缩执行臂次选道;真机 web 宿主
+   *  把它隔离在 preset 组内（web-app presets patch isolate:{compaction:true},
+   *  host 面 disabled）,插件域恒不可达——cordis 对未声明 inject 的服务属性
+   *  读取即抛,一律经 compact.ts 的 optionalFace 容错取用,勿在本插件顶层直接读 */
   compaction?: CompactionLike;
+  /** 宿主命令注册表鸭子面（ctx.commands,interaction/commands/src/index.ts:30
+   *  name='commands'+:113-117 Context 声明合并;base bundle host 面
+   *  cordis.patch.yml:307-308,web 预设组未 isolate）——票05 执行臂首选道:
+   *  execute(agent,'/compact',[],signal) 与宿主 UI /compact 同入口;完成信号
+   *  =execute promise 本身（compact.ts 头注克隆钉点）。同受 inject 执法,
+   *  经 compact.ts 的懒注入/optionalFace 取用 */
+  commands?: CommandsLike;
   /** 宿主会话投影注册表鸭子面（session-projection/src/index.ts:182+
    *  SessionProjectionRegistry.stateOf）——压缩后新前缀尽力读（票05） */
   sessionProjections?: SessionProjectionsLike;
@@ -341,7 +352,7 @@ export function apply(ctx: PluginContext, config: FerrymanPluginConfig = {}): vo
   registerBlockedRemote(ctx, deps);
   // 票05：热压缩轮询执行臂（与五事件位共用同一 deps/注册表——会话清单与复查同源）;
   // 票06：banner 仓随臂递入——压缩成功+上报送达置位,横幅经上方 Remote list 上浏览器
-  const loop = startPollLoop({ ep, logger: deps.logger, registry: deps.registry, ctx, banner: deps.banner });
+  const loop = startPollLoop({ ep, logger: deps.logger, registry: deps.registry, ctx, banner: deps.banner, reportSettleMs: config.reportSettleMs });
   void selfcheckOnce(ctx, { ...resolved, fetchImpl: config.fetchImpl });
   return () => loop.stop();
 }

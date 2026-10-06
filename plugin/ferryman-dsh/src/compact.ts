@@ -8,13 +8,40 @@
 //     忙位）∧ ②会话闲置时钟仍 < TTL（热窗内;缺省 1800s=ADR-0016 同款,应答
 //     ttl_s 可覆盖）。任一不过 → POST /dsh/compacted {ok:false,
 //     reason:"expired-or-busy"},不执行。
-//   - 执行：懒注入 ctx.compaction（cordis inject 先例 fork-session.ts:60-64,
-//     真机 web 宿主实证可用）取 CompactionEngine,方法带 receiver 整体调用
-//     （10-06 真机事故铁律:摘下来裸调 this=undefined 即崩;bind 后再调）——
-//     compactNow(agent, signal)（packages/compaction/compaction/src/index.ts:
-//     162-166 签名;忙=ManualCompactionError code 'busy',:35-64,catch 判
-//     code 含 'busy' 或 message 形态匹配）→ 上报 {ok:false, reason:"busy"};
-//     其余失败 → {ok:false, reason:"error"}＋logger.warn 一行。
+//   - 执行（两道,先命令后服务面——2026-10-07 E2E 实锚返工）：
+//     ①命令道（首选）：真机 web 宿主把 compaction 服务隔离在 preset 组内
+//      （packages/bundle/web-app/cordis.patch.yml「The token METER stays on the
+//      host plane; only the compaction backend that reads it moves」——host 面
+//      compaction-basic/command-compact 双 disabled;presets/cordis.patch.yml
+//      cordis:group isolate:{compaction:true}）,插件域 ctx.inject('compaction')
+//      恒不递面;而命令注册表 commands 服务留在 host 面（packages/bundle/base/
+//      cordis.patch.yml:307-308,未被 disable/isolate）——宿主 UI 的 /compact
+//      即走它（client/ui-commands/src/client/service.ts:406 remote 调用,网关
+//      解析 agent 后同样落到 execute）,插件同走。懒注入 ctx.commands
+//      （services 键=commands,interaction/commands/src/index.ts:30 name+:113-117
+//      Context 声明合并）取 CommandRuntime,带 receiver 调
+//      execute(agent, '/compact', [], signal)（:360-366 签名;@Remote 装饰只挂
+//      原型标记不换方法体——typert-protocol/src/index.ts:198-225,进程内直调
+//      即真执行;view(agent) 按对象身份解析 agent 作用域层——core/scope/src/
+//      index.ts:15 ScopeKey=object,agent-loop/src/agent.ts:130 createScope
+//      (loopCtx,this) 以 agent 本体为键,注册表存的活引用=同一对象）。
+//      完成信号=execute 的 promise 本身:handler 直 await compactNow
+//      （command-compact/src/index.ts:67）,execute await handler settle
+//      （commands/src/index.ts:424-425）——解析即 compaction/end 已落,与直调
+//      compactNow 等价,无需另观察事件流。结果面:undefined=该 agent 视图无
+//      compact 命令（:367-370 未解析）→回落服务面;{kind:'success'}=压缩真
+//      完成;{kind:'error',text}=预期失败（ManualCompactionError 已被
+//      command-compact/src/index.ts:24-56 转译,code 丢失——busy 分支文案钉点
+//      :26-31 'active compaction'/'not idle',匹配即 busy;文案改版退化成
+//      error,仅账本 reason 标签之差,daemon 对 reason 无行为分支——
+//      internal/daemon/compact.go:156-166 只记账）;handler 非预期抛错被
+//      execute 原样 rethrow（commands/src/index.ts:426-429）→落 catch 带。
+//     ②服务面（次选:命令道缺席/未注册时的合成宿主与 base 组成）：
+//      compactNow(agent, signal)（packages/compaction/compaction/src/index.ts:
+//      162-166 签名;忙=ManualCompactionError code 'busy',:35-64,catch 判
+//      code 含 'busy' 或 message 形态匹配）→ 上报 {ok:false, reason:"busy"};
+//      其余失败 → {ok:false, reason:"error"}＋logger.warn 一行。
+//     两道皆缺 → {ok:false, reason:"no-compaction-channel"}＋warn 指因。
 //   - 成功：尽力读新前缀（ctx.sessionProjections 投影 contextPressure 的
 //     projectedTokens ?? pressureTokens,packages/llm/token-meter/src/
 //     projection.ts:30-48;不可得省略键）→ {ok:true, prefix_tokens?,
@@ -46,6 +73,21 @@ export const MIN_POLL_INTERVAL_MS = 10_000;
 export const DEFAULT_HOT_TTL_S = 1800;
 /** compacted 上报的 source 值（daemon 落账本 kind=compacted 随行） */
 export const COMPACT_SOURCE = "host-plugin";
+/**
+ * 成功上报前的落盘稳定窗 ms（2026-10-07 E2E 实锚返工第三修）。竞态链:压缩
+ * 事件 append（如 03:16:42.598）→ 本插件 ~10ms 内上报 → daemon 立 compressed
+ * 标记（TS=42.605）;而 dsh 会话日志是批量落盘——批窗 200ms
+ * （session-persistence-jsonl/src/storage.ts:36 LIVE_WRITE_BATCH_MAX_DELAY_MS）
+ * ,drain 后文件 mtime=42.798 → daemon 守望（poll_interval_s=1）检测到
+ * compaction/* 机器产出增量 → TouchFull 把 LastWrite 顶到 42.798
+ * （watcher_dsh.go:247-258）→ 标记作废规则 `LastWrite > 标记TS` 判死自家标记
+ * （compact.go:196）——压缩自身的落盘写晚于上报即自杀,±0.2s 掷硬币（真机
+ * 两轮:一轮活一轮死,死者 gate 侧 idle=111.1 ⇒ LastWrite=42.8 实证）。稳定窗
+ * 2s=批窗 10 倍,让 TS 落在 drain mtime 之后,竞态闭死（drainPaused 只在写
+ * 失败时置位——失败写不动 mtime,不引入新竞态）。横幅与标记同窗延后,代价
+ * 不可感。
+ */
+export const REPORT_SETTLE_MS = 2_000;
 
 // ---- 宿主服务鸭子面（未声明 inject 的属性读取即抛,一律 optionalFace 取用） ----
 
@@ -54,9 +96,54 @@ export interface CompactionLike {
   compactNow(agent: unknown, signal: AbortSignal, sourceCommandId?: string): Promise<unknown>;
 }
 
-/** ctx.sessionProjections（session-projection/src/index.ts:182+ stateOf 读投影） */
+/**
+ * ctx.commands（interaction/commands/src/index.ts:30 name='commands' + :113-117
+ * Context 声明合并;base bundle host 面 cordis.patch.yml:307-308）。execute 契约
+ * :360-366——@Remote async execute(agent, line, submittedAttachments, signal)
+ * : Promise<CommandExecution | undefined>;完成信号=promise 本身（头注「执行」节钉点）。
+ */
+export interface CommandsLike {
+  execute(
+    agent: unknown,
+    line: string,
+    submittedAttachments: readonly unknown[],
+    signal: AbortSignal,
+  ): Promise<unknown>;
+}
+
+/**
+ * 命令道结果面解析（commands/src/types.ts:49-54 CommandExecution={commandId,
+ * result};result 联合 :34-41 success{text?,sourceEventSeq?}|error{text}）：
+ *   - success → 压缩真完成（含「No compactable history yet.」——compactNow 回
+ *     null 的合法成功,command-compact/src/index.ts:68;前缀未变,daemon 侧照
+ *     prefix_tokens 实值判定,不为此时伪造利好）;
+ *   - error 文本匹配 busy 分支文案（command-compact/src/index.ts:26-31 唯一
+ *     含 'active compaction'/'not idle' 的分支）→ busy;其余 → error。
+ */
+export function parseCommandOutcome(
+  outcome: unknown,
+): { ok: true } | { ok: false; reason: "busy" | "error"; text: string } {
+  const result = outcome !== null && typeof outcome === "object"
+    ? (outcome as { result?: unknown }).result
+    : undefined;
+  if (result !== null && typeof result === "object") {
+    const r = result as { kind?: unknown; text?: unknown };
+    if (r.kind === "success") return { ok: true };
+    const text = typeof r.text === "string" ? r.text : "";
+    if (/active compaction|not idle/i.test(text)) return { ok: false, reason: "busy", text };
+    return { ok: false, reason: "error", text };
+  }
+  // 非对象回话=宿主契约外的畸形面,按 error 收口（不拦降级链）
+  return { ok: false, reason: "error", text: typeof outcome === "string" ? outcome : "" };
+}
+
+/** ctx.sessionProjections（session-projection/src/index.ts:196+ Service;读面=
+ *  snapshot——stateOf 回的是单元原始态,无 projectedTokens（该键只活在 wire
+ *  视图,:208-216 view 计算;2026-10-07 E2E 实锚:stateOf 落 pressureTokens
+ *  兜底=压缩盲的旧请求压值,prefix_tokens 恒报旧数） */
 export interface SessionProjectionsLike {
-  stateOf(session: unknown, key: string): unknown;
+  /** wire 视图读：snapshot(session, keys) → {asOfSeq, values}（:336-357 一致切面） */
+  snapshot(session: unknown, keys?: readonly string[]): { values?: Record<string, unknown> } | undefined;
 }
 
 /** 宿主服务面 best-effort 取用:读抛错（inject 执法）或缺面都归 undefined,不炸执行臂。 */
@@ -166,6 +253,9 @@ export interface PollDeps {
   clearImpl?: (handle: unknown) => void;
   /** 新前缀读取注入面;缺省经 sessionProjections 投影尽力读 */
   readPrefixTokens?: (agent: unknown) => number | undefined;
+  /** 成功上报前落盘稳定窗 ms;缺省 REPORT_SETTLE_MS（常量头注:标记自杀竞态
+   *  的闭窗;沙箱/测试压秒级可注入小值） */
+  reportSettleMs?: number;
   /** 压缩成功横幅仓（票06,src/banner.ts）:ok:true 上报送达即置位,浏览器经
    *  ferrymanBlocked list 信封 banner 布尔拉取;缺省=不置位（纯测试驱动/老接线） */
   banner?: BannerStore;
@@ -209,7 +299,7 @@ function isBusyError(e: unknown): boolean {
  */
 function hookLazyInjection(
   ctx: PluginContext | undefined,
-  lazy: { compaction?: CompactionLike; projections?: SessionProjectionsLike },
+  lazy: { compaction?: CompactionLike; projections?: SessionProjectionsLike; commands?: CommandsLike },
 ): void {
   if (ctx === undefined) return;
   try {
@@ -222,6 +312,13 @@ function hookLazyInjection(
     ctx.inject?.(["sessionProjections"], (scoped) => {
       const p = optionalFace(() => (scoped as PluginContext).sessionProjections);
       if (p !== undefined) lazy.projections = p;
+    });
+  } catch { /* 老宿主无懒注入 API */ }
+  try {
+    // 命令道（首选执行道,头注「执行」节钉点）;真机 web 宿主实证递面
+    ctx.inject?.(["commands"], (scoped) => {
+      const c = optionalFace(() => (scoped as PluginContext).commands);
+      if (c !== undefined) lazy.commands = c;
     });
   } catch { /* 老宿主无懒注入 API */ }
 }
@@ -247,10 +344,34 @@ function resolveCompaction(
   return lazy.compaction;
 }
 
+/** 取命令注册表服务面：三段式同 resolveCompaction（懒注入缓存→直接读→再挂）。 */
+function resolveCommands(
+  ctx: PluginContext | undefined,
+  lazy: { commands?: CommandsLike },
+): CommandsLike | undefined {
+  if (lazy.commands !== undefined) return lazy.commands;
+  if (ctx === undefined) return undefined;
+  const direct = optionalFace(() => ctx.commands);
+  if (direct !== undefined) {
+    lazy.commands = direct;
+    return direct;
+  }
+  try {
+    ctx.inject?.(["commands"], (scoped) => {
+      const c = optionalFace(() => (scoped as PluginContext).commands);
+      if (c !== undefined) lazy.commands = c;
+    });
+  } catch { /* 老宿主无懒注入 API */ }
+  return lazy.commands;
+}
+
 /**
  * 尽力读新前缀（spec:会话投影 contextPressure/tokenUsage 可得则得,不可得省略）。
- * projectedTokens=「下一个请求的前缀价」（压缩影子化立即反应,pressureTokens 做不到
- * ——projection.ts:36-44）,故优先;无投影数→undefined（上报省键）。
+ * 读面=snapshot wire 视图（非 stateOf 原始态——projectedTokens 只在 view 里,
+ * session-projection/src/index.ts:208-216）:projectedTokens=「下一个请求的前缀价」
+ * （压缩影子化立即反应——token-meter/src/projection.ts:36-44「reacting the
+ * moment a compaction shadows a span」;压力口 pressureTokens 对压缩盲,只作
+ * 缺档兜底）;无投影数→undefined（上报省键）。
  */
 function readPrefixFromProjections(
   projections: SessionProjectionsLike | undefined,
@@ -260,12 +381,10 @@ function readPrefixFromProjections(
   return optionalFace(() => {
     const session = (agent as { session?: unknown } | null | undefined)?.session;
     if (session === undefined || session === null) return undefined;
-    const state = projections.stateOf(session, "contextPressure") as {
-      projectedTokens?: unknown;
-      pressureTokens?: unknown;
-    } | null | undefined;
-    if (state === null || typeof state !== "object") return undefined;
-    for (const v of [state.projectedTokens, state.pressureTokens]) {
+    const snap = projections.snapshot(session, ["contextPressure"]);
+    const view = snap?.values?.["contextPressure"];
+    if (view === null || typeof view !== "object") return undefined;
+    for (const v of [(view as Record<string, unknown>)["projectedTokens"], (view as Record<string, unknown>)["pressureTokens"]]) {
       if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
     }
     return undefined;
@@ -287,7 +406,7 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
   let stopped = false;
   let ticking = false;
   const inFlight = new Set<string>();
-  const lazy: { compaction?: CompactionLike; projections?: SessionProjectionsLike } = {};
+  const lazy: { compaction?: CompactionLike; projections?: SessionProjectionsLike; commands?: CommandsLike } = {};
 
   hookLazyInjection(deps.ctx, lazy);
 
@@ -308,13 +427,31 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
     timer = undefined;
   }
 
-  /** 执行单条 compact 指令：复查→compactNow→上报。fire-and-forget,内吞一切异常。 */
+  /** 执行单条 compact 指令：复查→命令道/服务面压缩→上报。fire-and-forget,内吞一切异常。 */
   async function executeCommand(cmd: PollCommand): Promise<void> {
     const sid = cmd.session_id as string;
     const report = async (body: { ok: boolean; reason?: string; prefix_tokens?: number }): Promise<boolean> => {
       const delivered = await reportCompacted(deps.ep, { session_id: sid, source: COMPACT_SOURCE, ...body });
       if (!delivered) logger.warn(`[ferryman-dsh] 压缩结果上报失败（daemon 不可达?）: ${sid}`);
       return delivered;
+    };
+    /** 成功收口共道（两执行道共用）：落盘稳定窗（REPORT_SETTLE_MS 头注:标记
+     *  自杀竞态闭窗——等压缩自身的批落盘写落定再立标记）→尽力读新前缀→上报
+     *  →横幅置位（票06:置位门=上报送达）。 */
+    const reportSuccess = async (entry: RegistryEntry): Promise<void> => {
+      const settleMs = normalizePositive(deps.reportSettleMs) ?? REPORT_SETTLE_MS;
+      await new Promise<void>((r) => setTimeout(r, settleMs));
+      const prefix = deps.readPrefixTokens !== undefined
+        ? deps.readPrefixTokens(entry.agent)
+        : readPrefixFromProjections(lazy.projections, entry.agent);
+      const delivered = await report(prefix === undefined ? { ok: true } : { ok: true, prefix_tokens: prefix });
+      // 票06 横幅触发源（src/banner.ts 头注克隆钉点）：两执行道的成功点同义——
+      // 命令道 execute 解析=handler 已 await compactNow（command-compact/src/
+      // index.ts:67;commands/src/index.ts:424-425 await handler settle）,服务面
+      // compactNow 解析即 compaction/end 已落（compaction/src/index.ts:147 锁语义
+      // + types.ts:104 endSeq）;上报送达=daemon 侧 compressed 标记已立——「直接
+      // 继续」承诺成立才亮;ok:false/上报终败一律不亮
+      if (delivered && deps.banner !== undefined) deps.banner.set(sid);
     };
     try {
       // N1 双重复查：agent 空闲 ∧ 闲置 < TTL 热窗;任一不过 → expired-or-busy 不执行。
@@ -328,23 +465,41 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
       if (inFlight.has(sid)) return; // 同会话压缩在途——上一臂自会上报,不双跑
       inFlight.add(sid);
       try {
+        // ①命令道（首选,头注「执行」节克隆钉点）：宿主 UI /compact 同款入口
+        const commandsFace = resolveCommands(deps.ctx, lazy);
+        const runCommand = commandsFace !== undefined
+          ? commandsFace.execute?.bind(commandsFace) // receiver 铁律:bind 整体调用
+          : undefined;
+        if (typeof runCommand === "function") {
+          // 空附件跳过收件准入（commands/src/index.ts:390 length>0 才走）;signal
+          // 永不 abort=命令跑到底
+          const outcome = await runCommand(entry.agent, "/compact", [], new AbortController().signal);
+          if (outcome !== undefined) {
+            // 命令道终局:成功/错误都是已执行的真结果,不回落服务面
+            const parsed = parseCommandOutcome(outcome);
+            if (parsed.ok) {
+              await reportSuccess(entry);
+            } else if (parsed.reason === "busy") {
+              await report({ ok: false, reason: "busy" });
+            } else {
+              logger.warn(`[ferryman-dsh] 压缩命令失败: ${sid} ${parsed.text}`);
+              await report({ ok: false, reason: "error" });
+            }
+            return;
+          }
+          // undefined=该 agent 视图无 compact 命令（commands/src/index.ts:367-370
+          // 语法/名字未解析）→ 落服务面
+        }
+        // ②服务面（次选）
         const engine = resolveCompaction(deps.ctx, lazy);
         const compactNow = engine?.compactNow?.bind(engine); // receiver 铁律:bind 整体调用
         if (typeof compactNow !== "function") {
-          logger.warn(`[ferryman-dsh] 压缩指令无法执行：宿主无 compaction 服务面: ${sid}`);
-          await report({ ok: false, reason: "error" });
+          logger.warn(`[ferryman-dsh] 压缩指令无法执行：宿主无压缩通道（commands 服务面与 compaction 服务面皆缺）: ${sid}`);
+          await report({ ok: false, reason: "no-compaction-channel" });
           return;
         }
         await compactNow(entry.agent, new AbortController().signal);
-        const prefix = deps.readPrefixTokens !== undefined
-          ? deps.readPrefixTokens(entry.agent)
-          : readPrefixFromProjections(lazy.projections, entry.agent);
-        const delivered = await report(prefix === undefined ? { ok: true } : { ok: true, prefix_tokens: prefix });
-        // 票06 横幅触发源（src/banner.ts 头注克隆钉点）：compactNow 解析即
-        // compaction/end 已落（compaction/src/index.ts:147 锁语义 + types.ts:104
-        // endSeq）;上报送达=daemon 侧 compressed 标记已立——「直接继续」承诺
-        // 成立才亮;ok:false/上报终败一律不亮
-        if (delivered && deps.banner !== undefined) deps.banner.set(sid);
+        await reportSuccess(entry);
       } catch (e) {
         if (isBusyError(e)) {
           await report({ ok: false, reason: "busy" });

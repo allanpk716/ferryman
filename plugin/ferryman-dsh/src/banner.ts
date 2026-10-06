@@ -1,15 +1,19 @@
 // 票06 · 压缩完成横幅——宿主半面状态仓（浏览器横幅的唯一事实源）。
 //
 // 触发源查证（dsh-research 克隆,只读）——「压缩完成」钉在轮询臂自己的成功点
-// （compactNow 解析 + /dsh/compacted 上报送达）,不观察 session/event 流：
-//   - compactNow(agent, signal) 成功解析即压缩完成：契约钉点
-//     packages/compaction/compaction/src/index.ts:147（append standalone
-//     `compaction/start` … 「That durable marker is the compaction lock until
-//     one `compaction/end` attempt」——compaction/start 是锁标记,直到一次
-//     compaction/end 尝试）+ :162-166（abstract compactNow 签名）;成功回值
-//     CompactionResult（packages/compaction/compaction/src/types.ts:94）必带
-//     endSeq（:104「The seq of the appended `compaction/end` event」）——解析时
-//     compaction/end 已落事件流,其 error 字段缺省=成功收尾（types.ts:69-72）。
+// （执行道成功解析 + /dsh/compacted 上报送达）,不观察 session/event 流：
+//   - 两执行道成功点同义（compact.ts 头注「执行」节钉点）：
+//     · 命令道（首选,2026-10-07 返工）：commands.execute('/compact') 解析即
+//       压缩收口——command-compact/src/index.ts:67 handler 直 await compactNow,
+//       commands/src/index.ts:424-425 execute await handler settle;
+//     · 服务面（次选）：compactNow(agent, signal) 成功解析：契约钉点
+//       packages/compaction/compaction/src/index.ts:147（append standalone
+//       `compaction/start` … 「That durable marker is the compaction lock until
+//       one `compaction/end` attempt」——compaction/start 是锁标记,直到一次
+//       compaction/end 尝试）+ :162-166（abstract compactNow 签名）;成功回值
+//       CompactionResult（packages/compaction/compaction/src/types.ts:94）必带
+//       endSeq（:104「The seq of the appended `compaction/end` event」）——解析时
+//       compaction/end 已落事件流,其 error 字段缺省=成功收尾（types.ts:69-72）。
 //   - 为什么不走 session/event 观察位：compaction 三事件 log-only、不进
 //     surface（types.ts:3-4「…without entering the surface, so they are not
 //     surface events」;surface 侧是紧随其后的替换 user/message 事件）,以事件流

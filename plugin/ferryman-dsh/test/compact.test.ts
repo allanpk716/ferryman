@@ -108,9 +108,10 @@ function dispatchRoute(mock: MockDaemon, extra: Record<string, unknown> = {}): {
 }
 
 /** 起循环并等立即首轮落定（请求落地≠轮次落定:再让 30ms 让应答处理完,
- *  否则手动 tick 撞单飞 guard 会被静默吞掉） */
+ *  否则手动 tick 撞单飞 guard 会被静默吞掉）。成功上报前的落盘稳定窗
+ *  （REPORT_SETTLE_MS,生产 2s）在测试压到 5ms——除专测竞态闭窗的用例。 */
 async function startSettled(t: { after: (fn: () => void) => void }, mock: MockDaemon, deps: Omit<PollDeps, "ep"> & { ep?: PollDeps["ep"] }): Promise<PollLoopHandle> {
-  const handle = startPollLoop({ ep: epOf(mock), ...deps } as PollDeps);
+  const handle = startPollLoop({ ep: epOf(mock), reportSettleMs: 5, ...deps } as PollDeps);
   t.after(() => handle.stop());
   await waitUntil(() => mock.requestsFor("/dsh/poll").length >= 1);
   await new Promise((r) => setTimeout(r, 30));
@@ -311,19 +312,19 @@ test("成功路径：compactNow 带 receiver+agent+AbortSignal;上报 {ok:true, 
   });
 });
 
-test("前缀缺省读：sessionProjections.stateOf(session,'contextPressure') 尽力取 projectedTokens;抛错/缺数省键", async (t) => {
+test("前缀缺省读：snapshot wire 视图取 contextPressure.projectedTokens;抛错/缺数省键", async (t) => {
   const mock = await mockFor(t);
   const { flag } = dispatchRoute(mock);
   const registry = new SessionRegistry();
   const session = { header: { id: SID, cwd: "C:/proj" } };
   registry.touch(SID, "C:/proj", { session });
-  const stateOfCalls: Array<{ session: unknown; key: string }> = [];
-  let stateOfImpl: (session: unknown, key: string) => unknown = (_s, key) => {
-    stateOfCalls.push({ session: _s, key });
-    return { projectedTokens: 777 };
+  const snapCalls: Array<{ session: unknown; keys: unknown }> = [];
+  let snapImpl: (session: unknown, keys: readonly string[]) => unknown = (s, keys) => {
+    snapCalls.push({ session: s, keys });
+    return { asOfSeq: 9, values: { contextPressure: { projectedTokens: 777 } } };
   };
   const projections = {
-    stateOf: (session: unknown, key: string): unknown => stateOfImpl(session, key),
+    snapshot: (session: unknown, keys?: readonly string[]): unknown => snapImpl(session, keys ?? []),
   };
   const logger = makeLogger();
   const { engine } = makeEngine();
@@ -334,17 +335,18 @@ test("前缀缺省读：sessionProjections.stateOf(session,'contextPressure') �
   flag.on = true;
   await handle.tick(); // 投影给 projectedTokens
   await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
-  assert.deepEqual(stateOfCalls[0], { session, key: "contextPressure" }, "读会话投影 contextPressure");
+  assert.deepEqual(snapCalls[0], { session, keys: ["contextPressure"] },
+    "读 snapshot wire 视图 contextPressure（stateOf 原始态无 projectedTokens——2026-10-07 E2E 实锚返工钉点）");
   assert.equal((mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>)["prefix_tokens"], 777);
 
-  stateOfImpl = () => { throw new Error("projection not ready"); };
+  snapImpl = () => { throw new Error("projection not ready"); };
   await handle.tick(); // 投影抛错 → 省键,ok 照报
   await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 2);
   const body2 = mock.requestsFor("/dsh/compacted")[1]!.body as Record<string, unknown>;
   assert.equal(body2["ok"], true);
   assert.equal("prefix_tokens" in body2, false, "不可得省略键（spec 钉点）");
 
-  stateOfImpl = () => ({ surfaceTokens: 5 }); // 无 projected/pressure 数 → 省键
+  snapImpl = () => ({ asOfSeq: 9, values: { contextPressure: { surfaceTokens: 5 } } }); // 无 projected/pressure 数 → 省键
   await handle.tick();
   await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 3);
   assert.equal("prefix_tokens" in (mock.requestsFor("/dsh/compacted")[2]!.body as Record<string, unknown>), false);
@@ -393,14 +395,116 @@ test("非 busy 失败：抛普通错误 → 上报 {ok:false, reason:'error'} + 
   assert.ok(logger.warns[0]!.includes("summary backend boom"), "失败详情进 logger（用户可见通道）");
 });
 
-test("无 compaction 服务面：上报 {ok:false, reason:'error'} + warn 指因,不抛", async (t) => {
+test("无压缩通道：commands 与 compaction 面皆缺 → 上报 {ok:false, reason:'no-compaction-channel'} + warn 指因,不抛", async (t) => {
   const mock = await mockFor(t);
   const { flag } = dispatchRoute(mock);
   const registry = new SessionRegistry();
   registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
   const logger = makeLogger();
   const handle = await startSettled(t, mock, {
-    logger, registry, ctx: ctxWithServices(logger, new Map()), // 空 service 面
+    logger, registry, ctx: ctxWithServices(logger, new Map()), // 空 service 面（两道皆缺）
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1 && logger.warns.length >= 1);
+  flag.on = false;
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["ok"], false);
+  assert.equal(body["reason"], "no-compaction-channel", "通道缺席如实上报（返工票钉点,非笼统 error）");
+  assert.ok(logger.warns.some((w) => w.includes("压缩通道")), "warn 指因（两服务面皆缺）");
+});
+
+// ---- ⑤b 命令道（首选执行道,2026-10-07 返工;克隆钉点见 src/compact.ts 头注） ----
+
+/** 命令注册表替身：抓 receiver/agent/line/attachments/signal,可编程回话 */
+function makeCommands(impl?: (agent: unknown, line: string) => Promise<unknown>) {
+  const rec: {
+    calls: Array<{ receiver: unknown; agent: unknown; line: string; attachments: unknown; signal: unknown }>;
+    impl: (agent: unknown, line: string) => Promise<unknown>;
+  } = {
+    calls: [],
+    // 缺省回话=真 CommandExecution 成功形（commands/src/types.ts:49-54 + command-compact :69-73）
+    impl: impl ?? (async () => ({ commandId: "cmd-x1", result: { kind: "success", text: "Compacted 3 history items (~1234 tokens).", sourceEventSeq: 42 } })),
+  };
+  const commands = {
+    execute(this: unknown, agent: unknown, line: string, attachments: readonly unknown[], signal: AbortSignal): Promise<unknown> {
+      rec.calls.push({ receiver: this, agent, line, attachments, signal });
+      return rec.impl(agent, line);
+    },
+  };
+  return { commands, rec };
+}
+
+test("命令道成功：execute 带 receiver+agent+'/compact'+空附件+AbortSignal;上报 ok:true+prefix;横幅置位", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
+  registry.touch(SID, "C:/proj", agent);
+  const { commands, rec } = makeCommands();
+  const { engine: engineUnused, rec: engineRec } = makeEngine();
+  const banner = new BannerStore();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, banner,
+    ctx: ctxWithServices(logger, new Map([["commands", commands], ["compaction", engineUnused]])),
+    readPrefixTokens: () => 2345,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
+  flag.on = false;
+  assert.equal(rec.calls.length, 1);
+  const call = rec.calls[0]!;
+  assert.equal(call.receiver, commands, "receiver=commands 服务本体（宿主方法带 receiver 铁律）");
+  assert.equal(call.agent, agent, "execute 收注册表存的 agent 活引用（view(agent) 按对象身份解析作用域层）");
+  assert.equal(call.line, "/compact", "固定命令行 /compact");
+  assert.deepEqual(call.attachments, [], "空附件（commands/src/index.ts:390 length>0 才走收件准入）");
+  assert.ok(call.signal instanceof AbortSignal, "execute(agent, line, attachments, signal) 克隆签名第四参");
+  assert.deepEqual(mock.requestsFor("/dsh/compacted")[0]!.body, {
+    session_id: SID, ok: true, prefix_tokens: 2345, source: COMPACT_SOURCE,
+  });
+  assert.equal(banner.has(SID), true, "命令道成功+上报送达=横幅置位（票06 两道同义成功点）");
+  assert.equal(engineRec.calls.length, 0, "命令道终局不回落服务面");
+});
+
+test("命令道 busy：error 文案命中 busy 分支（active compaction/not idle）→ {ok:false, reason:'busy'},零 warn", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  // command-compact/src/index.ts:26-31 busy 分支文案逐字
+  const { commands } = makeCommands(async () => ({
+    commandId: "cmd-x2",
+    result: { kind: "error", text: "Compaction is unavailable because this process has an active compaction, or the agent is not idle." },
+  }));
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
+  flag.on = false;
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["ok"], false);
+  assert.equal(body["reason"], "busy");
+  assert.equal(logger.errors.length, 0);
+  assert.equal(logger.warns.length, 0, "busy 是预期态:不走 warn/error 通道（服务面同款语义）");
+});
+
+test("命令道失败：error 文案（summary 失败）→ {ok:false, reason:'error'} + warn 带文案", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { commands } = makeCommands(async () => ({
+    commandId: "cmd-x3",
+    result: { kind: "error", text: "Compaction could not produce a useful summary. The attempt is recorded in the session log." },
+  }));
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["commands", commands]])),
   });
   flag.on = true;
   await handle.tick();
@@ -409,7 +513,104 @@ test("无 compaction 服务面：上报 {ok:false, reason:'error'} + warn 指因
   const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
   assert.equal(body["ok"], false);
   assert.equal(body["reason"], "error");
-  assert.ok(logger.warns.some((w) => w.includes("compaction")), "warn 指因（宿主无 compaction 服务面）");
+  assert.ok(logger.warns[0]!.includes("could not produce a useful summary"), "命令结果文案进 logger（用户可见通道）");
+});
+
+test("命令道缺 /compact（execute 回 undefined）或面无 execute 法 → 回落 compaction 服务面直调", async (t) => {
+  const mock = await mockFor(t);
+  const registry = new SessionRegistry();
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
+  registry.touch(SID, "C:/proj", agent);
+  const { commands } = makeCommands(async () => undefined); // 命令未解析（commands/src/index.ts:367-370）
+  const { engine, rec } = makeEngine();
+  const logger = makeLogger();
+  const flag = { on: false };
+  mock.route("/dsh/poll", () => ({
+    status: 200,
+    json: flag.on ? { commands: [CMD] } : { commands: [] },
+  }));
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["commands", commands], ["compaction", engine]])),
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1 && rec.calls.length >= 1);
+  flag.on = false;
+  assert.equal(rec.calls.length, 1, "undefined=该 agent 视图无 compact 命令 → 服务面接手");
+  assert.equal((mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>)["ok"], true);
+
+  // 面 2：commands 面在但缺 execute 法（鸭子面残缺）——同回落服务面
+  const handle2 = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["commands", { registerOnly: true }], ["compaction", engine]])),
+  });
+  flag.on = true;
+  await handle2.tick();
+  await waitUntil(() => rec.calls.length >= 2);
+  flag.on = false;
+  assert.equal(rec.calls.length, 2, "无 execute 法的 commands 面=通道残缺 → 服务面接手");
+});
+
+test("命令道优先：两面皆在 → 只走 execute,compactNow 不被调", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { commands, rec } = makeCommands();
+  const { engine, rec: engineRec } = makeEngine();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["commands", commands], ["compaction", engine]])),
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
+  flag.on = false;
+  assert.equal(rec.calls.length, 1, "命令道先行");
+  assert.equal(engineRec.calls.length, 0, "服务面不被触碰（命令道已给出真结果）");
+});
+
+test("落盘稳定窗：成功上报晚于压缩收口 ≥ settle 窗（标记自杀竞态闭窗,REPORT_SETTLE_MS 头注）", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { commands, rec } = makeCommands();
+  const logger = makeLogger();
+  // 真生产缺省 2000ms 在此压 120ms——量的是「压缩收口→上报」间隔 ≥ 窗,不是绝对时延
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+    reportSettleMs: 120,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => rec.calls.length >= 1, 2000);
+  const compactDoneAt = Date.now();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 4000);
+  flag.on = false;
+  const gap = Date.now() - compactDoneAt;
+  assert.ok(gap >= 100, `上报须晚于压缩收口 ≥ settle 窗（实测 ${gap}ms）——dsh 批落盘（200ms 批窗）的
+    mtime 晚于上报会令 daemon 守望 Touch 顶新 LastWrite、按 LastWrite>标记TS 判死自家标记（E2E 实锚
+    2026-10-07:事件 42.598→上报 42.605→drain mtime 42.798→标记自杀,gate 放行链断）`);
+});
+
+test("命令道抛错（handler 非预期异常被 execute rethrow）→ {ok:false, reason:'error'} + warn", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { commands } = makeCommands(async () => { throw new Error("gateway boom"); });
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1 && logger.warns.length >= 1);
+  flag.on = false;
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["ok"], false);
+  assert.equal(body["reason"], "error");
+  assert.ok(logger.warns[0]!.includes("gateway boom"));
 });
 
 test("在途防双跑：同会话两指令一轮 → compactNow 恰一次、上报恰一次", async (t) => {

@@ -9,10 +9,10 @@
 #      与 profiles/web/node_modules/ferryman-dsh，web 实例从前者装载）。
 #   3. config 调参：start.sh 每次重写沙箱 config.toml，本脚本在其后追加
 #      [heartbeat].ttl_s（TTL 基准——不可得则整条压缩链静默不触发）＋
-#      [dsh_compact] 秒级参数（触发线 0.5×TTL／min_peak 压到 4000——E2E 灌
-#      几千 token 即可触发，不硬灌默认的 2 万／poll_hint_s=2——插件侧下限
-#      10s 托底＝指令送达周期 10s／compressed 标记窗 3×TTL——盖过 block_s=90
-#      留出放行断言窗口）。
+#      [dsh_compact] 秒级参数（触发线 0.5×TTL／min_peak=12000——须卡在 glm-5.3
+#      提示地板 ~9.4K 与可达峰值 ~13.4K 之间,4000 会把 gate 放行比较做成结构性
+#      不可达／poll_hint_s=2——插件侧下限 10s 托底＝指令送达周期 10s／compressed
+#      标记窗 3×TTL——盖过 block_s=90 留出放行断言窗口）。
 #   4. 重启 daemon（吃新 config；不清数据目录——token/台账延续）＋重启 web
 #      实例（吃新插件；重写 web.log 便于取登录 token）＋健康检查。
 #
@@ -84,7 +84,12 @@ echo "== [suite/setup 3/6] config 调参（追加 [heartbeat]+[dsh_compact]） =
 # （不会叠出重复节）。阈值面（summarize 45/block 90）沿用栈缺省不动。
 E2E_SUITE_TTL_S="${E2E_SUITE_TTL_S:-60}"
 E2E_SUITE_TRIGGER_RATIO="${E2E_SUITE_TRIGGER_RATIO:-0.5}"
-E2E_SUITE_MIN_PEAK="${E2E_SUITE_MIN_PEAK:-4000}"
+# min_peak 必须卡在 glm-5.3 的提示地板（system+tools ≈ 9.4K,首请求 cache_read
+# 实测 9344）与两轮灌文可达峰值（≈13.4K）之间:4000 时 gate 的 compressed 放行比
+# 较（prefix < min_peak）永远差着模型地板——压缩到极致也压不进 4000,断言④结构
+# 性不可达（2026-10-07 实锚:真压缩 4534 tokens 后 projected 仍 ≈8891）。12000:
+# 触发侧灌 1-2 轮即过线,放行侧压缩后 ≈8.9-9.6K 余 2.4K+。
+E2E_SUITE_MIN_PEAK="${E2E_SUITE_MIN_PEAK:-12000}"
 E2E_SUITE_COMMAND_TTL_RATIO="${E2E_SUITE_COMMAND_TTL_RATIO:-0.5}"
 E2E_SUITE_POLL_HINT_S="${E2E_SUITE_POLL_HINT_S:-2}"
 E2E_SUITE_MARK_RATIO="${E2E_SUITE_MARK_RATIO:-3.0}"
@@ -95,8 +100,9 @@ cat >> "$(sandbox_config)" <<EOF
 [heartbeat]
 ttl_s = $E2E_SUITE_TTL_S
 
-# 秒级压缩参数：触发线 0.5×TTL＝${E2E_SUITE_TRIGGER_RATIO}×${E2E_SUITE_TTL_S}s；min_peak 压到
-# ${E2E_SUITE_MIN_PEAK}（默认 20000 灌不起）；指令有效期 0.5×TTL（盖过 10s 轮询周期）；
+# 秒级压缩参数：触发线 0.5×TTL＝${E2E_SUITE_TRIGGER_RATIO}×${E2E_SUITE_TTL_S}s；min_peak＝
+# ${E2E_SUITE_MIN_PEAK}（卡 glm-5.3 提示地板 ~9.4K 与可达峰值 ~13.4K 之间——
+# gate 放行比较 prefix<min_peak 要压缩后能真过线）;指令有效期 0.5×TTL（盖过 10s 轮询周期）；
 # poll_hint_s=2（插件下限 10s 托底）；compressed 标记窗 ${E2E_SUITE_MARK_RATIO}×TTL＝$(awk "BEGIN{print $E2E_SUITE_MARK_RATIO*$E2E_SUITE_TTL_S}")s
 # （须 > block_s=90，给 gate 放行断言留窗口）。
 [dsh_compact]
