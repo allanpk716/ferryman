@@ -425,6 +425,51 @@ func TestSettingsRestartLastHealthyStableAcrossWrites(t *testing.T) {
 	}
 }
 
+// TestSettingsRestartPrecheckRejectsDataDirChange 预检④（评审高·返工）：
+// PUT server.data_dir 改成别的目录（Load 合法落盘、端口不动）→ POST restart
+// 400，文案点名「数据目录…暂不支持随安全重启生效/迁移」；帮手不拉起、hold
+// 不进；审计 rejected。
+func TestSettingsRestartPrecheckRejectsDataDirChange(t *testing.T) {
+	e, _ := srstNewEnv(t)
+	seams := srstStubSeams(t, nil)
+
+	other := filepath.ToSlash(filepath.Join(t.TempDir(), "other-data"))
+	code, raw := swPut(t, e, "server", map[string]any{"port": 25700, "data_dir": other})
+	if code != http.StatusOK {
+		t.Fatalf("PUT /settings/server = %d %q, want 200（data_dir 改动落盘合法）", code, raw)
+	}
+
+	code, raw = srstPost(t, e, "")
+	if code != http.StatusBadRequest {
+		t.Fatalf("data_dir 改动 POST = %d %q, want 400", code, raw)
+	}
+	msg := string(raw)
+	if !strings.Contains(msg, "数据目录") ||
+		!strings.Contains(msg, "暂不支持随安全重启生效") ||
+		!strings.Contains(msg, "迁移") {
+		t.Fatalf("400 文案应点名数据目录迁移暂不支持: %q", msg)
+	}
+	lines := swAuditLines(t, e)
+	found := false
+	for _, ln := range lines {
+		if ln["section"] == "restart" && ln["outcome"] == "rejected" {
+			found = true
+			if errStr, _ := ln["error"].(string); !strings.Contains(errStr, "数据目录") {
+				t.Fatalf("审计 error 应含 数据目录: %v", ln["error"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("审计行缺 restart/rejected: %v", lines)
+	}
+	if _, _, calls := seams.spawn(); calls != 0 {
+		t.Fatal("预检拒绝不得拉起帮手")
+	}
+	if seams.held() {
+		t.Fatal("预检拒绝不得进 hold")
+	}
+}
+
 // TestSettingsRestartSerializesWithWritesAndHoldsLock 验收4（F7 主面）：hold 缝
 // 置位后（=响应已出网、编排持锁进终局），节级写 200ms 内不得完成；release 后
 // 完成且回话正常（200）。
@@ -560,7 +605,7 @@ func TestProviderSwitchTakesSettingsWriteMu(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		req := httptest.NewRequest(http.MethodPost, "/provider_switch", strings.NewReader(`{"name":"b"}`))
-		req.Header.Set("Authorization", "Bearer " + e.token)
+		req.Header.Set("Authorization", "Bearer "+e.token)
 		req.RemoteAddr = "127.0.0.1:5555"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -707,7 +752,7 @@ func TestSettingsRestartGuards(t *testing.T) {
 	// 替身（非 *Daemon）：过守门仍 404。
 	hSt := makeHandler(&stopDaemon{}, e.token, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/settings/restart", strings.NewReader(""))
-	req.Header.Set("Authorization", "Bearer " + e.token)
+	req.Header.Set("Authorization", "Bearer "+e.token)
 	req.RemoteAddr = "127.0.0.1:5555"
 	rSt := httptest.NewRecorder()
 	hSt.ServeHTTP(rSt, req)

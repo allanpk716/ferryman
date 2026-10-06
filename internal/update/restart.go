@@ -15,11 +15,14 @@ package update
 //   - Launch（缺省=sup.launch(StartCmd)，不经 launchTx——verifyLaunch 探的
 //     是 FromPort，换端口场景必误报）→ 轮询 Probe(ToPort) 至 PollTimeout
 //     （缺省 90s/1s）→ 活=Success；
-//   - 死且有回滚源（RollbackPort≠0 且 LastHealthy 非空）→ Restore（缺省=
+//   - 死且有回滚源（RollbackPort≠0 且 LastHealthy 非空）→ 先 best-effort
+//     收敛首次拉起的失败进程（StopFailedCandidate——防失败进程与回滚守护
+//     并存成双守护，评审中·返工）→ Restore（缺省=
 //     copyFile(LastHealthy, ConfigPath+".restart-restore")+moveFileReplace
 //     原子替换）→ Launch → 轮询 Probe(RollbackPort) → 活=Success+RolledBack
 //     （F2 定案 A：还原「上次健康运行配置」=守护启动成功点盖章的
-//     last-healthy.toml，daemon 侧 stampLastHealthyConfig）；
+//     last-healthy.toml，daemon 侧 stampLastHealthyConfig）；收敛不了时回滚
+//     照做，成功 Detail 与告警正文附未收敛警示；
 //   - 死/无回滚源/Restore 失败 → Alert("Ferryman 安全重启失败", 人工指引)+
 //     Result{Success:false}。每阶段 logf 一行。
 //
@@ -43,14 +46,20 @@ import (
 // 面触碰（StopOld/Launch/Probe/Restore/Alert/Logf 缺省即真实现）。
 type RestartOpts struct {
 	DataDir, ConfigPath, StartCmd, LastHealthy, TargetExe string
-	FromPort, ToPort, RollbackPort int // RollbackPort=0 或 LastHealthy 空 = 无回滚源
-	GraceBeforeStop, PollTimeout, PollInterval time.Duration // 缺省 1s / 90s / 1s
-	StopOld func() error        // 缺省: NewSupervisor(Config{DataDir,Port:FromPort,StartCmd,Logf}) 的 sup.stopDaemon(TargetExe,"重启停旧")
-	Launch  func() error        // 缺省: sup.launch(StartCmd)（不经 launchTx——verifyLaunch 探 FromPort,换端口场景会误报）
-	Probe   func(port int) bool // 缺省: GET http://127.0.0.1:port/stats 任意 HTTP 应答(含 401)=活,3s 超时
-	Restore func() error        // 缺省: copyFile(LastHealthy, ConfigPath+".restart-restore") + moveFileReplace(tmp, ConfigPath)
-	Alert   func(title, msg string) // 缺省 nil=只 Logf
-	Logf    func(string, ...any)    // 缺省: 追加 <DataDir>/restart.log
+	FromPort, ToPort, RollbackPort                        int                 // RollbackPort=0 或 LastHealthy 空 = 无回滚源
+	GraceBeforeStop, PollTimeout, PollInterval            time.Duration       // 缺省 1s / 90s / 1s
+	StopOld                                               func() error        // 缺省: NewSupervisor(Config{DataDir,Port:FromPort,StartCmd,Logf}) 的 sup.stopDaemon(TargetExe,"重启停旧")
+	Launch                                                func() error        // 缺省: sup.launch(StartCmd)（不经 launchTx——verifyLaunch 探 FromPort,换端口场景会误报）
+	Probe                                                 func(port int) bool // 缺省: GET http://127.0.0.1:port/stats 任意 HTTP 应答(含 401)=活,3s 超时
+	Restore                                               func() error        // 缺省: copyFile(LastHealthy, ConfigPath+".restart-restore") + moveFileReplace(tmp, ConfigPath)
+	// StopFailedCandidate 回滚前收敛首次拉起的失败进程（评审中·返工）：
+	// 缺省读 <DataDir>/daemon.pid——活且映像==TargetExe → kill+有界等待退场
+	//（30s）；活但映像对不上 → 只记警示一行（非本程序候选，不动它）；不在/
+	// 读不出 → 无事。返回 nil=已收敛/无事；非 nil=活着但收敛不了（回滚照做，
+	// 成功 Detail 与告警正文附「可能有未收敛的失败进程」警示）。
+	StopFailedCandidate func() error
+	Alert               func(title, msg string) // 缺省 nil=只 Logf
+	Logf                func(string, ...any)    // 缺省: 追加 <DataDir>/restart.log
 }
 
 // RestartResult 帮手结论（CLI stdout 与告警正文的单源）。
@@ -104,6 +113,9 @@ func RunRestart(o RestartOpts) RestartResult {
 			return moveFileReplace(tmp, o.ConfigPath)
 		}
 	}
+	if o.StopFailedCandidate == nil {
+		o.StopFailedCandidate = func() error { return stopFailedCandidateDefault(sup, o.TargetExe, o.Logf) }
+	}
 
 	o.Logf("安全重启: 停旧口 %d → 新口 %d（回滚口 %d，回滚源 %q）", o.FromPort, o.ToPort, o.RollbackPort, o.LastHealthy)
 	time.Sleep(o.GraceBeforeStop) // 端点响应出网余量
@@ -127,6 +139,14 @@ func RunRestart(o RestartOpts) RestartResult {
 			fmt.Errorf("新守护于端口 %d 无应答（等满 %v），且无有效回滚源", o.ToPort, o.PollTimeout),
 			"无有效回滚源")
 	}
+	// 收敛首次拉起的失败进程（评审中·返工）：新口无应答只说明「不健康」，
+	// 进程可能仍活（启动卡死/慢）——不收敛直接回滚会与回滚守护并存成双
+	// 守护。best-effort：收敛不了回滚照做，结果与告警附警示。
+	unconverged := ""
+	if err := o.StopFailedCandidate(); err != nil {
+		o.Logf("失败进程未收敛（回滚照做）: %v", err)
+		unconverged = "；可能有未收敛的失败进程，如遇双守护请手动检查"
+	}
 	o.Logf("健康失败——还原上次健康配置 %s 后重拉", o.LastHealthy)
 	if err := o.Restore(); err != nil {
 		o.Logf("还原上次健康配置失败: %v", err)
@@ -139,11 +159,43 @@ func RunRestart(o RestartOpts) RestartResult {
 	if restartProbeUntil(o, o.RollbackPort) {
 		o.Logf("回滚守护已在端口 %d 应答——重启以回滚形态成功", o.RollbackPort)
 		return RestartResult{Success: true, RolledBack: true,
-			Detail: fmt.Sprintf("新守护（端口 %d）未活，已还原上次健康配置并在端口 %d 恢复服务", o.ToPort, o.RollbackPort)}
+			Detail: fmt.Sprintf("新守护（端口 %d）未活，已还原上次健康配置并在端口 %d 恢复服务%s",
+				o.ToPort, o.RollbackPort, unconverged)}
 	}
 	return o.failRestart(fmt.Sprintf("已还原上次健康配置，但回滚口 %d 仍无应答", o.RollbackPort),
 		fmt.Errorf("回滚后端口 %d 于 %v 内无应答", o.RollbackPort, o.PollTimeout),
-		"已还原上次健康配置")
+		"已还原上次健康配置"+unconverged)
+}
+
+// stopFailedCandidateDefault 收敛缺省实现（评审中·返工）：读 <DataDir>/
+// daemon.pid（随 sup.cfg.DataDir），活且映像==换装目标 → kill+有界等待退场
+// （30s，waitProcessExit 硬门同款）；活但映像对不上 → 只记警示一行（不是
+// 本程序的失败候选，不动别人的进程）；不在/读不出 → 无事（无身份可跟踪，
+// 不制造恐慌——多半是拉起秒退的形态）。返回非 nil=活着但收敛不了。
+func stopFailedCandidateDefault(sup *Supervisor, targetExe string, logf func(string, ...any)) error {
+	pid, err := sup.readDaemonPID()
+	if err != nil {
+		return nil
+	}
+	if !sup.procAlive(pid) {
+		return nil
+	}
+	img, ierr := sup.procImage(pid)
+	if ierr != nil {
+		return fmt.Errorf("失败候选 PID %d 活着但映像不可查: %w", pid, ierr)
+	}
+	if !samePath(img, targetExe) {
+		logf("警示: PID %d（映像 %s）与换装目标 %q 不匹配——非本程序失败候选，不动它", pid, img, targetExe)
+		return nil
+	}
+	if err := sup.killPID(pid); err != nil {
+		return fmt.Errorf("kill 失败候选 PID %d 失败: %w", pid, err)
+	}
+	if !sup.waitProcessExit(pid, 30*time.Second) {
+		return fmt.Errorf("失败候选 PID %d kill 后 30s 内未退场", pid)
+	}
+	logf("失败候选 PID %d 已收敛（kill+退场确认）", pid)
+	return nil
 }
 
 // failRestart 终局失败收口：完整人话告警落 Logf +（缝在位时）Alert 推送；

@@ -168,6 +168,93 @@ func TestRunRestartNoRollbackAlerts(t *testing.T) {
 	}
 }
 
+// TestRunRestartStopsFailedCandidateBeforeRestore 评审中·返工（可跟踪路径）：
+// 回滚前先收敛首次拉起的失败进程——StopFailedCandidate 被调且发生在 Restore
+// 之前（收敛时 config.toml 仍是坏内容）；收敛干净则成功 Detail 不附警示。
+func TestRunRestartStopsFailedCandidateBeforeRestore(t *testing.T) {
+	tmp := t.TempDir()
+	o := rrOpts(tmp)
+	bad := []byte("= [broken config\n")
+	good := []byte("[server]\nport = 25700\n")
+	if err := os.WriteFile(o.ConfigPath, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(o.LastHealthy, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o.StopOld = func() error { return nil }
+	o.Launch = func() error { return nil }
+	o.Probe = func(port int) bool {
+		if port == o.ToPort {
+			return false
+		}
+		return true // 回滚口即活
+	}
+	convergedBeforeRestore := false
+	o.StopFailedCandidate = func() error {
+		raw, rerr := os.ReadFile(o.ConfigPath)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		convergedBeforeRestore = bytes.Equal(raw, bad) // 收敛时还原尚未发生
+		return nil
+	}
+
+	res := RunRestart(o)
+	if !res.Success || !res.RolledBack {
+		t.Fatalf("Result = %+v, want Success+RolledBack", res)
+	}
+	if !convergedBeforeRestore {
+		t.Fatal("StopFailedCandidate 未在 Restore 之前被调（或调用时 config 已被还原）")
+	}
+	if bytes.Contains([]byte(res.Detail), []byte("未收敛")) {
+		t.Fatalf("收敛干净的成功 Detail 不应附警示: %q", res.Detail)
+	}
+}
+
+// TestRunRestartUntrackableCandidateStillRollsBack 评审中·返工（不可跟踪
+// 路径）：收敛缝报错（活着但不可跟踪形态）→ 不 panic、不阻断回滚——仍
+// Success+RolledBack、config 照常还原，成功 Detail 附「未收敛的失败进程」
+// 警示。
+func TestRunRestartUntrackableCandidateStillRollsBack(t *testing.T) {
+	tmp := t.TempDir()
+	o := rrOpts(tmp)
+	bad := []byte("= [broken config\n")
+	good := []byte("[server]\nport = 25700\n")
+	if err := os.WriteFile(o.ConfigPath, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(o.LastHealthy, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o.StopOld = func() error { return nil }
+	o.Launch = func() error { return nil }
+	o.Probe = func(port int) bool {
+		if port == o.ToPort {
+			return false
+		}
+		return true
+	}
+	o.StopFailedCandidate = func() error {
+		return errors.New("失败候选 PID 4242 活着但映像不可查")
+	}
+
+	res := RunRestart(o)
+	if !res.Success || !res.RolledBack {
+		t.Fatalf("Result = %+v, want 不可跟踪不阻断回滚（Success+RolledBack）", res)
+	}
+	got, err := os.ReadFile(o.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, good) {
+		t.Fatal("不可跟踪路径 config 仍须还原为 last-healthy 字节")
+	}
+	if !bytes.Contains([]byte(res.Detail), []byte("未收敛的失败进程")) {
+		t.Fatalf("成功 Detail 应附未收敛警示: %q", res.Detail)
+	}
+}
+
 // TestRunRestartStopOldFailSkipsLaunch 验收7b：StopOld 失败 → Launch 缝未被
 // 调、Probe 未被调、配置字节未动；Result 如实带停旧错误。
 func TestRunRestartStopOldFailSkipsLaunch(t *testing.T) {

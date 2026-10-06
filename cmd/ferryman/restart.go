@@ -94,13 +94,13 @@ func cmdRestart(args []string, w io.Writer) int {
 	}
 
 	res := update.RunRestart(update.RestartOpts{
-		DataDir:     dataDir,
-		ConfigPath:  config.ResolveConfigPath(""),
-		StartCmd:    startCmd,
-		LastHealthy: lastHealthy,
-		TargetExe:   targetExe,
-		FromPort:    fromPort,
-		ToPort:      toPort,
+		DataDir:      dataDir,
+		ConfigPath:   config.ResolveConfigPath(""),
+		StartCmd:     startCmd,
+		LastHealthy:  lastHealthy,
+		TargetExe:    targetExe,
+		FromPort:     fromPort,
+		ToPort:       toPort,
 		RollbackPort: rollbackPort,
 		Alert: func(title, msg string) {
 			notify.NotifyAlert(title, msg, cfg) // 旁路尽力而为（NotifyAlert 内已护）

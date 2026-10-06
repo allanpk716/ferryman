@@ -20,10 +20,13 @@ package daemon
 //     缺省拉起缝带递归熔断：测试二进制（*.test/.test.exe）内禁真拉帮手
 //     （2026-10-06 闪窗事故防线，见缝注释）。
 //
-// 预检三连（顺序钉死）：
+// 预检四连（顺序钉死）：
 //   ① 升级事务进行中（update.lock 被活监督者持有——serve.go 让路判定同源）
 //     → 拒：restart 与换装互斥，升级窗口内不重启；
 //   ② 盘上 config 干跑 Load（重启后守护按它启动——现在就拒好过起来再死）；
+//   ④ 数据目录身份比对（Load 成功后即可比）：盘上 [server].data_dir 与运行
+//     中守护不一致 → 拒——真迁移要搬 token/pid/handoffs/台账一整套，超出
+//     本票（评审高·返工裁定，详见预检处注释）；
 //   ③ 端口改动须可绑：盘上 [server].port ≠ 守护内存口时 net.Listen 探测新口，
 //     绑不上 → 拒（文案报端口号与原因；TOCTOU：探测与帮手真绑之间的竞窗由
 //     F9 裁定兜底——帮手 Launch 后 Probe 轮询抓得住，按健康失败走回滚）。
@@ -47,6 +50,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -169,7 +173,7 @@ func doSettingsRestart(dl DaemonLike, token string, w http.ResponseWriter, r *ht
 
 // settingsRestartLocked 重启编排主体（F7：调用方已持 settingsWriteMu，本函数
 // 不取锁——预检→静默门→审计→拉帮手）。所有 400/500 路径：审计 rejected
-//（带 error）后回话；票01 原语保证拒绝路径 config 字节不动（本函数全程不写盘）。
+// （带 error）后回话；票01 原语保证拒绝路径 config 字节不动（本函数全程不写盘）。
 func settingsRestartLocked(d *Daemon) (int, map[string]any) {
 	oldPort := d.Cfg.Server.Port
 	dataDir := d.Cfg.DataDir()
@@ -189,6 +193,14 @@ func settingsRestartLocked(d *Daemon) (int, map[string]any) {
 	diskCfg, err := config.Load(config.ResolveConfigPath(""), false)
 	if err != nil {
 		return reject(nil, fmt.Errorf("盘上配置重启后将无法启动，拒重启: %w", err))
+	}
+	// 预检④（评审高·返工裁定）：数据目录身份比对——盘上 data_dir 与运行中
+	// 守护不一致 → 拒。真迁移 data_dir 要搬 token/pid/handoffs/台账一整套，
+	// 超出本票；只修帮手停旧（用旧身份）会让新守护带着空数据目录「健康」
+	// 起来——更糟。两侧都走 DataDir() 解析（空=~/ferryman 缺省）再比。
+	if !settingsRestartSameDataDir(diskCfg.DataDir(), d.Cfg.DataDir()) {
+		return reject(nil, fmt.Errorf("盘上数据目录将变为 %s（当前运行中为 %s）——数据目录改动暂不支持随安全重启生效，本次不重启；如确要迁移，请手动改回或手动迁移后再试",
+			diskCfg.DataDir(), d.Cfg.DataDir()))
 	}
 	// 预检③：端口改动须可绑。
 	newPort := diskCfg.Server.Port
@@ -219,6 +231,18 @@ func settingsRestartLocked(d *Daemon) (int, map[string]any) {
 		resp["new_port"] = newPort // 端口变了才附（UI 明示「重启后自动改连新端口」）
 	}
 	return http.StatusOK, resp
+}
+
+// settingsRestartSameDataDir 数据目录身份比对（预检④）：Clean 后比较；
+// Windows 文件系统大小写不敏感 → EqualFold，且正斜杠归一为反斜杠
+// （update.samePath 同款归一——盘上写 / 与运行态 \ 混用不误判）；非 Windows
+// 精确比。
+func settingsRestartSameDataDir(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Clean(strings.ReplaceAll(a, "/", `\`)),
+			filepath.Clean(strings.ReplaceAll(b, "/", `\`)))
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // settingsRestartWaitQuiet 静默门（update 监督者 quietGate 同判据、无交互面）：
