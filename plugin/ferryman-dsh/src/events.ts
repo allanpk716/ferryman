@@ -121,12 +121,15 @@ export interface EventDeps {
   logger: LoggerLike;
   /** session/title 跟踪的最近标题（键=会话头行 id;随后续上报带出） */
   titles: Map<string, string>;
+  /** 欠交接账本（键=会话头行 id,多会话互不串）：created 问空记一笔,
+   *  用户步重问拿到即清;dispose 终局清（A4② 持续重试,2026-10-06 票05） */
+  handoffPending: Map<string, boolean>;
   /** 时钟注入面（判活转发的时间戳）;缺省 Date.now */
   now?: () => number;
 }
 
 export function makeEventDeps(ep: DaemonEndpoint, logger: LoggerLike): EventDeps {
-  return { ep, logger, titles: new Map(), now: () => Date.now() };
+  return { ep, logger, titles: new Map(), handoffPending: new Map(), now: () => Date.now() };
 }
 
 // ---- 共用小件 ----
@@ -156,6 +159,12 @@ export function blocksToText(messages: MessageInput[]): string {
  * 上下文消息后放行（官方桥 :225-241 同款）;一切故障 fail-open 放行（
  * ferryman-gate-codex.ps1:73 同纪律）。空步（合成上下文步）不问——官方桥
  * :226 同位短路。
+ *
+ * 晚到交接重问（A4②）：created 记了欠账的会话,每个用户步（step===1）在此
+ * 独立补问一次（不依赖闸门结果,allow/fail-open 都问）;拿到 → injectedMessage
+ * 追加进当前步 downstream.messages（additional_context 同位先例）并清账;
+ * 没拿到 → 账留着静默放行,绝不阻塞用户消息。block 步无下游可注入,不问
+ * 不清账;循环步（step>1）照旧短路。
  */
 export async function onPreStep(
   deps: EventDeps,
@@ -167,8 +176,9 @@ export async function onPreStep(
   // 用户输入——闸门语义是「审用户的回流」，循环步不问不注入（2026-10-05 案：
   // 活跃对话每步都过闸门吃 machineWaiting 豁免＋注入兜底文案，污染上下文）。
   if (payload.step > 1) return next();
+  const sid = sessionIdOf(payload.agent);
   const gate = await askGate(deps.ep, {
-    session_id: sessionIdOf(payload.agent),
+    session_id: sid,
     cwd: cwdOf(payload.agent),
     prompt: blocksToText(payload.messages),
   });
@@ -178,20 +188,34 @@ export async function onPreStep(
     return { kind: "reject" };
   }
   const downstream = await next();
-  if (gate?.additional_context && downstream.kind === "enter") {
-    return {
-      ...downstream,
-      messages: [...downstream.messages, injectedMessage(gate.additional_context)],
-    };
+  if (downstream.kind !== "enter") return downstream;
+  const extras: UserMessageLike[] = [];
+  if (sid && deps.handoffPending.get(sid)) {
+    let md: string | null = null;
+    try {
+      md = await askHandoff(deps.ep, { cwd: cwdOf(payload.agent), session_id: sid });
+    } catch {
+      md = null; // 防御带：askHandoff 契约不抛;真抛等同没拿到,放行不阻不噪
+    }
+    if (md) {
+      deps.handoffPending.delete(sid);
+      extras.push(injectedMessage(md));
+    }
   }
-  return downstream;
+  if (gate?.additional_context) {
+    extras.push(injectedMessage(gate.additional_context));
+  }
+  if (extras.length === 0) return downstream;
+  return { ...downstream, messages: [...downstream.messages, ...extras] };
 }
 
 // ---- ② agent/created（awaited）：交接播种 ----
 
 /**
  * 同 Agent＋cwd 的交接 MD 经 agent.inject() 播种（赶首请求——serial awaited
- * 位保证,见文件头钉点）。无交接/无键/daemon 故障 → 静默返回;永不抛
+ * 位保证,见文件头钉点）。askHandoff 空（交接还没铸好,含 daemon 暂不可达）→
+ * 记欠账 handoffPending,此后每个用户步重问补注（A4② 持续重试）;置账静默。
+ * 无键/抛错 → 不置账（fail-open:欠账只在「确实问过且确实空」时记）;永不抛
  *（throw 会弄失败 agent creation,runtime-types.ts:253-254）。
  */
 export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promise<void> {
@@ -200,9 +224,14 @@ export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promi
     const sid = sessionIdOf(agent);
     if (!sid || typeof agent?.inject !== "function") return;
     const md = await askHandoff(deps.ep, { cwd: cwdOf(agent), session_id: sid });
-    if (md) agent.inject(injectedMessage(md));
+    if (md) {
+      agent.inject(injectedMessage(md));
+    } else {
+      deps.handoffPending.set(sid, true);
+    }
   } catch (e) {
-    // 防御带：inject 抛错等宿主侧意外——creation 不因插件失败
+    // 防御带：inject 抛错等宿主侧意外——creation 不因插件失败;
+    // askHandoff 若真抛同落此处,不置欠账。
     deps.logger.warn(`[ferryman-dsh] 交接播种失败（忽略继续）: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -326,5 +355,7 @@ export function onStatus(deps: EventDeps, payload: StatusPayload): void {
 }
 
 export function onDisposed(deps: EventDeps, payload: DisposedPayload): void {
+  const sid = sessionIdOf(payload?.agent);
+  if (sid) deps.handoffPending.delete(sid); // 会话终局清欠账,不跨会话泄漏
   forwardLifecycle(deps, payload?.agent, "agent/disposed", {});
 }
