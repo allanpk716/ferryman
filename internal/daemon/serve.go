@@ -231,6 +231,14 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 		return 1
 	}
 
+	// 票07（F2 回滚源 A）：启动成功点盖戳「上次健康运行配置」——pid 落盘后、
+	// 控制面开跑前，当次已 Load 校验的 config.toml 原字节存档到
+	// <data_dir>/backups/config/last-healthy.toml；restart 帮手健康失败时按它
+	// 还原（settings_restart.go）。best-effort：盖戳失败不挡启动。
+	if err := stampLastHealthyConfig(config.ResolveConfigPath(""), dataDir); err != nil {
+		fmt.Printf("[ferryman] ⚠ 上次健康配置盖戳失败（不挡启动）: %v\n", err)
+	}
+
 	// 控制面即刻开始服务（v0.2.6：从渡口段之后提前至此）——pid 落盘后 15700 即
 	// 应答 /stats：渡口绑定重试（最长 bind_retry_s=240s）阻塞装配期间，监督者
 	// 的 90s 版本校验、看门/ensure 探活、restart 脚本的健康等待都必须能看到

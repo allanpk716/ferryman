@@ -33,6 +33,18 @@
         "center": true,
         "resizable": true,
         "visible": false
+      },
+      {
+        "label": "ferryman-settings",
+        "url": "ferryman-settings.html",
+        "title": "Ferryman 设置",
+        "width": 1040,
+        "height": 760,
+        "minWidth": 860,
+        "minHeight": 560,
+        "center": true,
+        "resizable": true,
+        "visible": false
       }
     ],
     "security": {

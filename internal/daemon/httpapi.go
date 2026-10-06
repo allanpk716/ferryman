@@ -134,6 +134,19 @@ func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch
 			doProviderSwitch(onProviderSwitch, token, w, r)
 			return
 		}
+		// 设置视图票06：POST /settings/dock/switch——复用同一 provider_switch
+		// 钩子（dockState.switchTo）的热换绑核心，外包设置面单写者锁+写前快照
+		// +审计（settings_switch.go）；钩子未装（渡口未启用）＝落既有分派 404。
+		if r.RequestURI == "/settings/dock/switch" && onProviderSwitch != nil {
+			doSettingsDockSwitch(d, onProviderSwitch, token, w, r)
+			return
+		}
+		// 票07：POST /settings/restart——安全重启端点（settings_restart.go），
+		// 无条件拦截（管理端点族自带守门序，无钩子面；替身在 handler 内 404）。
+		if r.RequestURI == "/settings/restart" {
+			doSettingsRestart(d, token, w, r)
+			return
+		}
 		// dsh 接收面三口（dsh phase2 票04，/shutdown、/provider_switch 同族
 		// 管理端点）：方法分派前拦截；DaemonLike 替身不拦（落既有 doPost 404）。
 		if dd, ok := d.(*Daemon); ok && doDshReceive(dd, token, w, r) {
@@ -142,6 +155,8 @@ func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch
 		switch r.Method {
 		case http.MethodPost:
 			doPost(d, token, w, r)
+		case http.MethodPut, http.MethodDelete:
+			doPost(d, token, w, r) // 票03：PUT 一并落 doPost 分派（设置写面）；票04：DELETE 同族（设置实体删除唯一 DELETE 端点在彼处早退）
 		case http.MethodGet:
 			doGet(d, token, w, r)
 		case http.MethodOptions:
@@ -164,14 +179,27 @@ func doPost(d DaemonLike, token string, w http.ResponseWriter, r *http.Request) 
 	// 先读光 body 再回话：401/404 路径若留未读数据就关连接，Windows 会发 RST
 	// 而非 FIN → 客户端读到 10053 连接中断而非状态码（server.py:749-751 注释搬运）。
 	bodyRaw, _ := io.ReadAll(r.Body)
+	if r.Method == http.MethodPut || r.Method == http.MethodDelete { // 票03 节级 PUT + 票04 实体 PUT/DELETE → 设置写面总分派（settings_entities.go；未知路径 404 在 auth 前）
+		handleSettingsWrite(d, token, w, r, bodyRaw)
+		return
+	}
 	// Python self.path 是 request-target 原文（带 query 即不匹配 → 404），
 	// 故用 RequestURI 精确匹配而非 r.URL.Path。
-	if r.RequestURI != "/gate" && r.RequestURI != "/subagent" && r.RequestURI != "/qwatch_stop" {
+	if r.RequestURI != "/gate" && r.RequestURI != "/subagent" && r.RequestURI != "/qwatch_stop" &&
+		r.RequestURI != "/settings/snapshots" && !strings.HasPrefix(r.RequestURI, "/settings/snapshots/") {
 		notFound(w) // 未知 POST 路径 404 在 auth 前（server.py:752-754 顺序照搬）
 		return
 	}
 	if !isAuthed(r, token) {
 		unauthorized(w)
+		return
+	}
+	if r.RequestURI == "/settings/snapshots" { // 票05：手动快照（写路径经票03 单写者锁）
+		handleSettingsSnapshotCreate(d, w, r)
+		return
+	}
+	if strings.HasPrefix(r.RequestURI, "/settings/snapshots/") { // 票05：快照还原
+		handleSettingsSnapshotRestore(d, w, r)
 		return
 	}
 	if r.RequestURI == "/qwatch_stop" { // T51 票04 一键停：无请求体
@@ -210,6 +238,12 @@ func doGet(d DaemonLike, token string, w http.ResponseWriter, r *http.Request) {
 			qsOr(q, "agent", "cc"),
 			qsOr(q, "cwd", ""),
 			qsOr(q, "session_id", "")))
+	case "/settings": // 设置视图读面（settings-view 票02）：settings_read.go，只读+脱敏
+		handleSettingsRead(d, w, r)
+	case "/settings/snapshots": // 设置快照清单（票05）：仅元数据，读面不取写锁
+		handleSettingsSnapshotList(d, w)
+	case "/settings/ferry": // ferry 节盘上现值（票04④）：PUT 自键层写后的对账读面（settings_entities.go）
+		handleSettingsFerryGet(d, w, r)
 	default:
 		// 票01接线（唯一改动点）：未命中端点先交只读查询面（queryapi.go
 		// 注册表，/sessions 等；鉴权已过），仍未命中才 404。

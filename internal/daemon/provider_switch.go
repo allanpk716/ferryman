@@ -60,6 +60,12 @@ func doProviderSwitch(onSwitch ProviderSwitchFunc, token string, w http.Response
 		badRequest(w, errors.New("body 须为 {\"name\":\"<条目名>\"} 的 JSON 对象（name 非空）"))
 		return
 	}
+	// 票07 随行小修（终局评审中级发现）：switch 落盘 active 是设置写路径，
+	// 与节级 PUT/实体写共用 settingsWriteMu 单写者锁——否则 switch 的读改写
+	// 落盘与并发节级写可能交错。锁内调 onSwitch（switchTo 只嵌套其自有 h.mu，
+	// 无反向依赖，无死锁环——settings_switch.go 同序先例）。
+	settingsWriteMu.Lock()
+	defer settingsWriteMu.Unlock()
 	resp, err := onSwitch(req.Name)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})

@@ -152,6 +152,13 @@ default = "glm-4.7-flash"
 	codeCh := make(chan int, 1)
 	go func() { codeCh <- ServeContext(ctx, false, "test-mig") }()
 	waitPidFile(t, filepath.Join(dataDir, "daemon.pid"), 15*time.Second)
+	// pid 出现即读会抢在渡口横幅前（横幅在 pid 后数毫秒才打；票07 又在 pid
+	// 落盘与渡口段之间加了 last-healthy 盖章，竞态窗更宽）——等渡口真正监听
+	// 再收 stdout（横幅落笔紧随监听其后），竞态根除。测试稳定性修，零生产
+	// 行为改动。
+	if !waitDial(t, fmt.Sprintf("127.0.0.1:%d", dockPort), 10*time.Second) {
+		t.Fatal("渡口未在预算内监听（横幅无从断言）")
+	}
 
 	out := read()
 	cancel()

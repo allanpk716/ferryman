@@ -210,6 +210,21 @@ document.querySelectorAll('input[name=appearance]').forEach((r) =>
   r.addEventListener('change', persist));
 optCdline.addEventListener('change', persist);
 
+// ── Ferryman 设置窗入口（守护侧配置）：壳内 invoke 开常驻窗；壳外新开页面 ──
+(function wireFerrymanSettingsEntry() {
+  const btn = document.getElementById('btnFerrymanSettings');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    const t = window.__TAURI__;
+    if (t && t.core && t.core.invoke) {
+      t.core.invoke('open_ferryman_settings_window')
+        .catch((e) => { status('打开 Ferryman 设置失败'); console.error('open_ferryman_settings_window 失败', e); });
+    } else if (typeof window.open === 'function') {
+      window.open('ferryman-settings.html', '_blank');
+    }
+  });
+})();
+
 // ── 自测（?selftest=1；结果落 #selftest-results data-*，供静态断言） ──
 function runSelftest() {
   const res = [];

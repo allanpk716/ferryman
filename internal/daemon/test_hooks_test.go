@@ -105,6 +105,7 @@ func runPS(t *testing.T, script string, stdin map[string]any, env map[string]str
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
 		"-File", filepath.Join(hooksRoot(t), script))
+	hideConsole(cmd) // 零闪窗铁律（票07 闪窗事故）：测试内 console 子进程不开可见窗口
 	cmd.Env = hookEnv(t, env)
 	if stdin != nil {
 		var in bytes.Buffer

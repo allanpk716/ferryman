@@ -598,6 +598,24 @@ fn open_settings_window(app: tauri::AppHandle) {
     open_settings(&app);
 }
 
+/// Ferryman 设置窗（守护侧配置）：与 settings 窗同款常驻模式——conf 声明、启动
+/// 创建 visible:false、关闭=隐藏不销毁，这里只负责显示（0.2.4 运行时建窗白屏
+/// 事故的教训原样适用，运行时建窗绝对禁止）。
+fn open_ferryman_settings(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("ferryman-settings") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// 既有设置窗（显示配置）内的「打开 Ferryman 设置…」按钮 → 本命令，
+/// 与托盘「Ferryman 设置」菜单项同一路径（open_settings_window 同款先例）。
+#[tauri::command]
+fn open_ferryman_settings_window(app: tauri::AppHandle) {
+    open_ferryman_settings(&app);
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例必须最前：二次启动不出现第二个窗口，拉起既有窗口后由 main 退出
@@ -630,6 +648,7 @@ pub fn run() {
             update_install,
             get_daemon_config,
             open_settings_window,
+            open_ferryman_settings_window,
             fit_height
         ])
         .setup(|app| {
@@ -724,9 +743,10 @@ pub fn run() {
             };
             let toggle = MenuItem::with_id(app, "toggle_appearance", toggle_label, true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
+            let fsettings = MenuItem::with_id(app, "ferryman_settings", "Ferryman 设置", true, None::<&str>)?;
             let update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &hide, &toggle, &settings, &update, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &hide, &toggle, &settings, &fsettings, &update, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().expect("无内置图标").clone())
                 .tooltip("Ferryman 用量悬浮窗")
@@ -747,6 +767,7 @@ pub fn run() {
                         }
                     }
                     "settings" => open_settings(app), // 显示常驻设置窗（0.2.4：conf 创建+隐藏，打开=显示）
+                    "ferryman_settings" => open_ferryman_settings(app), // Ferryman 设置（守护侧配置）：同款常驻模式
                     // 外观快捷切换（0.2.3）：前端走完整流向（toggle→persistProfile→
                     // applyProfile→invoke set_appearance），这里只转发意图。
                     "toggle_appearance" => {
@@ -779,7 +800,9 @@ pub fn run() {
             // 原「关闭即销毁」随运行时建窗一起退役——运行时建 WebView2 真机白屏事故）
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                if window.label() != "settings" {
+                // 位置记忆只属于悬浮窗（ferryman-settings 窗加入后收窄判定：两个
+                // 设置窗都不写 window-state.json，否则会互相顶掉悬浮窗的位置）。
+                if window.label() == "widget" {
                     if let Ok(pos) = window.outer_position() {
                         save_state(window.app_handle(), pos.x, pos.y);
                     }
