@@ -273,3 +273,152 @@ func TestRestoreAnchoredNoHandoffDeliversPromptAndListsOthers(t *testing.T) {
 		t.Fatalf("其他候选应列清单: %q", ctx)
 	}
 }
+
+// ---- 票03 新会话播种新鲜度（仅 dsh：covers 落后基准会话 last_write 超 60s
+// 容差＝过期不供；落空走既有降级。cc/codex 同数据行为逐字零变化）。 ----
+
+// regAgentSrc 登记一条指定 agent 的台账源会话（last_write 即基准）。
+func regAgentSrc(t *testing.T, e *gateEnv, agent, sid string, lastWrite float64) {
+	t.Helper()
+	e.led.TouchFull(agent, sid, filepath.Join(e.tmp, sid+".jsonl"), lastWrite, 10,
+		"C:/proj", "", 100, 0)
+}
+
+func TestRestoreDshAnchoredExpiredHandoffFallsToNoHandoff(t *testing.T) {
+	// 有锚形态：锚会话自己的交接 covers 落后其台账 last_write（超 60s 容差）
+	// ＝过期不供——落"锚会话没有交接"同款降级（原话+中性文案），绝不端旧
+	// 快照冒充续接。
+	e := newGateEnv(t)
+	regAgentSrc(t, e, "dsh", "blocked-src", e.t0-100) // 基准=锚会话 last_write
+	e.store.SaveHandoff("blocked-src", "dsh", "C:/proj", "被拦线程",
+		isoUTC(e.t0-1000), "fresh", "md-stale旧快照") // covers+60 < last_write
+	e.store.SaveHandoff("sibling-src", "dsh", "C:/proj", "别的线程",
+		isoUTC(e.t0-100), "fresh", "md-sibling")
+	e.store.SavePendingPromptFor("dsh", "C:/proj", "blocked-src", "被拦原话T3")
+	r := e.d.Restore("dsh", "C:/proj", "fresh")
+	ctx, _ := r["context"].(string)
+	if !strings.Contains(ctx, "被拦原话T3") {
+		t.Fatalf("应带被拦原话: %q", ctx)
+	}
+	if !strings.Contains(ctx, "没有生成") {
+		t.Fatalf("应落缺交接中性文案: %q", ctx)
+	}
+	if strings.Contains(ctx, "[Ferryman 交接 ·") || strings.Contains(ctx, "md-stale旧快照") {
+		t.Fatalf("过期交接不得注入: %q", ctx)
+	}
+	if !strings.Contains(ctx, "- 别的线程 → ") {
+		t.Fatalf("其他线程应列清单选读: %q", ctx)
+	}
+}
+
+func TestRestoreDshAnchoredFreshHandoffStillSupplied(t *testing.T) {
+	// 有锚形态对照：锚会话交接 covers 不落后 last_write（容差内）→ 照常锚定
+	// 注入+原话（新鲜度校验不得误拦新鲜交接）。
+	e := newGateEnv(t)
+	regAgentSrc(t, e, "dsh", "blocked-src", e.t0-100)
+	e.store.SaveHandoff("blocked-src", "dsh", "C:/proj", "被拦线程",
+		isoUTC(e.t0-100), "fresh", "md-fresh")
+	e.store.SavePendingPromptFor("dsh", "C:/proj", "blocked-src", "被拦原话T4")
+	r := e.d.Restore("dsh", "C:/proj", "fresh")
+	ctx, _ := r["context"].(string)
+	if !strings.Contains(ctx, "会话 被拦线程") || !strings.Contains(ctx, "被拦原话T4") {
+		t.Fatalf("新鲜锚定交接应照常注入: %q", ctx)
+	}
+}
+
+func TestRestoreDshUnanchoredCoversToleranceBoundary(t *testing.T) {
+	// 无锚形态·容差边界：与闸门覆盖判据同口径（ValidHandoff：covers+60 <
+	// last_write 才弃）——落后 61s 弃、55s 内（含恰好相等）供。
+	cases := []struct {
+		name       string
+		coversAgo  float64 // covers = t0 - coversAgo；last_write 固定 t0-100
+		wantSupply bool
+	}{
+		{"covers恰等last_write", 100, true},
+		{"落后55s在容差内", 155, true},
+		{"落后61s超容差", 161, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newGateEnv(t)
+			regAgentSrc(t, e, "dsh", "src", e.t0-100)
+			e.store.SaveHandoff("src", "dsh", "C:/proj", "h",
+				isoUTC(e.t0-tc.coversAgo), "fresh", "md")
+			r := e.d.Restore("dsh", "C:/proj", "newsid")
+			ctx, ok := r["context"]
+			if tc.wantSupply {
+				if !ok || ctx == nil {
+					t.Fatalf("covers 落后 %.0fs 应在容差内供给: %v", tc.coversAgo-100, r)
+				}
+				if s, _ := ctx.(string); !strings.Contains(s, "[Ferryman 交接 ·") {
+					t.Fatalf("应注入交接: %q", s)
+				}
+			} else if !ok || ctx != nil {
+				t.Fatalf("covers 落后 %.0fs 应过期不供（无锚落既有无交接形态）: %v",
+					tc.coversAgo-100, r)
+			}
+		})
+	}
+}
+
+func TestRestoreDshUnanchoredAllExpiredFallsToNoHandoff(t *testing.T) {
+	// 无锚形态：候选按其源会话 last_write 验、全过期 → 落既有"无交接"形态
+	//（context nil），不报错不静默注入旧快照。
+	e := newGateEnv(t)
+	regAgentSrc(t, e, "dsh", "src", e.t0-100)
+	e.store.SaveHandoff("src", "dsh", "C:/proj", "旧线",
+		isoUTC(e.t0-1000), "fresh", "md-old旧快照")
+	r := e.d.Restore("dsh", "C:/proj", "newsid")
+	ctx, ok := r["context"]
+	if !ok || ctx != nil {
+		t.Fatalf("全过期应落既有无交接形态 {context: nil}: %v", r)
+	}
+}
+
+func TestRestoreDshUnanchoredFiltersExpiredKeepsFreshPerCandidate(t *testing.T) {
+	// 无锚多候选：逐个按各自源会话 last_write 验——过期的最新候选不供，
+	// 较旧但新鲜的候选照常单候选注入（按候选各自源会话验，非只看最新）。
+	e := newGateEnv(t)
+	regAgentSrc(t, e, "dsh", "stale-src", e.t0-100) // 最新候选：covers 落后
+	e.store.SaveHandoff("stale-src", "dsh", "C:/proj", "过期线",
+		isoUTC(e.t0-1000), "fresh", "md-stale")
+	regAgentSrc(t, e, "dsh", "fresh-src", e.t0-2000) // 较旧候选：covers 领先其 last_write
+	e.store.SaveHandoff("fresh-src", "dsh", "C:/proj", "新鲜线",
+		isoUTC(e.t0-1900), "fresh", "md-fresh")
+	r := e.d.Restore("dsh", "C:/proj", "newsid")
+	ctx, _ := r["context"].(string)
+	if !strings.Contains(ctx, "会话 新鲜线") || strings.Contains(ctx, "会话 过期线") {
+		t.Fatalf("应只注入新鲜候选: %q", ctx)
+	}
+}
+
+func TestRestoreCcSameStaleDataUnchanged(t *testing.T) {
+	// cc 同数据（covers 落后 last_write）行为与改动前逐字一致：过期照供——
+	// 新鲜度校验仅 dsh，cc/codex 完全绕过。
+	// 有锚：过期交接照旧注入+原话。
+	e := newGateEnv(t)
+	regAgentSrc(t, e, "cc", "blocked-src", e.t0-100)
+	e.store.SaveHandoff("blocked-src", "cc", "C:/proj", "被拦线程",
+		isoUTC(e.t0-1000), "fresh", "md-stale")
+	e.store.SaveHandoff("sibling-src", "cc", "C:/proj", "别的线程",
+		isoUTC(e.t0-100), "fresh", "md-sibling")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "blocked-src", "被拦原话T5")
+	r := e.d.Restore("cc", "C:/proj", "fresh")
+	ctx, _ := r["context"].(string)
+	if !strings.Contains(ctx, "会话 被拦线程") || !strings.Contains(ctx, "[Ferryman 交接 ·") {
+		t.Fatalf("cc 有锚：过期交接应照旧注入（逐字旧行为）: %q", ctx)
+	}
+	if !strings.Contains(ctx, "被拦原话T5") {
+		t.Fatalf("cc 有锚：原话应照旧带上: %q", ctx)
+	}
+	// 无锚：单候选（过期）照旧注入。
+	e2 := newGateEnv(t)
+	regAgentSrc(t, e2, "cc", "src", e2.t0-100)
+	e2.store.SaveHandoff("src", "cc", "C:/proj", "旧线",
+		isoUTC(e2.t0-1000), "fresh", "md-old")
+	r2 := e2.d.Restore("cc", "C:/proj", "newsid")
+	ctx2, _ := r2["context"].(string)
+	if !strings.Contains(ctx2, "会话 旧线") || !strings.Contains(ctx2, "[Ferryman 交接 ·") {
+		t.Fatalf("cc 无锚：过期交接应照旧注入（逐字旧行为）: %q", ctx2)
+	}
+}
