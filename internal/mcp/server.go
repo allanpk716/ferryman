@@ -59,20 +59,27 @@ const (
 type Server struct {
 	client *DaemonClient
 	tools  []Tool
-	// version 版本号（票02，规格 §A）：经装配参数注入（cmd/ferryman 的
-	// main.version → Run → New；internal 包不 import cmd——显式传参不做全局
-	// 单例），doctor 工具响应 version 字段的数据源。
+	// version 本进程装配版本号（cmd/ferryman 的 main.version → Run → New 既有
+	// 装配管线，参数保留不破装配面）。票07 起 doctor 顶层 version 不再取本字
+	// 段——MCP exe 可能是旧版，报它误导排障；数据源改为守护自报版本（下方
+	// daemonVersion 注入缝）。
 	version string
 	// doctor 进程内结构化体检（票05；New 注入真实装配，测试可整体替换——
 	// 生产默认面向 HOME/exe/config 解析目标，测试面向临时环境）。
 	doctor func() []installer.CheckResult
+	// daemonVersion 守护自报版本取值（票07）：New 装配真实面（既有 /stats 只读
+	// GET 通道，每次调用现连不缓存），测试可整体替换——doctor 顶层 version 的
+	// 数据源；nil 时如实标注未知（daemonVersionOrUnknown 防线）。
+	daemonVersion func() string
 }
 
 // New 以既有配置解析产物装配（cfg 来自 config.Load——鉴权信息即由此取得）；
 // version 经装配参数传入（见 Server.version 注）。
 func New(cfg *config.Config, version string) *Server {
-	return &Server{client: NewDaemonClient(cfg), tools: ferrymanTools(),
-		doctor: defaultDoctorFunc(cfg), version: version}
+	cl := NewDaemonClient(cfg)
+	return &Server{client: cl, tools: ferrymanTools(),
+		doctor: defaultDoctorFunc(cfg), version: version,
+		daemonVersion: func() string { return fetchDaemonVersion(cl) }}
 }
 
 // Run `ferryman mcp` 子命令主体：configPath 显式参数 > FERRYMAN_CONFIG > 默认
