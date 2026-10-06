@@ -141,6 +141,12 @@ func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch
 			doSettingsDockSwitch(d, onProviderSwitch, token, w, r)
 			return
 		}
+		// 票07：POST /settings/restart——安全重启端点（settings_restart.go），
+		// 无条件拦截（管理端点族自带守门序，无钩子面；替身在 handler 内 404）。
+		if r.RequestURI == "/settings/restart" {
+			doSettingsRestart(d, token, w, r)
+			return
+		}
 		// dsh 接收面三口（dsh phase2 票04，/shutdown、/provider_switch 同族
 		// 管理端点）：方法分派前拦截；DaemonLike 替身不拦（落既有 doPost 404）。
 		if dd, ok := d.(*Daemon); ok && doDshReceive(dd, token, w, r) {

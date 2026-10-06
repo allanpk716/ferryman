@@ -51,11 +51,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/getlantern/systray"
-	"golang.org/x/sys/windows"
 
 	"ferryman/internal/backtest"
 	"ferryman/internal/clock"
@@ -120,6 +118,7 @@ serve 与面板:
 守护:
   ferryman status              # 探活：守护/版本、渡口监听、台账摘要（只读，不在线也如实报告）
   ferryman stop [--wait 秒]    # 优雅停：POST /shutdown+等让位（缺省预算 240s，绝不硬杀）
+  ferryman restart [--from N] [--to M]  # 安全重启：停旧→按盘上配置拉新；健康失败自动还原上次健康配置
 
 安装（钩子/配置注入与常驻保障）:
   ferryman install-cc [--events 事件1,事件2,…]
@@ -209,6 +208,8 @@ func run(args []string) int {
 		return cmdStatus(args[1:])
 	case "stop":
 		return cmdStop(args[1:])
+	case "restart": // 票07：安全重启帮手 CLI（端点拉起的同一形态，可独立复跑）
+		return cmdRestart(args[1:], os.Stdout)
 	case "version":
 		return cmdVersion(args[1:], os.Stdout)
 	case "update":
@@ -503,18 +504,12 @@ func trayUpgradeNow() {
 	}
 }
 
-// spawnDetachedHidden detached 隐藏拉起（票07）：与 internal/update 的
-// launchCmdImpl 同款 SysProcAttr 形态（该助手非导出不能跨包复用，就地镜像）
-// ——HideWindow 不闪窗，DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP 脱离父
-// 控制台（监督者长命于托盘进程）。Start 不 Wait，拉起即走。Windows 形态：
-// 本程序只发 Windows exe（release.yml 单 windows-latest 流水线，规格 §B）。
+// spawnDetachedHidden detached 隐藏拉起（票07）：本票起委托 internal/update
+// 的 SpawnDetachedHidden（proc_windows.go/proc_other.go——从 cmd 侧上移消重：
+// 零闪窗铁律+拉起者长命关系的平台面单源，托盘拉监督者/端点拉 restart 帮手
+// 共用一形态）。本壳保留原名，upstream.go 等既有调用点零改动。
 func spawnDetachedHidden(exe string, args ...string) error {
-	c := exec.Command(exe, args...)
-	c.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
-	}
-	return c.Start()
+	return update.SpawnDetachedHidden(exe, args...)
 }
 
 // ---- 子命令 ----

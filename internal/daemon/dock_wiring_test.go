@@ -50,7 +50,9 @@ func waitDial(t *testing.T, addr string, timeout time.Duration) bool {
 // listeningPortsOf 枚举某 PID 名下的 LISTENING 本地端口（netstat 文本解析，
 // Windows 形；解析失败返回 nil＝调用方跳过该断言，不误报）。
 func listeningPortsOf(pid int) map[string]bool {
-	out, err := exec.Command("netstat", "-ano", "-p", "tcp").Output()
+	cmd := exec.Command("netstat", "-ano", "-p", "tcp")
+	hideConsole(cmd) // 零闪窗铁律（票07 闪窗事故）：测试内 console 子进程不开可见窗口
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}

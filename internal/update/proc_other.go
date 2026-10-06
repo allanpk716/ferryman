@@ -37,3 +37,12 @@ func launchCmdImpl(cmdPath string) error {
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return c.Start()
 }
+
+// SpawnDetachedHidden detached 拉起任意 exe(票07 从 cmd 侧上移消重;非
+// Windows 形态:新会话直执行——cmd 侧原 Windows 旗标对 unix 无意义,Setsid
+// 即脱离父会话等价)。
+func SpawnDetachedHidden(exe string, args ...string) error {
+	c := exec.Command(exe, args...)
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return c.Start()
+}

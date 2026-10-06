@@ -125,3 +125,17 @@ func launchTxCmdImpl(cmdPath string) error {
 // (该变量在非 Windows 世界恒 nil,由其 launchCmdImpl 的新会话直执行担任
 // 同位——unix 上本无 wscript/cmd 通道之分)。
 func init() { txLauncher = launchTxCmdImpl }
+
+// SpawnDetachedHidden detached 隐藏拉起任意 exe(票07 从 cmd/ferryman/main.go
+// 上移消重:零闪窗铁律+拉起者长命关系的平台面单源——端点侧拉 restart 帮手、
+// 托盘拉监督者共用一形态):HideWindow 不闪窗,DETACHED_PROCESS|
+// CREATE_NEW_PROCESS_GROUP 脱离父控制台;Start 不 Wait,拉起即走(帮手/监督者
+// 长命于拉起者)。
+func SpawnDetachedHidden(exe string, args ...string) error {
+	c := exec.Command(exe, args...)
+	c.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
+	}
+	return c.Start()
+}
