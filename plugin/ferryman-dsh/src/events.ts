@@ -151,6 +151,24 @@ export function blocksToText(messages: MessageInput[]): string {
     .join("");
 }
 
+// ---- block 文案（票10 · F2 止血） ----
+
+/**
+ * block 文案里被拦原话的截断上限：120 码点（Code Point,增补平面字符按 1 计,
+ * 不按 UTF-16 单元——emoji 等不会被腰斩）。插件侧此前无截断工具,本 helper 为
+ * 本票新增;daemon 侧先例是 token 估算 cap=500（store.go pendingPromptCap）,
+ * 日志面板一行摘要用码点上限更直观,不照搬。已知取舍：宿主日志面板手机端
+ * 不可见的根治在票08（F1 对话区选择框）,本票是过渡止血。
+ */
+const blockPromptCap = 120;
+
+/** 按码点截断：超 cap 取头 cap 个码点加省略号;不超原样返回 */
+export function truncateCodePoints(text: string, cap: number): string {
+  const cps = Array.from(text);
+  if (cps.length <= cap) return text;
+  return cps.slice(0, cap).join("") + "…";
+}
+
 // ---- ① agent/pre-step：闸门问询 ----
 
 /**
@@ -184,7 +202,17 @@ export async function onPreStep(
   });
   if (gate?.decision === "block") {
     const reason = gate.reason ?? "会话闲置被闸门拦截";
-    deps.logger.warn(`[ferryman-dsh] 本条输入被 Ferryman 闸门拦截：${reason}`);
+    // 票10（F2 止血）：reason 之后追加被拦原话与两行指路,不替换 reason。
+    // 原话来源=拦截现场 payload.messages,与闸门 prompt 同走 blocksToText,
+    // 零新增 daemon 依赖;无文本块时省略原话行（无话可示,不给空行）。
+    const original = blocksToText(payload.messages);
+    const promptLine = original ? `被拦原话：${truncateCodePoints(original, blockPromptCap)}\n` : "";
+    deps.logger.warn(
+      `[ferryman-dsh] 本条输入被 Ferryman 闸门拦截：${reason}\n` +
+      `${promptLine}` +
+      `留在本会话：发送「强续 重发你的内容」可强制继续；\n` +
+      `新建会话（同目录）：开场自动收到交接与本条原话，无需重打。`,
+    );
     return { kind: "reject" };
   }
   const downstream = await next();

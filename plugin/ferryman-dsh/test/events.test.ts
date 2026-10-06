@@ -88,6 +88,78 @@ test("pre-step：daemon block → reject,理由经 logger.warn 用户可见（�
   assert.equal(body["transcript_path"], "");
 });
 
+// 票10（F2 止血）：block 文案 = 拦截理由＋被拦原话（截断）＋两行指路。
+test("pre-step block 文案止血：warn 含被拦原话与两行指路（理由保留）", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/gate", () => ({
+    status: 200,
+    json: { decision: "block", reason: "此会话已闲置 40 分钟（缓存已失效）" },
+  }));
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+
+  const decision = await onPreStep(deps, {
+    agent: { session: { header: { id: SID, cwd: "C:/proj" } } },
+    messages: [{ content: [{ type: "text", text: "帮我把部署脚本再跑一遍" }] }],
+    turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [] }));
+
+  assert.equal(decision.kind, "reject");
+  assert.equal(logger.warns.length, 1, "仍恰 warn 一条（多行文案合在一条内）");
+  const line = logger.warns[0]!;
+  assert.ok(line.includes("闲置 40 分钟"), "拦截理由保留（不替换 reason）");
+  assert.ok(line.includes("帮我把部署脚本再跑一遍"), "含被拦原话（blocksToText 同源,零新增 daemon 依赖）");
+  assert.ok(line.includes("强续") && line.includes("重发"), "指路①：留在本会话「强续 重发你的内容」强制继续");
+  assert.ok(line.includes("新建会话") && line.includes("自动收到"), "指路②：新建会话（同目录）开场自动收到交接+原话");
+});
+
+test("pre-step block 文案截断：原话超 120 码点 → 头 120 码点＋省略号,尾部不出现", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/gate", () => ({
+    status: 200,
+    json: { decision: "block", reason: "拦截" },
+  }));
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  const head = "前".repeat(120);
+  const tail = "后".repeat(80);
+
+  const decision = await onPreStep(deps, {
+    agent: { session: { header: { id: SID, cwd: "C:/proj" } } },
+    messages: [{ content: [{ type: "text", text: head + tail }] }],
+    turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [] }));
+
+  assert.equal(decision.kind, "reject");
+  const line = logger.warns[0]!;
+  assert.ok(line.includes(head), "头 120 码点完整保留");
+  assert.ok(line.includes("…"), "截断尾标（省略号）在");
+  assert.ok(!line.includes(tail), "尾部 80 码点不出现在文案里");
+});
+
+test("pre-step block 文案截断：码点计数（增补平面字符按 1 计,不按 UTF-16 单元）", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/gate", () => ({
+    status: 200,
+    json: { decision: "block", reason: "拦截" },
+  }));
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  // 119 个 BMP 码点＋1 个增补平面码点（𝄞=U+1D11E,UTF-16 占 2 单元）=120 码点
+  //（121 UTF-16 单元）：按码点截断恰好全保;按 UTF-16 单元会把 𝄞 腰斩。
+  const text = "前".repeat(119) + "𝄞" + "后".repeat(50);
+
+  await onPreStep(deps, {
+    agent: { session: { header: { id: SID, cwd: "C:/proj" } } },
+    messages: [{ content: [{ type: "text", text }] }],
+    turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [] }));
+
+  const line = logger.warns[0]!;
+  assert.ok(line.includes("𝄞"), "第 120 个码点（𝄞）完整保留,不被 UTF-16 腰斩");
+  assert.ok(!line.includes("后".repeat(50)), "尾部不出现");
+});
+
 test("pre-step：allow → 透传 next() 决策（不拦截）", async (t) => {
   const mock = await mockFor(t);
   const deps = depsOver(mock, makeLogger());
