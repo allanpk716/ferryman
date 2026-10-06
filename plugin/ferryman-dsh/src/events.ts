@@ -60,6 +60,9 @@ export interface SessionRef {
 export interface AgentRef {
   session?: SessionRef;
   inject?: (message: UserMessageLike) => void;
+  /** followup 代发面（runtime-types.ts:218-222,入队即唤醒开新 turn）——票08
+   *  「强续重发」用;可选鸭子面,缺省走降级文案（spike 验②:拦截现场可直接捕获） */
+  followup?: (message: UserMessageLike) => void;
 }
 
 // ---- agent/pre-step（waterfall） ----
@@ -124,12 +127,14 @@ export interface EventDeps {
   /** 欠交接账本（键=会话头行 id,多会话互不串）：created 问空记一笔,
    *  用户步重问拿到即清;dispose 终局清（A4② 持续重试,2026-10-06 票05） */
   handoffPending: Map<string, boolean>;
+  /** 被拦事件仓（票08：拦截现场缓存,浏览器卡片数据源;宿主进程生命周期） */
+  blocked: BlockedStore;
   /** 时钟注入面（判活转发的时间戳）;缺省 Date.now */
   now?: () => number;
 }
 
 export function makeEventDeps(ep: DaemonEndpoint, logger: LoggerLike): EventDeps {
-  return { ep, logger, titles: new Map(), handoffPending: new Map(), now: () => Date.now() };
+  return { ep, logger, titles: new Map(), handoffPending: new Map(), blocked: new BlockedStore(), now: () => Date.now() };
 }
 
 // ---- 共用小件 ----
@@ -169,6 +174,143 @@ export function truncateCodePoints(text: string, cap: number): string {
   return cps.slice(0, cap).join("") + "…";
 }
 
+// ---- 被拦事件缓存（票08 · F1 双面包,宿主半面数据源） ----
+
+/** daemon bypass 前缀（internal/daemon/gate.go:106 strings.HasPrefix(prompt,"强续")） */
+export const BYPASS_PREFIX = "强续";
+
+/**
+ * 宿主侧完整被拦事件（含 agent 活引用——只活在本进程,绝不外泄出宿主面;
+ * 被拒消息本身从 durable inbox 消失不进会话日志,runtime-types.ts:291,
+ * 拦截时缓存是原话唯一主径——spike 验②）。
+ */
+export interface BlockedEvent {
+  id: string;
+  sessionId: string;
+  cwd: string;
+  reason: string;
+  prompt: string;
+  time: number;
+  agent: AgentRef;
+  done: boolean;
+  doneAction: BlockedAction | null;
+}
+
+/** 动作记录（塌缩行文案的判别键） */
+export type BlockedAction = "resend" | "new-session";
+
+/** 浏览器拉取面 wire 形状（JSON 安全;键白名单,无 agent） */
+export interface BlockedCard {
+  id: string;
+  reason: string;
+  prompt: string;
+  time: number;
+  done: boolean;
+  doneAction: BlockedAction | null;
+}
+
+export interface BlockedRecordInput {
+  sessionId: string;
+  cwd: string;
+  reason: string;
+  prompt: string;
+  time: number;
+  agent: AgentRef;
+}
+
+/** 会话内缓存上限（FIFO 逐出最老;宿主内存有界,丢失面=降级手打,票10 文案兜底） */
+const BLOCKED_SESSION_CAP = 20;
+/** wire 面原话截断（码点;防御面——原话可能极长,浏览器只需预览与身份比对） */
+const BLOCKED_PROMPT_WIRE_CAP = 2000;
+
+/**
+ * 被拦事件仓：拦截现场 record,Remote 面拉取/动作落账。宿主重启即失
+ * （ADR-0023 取舍）——已知且接受:强续降级为用户手打,新会话本来就不依赖缓存。
+ */
+export class BlockedStore {
+  private seq = 0;
+  private readonly bySession = new Map<string, BlockedEvent[]>();
+
+  /** 拦截现场落账（同会话 FIFO 封顶;返回完整事件供调用方续用） */
+  record(input: BlockedRecordInput): BlockedEvent {
+    const events = this.bySession.get(input.sessionId) ?? [];
+    if (events.length >= BLOCKED_SESSION_CAP) events.shift();
+    const ev: BlockedEvent = {
+      id: `b${++this.seq}`,
+      sessionId: input.sessionId,
+      cwd: input.cwd,
+      reason: input.reason,
+      prompt: input.prompt,
+      time: input.time,
+      agent: input.agent,
+      done: false,
+      doneAction: null,
+    };
+    events.push(ev);
+    this.bySession.set(input.sessionId, events);
+    return ev;
+  }
+
+  /** wire 面（prompt 截断;不含 agent）;空会话空数组 */
+  list(sessionId: string): BlockedCard[] {
+    return (this.bySession.get(sessionId) ?? []).map((ev) => ({
+      id: ev.id,
+      reason: ev.reason,
+      prompt: truncateCodePoints(ev.prompt, BLOCKED_PROMPT_WIRE_CAP),
+      time: ev.time,
+      done: ev.done,
+      doneAction: ev.doneAction,
+    }));
+  }
+
+  get(id: string): BlockedEvent | undefined {
+    for (const events of this.bySession.values()) {
+      const hit = events.find((ev) => ev.id === id);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+
+  markDone(id: string, action: BlockedAction): BlockedEvent | undefined {
+    const ev = this.get(id);
+    if (ev === undefined || ev.done) return ev;
+    ev.done = true;
+    ev.doneAction = action;
+    return ev;
+  }
+
+  /**
+   * 手打强续对账：用户绕过卡片手敲「强续 <原话>」放行时,把精确同文的待处理卡
+   * 转 done(resend)——卡片不留假待办。精确匹配（去前缀+trim 后全等）,不做模糊
+   * 归并;未命中不动（另一句被拦的原话没被重发,卡片保持真状态）。
+   */
+  markDoneByPrompt(sessionId: string, prompt: string, action: BlockedAction): boolean {
+    const events = this.bySession.get(sessionId);
+    if (events === undefined) return false;
+    let hit = false;
+    for (const ev of events) {
+      if (!ev.done && ev.prompt === prompt) {
+        ev.done = true;
+        ev.doneAction = action;
+        hit = true;
+      }
+    }
+    return hit;
+  }
+}
+
+/** 代发文本：「强续 」+原话;原话本身以强续开头时去重避免「强续 强续 …」 */
+export function withBypassPrefix(prompt: string): string {
+  return prompt.startsWith(BYPASS_PREFIX) ? prompt : `${BYPASS_PREFIX} ${prompt}`;
+}
+
+/** 手打对账的比对键：强续前缀剥掉+两端 trim;无前缀返回 null（普通消息不对账） */
+export function stripBypassPrefix(text: string): string | null {
+  if (!text.startsWith(BYPASS_PREFIX)) return null;
+  return text.slice(BYPASS_PREFIX.length).trim();
+}
+
+
 // ---- ① agent/pre-step：闸门问询 ----
 
 /**
@@ -183,6 +325,9 @@ export function truncateCodePoints(text: string, cap: number): string {
  * 追加进当前步 downstream.messages（additional_context 同位先例）并清账;
  * 没拿到 → 账留着静默放行,绝不阻塞用户消息。block 步无下游可注入,不问
  * 不清账;循环步（step>1）照旧短路。
+ *
+ * 票08（F1）：block 落账被拦事件仓（浏览器选择框卡片数据源）;allow 的
+ * 「强续 <原话>」做手打对账（精确同文 → 待处理卡转 done）。
  */
 export async function onPreStep(
   deps: EventDeps,
@@ -195,25 +340,41 @@ export async function onPreStep(
   // 活跃对话每步都过闸门吃 machineWaiting 豁免＋注入兜底文案，污染上下文）。
   if (payload.step > 1) return next();
   const sid = sessionIdOf(payload.agent);
+  const text = blocksToText(payload.messages);
   const gate = await askGate(deps.ep, {
     session_id: sid,
     cwd: cwdOf(payload.agent),
-    prompt: blocksToText(payload.messages),
+    prompt: text,
   });
   if (gate?.decision === "block") {
     const reason = gate.reason ?? "会话闲置被闸门拦截";
     // 票10（F2 止血）：reason 之后追加被拦原话与两行指路,不替换 reason。
     // 原话来源=拦截现场 payload.messages,与闸门 prompt 同走 blocksToText,
     // 零新增 daemon 依赖;无文本块时省略原话行（无话可示,不给空行）。
-    const original = blocksToText(payload.messages);
-    const promptLine = original ? `被拦原话：${truncateCodePoints(original, blockPromptCap)}\n` : "";
+    const promptLine = text ? `被拦原话：${truncateCodePoints(text, blockPromptCap)}\n` : "";
     deps.logger.warn(
       `[ferryman-dsh] 本条输入被 Ferryman 闸门拦截：${reason}\n` +
       `${promptLine}` +
       `留在本会话：发送「强续 重发你的内容」可强制继续；\n` +
       `新建会话（同目录）：开场自动收到交接与本条原话，无需重打。`,
     );
+    // 票08（F1）：被拒消息从 durable inbox 消失不进会话日志（runtime-types.ts:291）
+    // ——拦截时缓存是原话唯一主径;agent 活引用只留宿主侧供「强续重发」代发。
+    deps.blocked.record({
+      sessionId: sid,
+      cwd: cwdOf(payload.agent),
+      reason,
+      prompt: text,
+      time: (deps.now ?? Date.now)(),
+      agent: payload.agent,
+    });
     return { kind: "reject" };
+  }
+  // 手打强续对账（票08）：用户绕过卡片手敲「强续 <原话>」过闸——把精确同文的
+  // 待处理卡转 done(resend),卡片不留假待办;普通放行消息不参与对账。
+  const stripped = stripBypassPrefix(text);
+  if (sid && stripped !== null) {
+    deps.blocked.markDoneByPrompt(sid, stripped, "resend");
   }
   const downstream = await next();
   if (downstream.kind !== "enter") return downstream;

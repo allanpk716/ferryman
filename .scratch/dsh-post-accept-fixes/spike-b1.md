@@ -76,3 +76,4 @@
 ## 附：基线
 
 - 插件测试基线：79/79 绿（`node --test --experimental-strip-types "test/*.test.ts"`，2026-10-06 本分支复跑；票05 后已从 73 增至 79）。本票零代码改动，基线未动。
+- 实现期回写（票08，2026-10-06，以事实为准）：验③补两事实——宿主 `agents.create` 需调用方自备 `sessionId`（`session-<uuid>`，session-controller commands.ts:109/266 同形）且新会话须 `workspaceRegistry.list()/attachSession` 挂靠才进侧栏分组；"startSession" 是浏览器侧 uiWorkspace 流（navigation.ts:223），宿主 agents 注册面无此方法——票08 按宿主 create＋挂靠落地，spike 其余结论与实现一致（remote 已验证，无需改判）。
