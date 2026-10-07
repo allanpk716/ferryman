@@ -168,10 +168,24 @@ func TestDshCompactTriggerFiveConditions(t *testing.T) {
 			func(t *testing.T, e *trigEnv) { wantNoSlot(t, e) }},
 		{"条件③族系在途不入槽", 100,
 			func(e *trigEnv) {
-				e.regTrig(80, 50000)
-				e.led.DshMainRunSet(trigSID, true, e.t0-1) // 运行态在效（长生成/子代理在跑）
+				e.regTrig(1000, 50000)
+				// v0.9.4 新鲜度语义：运行信号晚于 lastWrite(t0-1000)+宽限300(=t0-700)
+				// 才挡——t0-100 的刷新=写入后仍在跑（长生成/子代理），不入槽
+				e.led.DshMainRunSet(trigSID, true, e.t0-100)
 			},
 			func(t *testing.T, e *trigEnv) { wantNoSlot(t, e) }},
+		{"条件③陈旧运行态不挡（v0.9.4 bb5d5e37 实锚）", 100,
+			func(e *trigEnv) {
+				e.regTrig(1000, 50000)
+				// 运行信号比最后写入只新 50s(<300 宽限)=宿主未送 idle 的挂死残影
+				//——闲置已 1000s 过触发线,陈货不挡（旧语义挂满 DshRunStaleS=永迟）
+				e.led.DshMainRunSet(trigSID, true, e.t0-950)
+			},
+			func(t *testing.T, e *trigEnv) {
+				if cmd := e.trigSlot(trigSID); cmd == nil {
+					t.Fatal("陈旧运行态应放行入槽")
+				}
+			}},
 		{"条件④有效压缩标记不入槽", 100,
 			func(e *trigEnv) {
 				e.regTrig(80, 50000)

@@ -41,6 +41,10 @@ import (
 	"ferryman/internal/ledger"
 )
 
+// dshCompactRunGraceS 在途判定宽限（v0.9.4）：运行信号晚于 lastWrite+本宽限才
+// 挡触发——容忍转录落盘批延迟（事件批 200ms 落盘先例同量级思想，取宽值防误放）。
+const dshCompactRunGraceS = 300.0
+
 // dshCompactSlotFresh 槽内是否存在未过期指令（触发面自判，票02 compact.go
 // 槽锁内只读）。过期指令留槽等覆盖（N1 派发侧丢弃语义在 DshPoll）——留槽
 // 的过期指令不挡新触发。
@@ -81,8 +85,10 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 	if peak < dc.MinPeakTokens {
 		return // 条件②peak 不足（压缩红利盖不过冷重付，不值得压）
 	}
-	if w.Ledger.DshFamilyRunning(sid) {
-		return // 条件③在途（族系运行态在效——长生成/子代理在跑，此刻不该压）
+	if w.Ledger.DshFamilyRunningAfter(sid, lastWrite+dshCompactRunGraceS) {
+		return // 条件③在途（运行信号晚于最后写入+宽限——v0.9.4 新鲜度语义：宿主
+		// 未送 status=idle 时运行态挂 1h 的陈货不再挡触发；真在途的长生成持续写
+		// 转录，运行信号恒新于 lastWrite，保护不丢）
 	}
 	if _, _, active := w.Daemon.DshCompressedActive(sid); active {
 		return // 条件④有效 compressed 标记（刚压过、红利未消费完，不重复压）

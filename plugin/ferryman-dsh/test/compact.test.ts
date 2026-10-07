@@ -227,21 +227,25 @@ test("双重复查·忙：agent running → 上报 expired-or-busy,不碰 compac
   assert.equal(logger.errors.length, 0);
 });
 
-test("双重复查·冷窗与未知会话：闲置 ≥ TTL / 注册表无此 sid → expired-or-busy", async (t) => {
+test("双重复查·冷窗已删（v0.9.4）：闲置 1800s 无忙位照样执行;未知会话仍拒", async (t) => {
   const mock = await mockFor(t);
   let cmdSid = SID;
   mock.route("/dsh/poll", () => ({ status: 200, json: { commands: [{ action: "compact", session_id: cmdSid, cwd: "C:/proj" }] } }));
   let clock = 1_000_000_000_000;
   const registry = new SessionRegistry(() => clock);
   registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
-  clock += 1800_000; // 恰满 1800s:热窗为 < TTL,等于即出窗
+  clock += 1800_000; // 闲置 1800s——热窗腿已删（bb5d5e37 实锚）,无忙位即执行
+  const { engine, rec } = makeEngine();
   const logger = makeLogger();
-  const handle = await startSettled(t, mock, { logger, registry });
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["compaction", engine]])),
+    readPrefixTokens: () => 1234,
+  });
   await handle.tick();
-  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
+  await waitUntil(() => rec.calls.length >= 1 && mock.requestsFor("/dsh/compacted").length >= 1);
   const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
-  assert.equal(body["ok"], false);
-  assert.equal(body["reason"], "expired-or-busy", "闲置恰满 TTL=出热窗");
+  assert.equal(body["ok"], true, "闲置恰满 TTL 无忙位=执行（冷压缩照样省,daemon 触发为权威）");
+  assert.equal(body["prefix_tokens"], 1234);
 
   cmdSid = "session-does-not-exist";
   await handle.tick();
@@ -251,37 +255,31 @@ test("双重复查·冷窗与未知会话：闲置 ≥ TTL / 注册表无此 sid
   assert.equal(body2["reason"], "expired-or-busy", "宿主已不持有该会话=复查不过");
 });
 
-test("ttl_s 应答覆盖热窗：60s 窗杀超窗会话;3600s 窗放行同会话执行", async (t) => {
+test("busy 衰减（v0.9.4）：置位 300s 后不再算忙——挂死 busy 不永拒", async (t) => {
   const mock = await mockFor(t);
-  let ttl = 60;
-  const flag = { on: false };
-  mock.route("/dsh/poll", () => ({
-    status: 200,
-    json: flag.on ? { commands: [CMD], ttl_s: ttl } : { commands: [] },
-  }));
+  const { flag } = dispatchRoute(mock);
   let clock = 1_000_000_000_000;
   const registry = new SessionRegistry(() => clock);
   const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
   registry.touch(SID, "C:/proj", agent);
-  clock += 120_000; // 闲置 120s
+  registry.setStatus(SID, "running"); // 宿主未送 idle（bb5d5e37 实锚形态）:busy 挂死
+  clock += 400_000; // 400s 无任何事件——busy 已陈（>300s 衰减窗）
   const { engine, rec } = makeEngine();
   const logger = makeLogger();
   const handle = await startSettled(t, mock, {
-    logger, registry, ttlS: 1800, ctx: ctxWithServices(logger, new Map([["compaction", engine]])),
+    logger, registry, ctx: ctxWithServices(logger, new Map([["compaction", engine]])),
+    readPrefixTokens: () => 2345,
   });
   flag.on = true;
-  await handle.tick(); // ttl_s=60 < 120 → 出窗
-  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
-  assert.equal((mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>)["reason"], "expired-or-busy");
-  assert.equal(rec.calls.length, 0);
-
-  ttl = 3600;
-  await handle.tick(); // ttl_s=3600 > 120 → 热窗内,执行
-  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 2 && rec.calls.length >= 1);
-  assert.equal(rec.calls.length, 1, "热窗覆盖后放行执行");
-  assert.equal((mock.requestsFor("/dsh/compacted")[1]!.body as Record<string, unknown>)["ok"], true);
+  await handle.tick();
+  await waitUntil(() => rec.calls.length >= 1 && mock.requestsFor("/dsh/compacted").length >= 1);
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["ok"], true, "挂死 busy 过衰减窗=执行");
   flag.on = false;
 });
+
+// （ttl_s 应答覆盖热窗的旧测试随「闲置<TTL」腿一并退役——v0.9.4 热窗语义删除,
+//  bb5d5e37 实锚;ttl_s 字段解析保留待「poll 应答补发 ttl_s」留底小票复用。）
 
 // ---- ⑤ 执行臂：receiver / busy / 前缀 / 上报 ----
 

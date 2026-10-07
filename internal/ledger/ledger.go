@@ -526,6 +526,29 @@ func (l *Ledger) DshFamilyRunning(sid string) bool {
 	return l.dshFamilyRunningWindow(sid, 0, DshRunStaleS)
 }
 
+// DshFamilyRunningAfter v0.9.4 运行态新鲜度判定（dsh-hot-compaction 触发面）：
+// 运行信号晚于 sinceTS 才算真在途。生产实锚（2026-10-07 bb5d5e37 八连
+// expired-or-busy）：宿主未送 status=idle 时运行态挂满 DshRunStaleS(1h)，
+// 触发被陈旧 running 信号推迟到闲置 1h——比文件写入还老的运行信号在「闲置
+// 已过触发线」的语境里是陈货（真在途的长生成会持续写转录，LastWrite 会推过
+// running 置位时刻）。触发面以 lastWrite+宽限 为界调用；闸门豁免/qwatch 沿用
+// 原语义不动。
+func (l *Ledger) DshFamilyRunningAfter(sid string, sinceTS float64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if st := l.byKey[[2]string{"dsh", sid}]; st != nil && st.DshRunningTS != nil &&
+		*st.DshRunningTS > sinceTS {
+		return true
+	}
+	for child := range l.dshChildren[sid] {
+		if ent, ok := l.dshChildRuns[child]; ok && ent.runningTS != nil &&
+			*ent.runningTS > sinceTS {
+			return true
+		}
+	}
+	return false
+}
+
 // DshFamilyRunningGated 闸门豁免专用（machineWaiting dsh 道）：同
 // DshFamilyRunning 但窗口＝DshRunGraceS ≤ 距今 ≤ DshRunGateCapS（2026-10-05
 // 漏拦案两洞：①下限——刚置位的运行态多半是本输入自己的 turn/start /

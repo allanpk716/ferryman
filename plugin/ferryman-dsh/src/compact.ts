@@ -4,10 +4,12 @@
 //     建议可调,取 max(建议, 10000ms) 下限）;每轮 POST {daemon}/dsh/poll,体=
 //     本宿主会话清单 {agent:"dsh", sessions:[{sid, idle_s}]}（会话注册表由
 //     五事件位维护,见 events.ts 各 handler 的 touch/setStatus/remove）。
-//   - 指令执行前双重复查（N1 插件侧）：①agent 仍空闲（agent/status 维护的
-//     忙位）∧ ②会话闲置时钟仍 < TTL（热窗内;缺省 1800s=ADR-0016 同款,应答
-//     ttl_s 可覆盖）。任一不过 → POST /dsh/compacted {ok:false,
-//     reason:"expired-or-busy"},不执行。
+//   - 指令执行前双重复查（N1 插件侧,v0.9.4 修订）：①agent 在册且宿主拿得到
+//     ∧ ②busy 位新鲜（置位后 300s 内才算忙——宿主未送 status=idle 时挂死的
+//     busy 不再永拒）。任一不过 → POST /dsh/compacted {ok:false,
+//     reason:"expired-or-busy"},不执行。「闲置<TTL 热窗」腿已删（2026-10-07
+//     bb5d5e37 实锚:宿主 idle 缺送时指令恒迟于 TTL=永拒;冷压缩照样省——
+//     0592c18d 同日实锚 60562→20562）。
 //   - 执行（两道,先命令后服务面——2026-10-07 E2E 实锚返工）：
 //     ①命令道（首选）：真机 web 宿主把 compaction 服务隔离在 preset 组内
 //      （packages/bundle/web-app/cordis.patch.yml「The token METER stays on the
@@ -454,11 +456,17 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
       if (delivered && deps.banner !== undefined) deps.banner.set(sid);
     };
     try {
-      // N1 双重复查：agent 空闲 ∧ 闲置 < TTL 热窗;任一不过 → expired-or-busy 不执行。
-      // 无登记/无 agent 引用（会话已终局或仅剩事件流残影）同归此支——宿主拿不出的会话不硬压。
+      // N1 双重复查（v0.9.4 生产实锚修订,2026-10-07 bb5d5e37 八连 expired-or-busy）：
+      // ①agent 在册且宿主拿得到（无登记/无 agent 引用＝会话已终局或仅剩事件流残影,
+      // 不硬压）;②busy 位带 5min 衰减——宿主未送 status=idle 时 busy 挂死,而真在途
+      // 的回合事件流持续喂注册表、idle 恒小,衰减窗不误放。「闲置 < TTL 热窗」腿已删:
+      // daemon 触发是压缩时机的权威（触发线 0.8×TTL 自带热窗语义）,宿主 idle 缺送时
+      // 指令恒迟于 TTL,此腿等于永不执行;冷压缩照样把下次重付砍 2/3（同日 0592c18d
+      // 实锚 60562→20562）。
       const idle = deps.registry.idleS(sid);
       const entry = idle === undefined ? undefined : deps.registry.get(sid);
-      if (entry === undefined || entry.agent === undefined || entry.agent === null || entry.busy || idle >= ttlS) {
+      const busyLive = entry !== undefined && entry.busy === true && (idle ?? Infinity) < 300;
+      if (entry === undefined || entry.agent === undefined || entry.agent === null || busyLive) {
         await report({ ok: false, reason: "expired-or-busy" });
         return;
       }
