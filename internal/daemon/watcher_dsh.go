@@ -283,6 +283,10 @@ func (w *Watcher) pollDshSession(dir string) {
 	// 仅 dsh——本函数即 dsh 专属路径，谓词面另有 agent 收窄）。排在 maybeEnqueue
 	// 之后＝同轮常规线优先。
 	w.maybeDshRegen(st, rec)
+	// 票03（dsh-hot-compaction）：热缓存压缩触发扫描——五条件全真入指令槽＋
+	// 并行交接（compact_trigger.go）。排在重铸之后＝重铸优先，既有生产行为
+	// 零扰动；两线同轮互斥由 HandedOffAt 章保证（先入队者盖章）。
+	w.maybeDshCompactTrigger(st)
 }
 
 // dshIsFed 会话是否已被插件事件面接管（票05 跨源去重开关）。nil Daemon 或

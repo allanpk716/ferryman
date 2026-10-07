@@ -229,7 +229,10 @@ test("list：返回 wire 卡片（与 store 同形）;空会话空数组不抛",
   assert.equal(out.ok, true);
   assert.equal(out.cards.length, 1);
   assert.equal(out.cards[0]!.prompt, "原话");
-  assert.deepEqual(await service.list("session-unknown"), { ok: true, sessionId: "session-unknown", cards: [] });
+  assert.deepEqual(await service.list("session-unknown"), { ok: true, sessionId: "session-unknown", cards: [], banner: false });
+  // 票06：信封层扩 banner 布尔（压缩完成横幅数据通道,src/banner.ts）——上方
+  // cards[] 元素键白名单（「wire 键白名单外的键」断言）不动,扩的是信封键;
+  // banner 语义与状态机钉在 test/banner.test.ts。
 });
 
 test("resend：followup 代发「强续 +原话」UserMessage（ferryman-dsh source）,卡片转 done(resend)", async () => {
@@ -374,6 +377,31 @@ test("registerBlockedRemote：cordis 代理对未声明 inject 的服务属性�
   assert.ok(provided.has(BLOCKED_SERVICE_KEY), "服务仍注册（list/resend/拦截不受影响）");
   const svc = provided.get(BLOCKED_SERVICE_KEY) as { typertRemote: unknown };
   assert.ok(svc.typertRemote, "注册的是带 SRC 面的服务对象");
+});
+
+test("registerBlockedRemote 懒注入:宿主运行期递 agents 面 →「新会话」真建会话（fork-session.ts:60-64 正道,真机 web 宿主改钉）", async (t) => {
+  const mock = await mockFor(t);
+  blockRoute(mock);
+  const deps = depsOver(mock, makeLogger());
+  await intercept(deps, "懒注入后新会话可点", SID);
+  const provided = new Map<string, unknown>();
+  const created: Array<Record<string, unknown>> = [];
+  const fakeAgents = { create: async (opts: Record<string, unknown>) => { created.push(opts); } };
+  const ctx = {
+    provide: (name: string, value: unknown) => void provided.set(name, value),
+    get agents(): never { throw new Error('cannot get property "agents" without inject'); },
+    inject: (services: readonly string[], cb: (scoped: unknown) => void) => {
+      if (services.includes("agents")) cb({ agents: fakeAgents });
+    },
+  };
+  registerBlockedRemote(ctx as never, deps);
+  const svc = provided.get(BLOCKED_SERVICE_KEY) as { newSession(id: string): Promise<{ ok: boolean; sessionId?: string }> };
+  const card = deps.blocked.list(SID)[0]!;
+  const r = await svc.newSession(card.id);
+  assert.equal(r.ok, true, "懒注入的 agents 面被用上——新会话真建了");
+  assert.match(r.sessionId ?? "", /^session-/, "回话带新会话键");
+  assert.equal(created.length, 1, "agents.create 恰调一次");
+  assert.equal((created[0]!.meta as Record<string, unknown>).cwd, "C:/proj", "同目录建会话（交接按 cwd 锚定带回）");
 });
 
 test("apply 集成：挂接的 pre-step 拦下后,经 provide 出的 Remote 服务可拉到卡片", async (t) => {

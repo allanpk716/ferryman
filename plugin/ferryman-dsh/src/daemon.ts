@@ -1,5 +1,5 @@
-// 票05 · daemon 管理口 HTTP 客户端——三口（/dsh/gate、/dsh/event、/dsh/handoff）
-// 的统一发送面。对面契约钉点（Ferryman 仓内,只读）：
+// 票05 · daemon 管理口 HTTP 客户端——五路（/dsh/gate、/dsh/event、/dsh/handoff、
+// /dsh/poll、/dsh/compacted,后两路=票05 热压缩执行臂）的统一发送面。对面契约钉点（Ferryman 仓内,只读）：
 //   - 端点与守门序：POST + Bearer <daemon.token> + loopback（internal/daemon/
 //     dsh_receive.go:59-91;token 文件 <dataDir>/daemon.token,internal/daemon/
 //     httpapi.go:35-54）;管理口缺省 15700。
@@ -99,6 +99,58 @@ export async function askHandoff(
   if (!r.ok || typeof r.data !== "object" || r.data === null) return null;
   const ctx = (r.data as Record<string, unknown>)["context"];
   return typeof ctx === "string" && ctx.length > 0 ? ctx : null;
+}
+
+// ---- /dsh/poll 指令轮询与 /dsh/compacted 压缩上报（票05 热压缩执行臂） ----
+
+/** poll 应答里的单条指令（spec「架构与契约」:{action:"compact", session_id, cwd}） */
+export interface PollCommand {
+  action?: string;
+  session_id?: string;
+  cwd?: string;
+}
+
+/** poll 应答（commands=未过期指令,过期即丢弃在 daemon 侧;poll_hint_s=建议轮询
+ *  间隔秒,下限 10s 插件侧托底;ttl_s=热窗复查 TTL 秒,插件侧可选覆盖） */
+export interface PollResponse {
+  commands?: PollCommand[];
+  poll_hint_s?: number;
+  ttl_s?: number;
+}
+
+/**
+ * 取压缩指令。单次尝试,失败回 null＝轮询失败静默（spec 钉点:下轮再试）。
+ */
+export async function askPoll(
+  ep: DaemonEndpoint,
+  body: { agent: string; sessions: Array<{ sid: string; idle_s: number }> },
+): Promise<PollResponse | null> {
+  const r = await postJSON(ep, "/dsh/poll", body);
+  if (!r.ok || typeof r.data !== "object" || r.data === null) return null;
+  return r.data as PollResponse;
+}
+
+/** compacted 上报体（daemon 落账本 kind=compacted 全字段;ok=true 且 prefix_tokens
+ *  非空时更新 gate 会话 compressed 标记——spec「架构与契约」） */
+export interface CompactedReport {
+  session_id: string;
+  ok: boolean;
+  reason?: string;
+  prefix_tokens?: number;
+  source?: string;
+}
+
+/**
+ * 上报压缩结果。朴素失败策略（sendEvent 同款）：失败不阻塞、静默重试一次;
+ * 两败俱败回 false（调用方 warn 一行）,永不抛。
+ */
+export async function reportCompacted(ep: DaemonEndpoint, body: CompactedReport): Promise<boolean> {
+  let r = await postJSON(ep, "/dsh/compacted", body);
+  if (!r.ok) {
+    r = await postJSON(ep, "/dsh/compacted", body); // 静默重试一次
+    if (!r.ok) return false;
+  }
+  return true;
 }
 
 // ---- /dsh/event 事件上报 ----

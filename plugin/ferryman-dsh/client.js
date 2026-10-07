@@ -25,6 +25,11 @@
 //     inject 回调发业务面）。被拦事件不是会话日志事件,无对话流内嵌节点可挂,
 //     输入坞卡面是平台上离「对话区选择框」最近的可交互落点（mock 信息结构
 //     原样保留,配色走平台 design token）。
+//   - 压缩横幅（票06）：同 list 应答信封扩 banner 布尔（宿主在 compactNow 成功
+//     +上报送达置位、用户下次发消息/会话终局清位——src/banner.ts 触发源克隆
+//     钉点;触发源不走 session/event 流,compaction 三事件 log-only 不进 surface,
+//     types.ts:3-4）。横幅=无按钮轻行（D3 定案）,复用同一 dock 槽与窄容器浮层
+//     先例,拉到 banner:false 即消失（单次展示,以宿主位为准,浏览器不自行续命）。
 //   - 已知取舍（ADR-0023）：宿主重启丢缓存 → 卡片数据为空,拦截反馈回落票10
 //     logger 文案;DSH 前端内部面（slot 名/roster 机制）随宿主升级可能漂移,
 //     失灵只降级回「消息消失+日志一行」,闸门本体在 daemon 侧不受影响。
@@ -136,6 +141,17 @@
         border: '1px solid var(--dsw-alias-border-l2, #3a4160)',
         color: 'var(--dsw-alias-label-secondary, #9aa0b5)',
       },
+      // 票06 压缩横幅行：与 doneRow 同族轻行（背景+一行字+小图标,无按钮——D3 定案）,
+      // 但文案用主标签色（这是「可以放心继续」的正面讯号,不是记录残行）
+      bannerRow: {
+        display: 'flex', alignItems: 'center', gap: '8px',
+        fontSize: '12.5px', wordBreak: 'break-word',
+        padding: '9px 14px', borderRadius: '14px',
+        width: '100%', maxWidth: '100%', boxSizing: 'border-box',
+        background: 'var(--dsw-alias-bg-layer-2, #1d2030)',
+        border: '1px solid var(--dsw-alias-border-l2, #3a4160)',
+        color: 'var(--dsw-alias-label-primary, #e8eaf2)',
+      },
       tick: {
         width: '16px', height: '16px', borderRadius: '50%', flex: 'none',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -230,7 +246,8 @@
 
     function BlockedDock(props) {
       var face = props.ferrymanBlocked;
-      var statePair = React.useState({ cards: [], ready: false });
+      // banner=压缩横幅位（票06,信封层布尔;宿主清位后下轮拉到 false 即消失）
+      var statePair = React.useState({ cards: [], banner: false, ready: false });
       var cards = statePair[0];
       var setCards = statePair[1];
       var busyPair = React.useState('');
@@ -251,7 +268,7 @@
       function refresh() {
         return face.list().then(function (r) {
           if (r && r.ok && Array.isArray(r.cards)) {
-            setCards({ cards: r.cards, ready: true });
+            setCards({ cards: r.cards, banner: r.banner === true, ready: true });
           }
         }).catch(function () { /* 轮询失败静默,下轮再试 */ });
       }
@@ -261,7 +278,7 @@
         var tick = function () {
           face.list().then(function (r) {
             if (alive && r && r.ok && Array.isArray(r.cards)) {
-              setCards({ cards: r.cards, ready: true });
+              setCards({ cards: r.cards, banner: r.banner === true, ready: true });
             }
           }).catch(function () { /* 静默 */ });
         };
@@ -291,7 +308,8 @@
         };
       }, [rootEl]);
 
-      if (!cards.ready || cards.cards.length === 0) return null;
+      // 票06：横幅在场即渲染（不再单看卡片数量才渲染）;无卡无横幅照旧整体 null
+      if (!cards.ready || (cards.cards.length === 0 && !cards.banner)) return null;
 
       function act(method, card) {
         setBusy(card.id);
@@ -311,10 +329,25 @@
         });
       }
 
-      var children = cards.cards.map(function (card) {
-        return card.done
+      var children = [];
+      // 票06 压缩横幅（置顶,先安心再看事）：宿主压缩成功+上报送达置位,单次展示
+      // ——用户下次发消息宿主清位,下轮拉到 banner:false 即消失（状态机以宿主位
+      // 为准,浏览器不自行续命）
+      if (cards.banner) {
+        children.push(h('div', {
+          key: 'ferryman-banner',
+          style: S.bannerRow,
+          'data-ferryman-banner': 'compacted',
+          role: 'status',
+        }, [
+          h('span', { style: S.tick, 'aria-hidden': 'true' }, '✓'),
+          '本会话已压缩归档（交接已存档），直接继续',
+        ]));
+      }
+      cards.cards.forEach(function (card) {
+        children.push(card.done
           ? CollapsedCard(card)
-          : PendingCard(card, face, busy === card.id, act);
+          : PendingCard(card, face, busy === card.id, act));
       });
       if (err) {
         children.push(h('div', { key: 'ferryman-err', style: S.err, role: 'alert' }, err));

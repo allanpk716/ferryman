@@ -219,6 +219,21 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			d.gateWarn(agent, snap.sid, "hot-allow", idle)
 			return allowAllow(d.hotCtx(idle, remain))
 		}
+		// 票04 dsh-hot-compaction gate 联动：已压缩短前缀不拦——拦窗内先查压缩
+		// 标记（判定单源票02 DshCompressedActive：标记在∧未过死线∧标记后无
+		// 机器产出流量，gate 只消费不重复实现）：有效 ∧ 当前前缀 <
+		// min_peak_tokens → 全量重付的前提不成立（前缀已短，冷重付也便宜），
+		// 放行不拦。pending 同 hot-allow 款清掉（红利失效后再长闲置从分支7
+		// 重新起圈，保护不丢）；否则照旧拦。标记唯一置位口 = /dsh/compacted
+		//（票02），只挂 dsh 会话——cc/codex 查无标记＝行为零变化。
+		if prefix, ok := d.DshCompressedActive(snap.sid); ok &&
+			prefix < d.Cfg.DshCompact.MinPeakTokens {
+			d.Pending.Clear(key)
+			d.gateWarn(agent, snap.sid, "compacted-short-prefix", idle)
+			return map[string]any{"decision": "allow",
+				"reason":             "compacted-short-prefix",
+				"additional_context": d.compactedShortCtx(idle)}
+		}
 	}
 
 	// observe：只警告不拦（验证期默认）
@@ -426,6 +441,14 @@ func (d *Daemon) hotCtx(idle, remainS float64) string {
 	return mathx.RuneTrunc(fmt.Sprintf("[Ferryman] 本会话已闲置 %.0f 分钟，但缓存仍热"+
 		"（近期保温/请求焐热），本条按折扣价，放行不拦。缓存约 %.0f 分钟后过期；"+
 		"之后再长闲置会被正常拦（交接自动备好）。", idle/60, remainS/60), WarnContextCap)
+}
+
+// compactedShortCtx 已压缩短前缀的放行提示（票04 gate 联动，hotCtx 同款）：
+// 说明为何不拦（已压缩归档、前缀已短）＋红利边界（标记失效后照旧拦）。
+func (d *Daemon) compactedShortCtx(idle float64) string {
+	return mathx.RuneTrunc(fmt.Sprintf("[Ferryman] 本会话已闲置 %.0f 分钟，但已被"+
+		"压缩归档（前缀已短，重付便宜），本条放行不拦；压缩红利失效后再长闲置"+
+		"会被正常拦（交接自动备好）。", idle/60), WarnContextCap)
 }
 
 // warnCtx _warn_ctx（server.py:279-289；cc 逐字）。

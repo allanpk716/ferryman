@@ -1,9 +1,11 @@
 package daemon
 
-// dsh_receive.go — dsh phase2 票04：daemon 接收面三口（spec「daemon 接收面」
+// dsh_receive.go — dsh phase2 票04：daemon 接收面（spec「daemon 接收面」
 // 节，D5 同构复用）：POST /dsh/gate（闸门问询）、POST /dsh/event（事件接收）、
 // POST /dsh/handoff（交接查询）。与 CC 面同构、不另起炉灶：
-//
+// 票02（dsh-hot-compaction）起新增两口 POST /dsh/poll（轮询取压缩指令）、
+// POST /dsh/compacted（压缩结果上报）——业务本体在 compact.go，本文件只挂
+// 同一拦截族（守门序同源）。三口明细：
 //   - /dsh/gate：body 钉 agent="dsh" 后整体交 Gate——闸门判定入口唯一（台账/
 //     阈值/观察窗/observe-enforce 状态机零复制）；非 cc agent 的模式开关走
 //     gate.codex_mode（既有语义，不另设 dsh 开关）；决策回显与 CC /gate 同形
@@ -51,11 +53,12 @@ import (
 	"ferryman/internal/clock"
 )
 
-// isDshReceivePath 三口路径判定（makeHandler 拦截与 doDshReceive 分派共用）。
+// isDshReceivePath 接收面路径判定（makeHandler 拦截与 doDshReceive 分派共用）。
 // RequestURI 精确匹配——带 query 视为未知路径（doPost 同规）。
 func isDshReceivePath(uri string) bool {
 	switch uri {
-	case "/dsh/gate", "/dsh/event", "/dsh/handoff":
+	case "/dsh/gate", "/dsh/event", "/dsh/handoff",
+		"/dsh/poll", "/dsh/compacted": // 票02（dsh-hot-compaction）：轮询取指令/压缩上报
 		return true
 	}
 	return false
@@ -93,6 +96,10 @@ func doDshReceive(d *Daemon, token string, w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, d.DshEvent(body))
 	case "/dsh/handoff":
 		writeJSON(w, http.StatusOK, d.DshHandoff(pyStr(body["cwd"]), pyStr(body["session_id"])))
+	case "/dsh/poll": // 票02（dsh-hot-compaction）：轮询取压缩指令
+		writeJSON(w, http.StatusOK, d.DshPoll(body))
+	case "/dsh/compacted": // 票02：压缩结果上报（账本 kind=compacted＋标记/前缀）
+		writeJSON(w, http.StatusOK, d.DshCompacted(body))
 	}
 	return true
 }
