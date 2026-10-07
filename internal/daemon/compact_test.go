@@ -5,13 +5,16 @@ package daemon
 //
 //   - poll：{agent:"dsh", sessions:[{sid,idle_s}]} → {commands:[{action,
 //     session_id,cwd}], poll_hint_s}；应答即清槽（先到先得，多宿主同 sid
-//     天然去重）；过期指令丢弃不派发（N1）；同槽新指令覆盖旧指令；
-//     enabled 关＝空应答；只应答请求清单内会话。
+//     天然去重）；过期指令丢弃不派发（N1）；槽内未过期指令不被覆盖（票01
+//     重触发节流）；enabled 关＝空应答；只应答请求清单内会话。
 //   - compacted：恒落 kind=compacted 账本行（字段齐全）；ok=true 且带
 //     prefix_tokens → compressed 标记（带 expires）＋prefix 覆盖；ok=false
 //     只落行不设标记；标记有效期（不再续期）与流量作废（红利只领一次）
 //     语义可测。
 //   - 守门序与 /dsh/gate 同族：loopback → POST → Bearer。
+//   - 票01 领取后执行窗：领取起 dshCompactExecWindowS 内无 ok 上报 → 守望
+//     sweep 计一轮未送达（与"过期无人领取"同计数同告警路径）；在飞窗内
+//     不重入槽；ok=true 收口、ok=false 不收口。
 
 import (
 	"fmt"
@@ -61,7 +64,8 @@ func newCompactEnv(t *testing.T, ttls float64) *compactEnv {
 	cfg.Heartbeat.TTLS = ttls
 	e.d = NewDaemon(cfg, e.led, st, func(*ledger.SessionState) bool { return true },
 		acc, 0, nil)
-	resetCompactMiss() // 守护可见性票01 包级态测试卫生：防跨用例渗漏（freezeClock 还原同纪律）
+	resetCompactMiss()  // 守护可见性票01 包级态测试卫生：防跨用例渗漏（freezeClock 还原同纪律）
+	resetCompactClaims() // 票01 在飞领取窗包级态同款卫生
 	return e
 }
 
@@ -138,13 +142,41 @@ func TestDshCompactPollClearsSlotOnce(t *testing.T) {
 	}
 }
 
-func TestDshCompactSlotOverwrite(t *testing.T) {
+// slotPeek 锁内抄指令槽条目（nil=无；拷贝防逃逸共享引用）——不领取的检查面
+//（poll 会起在飞执行窗，混入覆盖语义用例会串场）。
+func (e *compactEnv) slotPeek(sid string) *dshCompactCmd {
+	e.d.compactMu.Lock()
+	defer e.d.compactMu.Unlock()
+	cmd := e.d.dshCompactSlot[sid]
+	if cmd == nil {
+		return nil
+	}
+	cp := *cmd
+	return &cp
+}
+
+// TestDshCompactSlotFreshNotOverwritten 票01 收窄覆盖语义：槽内未过期指令不被
+// 同会话新指令覆盖（30s 重发环治点的一半——触发间隔 ≥ 指令有效期）；过期槽
+// 照旧允许新指令覆盖（既有覆盖语义收窄到过期槽）。
+func TestDshCompactSlotFreshNotOverwritten(t *testing.T) {
 	e := newCompactEnv(t, 100)
-	e.d.EnqueueDshCompact(compactSID, "C:/old")
-	e.d.EnqueueDshCompact(compactSID, "C:/new") // 同槽覆盖旧指令
+	if !e.d.EnqueueDshCompact(compactSID, "C:/old") {
+		t.Fatal("入槽应成功")
+	}
+	if e.d.EnqueueDshCompact(compactSID, "C:/new") {
+		t.Fatal("有效期内同槽新指令应拒（票01 重触发节流）")
+	}
+	if cmd := e.slotPeek(compactSID); cmd == nil || cmd.Cwd != "C:/old" {
+		t.Fatalf("槽内未过期指令应原样保留, got %+v", cmd)
+	}
+	// 过期后新指令照常覆盖入槽（不领取场景——过期指令留槽等覆盖）
+	e.advance(21) // 越过 0.2×100=20s 死线
+	if !e.d.EnqueueDshCompact(compactSID, "C:/new") {
+		t.Fatal("过期槽应允许新指令覆盖入槽")
+	}
 	cmds := e.d.DshPoll(pollBody(compactSID))["commands"].([]map[string]any)
 	if len(cmds) != 1 || cmds[0]["cwd"] != "C:/new" {
-		t.Fatalf("同槽应覆盖旧指令, got %v", cmds)
+		t.Fatalf("过期旧槽应被新指令覆盖, got %v", cmds)
 	}
 }
 
@@ -531,22 +563,24 @@ func TestCompactUndeliveredRounds(t *testing.T) {
 	}
 }
 
-// TestCompactUndeliveredResetHooks 清零钩子表（票01 修正版：清零＝指令被领取
-// 或 ok=true 上报，入槽不清零）。wantLastRound 是计数被清零的直接证据——清零
-// 后轮号从 1 重数；不清零的对照形轮号会照旧累大。
+// TestCompactUndeliveredResetHooks 清零钩子表（票01 修订版：清零只认 ok=true
+// 上报——领取不再清零，bb5d5e37 实锚"领取即清零"把告警永久消音；入槽照旧
+// 不清零）。wantLastRound 是计数状态变化的直接证据——清零后轮号从 1 重数；
+// 不清零的对照形轮号照旧累大。领取后走在飞执行窗（窗内不重入槽），故 claim
+// 形在续丢轮前推过窗口。
 func TestCompactUndeliveredResetHooks(t *testing.T) {
 	cases := []struct {
 		name          string
 		preDrops      int    // 首段连续轮数
-		resetKind     string // "": 无（对照）| "claim" 领取 | "ok-true" | "ok-false"
+		resetKind     string // "": 无（对照）| "claim" 领取（不清零,票01修订）| "ok-true" | "ok-false"
 		postDrops     int    // 清零（或对照）后再丢轮数
 		wantAlerts    int    // 全程 gate.log 告警行总数
 		wantLastRound int    // 尾条日志轮号（0＝不查）
 	}{
 		{"ok=true上报清零:再3轮再告警轮号重数", 3, "ok-true", 3, 2, 3},
 		{"入槽不清零:真实循环过期-重灌3轮即告警", 0, "", 3, 1, 3},
-		{"领取清零:再2轮不告警", 2, "claim", 2, 0, 2},
-		{"领取清零:第3轮才告警且轮号从1重数", 2, "claim", 3, 1, 3},
+		{"领取不清零(票01修订):累计满3轮照告警", 2, "claim", 1, 1, 3},
+		{"领取不清零(票01修订):对照形轮号累大", 1, "claim", 1, 0, 2},
 		{"ok=false不清零:第3轮照告警", 2, "ok-false", 1, 1, 3},
 	}
 	for _, tc := range cases {
@@ -566,6 +600,8 @@ func TestCompactUndeliveredResetHooks(t *testing.T) {
 				if got := e.claimOnce(compactSID); got != 1 {
 					t.Fatalf("领取应得 1 条指令, got %d", got)
 				}
+				// 票01：领取起在飞执行窗，窗内不重入槽——推过窗口再续丢轮
+				e.advance(dshCompactExecWindowS + 1)
 			}
 			for i := 0; i < tc.postDrops; i++ {
 				e.dropOnce(compactSID)
@@ -618,5 +654,161 @@ func TestCompactUndeliveredPerSession(t *testing.T) {
 	n, s := e.undeliveredAlerts()
 	if n != 2 {
 		t.Fatalf("两会话应各告警一行, got %d\n%s", n, s)
+	}
+}
+
+// ---- 票01：领取后执行窗——"领取不执行"空转环的钉子 ----
+
+// resetCompactClaims 清空包级在飞领取窗（票01 包级态测试卫生，resetCompactMiss
+// 同款纪律）。
+func resetCompactClaims() {
+	dshCompactClaimMu.Lock()
+	dshCompactClaimAt = map[string]float64{}
+	dshCompactClaimMu.Unlock()
+}
+
+// claimExecSweep 构造并结算一轮"领取后执行窗超时"（票01）：入槽→领取（在飞
+// 窗起点）→推过执行窗（180s+60s=240s）→sweep 结算（计一轮＋清领取位）。
+// 各步断言防空转假绿。
+func (e *compactEnv) claimExecSweep(t *testing.T, sid string) {
+	t.Helper()
+	if !e.d.EnqueueDshCompact(sid, "C:/proj") {
+		t.Fatal("入槽应成功（上一轮 sweep 已放行重入槽）")
+	}
+	if got := len(e.d.DshPoll(pollBody(sid))["commands"].([]map[string]any)); got != 1 {
+		t.Fatalf("指令应被领取, got %d", got)
+	}
+	e.advance(dshCompactExecWindowS + 1)
+	e.d.dshCompactClaimSweep(sid)
+}
+
+// TestDshCompactClaimWindowThrottlesEnqueue 在飞领取窗内不重入槽（票01 结构性
+// 兜底；"领取后 30s 重触发被拒"的 daemon 面钉子）。窗走满即放行（结算归守望
+// sweep，入槽侧只认窗口几何）。
+func TestDshCompactClaimWindowThrottlesEnqueue(t *testing.T) {
+	e := newCompactEnv(t, 100)
+	if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("入槽应成功")
+	}
+	if got := len(e.d.DshPoll(pollBody(compactSID))["commands"].([]map[string]any)); got != 1 {
+		t.Fatalf("指令应被领取, got %d", got)
+	}
+	e.advance(30) // 领取后 30s：执行窗（240s）内
+	if e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("在飞领取窗内重入槽应拒（30s 重发环治点）")
+	}
+	e.advance(dshCompactExecWindowS) // 越过执行窗
+	if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("执行窗走满后应放行重入槽")
+	}
+}
+
+// TestDshCompactClaimOkClosesWindow ok=true 收口在飞窗：成功上报即刻放行重入
+// 槽（真开会话秒领取秒执行→再触发不受 240s 窗拖累）。
+func TestDshCompactClaimOkClosesWindow(t *testing.T) {
+	e := newCompactEnv(t, 100)
+	e.regCompact(compactSID, 100, 50000) // ok=true 落账本行要台账（Acct 面）
+	if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("入槽应成功")
+	}
+	if got := len(e.d.DshPoll(pollBody(compactSID))["commands"].([]map[string]any)); got != 1 {
+		t.Fatalf("指令应被领取, got %d", got)
+	}
+	if r := e.d.DshCompacted(map[string]any{"session_id": compactSID, "ok": true}); r["ok"] != true {
+		t.Fatalf("上报响应 = %v", r)
+	}
+	if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("ok=true 应收口在飞窗,重入槽立即放行")
+	}
+}
+
+// TestDshCompactClaimOkFalseKeepsWindow ok=false 不收口在飞窗（票01）：no-agent/
+// busy/timeout/error 一律不算送达——窗照走满，30s 重发环不复活。
+func TestDshCompactClaimOkFalseKeepsWindow(t *testing.T) {
+	e := newCompactEnv(t, 100)
+	if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("入槽应成功")
+	}
+	if got := len(e.d.DshPoll(pollBody(compactSID))["commands"].([]map[string]any)); got != 1 {
+		t.Fatalf("指令应被领取, got %d", got)
+	}
+	if r := e.d.DshCompacted(map[string]any{"session_id": compactSID,
+		"ok": false, "reason": "no-agent"}); r["ok"] != true {
+		t.Fatalf("上报响应 = %v", r)
+	}
+	e.advance(30)
+	if e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("ok=false 不收口在飞窗,窗内重入槽应拒")
+	}
+	e.advance(dshCompactExecWindowS)
+	if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("窗走满后应放行重入槽")
+	}
+}
+
+// TestCompactClaimTimeoutRounds 领取后执行窗超时计轮表（票01）：与"过期无人
+// 领取"同计数同告警路径——1、2 轮只日志；第 3 轮恰 gateWarn 一行；4 轮不再
+// 叠加；日志文案带"领取后执行窗"与轮号、sid16。
+func TestCompactClaimTimeoutRounds(t *testing.T) {
+	cases := []struct {
+		name       string
+		rounds     int
+		wantAlerts int
+	}{
+		{"第1轮只日志不告警", 1, 0},
+		{"第2轮只日志不告警", 2, 0},
+		{"第3轮告警恰一行", 3, 1},
+		{"第4轮不叠加", 4, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newCompactEnv(t, 100)
+			log := captureCompactLog(t)
+			for i := 0; i < tc.rounds; i++ {
+				e.claimExecSweep(t, compactSID)
+			}
+			if got, s := e.undeliveredAlerts(); got != tc.wantAlerts {
+				t.Fatalf("gate.log compact-undelivered 行 = %d, want %d\n%s", got, tc.wantAlerts, s)
+			}
+			lines := strings.Split(strings.TrimSpace(log.String()), "\n")
+			if len(lines) != tc.rounds {
+				t.Fatalf("日志行 = %d, want %d（每结算一行）\n%q", len(lines), tc.rounds, log.String())
+			}
+			for i, ln := range lines {
+				want := fmt.Sprintf("[compact] dsh 指令领取后执行窗内无成功上报(第 %d 轮):%s",
+					i+1, runeCap16(compactSID))
+				if ln != want {
+					t.Fatalf("日志行 %d = %q, want %q", i+1, ln, want)
+				}
+			}
+		})
+	}
+}
+
+// TestCompactMissCounterSharedAcrossPaths 两路未送达同计数（票01"同权同告警
+// 路径"）：过期无人领取、领取后执行窗超时交替累计——第 3 轮照告警，日志两路
+// 文案各形、轮号连续。
+func TestCompactMissCounterSharedAcrossPaths(t *testing.T) {
+	e := newCompactEnv(t, 100)
+	log := captureCompactLog(t)
+	e.dropOnce(compactSID)          // 过期无人领取 第1轮
+	e.claimExecSweep(t, compactSID) // 领取后执行窗超时 第2轮
+	e.dropOnce(compactSID)          // 过期无人领取 第3轮 → 告警
+	if n, s := e.undeliveredAlerts(); n != 1 {
+		t.Fatalf("两路同计数:第3轮应告警一行, got %d\n%s", n, s)
+	}
+	lines := strings.Split(strings.TrimSpace(log.String()), "\n")
+	wantMsg := []string{
+		fmt.Sprintf("[compact] dsh 指令过期无人领取(第 1 轮):%s", runeCap16(compactSID)),
+		fmt.Sprintf("[compact] dsh 指令领取后执行窗内无成功上报(第 2 轮):%s", runeCap16(compactSID)),
+		fmt.Sprintf("[compact] dsh 指令过期无人领取(第 3 轮):%s", runeCap16(compactSID)),
+	}
+	if len(lines) != len(wantMsg) {
+		t.Fatalf("日志行 = %d, want %d\n%q", len(lines), len(wantMsg), log.String())
+	}
+	for i, ln := range lines {
+		if ln != wantMsg[i] {
+			t.Fatalf("日志行 %d = %q, want %q", i+1, ln, wantMsg[i])
+		}
 	}
 }

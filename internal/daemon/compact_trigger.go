@@ -1,32 +1,41 @@
 package daemon
 
 // compact_trigger.go — dsh-hot-compaction 票03：daemon 触发判定接线（守望扫
-// 描入槽＋并行交接）。
+// 描入槽＋并行交接）。票01 2026-10-07 修订：在飞领取窗结算前置＋重触发节流。
 //
-// 触发面（spec「架构与契约」daemon 节逐字）：watcher 扫描（pollDshSession
-// 尾，maybeDshRegen 之后——重铸线优先，HandedOffAt 章使两线同轮至多入队一
-// 次）按五条件判定：
+// 触发面（spec「架构与契约」daemon 节逐字，票01 增补在飞窗一道）：watcher
+// 扫描（pollDshSession 尾，maybeDshRegen 之后——重铸线优先，HandedOffAt 章
+// 使两线同轮至多入队一次）按六条件判定：
 //
 //	闲置 ≥ trigger_ratio×TTL ∧ peak_ctx ≥ min_peak_tokens ∧ 无在途请求
-//	（族系运行态 DshFamilyRunning）∧ 无有效 compressed 标记 ∧ 无未过期在
-//	槽指令
+//	（族系运行态 DshFamilyRunning）∧ 无有效 compressed 标记 ∧ 无在飞领取窗
+//	（票01）∧ 无未过期在槽指令
 //
 // → EnqueueDshCompact 入槽（expires_at=now+command_ttl_ratio×TTL，票02 槽
-// 语义：同槽覆盖旧指令、poll 应答即清槽）；同时按既有 L1 摆渡管线异步生成
-// 交接文档（w.Enqueue 通道本体，regen 先例）——与指令独立、互不阻塞、交接
-// 失败只日志不回滚指令。
+// 语义经票01 收窄：槽内未过期指令不覆盖、在飞领取窗内不重入槽——poll 应答
+// 清槽后由在飞窗接棒节流，"领取→不执行→30s 重发"空转环就此闭死）；同时按
+// 既有 L1 摆渡管线异步生成交接文档（w.Enqueue 通道本体，regen 先例）——与指
+// 令独立、互不阻塞、交接失败只日志不回滚指令。
+//
+// 在飞领取窗结算（票01）先于一切判定：领取后 dshCompactExecWindowS 内无
+// /dsh/compacted ok 上报 → sweep 计一轮"未送达"（与"过期无人领取"同计数同
+// gateWarn 告警路径）并清领取位放行重触发。结算与节流都在守望单线程里先后
+// 发生，无锁序问题。
 //
 // 前置判定分工（票02 代码事实钉死，勿重复实现）：EnqueueDshCompact 只管
-// enabled＋TTL 可得；「无有效标记」「无未过期在槽」两道由本触发面自判——
+// enabled＋TTL 可得（票01 另加：未过期槽不覆盖＋在飞窗不重入槽，结构性兜
+// 底）；「无有效标记」「无在飞窗」「无未过期在槽」三道由本触发面自判——
 // 标记判走票02 DshCompressedActive 单源（有效期＋红利只领一次语义全在那），
-// 槽判走本文件 dshCompactSlotFresh（compactMu 锁内只读）。
+// 槽判走本文件 dshCompactSlotFresh（compactMu 锁内只读），在飞窗判走票01
+// dshCompactClaimActive（独立小锁）。
 //
 // 判定面全部来自既有状态源（零新增内存态）：闲置/peak/观察窗＝台账会话态
 //（dsh 的 peak 由文件面 harvestDshUsage／事件面回写，闲置锚 TouchFull 票09
 // 口径）；在途＝族系运行态（ledger.Dsh* 方法组）；标记与槽＝票02 面。指令槽
-// 未过期窗口（0.2×TTL）即触发节流：窗口内不重判不重入槽；过期后条件仍真则
-// 重复触发覆盖旧槽（spec「同槽新指令覆盖旧指令」），交接侧由 HandedOffAt 章
-// ＋ValidHandoff 去重保证不重摆（regen 同款两道）。
+// 未过期窗口（0.2×TTL）与在飞领取窗（票01，180s+60s）即触发节流：窗口内不
+// 重判不重入槽；两窗全过期后条件仍真则重复触发覆盖旧槽（spec「同槽新指令
+// 覆盖旧指令」的票01 收窄形），交接侧由 HandedOffAt 章＋ValidHandoff 去重
+// 保证不重摆（regen 同款两道）。
 //
 // 并发纪律：守望单线程调用（pollDshSession 各段同款）；台账锁内只有内存抄
 // 字段；一切异常吞掉——压缩判定永不弄断守望。
@@ -47,7 +56,7 @@ const dshCompactRunGraceS = 300.0
 
 // dshCompactSlotFresh 槽内是否存在未过期指令（触发面自判，票02 compact.go
 // 槽锁内只读）。过期指令留槽等覆盖（N1 派发侧丢弃语义在 DshPoll）——留槽
-// 的过期指令不挡新触发。
+// 的过期指令不挡新触发（票01：覆盖收窄到过期槽，EnqueueDshCompact 双道同判）。
 func (d *Daemon) dshCompactSlotFresh(sid string) bool {
 	d.compactMu.Lock()
 	defer d.compactMu.Unlock()
@@ -74,6 +83,9 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 	sid, cwd, lastWrite, observed, handedOff, peak :=
 		st.SessionID, st.Cwd, st.LastWrite, st.ObservedActive, st.HandedOffAt, st.PeakCtx
 	w.Ledger.Mu().Unlock()
+	// 票01：在飞领取窗结算先于一切判定——过期未结（领取后窗内无 ok 上报）在
+	// 此计一轮未送达并清领取位；即使后续条件早退，结算也已完成（与触发解耦）。
+	w.Daemon.dshCompactClaimSweep(sid)
 	if !observed {
 		return // 与摆渡/重铸同纪律：启动后只见登记不动作（重启观察窗内的除外）
 	}
@@ -93,6 +105,10 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 	}
 	if _, _, active := w.Daemon.DshCompressedActive(sid); active {
 		return // 条件④有效 compressed 标记（刚压过、红利未消费完，不重复压）
+	}
+	if dshCompactClaimActive(sid, clock.Now()) {
+		return // 票01 重触发节流：在飞领取窗内（指令已派发、执行未收口）——
+		// 不重触发不重入槽，"领取→不执行→30s 重发"空转环闭死于此
 	}
 	if w.Daemon.dshCompactSlotFresh(sid) {
 		return // 条件⑤未过期在槽指令（已触发过且指令还活着——不重复入槽）

@@ -16,8 +16,10 @@ package daemon
 // mtime 相差一个纪元，regen/dsh_boot 测试同款取舍反向用）。
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,6 +81,8 @@ func newTrigEnv(t *testing.T, ttls float64) *trigEnv {
 		e.enqDone = append(e.enqDone, s.Agent+"/"+s.SessionID)
 		return true
 	}, e.t0, acc, e.d, nil, nil)
+	resetCompactMiss()   // 守护可见性票01 包级态卫生（本文件 sweep/计轮用例也要）
+	resetCompactClaims() // 票01 在飞领取窗包级态同款卫生
 	return e
 }
 
@@ -212,6 +216,21 @@ func TestDshCompactTriggerFiveConditions(t *testing.T) {
 					t.Fatalf("未过期在槽期间交接也应零尝试: %v", got)
 				}
 			}},
+		{"票01在飞领取窗:领取后30s重触发被拒", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				e.run()                        // 首次触发：入槽＋交接
+				e.d.DshPoll(pollBody(trigSID)) // 领取：在飞执行窗起点 t0
+				e.advance(30)                  // 领取后 30s（窗 180s+60s=240s 内）
+			},
+			func(t *testing.T, e *trigEnv) {
+				if cmd := e.trigSlot(trigSID); cmd != nil {
+					t.Fatalf("在飞领取窗内重触发不得入槽（30s 重发环治点）, got %+v", cmd)
+				}
+				if got := e.enqTryList(); len(got) != 1 {
+					t.Fatalf("在飞窗内交接也零尝试（首次那摆之外不重摆）: %v", got)
+				}
+			}},
 		{"五条件全真入槽带expires_at", 100,
 			func(e *trigEnv) { e.regTrig(80, 50000) },
 			func(t *testing.T, e *trigEnv) {
@@ -338,6 +357,52 @@ func TestDshCompactTriggerNeedsObserved(t *testing.T) {
 	if cmd := e.trigSlot(trigSID); cmd != nil {
 		t.Fatal("未观察会话不触发")
 	}
+}
+
+// ---- 票01 触发面全链：在飞领取窗节流→窗走满 sweep 计轮→放行重入槽 ----
+
+func TestDshCompactTriggerClaimWindowLifecycle(t *testing.T) {
+	e := newTrigEnv(t, 100) // 指令有效期 20s、执行窗 240s
+	log := captureCompactLog(t)
+	e.regTrig(80, 50000)
+	e.run() // 首次触发：入槽＋交接
+	if cmd := e.trigSlot(trigSID); cmd == nil {
+		t.Fatal("首次触发应入槽")
+	}
+	if got := len(e.d.DshPoll(pollBody(trigSID))["commands"].([]map[string]any)); got != 1 {
+		t.Fatalf("指令应被领取, got %d", got)
+	}
+	e.advance(30) // 领取后 30s：在飞窗（240s）内
+	e.run()
+	if cmd := e.trigSlot(trigSID); cmd != nil {
+		t.Fatalf("在飞领取窗内重触发不得入槽, got %+v", cmd)
+	}
+	if got := e.enqTryList(); len(got) != 1 {
+		t.Fatalf("在飞窗内交接零尝试（首次那摆之外不重摆）: %v", got)
+	}
+	if n, s := e.undeliveredAlertsTrig(); n != 0 {
+		t.Fatalf("窗未走满不应计轮/告警, got %d\n%s", n, s)
+	}
+	e.advance(215) // t0+245：越过执行窗
+	e.run()        // sweep 结算：计一轮未送达＋清领取位放行重触发
+	cmd := e.trigSlot(trigSID)
+	if cmd == nil || trigAbsDiff(cmd.EnqueuedAt, e.t0+245) > 1e-9 {
+		t.Fatalf("窗走满应计轮并放行重入槽（新 expires_at）: %+v", cmd)
+	}
+	want := fmt.Sprintf("[compact] dsh 指令领取后执行窗内无成功上报(第 1 轮):%s", runeCap16(trigSID))
+	if !strings.Contains(log.String(), want) {
+		t.Fatalf("sweep 应落未送达日志: %q", log.String())
+	}
+}
+
+// undeliveredAlertsTrig 触发面环境版告警读取（DataDir 沙箱同 compactEnv 版）。
+func (e *trigEnv) undeliveredAlertsTrig() (int, string) {
+	b, err := os.ReadFile(filepath.Join(e.tmp, "data", "gate.log"))
+	s := string(b)
+	if err != nil {
+		return 0, s
+	}
+	return strings.Count(s, "mode=compact-undelivered"), s
 }
 
 // ---- 接线钉子：pollDshSession 全链 ----

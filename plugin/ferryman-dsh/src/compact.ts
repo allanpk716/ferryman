@@ -4,11 +4,14 @@
 //     建议可调,取 max(建议, 10000ms) 下限）;每轮 POST {daemon}/dsh/poll,体=
 //     本宿主会话清单 {agent:"dsh", sessions:[{sid, idle_s}]}（会话注册表由
 //     五事件位维护,见 events.ts 各 handler 的 touch/setStatus/remove）。
-//   - 指令执行前双重复查（N1 插件侧,v0.9.4 修订;票03 输入改钟②）：①agent 在册
-//     且宿主拿得到 ∧ ②busy 位新鲜（busyLive := busy ∧ (now−lastEventAt)<300s,
-//     输入=事件面专属时钟——宿主未送 status=idle 时挂死的 busy 不再永拒;播种
-//     不可触碰钟②,源无关）。任一不过 → POST /dsh/compacted {ok:false,
-//     reason:"expired-or-busy"},不执行。「闲置<TTL 热窗」腿已删（2026-10-07
+//   - 指令执行前三道复查（N1 插件侧,v0.9.4 修订;票03 输入改钟②;夜链票01 再
+//     分叉 no-agent）：①agent 在册且宿主拿得到——条目在但无活 agent 引用（播
+//     种条目/事件残影）→ {ok:false, reason:"no-agent"}（夜链票01:领取即上报
+//     不可执行,不再静默跳过——bb5d5e37"领取不执行"空转环的插件半面）,未知
+//     会话仍 expired-or-busy ∧ ②busy 位新鲜（busyLive := busy ∧
+//     (now−lastEventAt)<300s,输入=事件面专属时钟——宿主未送 status=idle 时
+//     挂死的 busy 不再永拒;播种不可触碰钟②,源无关）。任一不过 → POST
+//     /dsh/compacted {ok:false, ...},不执行。「闲置<TTL 热窗」腿已删（2026-10-07
 //     bb5d5e37 实锚:宿主 idle 缺送时指令恒迟于 TTL=永拒;冷压缩照样省——
 //     0592c18d 同日实锚 60562→20562）。
 //   - 执行（两道,先命令后服务面——2026-10-07 E2E 实锚返工）：
@@ -420,8 +423,9 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
       // 票03 三钟分工:②的输入自 idleS 改为事件面专属时钟 lastEventAt——播种只
       // 推进钟③ lastActivityAt/idleS,若仍拿 idleS 当「事件新鲜」判据,播种拨新
       // idleS 会救活挂死 busy 而永拒;busyLive 一律走钟②,源无关、播种不可重置）：
-      // ①agent 在册且宿主拿得到（无登记/无 agent 引用＝会话已终局或仅剩事件流残影,
-      // 不硬压）;②busy 位带 300s 事件钟衰减（busyLive := busy ∧
+      // ①agent 在册且宿主拿得到（无登记＝会话已终局→expired-or-busy;条目在但
+      // 无 agent 引用＝播种条目/事件流残影→no-agent,夜链票01 分叉,见下行）;
+      // ②busy 位带 300s 事件钟衰减（busyLive := busy ∧
       // (now−lastEventAt)<EVENT_FRESH_WINDOW_MS——宿主未送 status=idle 时挂死的
       // busy 不再永拒,真在途回合的事件流持续喂钟②恒新鲜）。事件位在 registry.ts
       // touch/setStatus 内推进钟②;seed 路径结构性不碰。「闲置 < TTL 热窗」腿已删:
@@ -431,8 +435,16 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
       const entry = deps.registry.get(sid);
       const busyLive = entry !== undefined && entry.busy === true
         && (deps.registry.eventAgeMs(sid) ?? Infinity) < EVENT_FRESH_WINDOW_MS;
-      if (entry === undefined || entry.agent === undefined || entry.agent === null || busyLive) {
+      if (entry === undefined || busyLive) {
         await report({ ok: false, reason: "expired-or-busy" });
+        return;
+      }
+      if (entry.agent === undefined || entry.agent === null) {
+        // 票01（夜链 20261007-170808）：条目在但无活 agent 引用（播种条目/事件
+        // 流残影）＝宿主无从执行——领取即上报不可执行，不再静默跳过。bb5d5e37
+        // 实锚：静默跳过＝"领取→不执行→30s 重发"空转环的插件半面。daemon 侧
+        // ok=false 不计送达、在飞执行窗照走满（重触发节流窗），空转环两端同治。
+        await report({ ok: false, reason: "no-agent" });
         return;
       }
       if (inFlight.has(sid)) return; // 同会话压缩在途——上一臂自会上报,不双跑
