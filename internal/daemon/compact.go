@@ -27,14 +27,18 @@ package daemon
 // 并发纪律：指令槽被守望线程（入槽，票03）与 HTTP 线程（poll 读清）双头
 // 读写——compactMu 独立小锁串行化，临界区纯内存、不嵌套其他锁（无锁序约
 // 束，cfgMu 同款）；compressed 标记挂 SessionState（DshCompressed 整体换指
-// 针），台账锁内读写——与其他台账字段同一把锁同一纪律。
+// 针），台账锁内读写——与其他台账字段同一把锁同一纪律。守护可见性票01 的
+// 无人领取计数另走一把包级独立小锁（dshCompactMissMu，锁内纯内存），与
+// compactMu 互不嵌套——含落盘 IO 的日志/告警一律在 compactMu 锁外。
 //
 // TTL 不可得（heartbeat.ttl_s 未实测/未配置 ≤0）的保守面：指令拒入槽（无
 // 有效期即无 N1 语义）、标记 Expires 钉死在置位时刻（读侧恒无效）——cacheHot
 // 「绝不伪造」同纪律。
 
 import (
+	"fmt"
 	"sort"
+	"sync"
 
 	"ferryman/internal/accounts"
 	"ferryman/internal/clock"
@@ -81,8 +85,10 @@ func (d *Daemon) EnqueueDshCompact(sid, cwd string) bool {
 }
 
 // DshPoll 轮询取指令业务口（/dsh/poll 端点与测试共用）：只应答请求清单内的
-// 会话；应答即清槽（先到先得）；过期指令丢弃不派发（N1）。坏形（sessions
-// 非数组/元素非对象）静默收窄——照常回空应答不 5xx（DshEvent 同纪律）。
+// 会话；应答即清槽（先到先得）；过期指令丢弃不派发（N1）——丢弃逐轮打日志、
+// 连续 3 轮 gateWarn 告警一次（守护可见性票01）；指令被领取（派发应答）即
+// 清零该会话无人领取计数（票01 清零钩子①，锁外补账）。坏形（sessions 非数
+// 组/元素非对象）静默收窄——照常回空应答不 5xx（DshEvent 同纪律）。
 func (d *Daemon) DshPoll(body map[string]any) map[string]any {
 	hint := 30.0
 	enabled := false
@@ -108,6 +114,7 @@ func (d *Daemon) DshPoll(body map[string]any) map[string]any {
 		return resp
 	}
 	now := clock.Now()
+	var expired, claimed []string
 	d.compactMu.Lock()
 	for sid := range wanted {
 		cmd := d.dshCompactSlot[sid]
@@ -116,12 +123,18 @@ func (d *Daemon) DshPoll(body map[string]any) map[string]any {
 		}
 		delete(d.dshCompactSlot, sid) // 应答即清槽（过期也不回槽——N1 丢弃）
 		if now >= cmd.ExpiresAt {
-			continue // 过期指令丢弃不派发（N1）
+			expired = append(expired, sid) // 过期丢弃不派发（N1）；可见性记账锁外补（票01）
+			continue
 		}
+		claimed = append(claimed, sid) // 领取＝有人来领，无人领取计数清零（票01，锁外补账）
 		cmds = append(cmds, map[string]any{"action": "compact",
 			"session_id": cmd.SessionID, "cwd": cmd.Cwd})
 	}
 	d.compactMu.Unlock()
+	for _, sid := range claimed {
+		dshCompactMissReset(sid) // 票01 清零钩子①：领取（独立小锁，在 compactMu 外）
+	}
+	d.noteDshCompactUndelivered(expired) // 票01：计数（独立小锁）＋日志/告警落盘全在 compactMu 外
 	if len(cmds) > 1 { // 派发序确定化（map 迭代序随机；测试与排查可读）
 		sort.Slice(cmds, func(i, j int) bool {
 			return cmds[i]["session_id"].(string) < cmds[j]["session_id"].(string)
@@ -164,6 +177,9 @@ func (d *Daemon) DshCompacted(body map[string]any) map[string]any {
 		f["source"] = source
 	}
 	d.Acct("compacted", st, "dsh", sid, "", f)
+	if okB {
+		dshCompactMissReset(sid) // 守护可见性票01：成功压缩上报＝链路有产出，无人领取计数清零
+	}
 	if okB && hasPrefix && prefix > 0 {
 		now := clock.Now()
 		expires := now // TTL 不可得：expires=now → 读侧恒无效（保守面）
@@ -200,4 +216,59 @@ func (d *Daemon) DshCompressedActive(sid string) (int, int, bool) {
 		return 0, 0, false
 	}
 	return st.PeakCtx, m.PrePeak, true
+}
+
+// ---- 守护可见性票01：过期指令"入槽后过期仍无人领取"不再静默 ----
+//
+// 三件：每次过期丢弃一行日志（compactLogf 缝）；同一会话连续满
+// dshCompactMissAlertRounds 轮经 gateWarn 告警一次（mode=compact-undelivered，
+// 每会话一次防刷屏）；指令被领取（DshPoll 派发应答）或成功压缩上报
+//（DshCompacted ok=true）清零计数——之后再满 3 轮可再告警（有界重复）。
+// 入槽不清零：自然循环（入槽→过期→poll 丢弃→触发器下轮重灌）轮数照常累计
+// ——这正是告警要抓的形态。领取＝有人来领：清零＋零日志零告警。
+
+// dshCompactMissAlertRounds 连续过期无人领取告警阈值（票01）：第 3 轮恰告警
+// 一次；4、5 轮只日志不叠加；计数清零后重新起算。
+const dshCompactMissAlertRounds = 3
+
+// compactLogf 压缩链日志缝（票01）：var 形＝测试捕获（appendLineBestEffort /
+// logShutdownSource 惯例）。缺省 stdout 一行（compact_trigger.go 的 [compact]
+// 前缀同款）。
+var compactLogf = func(format string, args ...any) {
+	fmt.Printf(format, args...)
+}
+
+// dshCompactMissN 会话"过期无人领取"连续轮数（票01）。包级态＋独立小锁——
+// daemon.go 不在票01 改动路径、Daemon 字段挂不进；单守护进程现实下等价
+// Daemon 字段（测试经 resetCompactMiss 复位防跨用例渗漏）。锁内纯内存，绝不
+// 与 compactMu 嵌套（头注并发纪律）。
+var (
+	dshCompactMissMu sync.Mutex
+	dshCompactMissN  = map[string]int{}
+)
+
+// noteDshCompactUndelivered 过期指令丢弃可见性（票01；DshPoll 出锁后调用）：
+// 每丢一行日志（第 N 轮＝连续无人领取轮数，sid 经 runeCap16 截 16 位）；连续
+// 满 dshCompactMissAlertRounds 轮经 gateWarn 告警一次（落 <DataDir>/gate.log，
+// 失败静默——appendGateWarn 尽力而为同纪律）。
+func (d *Daemon) noteDshCompactUndelivered(sids []string) {
+	for _, sid := range sids {
+		dshCompactMissMu.Lock()
+		dshCompactMissN[sid]++
+		n := dshCompactMissN[sid]
+		dshCompactMissMu.Unlock()
+		compactLogf("[compact] dsh 指令过期无人领取(第 %d 轮):%s\n", n, runeCap16(sid))
+		if n == dshCompactMissAlertRounds {
+			d.gateWarn("dsh", sid, "compact-undelivered", 0)
+		}
+	}
+}
+
+// dshCompactMissReset 无人领取连续计数清零（票01 两钩子共用）：指令被领取
+//（DshPoll 派发应答）或成功压缩上报（DshCompacted ok=true）＝指令有人接，
+// 既往无人领取一笔勾销，下轮从 1 重新起算。
+func dshCompactMissReset(sid string) {
+	dshCompactMissMu.Lock()
+	delete(dshCompactMissN, sid)
+	dshCompactMissMu.Unlock()
 }

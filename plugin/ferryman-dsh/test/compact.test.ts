@@ -37,6 +37,7 @@ import {
   type LoggerLike,
 } from "../src/events.ts";
 import { BannerStore } from "../src/banner.ts";
+import { EVENT_FRESH_WINDOW_MS } from "../src/registry.ts";
 import { apply, inject as pluginInject, type PluginContext } from "../src/index.ts";
 import {
   startMockDaemon,
@@ -124,6 +125,11 @@ test("inject 数组不变：零宿主服务依赖声明保持空数组（验收�
   assert.deepEqual(pluginInject, []);
 });
 
+test("执行臂超时常量（票02）：生产缺省 180_000ms;值可注入覆盖（用例内压毫秒级）", async () => {
+  const m = await import("../src/compact.ts");
+  assert.equal(m.DEFAULT_COMPACT_TIMEOUT_MS, 180_000, "缺省 180s（票面钉点）");
+});
+
 // ---- ① 轮询循环起停 ----
 
 test("轮询循环起停（注入定时器）：默认 30000ms 挂表;stop 清表且幂等", () => {
@@ -200,6 +206,10 @@ test("poll_hint_s 下限可注入（沙箱/E2E 压秒级用）:0.005s 建议 × 
 });
 
 // ---- ④ 双重复查（N1 插件侧） ----
+// （票03 三钟分工:busyLive 衰减唯一输入自 v0.9.4 的 idleS 改为事件面专属时钟
+//   lastEventAt（钟②）——播种只推进钟③ lastActivityAt,idleS 不再能当「事件
+//   新鲜」判据。下列既有用例的 touch/setStatus 均为事件面动作,两种输入下行为
+//   一致（零回归）;断言语义按钟②注明,用例不删。）
 
 test("双重复查·忙：agent running → 上报 expired-or-busy,不碰 compaction", async (t) => {
   const mock = await mockFor(t);
@@ -208,7 +218,7 @@ test("双重复查·忙：agent running → 上报 expired-or-busy,不碰 compac
   const registry = new SessionRegistry(() => clock);
   const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
   registry.touch(SID, "C:/proj", agent);
-  registry.setStatus(SID, "running"); // 用户回来了:agent 忙
+  registry.setStatus(SID, "running"); // 用户回来了:agent 忙(事件面置位,钟②即新鲜)
   const { engine, rec } = makeEngine();
   const logger = makeLogger();
   const handle = await startSettled(t, mock, {
@@ -255,7 +265,7 @@ test("双重复查·冷窗已删（v0.9.4）：闲置 1800s 无忙位照样执�
   assert.equal(body2["reason"], "expired-or-busy", "宿主已不持有该会话=复查不过");
 });
 
-test("busy 衰减（v0.9.4）：置位 300s 后不再算忙——挂死 busy 不永拒", async (t) => {
+test("busy 衰减（v0.9.4;票03 输入改钟②）：事件钟 300s 出窗后不再算忙——挂死 busy 不永拒", async (t) => {
   const mock = await mockFor(t);
   const { flag } = dispatchRoute(mock);
   let clock = 1_000_000_000_000;
@@ -263,7 +273,10 @@ test("busy 衰减（v0.9.4）：置位 300s 后不再算忙——挂死 busy 不
   const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
   registry.touch(SID, "C:/proj", agent);
   registry.setStatus(SID, "running"); // 宿主未送 idle（bb5d5e37 实锚形态）:busy 挂死
-  clock += 400_000; // 400s 无任何事件——busy 已陈（>300s 衰减窗）
+  // 票03 语义注明:400s 无任何**事件**——钟② lastEventAt 停在置位时刻,出 300s
+  // 衰减窗（busyLive := busy ∧ (now−lastEventAt)<300s）;钟③/idleS 同步变陈
+  // （纯事件面场景两钟同值,本用例在两种输入下行为一致=零回归）
+  clock += 400_000;
   const { engine, rec } = makeEngine();
   const logger = makeLogger();
   const handle = await startSettled(t, mock, {
@@ -276,6 +289,39 @@ test("busy 衰减（v0.9.4）：置位 300s 后不再算忙——挂死 busy 不
   const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
   assert.equal(body["ok"], true, "挂死 busy 过衰减窗=执行");
   flag.on = false;
+});
+
+test("busyLive 输入=钟②（票03 三钟分工）：播种推进钟③（idle_s 归零）不救活挂死 busy——旧 idleS 输入下会误拒", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  let clock = 1_000_000_000_000;
+  const registry = new SessionRegistry(() => clock);
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
+  registry.touch(SID, "C:/proj", agent);
+  registry.setStatus(SID, "running"); // 宿主未送 idle:busy 挂死（bb5d5e37 形态）
+  clock += 400_000; // 钟②出窗:busyLive 成熟
+  // 模拟主路播种重播:快照 updatedAt 实际推进把钟③拨新（idle_s 归 ~1s）——钟②纹丝不动
+  registry.seedAdvanceActivity(SID, clock - 1_000);
+  assert.equal(registry.idleS(SID), 1, "钟③已被播种拨新（旧 idleS 输入会判 <300s=忙而误拒）");
+  assert.ok(
+    (registry.eventAgeMs(SID) ?? 0) >= EVENT_FRESH_WINDOW_MS,
+    "钟②仍陈旧（播种永不可触碰——三钟分工换输入的根因）",
+  );
+  const { engine, rec } = makeEngine();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["compaction", engine]])),
+    readPrefixTokens: () => 4567,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => rec.calls.length >= 1 && mock.requestsFor("/dsh/compacted").length >= 1);
+  flag.on = false;
+  assert.equal(
+    (mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>)["ok"],
+    true,
+    "busyLive 唯一输入=钟②:播种拨新钟③不得救活挂死 busy",
+  );
 });
 
 // （ttl_s 应答覆盖热窗的旧测试随「闲置<TTL」腿一并退役——v0.9.4 热窗语义删除,
@@ -631,6 +677,132 @@ test("在途防双跑：同会话两指令一轮 → compactNow 恰一次、上�
   assert.equal(mock.requestsFor("/dsh/compacted").length, 1, "恰一次上报（上一臂自会报）");
 });
 
+// ---- ⑤c 执行臂超时+作废纪元（票02;两道共用一道超时,F1 解除证据=epoch 机制） ----
+
+/** 慢 executor 门：impl 挂在 gate promise 上,release() 才回话（超时/迟到用例共用） */
+function makeGate<T>(value: T): { gate: Promise<T>; release: () => void } {
+  let release!: () => void;
+  const gate = new Promise<T>((r) => { release = () => r(value); });
+  return { gate, release };
+}
+
+test("执行臂超时（票02）：慢 executor 到点上报 {ok:false, reason:'timeout'}+source+warn;在途位放行", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { gate, release } = makeGate<unknown>(null);
+  t.after(() => release()); // 兜底:慢臂不许跨用例悬挂
+  const { commands, rec } = makeCommands(() => gate);
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry,
+    ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+    compactTimeoutMs: 25, // 不真等 180s——超时值可注入（票面钉点）
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 3000);
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["session_id"], SID);
+  assert.equal(body["ok"], false);
+  assert.equal(body["reason"], "timeout");
+  assert.equal(body["source"], COMPACT_SOURCE, "source 同源常量（daemon 账本 kind=compacted 随行）");
+  assert.ok(logger.warns.some((w) => w.includes("超时")), "超时一行 warn（用户可见通道）");
+  assert.equal(rec.calls.length, 1, "超时前恰一次执行");
+  // 在途位已放行：旧臂仍挂在 gate 上,新指令立即可开第二臂（不等旧臂收口）
+  rec.impl = async () => ({ commandId: "cmd-t1b", result: { kind: "success", text: "fast" } });
+  await handle.tick();
+  await waitUntil(() => rec.calls.length >= 2, 2000);
+  assert.equal(rec.calls.length, 2, "超时清 inFlight:同会话新指令立即执行");
+  flag.on = false;
+  release();
+});
+
+test("迟到丢弃（票02）：超时上报后慢 promise 才 resolve → 无第二条上报、横幅不亮", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  // 迟到回话=成功形 CommandExecution——若实现漏了作废,会看见第二条 ok:true+横幅,
+  // 正是本用例要拦的形态
+  const { gate, release } = makeGate<unknown>({ commandId: "cmd-late", result: { kind: "success", text: "late" } });
+  t.after(() => release());
+  const { commands } = makeCommands(() => gate);
+  const banner = new BannerStore();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, banner,
+    ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+    compactTimeoutMs: 25,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 3000);
+  assert.equal((mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>)["reason"], "timeout");
+  release(); // 迟到完成（纪元已作废）
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(mock.requestsFor("/dsh/compacted").length, 1, "迟到完成静默丢弃:不上报");
+  assert.equal(banner.has(SID), false, "迟到完成不亮横幅");
+  flag.on = false;
+});
+
+test("超时后恢复（票02）：同会话下一条指令正常执行并上报 ok:true;横幅置位", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { gate, release } = makeGate<unknown>(null);
+  t.after(() => release());
+  const { commands, rec } = makeCommands(() => gate);
+  const banner = new BannerStore();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, banner,
+    ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+    compactTimeoutMs: 25,
+    readPrefixTokens: () => 3456,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 3000); // 超时上报
+  rec.impl = async () => ({ commandId: "cmd-r1", result: { kind: "success", text: "recovered" } });
+  await handle.tick(); // 纪元继续递增:新执行带新纪元
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 2, 3000);
+  flag.on = false;
+  const body2 = mock.requestsFor("/dsh/compacted")[1]!.body as Record<string, unknown>;
+  assert.equal(body2["ok"], true, "超时后下一条指令正常执行");
+  assert.equal(body2["prefix_tokens"], 3456);
+  assert.equal(body2["source"], COMPACT_SOURCE);
+  assert.equal(banner.has(SID), true, "恢复成功+上报送达=横幅置位");
+  release();
+});
+
+test("服务面同超时（票02 两道共用）：compactNow 挂起 → 同 {ok:false, reason:'timeout'}", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { gate, release } = makeGate<unknown>(null);
+  t.after(() => release());
+  const { engine } = makeEngine(() => gate); // 无 commands 面 → 落服务面
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry,
+    ctx: ctxWithServices(logger, new Map([["compaction", engine]])),
+    compactTimeoutMs: 25,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 3000);
+  flag.on = false;
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["ok"], false);
+  assert.equal(body["reason"], "timeout");
+  assert.equal(body["source"], COMPACT_SOURCE);
+  release();
+});
+
 // ---- ⑥ 失败静默与上报重试 ----
 
 test("轮询失败静默：daemon 不可达 → tick 不抛、零 warn（下轮再试）", async (t) => {
@@ -745,4 +917,9 @@ test("apply 接线：起轮询循环（挂载即首轮 /dsh/poll）;返回卸载
   release({ status: 200, json: { commands: [] } });
   disposer!();
   assert.doesNotThrow(() => disposer!(), "disposer 幂等");
+  // 票03:apply 起播种调度(首轮 poll 前播种一次);本测试 ctx 无宿主服务面
+  // (sessions/workspaceRegistry 皆缺)→ 静默降级回事件喂养,warn 一行——
+  // 「降级:服务缺面→静默回事件喂养,加载与轮询不受影响」验收在本用例成立
+  // (上方断言已证首轮 poll 照发)
+  assert.equal(logger.warns.filter((w) => w.includes("播种")).length, 1, "播种降级 warn 恰一行");
 });

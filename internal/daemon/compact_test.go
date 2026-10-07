@@ -14,8 +14,10 @@ package daemon
 //   - 守门序与 /dsh/gate 同族：loopback → POST → Bearer。
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,6 +61,7 @@ func newCompactEnv(t *testing.T, ttls float64) *compactEnv {
 	cfg.Heartbeat.TTLS = ttls
 	e.d = NewDaemon(cfg, e.led, st, func(*ledger.SessionState) bool { return true },
 		acc, 0, nil)
+	resetCompactMiss() // 守护可见性票01 包级态测试卫生：防跨用例渗漏（freezeClock 还原同纪律）
 	return e
 }
 
@@ -434,5 +437,186 @@ func TestDshCompactEndpointGuards(t *testing.T) {
 	}
 	if len(e.compactRows(compactSID)) != 1 {
 		t.Fatal("HTTP compacted 应落账本行")
+	}
+}
+
+// ---- 守护可见性票01：过期无人领取逐轮日志＋一次性告警＋重置钩子 ----
+
+// captureCompactLog 捕获 compactLogf 缝输出（用毕 t.Cleanup 还原；freezeClock
+// 同纪律）。
+func captureCompactLog(t *testing.T) *strings.Builder {
+	t.Helper()
+	var sb strings.Builder
+	orig := compactLogf
+	compactLogf = func(format string, args ...any) {
+		fmt.Fprintf(&sb, format, args...)
+	}
+	t.Cleanup(func() { compactLogf = orig })
+	return &sb
+}
+
+// resetCompactMiss 清空包级连续无人领取计数（newCompactEnv 开头调用，包级态
+// 跨用例渗漏防护）。
+func resetCompactMiss() {
+	dshCompactMissMu.Lock()
+	dshCompactMissN = map[string]int{}
+	dshCompactMissMu.Unlock()
+}
+
+// dropOnce 真实循环构造一轮"过期无人领取"（票01 修正版：入槽不清零——入槽、
+// 越过指令死线 0.2×100=20s、poll 丢弃，即触发器自然形态）。N1 不派发，此处
+// 不断言——派发面已有 TestDshCompactPollDropsExpired 钉住。env 固定 ttls=100
+// enabled 缺省开，入槽必成（返回值不查：本组用例只关心过期丢弃）。
+func (e *compactEnv) dropOnce(sid string) {
+	e.d.EnqueueDshCompact(sid, "C:/proj")
+	e.advance(21)
+	e.d.DshPoll(pollBody(sid))
+}
+
+// claimOnce 入槽一条新鲜指令并立即 poll 领取（票01 修正版清零钩子①：应答
+// commands 非空＝有人来领）。返回领取条数（恒 1）。
+func (e *compactEnv) claimOnce(sid string) int {
+	e.d.EnqueueDshCompact(sid, "C:/proj")
+	return len(e.d.DshPoll(pollBody(sid))["commands"].([]map[string]any))
+}
+
+// undeliveredAlerts 沙箱 gate.log 里 mode=compact-undelivered 行数（无文件＝
+// 零告警的正常形态，返回空串）。
+func (e *compactEnv) undeliveredAlerts() (int, string) {
+	b, err := os.ReadFile(filepath.Join(e.tmp, "data", "gate.log"))
+	s := string(b)
+	if err != nil {
+		return 0, s
+	}
+	return strings.Count(s, "mode=compact-undelivered"), s
+}
+
+// TestCompactUndeliveredRounds 轮数→告警数映射表（票01）：1、2 轮只日志；
+// 第 3 轮恰告警一行；4、5 轮不再叠加（每会话一次防刷屏）。逐轮日志行数＝
+// 轮数，行文带轮号与 sid16。
+func TestCompactUndeliveredRounds(t *testing.T) {
+	cases := []struct {
+		name       string
+		rounds     int
+		wantAlerts int
+	}{
+		{"第1轮只日志不告警", 1, 0},
+		{"第2轮只日志不告警", 2, 0},
+		{"第3轮告警恰一行", 3, 1},
+		{"第4轮不叠加", 4, 1},
+		{"第5轮不叠加", 5, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newCompactEnv(t, 100)
+			log := captureCompactLog(t)
+			for i := 0; i < tc.rounds; i++ {
+				e.dropOnce(compactSID)
+			}
+			if got, s := e.undeliveredAlerts(); got != tc.wantAlerts {
+				t.Fatalf("gate.log compact-undelivered 行 = %d, want %d\n%s", got, tc.wantAlerts, s)
+			}
+			lines := strings.Split(strings.TrimSpace(log.String()), "\n")
+			if len(lines) != tc.rounds {
+				t.Fatalf("日志行 = %d, want %d（每丢一行）\n%q", len(lines), tc.rounds, log.String())
+			}
+			for i, ln := range lines {
+				want := fmt.Sprintf("[compact] dsh 指令过期无人领取(第 %d 轮):%s",
+					i+1, runeCap16(compactSID))
+				if ln != want {
+					t.Fatalf("日志行 %d = %q, want %q", i+1, ln, want)
+				}
+			}
+		})
+	}
+}
+
+// TestCompactUndeliveredResetHooks 清零钩子表（票01 修正版：清零＝指令被领取
+// 或 ok=true 上报，入槽不清零）。wantLastRound 是计数被清零的直接证据——清零
+// 后轮号从 1 重数；不清零的对照形轮号会照旧累大。
+func TestCompactUndeliveredResetHooks(t *testing.T) {
+	cases := []struct {
+		name          string
+		preDrops      int    // 首段连续轮数
+		resetKind     string // "": 无（对照）| "claim" 领取 | "ok-true" | "ok-false"
+		postDrops     int    // 清零（或对照）后再丢轮数
+		wantAlerts    int    // 全程 gate.log 告警行总数
+		wantLastRound int    // 尾条日志轮号（0＝不查）
+	}{
+		{"ok=true上报清零:再3轮再告警轮号重数", 3, "ok-true", 3, 2, 3},
+		{"入槽不清零:真实循环过期-重灌3轮即告警", 0, "", 3, 1, 3},
+		{"领取清零:再2轮不告警", 2, "claim", 2, 0, 2},
+		{"领取清零:第3轮才告警且轮号从1重数", 2, "claim", 3, 1, 3},
+		{"ok=false不清零:第3轮照告警", 2, "ok-false", 1, 1, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newCompactEnv(t, 100)
+			e.regCompact(compactSID, 100, 50000) // 上报钩子要落账本行（Acct 面）
+			log := captureCompactLog(t)
+			for i := 0; i < tc.preDrops; i++ {
+				e.dropOnce(compactSID)
+			}
+			switch tc.resetKind {
+			case "ok-true":
+				e.d.DshCompacted(map[string]any{"session_id": compactSID, "ok": true})
+			case "ok-false":
+				e.d.DshCompacted(map[string]any{"session_id": compactSID, "ok": false})
+			case "claim":
+				if got := e.claimOnce(compactSID); got != 1 {
+					t.Fatalf("领取应得 1 条指令, got %d", got)
+				}
+			}
+			for i := 0; i < tc.postDrops; i++ {
+				e.dropOnce(compactSID)
+			}
+			if got, s := e.undeliveredAlerts(); got != tc.wantAlerts {
+				t.Fatalf("gate.log 告警 = %d, want %d\n%s", got, tc.wantAlerts, s)
+			}
+			if tc.wantLastRound > 0 {
+				lines := strings.Split(strings.TrimSpace(log.String()), "\n")
+				wantLast := fmt.Sprintf("[compact] dsh 指令过期无人领取(第 %d 轮):%s",
+					tc.wantLastRound, runeCap16(compactSID))
+				if last := lines[len(lines)-1]; last != wantLast {
+					t.Fatalf("尾条日志 = %q, want %q（轮号重数＝计数被清零的直接证据）",
+						last, wantLast)
+				}
+			}
+		})
+	}
+}
+
+// TestCompactUndeliveredClaimSilent 正常领取路径零声（票01：被领走不算无人
+// 领取）——日志零行、gate.log 零告警。
+func TestCompactUndeliveredClaimSilent(t *testing.T) {
+	e := newCompactEnv(t, 100)
+	log := captureCompactLog(t)
+	if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+		t.Fatal("入槽应成功")
+	}
+	r := e.d.DshPoll(pollBody(compactSID))
+	if got := len(r["commands"].([]map[string]any)); got != 1 {
+		t.Fatalf("指令应被领取, got %d", got)
+	}
+	if log.String() != "" {
+		t.Fatalf("领取路径应零日志, got %q", log.String())
+	}
+	if n, s := e.undeliveredAlerts(); n != 0 {
+		t.Fatalf("领取路径应零告警, got %d\n%s", n, s)
+	}
+}
+
+// TestCompactUndeliveredPerSession 每会话独立计数（票01）：两会话各满 3 轮
+// 各告警一行，互不顶替、互不串账。
+func TestCompactUndeliveredPerSession(t *testing.T) {
+	e := newCompactEnv(t, 100)
+	captureCompactLog(t)
+	for i := 0; i < 3; i++ {
+		e.dropOnce(compactSID)
+		e.dropOnce(compactSID2)
+	}
+	n, s := e.undeliveredAlerts()
+	if n != 2 {
+		t.Fatalf("两会话应各告警一行, got %d\n%s", n, s)
 	}
 }
