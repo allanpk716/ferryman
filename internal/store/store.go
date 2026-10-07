@@ -484,6 +484,10 @@ func (s *Store) PopPendingPrompt(sessionID, consumeFor string) string {
 // RestoreCandidates DESIGN §6.9：agent+cwd 双键过滤，covers 降序（最新在前），
 // 24h 新鲜窗内且 status∈{fresh,skeleton}；已消耗交接不供给（强续消耗过滤，
 // 与 ValidHandoff 同口径）。
+// 票02（dsh-first-live-followups）排序全序：covers desc → created_at desc →
+// handoff_id/路径字典序——原两键 SliceStable 对 covers 平局按索引序（保存序），
+// 同状态重复查询应答不稳定；三键后同状态应答逐字节一致（候选集因
+// MarkInjected/消耗的变化是合法状态迁移，不要求跨状态一致）。
 func (s *Store) RestoreCandidates(agent, cwd string) []Entry {
 	if cwd == "" {
 		return []Entry{}
@@ -503,9 +507,18 @@ func (s *Store) RestoreCandidates(agent, cwd string) []Entry {
 		}
 	}
 	s.mu.Unlock()
-	// Python sort(key=-covers) Timsort 稳定；同 covers 保持原序（SliceStable）。
+	// 三键全序（handoff_id 唯一即全序；Path 末键为理论兜底）。
 	sort.SliceStable(cands, func(i, j int) bool {
-		return cands[i].CoversUntilS > cands[j].CoversUntilS
+		if cands[i].CoversUntilS != cands[j].CoversUntilS {
+			return cands[i].CoversUntilS > cands[j].CoversUntilS
+		}
+		if cands[i].CreatedAt != cands[j].CreatedAt {
+			return cands[i].CreatedAt > cands[j].CreatedAt
+		}
+		if cands[i].HandoffID != cands[j].HandoffID {
+			return cands[i].HandoffID < cands[j].HandoffID
+		}
+		return cands[i].Path < cands[j].Path
 	})
 	return cands
 }

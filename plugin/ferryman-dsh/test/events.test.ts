@@ -18,6 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildEventBody,
+  handoffTemplateKey,
   makeEventDeps,
   onCreated,
   onDisposed,
@@ -702,4 +703,99 @@ test("injectedMessage：宿主 UserMessage 同形（role/content/source/id）,�
   assert.equal((a.content[0] as { text: string }).text, "# 交接 A");
   assert.equal(a.source.kind, "ferryman-dsh");
   assert.notEqual(a.id, b.id, "每消息独立身份（createMessage randomUUID 同语义）");
+});
+
+// ---- ⑤b 票02（dsh-first-live-followups）：同轮交接注入去重（首句模板判重） ----
+//
+// 2026-10-07 15:41 实锚：同会话同轮注入三份材料（己线旧文档全文＋两份内容
+// 不一致清单）——全文比对拦不住内容不同的重复；去重改按首句模板（"本项目
+// 有 N 份可用交接"一族,不同 N/不同清单也拦）。同轮=两次用户输入之间：用户
+// 步 turn 前进即清模板账；created（宿主重铸 agent）不清账——重铸连发两问
+// 正是双清单形态的活路径。
+
+test("handoffTemplateKey：首句数字折叠——不同 N 的清单同键；同文档两次同键；族间不同键", () => {
+  const listA = handoffTemplateKey(
+    "[Ferryman] 本项目有 2 份可用交接——这个目录跑过多个会话。\n- 线甲 → p1\n- 线乙 → p2");
+  const listB = handoffTemplateKey(
+    "[Ferryman] 本项目有 3 份可用交接——这个目录跑过多个会话。\n- 线甲 → p1\n- 线乙 → p2\n- 线丙 → p3");
+  assert.equal(listA, listB, "不同 N/不同清单内容＝同族,同键（15:41 双清单案）");
+  const docX1 = handoffTemplateKey("[Ferryman 交接 · 2026-10-07 15:04:05 · 会话 甲]\n交接正文一");
+  const docX2 = handoffTemplateKey("[Ferryman 交接 · 2026-10-07 15:04:05 · 会话 甲]\n交接正文二");
+  assert.equal(docX1, docX2, "同一文档两次（正文不同,首句同）＝同键");
+  assert.notEqual(listA, docX1, "清单族与交接文档族不同键");
+  const docY = handoffTemplateKey("[Ferryman 交接 · 2026-10-07 15:04:05 · 会话 乙]\n交接正文");
+  assert.notEqual(docX1, docY, "不同会话的文档首句不同键（乙不被甲误拦）");
+});
+
+test("同轮两份不同候选清单（15:41 形态）：第二份被首句模板去重拦下", async (t) => {
+  const mock = await mockFor(t);
+  let calls = 0;
+  mock.route("/dsh/handoff", () => {
+    calls++;
+    return calls === 1
+      ? { status: 200, json: { context: "[Ferryman] 本项目有 2 份可用交接——这个目录跑过多个会话。\n- 线甲 → p1\n- 线乙 → p2" } }
+      : { status: 200, json: { context: "[Ferryman] 本项目有 3 份可用交接——这个目录跑过多个会话。\n- 线甲 → p1\n- 线乙 → p2\n- 线丙 → p3" } };
+  });
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  const injected: UserMessageLike[] = [];
+  const agent = {
+    session: { header: { id: SID, cwd: "C:/proj" } },
+    inject: (m: UserMessageLike) => void injected.push(m),
+  };
+  // 同轮两次 created（宿主重铸 agent 连发两问——同轮双问的活路径）：
+  // 第一份清单注入；第二份内容不同（N=3）但首句同族 → 拦下。
+  await onCreated(deps, { agent });
+  await onCreated(deps, { agent });
+  assert.equal(calls, 2, "两问都发出（去重不吞查询）");
+  assert.equal(injected.length, 1, "同轮同族只注入第一份（15:41 双清单形态被拦）");
+  assert.ok(((injected[0]!.content[0] as { text: string }).text).includes("2 份"), "注入的是首份");
+  assert.equal(logger.warns.length, 1, "拦下一次,warn 一行（可观测）");
+  assert.ok(logger.warns[0]!.includes("去重"), `warn 应注明去重: ${logger.warns[0]}`);
+});
+
+test("同轮同文档两次（首句相同）也拦；新用户轮清账后再注入放行", async (t) => {
+  const mock = await mockFor(t);
+  let calls = 0;
+  mock.route("/dsh/handoff", () => {
+    calls++;
+    return { status: 200, json: { context: "[Ferryman 交接 · 2026-10-07 15:04:05 · 会话 甲]\n交接正文" } };
+  });
+  const deps = depsOver(mock, makeLogger());
+  const injected: UserMessageLike[] = [];
+  const agent = {
+    session: { header: { id: SID, cwd: "C:/proj" } },
+    inject: (m: UserMessageLike) => void injected.push(m),
+  };
+  await onCreated(deps, { agent });
+  await onCreated(deps, { agent }); // 同轮同文档：拦
+  assert.equal(injected.length, 1, "同轮同文档第二次被拦");
+  // 新用户轮（turn 前进）：模板账清——同文档再注入放行（同轮判重,不跨轮）
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "新轮消息" }] }], turn: 2, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  await onCreated(deps, { agent });
+  assert.equal(injected.length, 2, "新轮清账后同文档可再注入");
+});
+
+test("created：拿到交接即清欠账（15:41 陈欠账根因）——用户步不再重问", async (t) => {
+  const mock = await mockFor(t);
+  let calls = 0;
+  mock.route("/dsh/handoff", () => {
+    calls++;
+    return { status: 200, json: { context: "# 交接在手" } };
+  });
+  const deps = depsOver(mock, makeLogger());
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } }, inject: () => {} };
+  // 昨日陈欠账形态（15:41 真实路径：created 拿到后欠账未清）
+  deps.handoffPending.set(SID, true);
+  await onCreated(deps, { agent });
+  assert.equal(calls, 1);
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const out = await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "下一条" }] }], turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  assert.equal(calls, 1, "created 拿到即清欠账,用户步不再重问");
+  if (out.kind === "enter") assert.equal(out.messages.length, 1, "无补注追加");
 });

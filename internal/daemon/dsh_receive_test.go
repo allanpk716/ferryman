@@ -963,3 +963,209 @@ func TestProbeGateDshIndependentMode(t *testing.T) {
 		t.Fatalf("enforce 凉会话推演应走分支7 warn: %+v", res)
 	}
 }
+
+// ---- ⑤票02（dsh-first-live-followups）：同会话续用的交接注入面 ----
+//
+// 续用判定=daemon 单点（DshHandoff 前置判）：目标会话转录可解析出**机器
+// 产出事件**（assistant/message、compaction/*——dshChunkHasProduction 同口径）
+// ＝同会话续用（强续首条/压缩后回来首条，上下文本就在会话内）。主依据=
+// 转录解析而非 size>0（宿主新会话 created 即落头部行；头行 type=session 非
+// 事件）；peak_ctx 不作判据（票03 已证闸门时刻读 0）。开关 [gate]
+// dsh_handoff_on_continue 默认 false（D3：助手推荐、用户未拍板——注释与
+// 断言不得写成用户已确认）；任何档位不附候选清单（D4：设计判断）。
+
+// newDshContEnv 票02 续用判定环境：wenv 全套（真 Accounts 记账断言）＋dsh
+// 会话根指沙箱（真机布局夹具 writeDshSession：root/--C-proj--/<id>/…）。
+func newDshContEnv(t *testing.T) *wenvT {
+	t.Helper()
+	w := newWenv(t)
+	w.d.Cfg.Watch.DshSessionsDir = filepath.Join(w.tmp, "dsh-sessions")
+	return w
+}
+
+// contProduction 机器产出批：assistant/message 一条（usage 不要求——判定只认
+// 事件类型，与 dshChunkHasProduction 同口径）。
+func contProduction() string {
+	return `{"type":"assistant/message","seq":3,"time":1790905227524,"data":{"message":{"source":{"kind":"model","model":"glm-5.3"}}}}` + "\n"
+}
+
+// TestDshHandoffContinuationDefaultZeroInjection 15:41 形态主钉：同会话续用
+// （转录有机器产出）默认零注入——同目录交接在手（含己线 fresh）也不注入、
+// 不列清单、不记账、不碰 store 状态。
+func TestDshHandoffContinuationDefaultZeroInjection(t *testing.T) {
+	w := newDshContEnv(t)
+	sid := "session-66666666-6666-4666-8666-666666666666"
+	writeDshSession(t, w.d.Cfg.Watch.DshSessionsDir, sid, dshHeaderFor(sid), contProduction())
+	w.store.SaveHandoff(sid, "dsh", "C:/proj", "己线", isoUTC(w.t0-30), "fresh", "md-own")
+	w.store.SaveHandoff("sibling-src", "dsh", "C:/proj", "别的线程", isoUTC(w.t0-40), "fresh", "md-sib")
+
+	r := w.d.DshHandoff("C:/proj", sid)
+	ctx, ok := r["context"]
+	if !ok || ctx != nil {
+		t.Fatalf("续用默认零注入, want {context:nil}: %v", r)
+	}
+	if len(r) != 1 {
+		t.Fatalf("回话应只有 context 键: %v", r)
+	}
+	if rows := w.acc.Read(accounts.ReadOpts{Kind: "inject"}); len(rows) != 0 {
+		t.Fatalf("续用不得记 inject 行: %v", rows)
+	}
+	if cands := w.store.RestoreCandidates("dsh", "C:/proj"); len(cands) != 2 {
+		t.Fatalf("续用零注入不得消费/标记候选: %d 条", len(cands))
+	}
+}
+
+// TestDshHandoffContinuationCrossFacePeakZero 交叉面（必测）：重启后贫血台账
+// （PeakCtx=0＋事件面合成路径）但转录非空的续用会话——判定不依赖台账，
+// 默认零注入。
+func TestDshHandoffContinuationCrossFacePeakZero(t *testing.T) {
+	w := newDshContEnv(t)
+	sid := "session-77777777-7777-4777-8777-777777777777"
+	writeDshSession(t, w.d.Cfg.Watch.DshSessionsDir, sid, dshHeaderFor(sid), contProduction())
+	// 贫血台账形态：PeakCtx=0、TranscriptPath=事件面合成键（非真代文件路径）
+	w.led.TouchFull("dsh", sid, "dsh-event://"+sid, w.t0-10, 10, "C:/proj", "", 0, 0)
+	w.store.SaveHandoff(sid, "dsh", "C:/proj", "己线", isoUTC(w.t0-30), "fresh", "md-own")
+
+	if r := w.d.DshHandoff("C:/proj", sid); r["context"] != nil {
+		t.Fatalf("PeakCtx=0 但转录非空＝续用, want context nil: %v", r["context"])
+	}
+}
+
+// TestDshHandoffContinueSwitchOnAttachesOwnLineOnly 开关=true：续用在横幅外
+// 恰附一份最新己线交接文档（源会话=本会话、未消耗、播种新鲜度同口径）；
+// 任何档位不附候选清单（此处钉 true 档）。
+func TestDshHandoffContinueSwitchOnAttachesOwnLineOnly(t *testing.T) {
+	w := newDshContEnv(t)
+	w.d.Cfg.GateDshHandoffOnContinue = true
+	sid := "session-88888888-8888-4888-8888-888888888888"
+	writeDshSession(t, w.d.Cfg.Watch.DshSessionsDir, sid, dshHeaderFor(sid), contProduction())
+	w.led.TouchFull("dsh", sid, filepath.Join(w.tmp, "sid.jsonl"), w.t0-10, 10, "C:/proj", "", 0, 0)
+	en := w.store.SaveHandoff(sid, "dsh", "C:/proj", "己线标题", isoUTC(w.t0-5), "fresh",
+		"<<<INJECT>>>\n己线交接正文CONT\n<<</INJECT>>>")
+	w.store.SaveHandoff("sibling-src", "dsh", "C:/proj", "别的线程", isoUTC(w.t0-100), "fresh", "md-sib")
+
+	r := w.d.DshHandoff("C:/proj", sid)
+	ctx, _ := r["context"].(string)
+	if ctx == "" {
+		t.Fatalf("开关开＝续用恰附一份己线交接: %v", r)
+	}
+	if !strings.Contains(ctx, "[Ferryman 交接 ·") || !strings.Contains(ctx, "己线交接正文CONT") {
+		t.Fatalf("应注入己线交接文档: %q", ctx)
+	}
+	if strings.Contains(ctx, "份可用交接") {
+		t.Fatalf("续用不得附候选清单（开关只控制己线文档,清单任何档位不附）: %q", ctx)
+	}
+	// 恰一份：inject 记账一行、handoff_id=己线
+	rows := w.acc.Read(accounts.ReadOpts{Kind: "inject"})
+	if len(rows) != 1 || rows[0]["handoff_id"] != en.HandoffID {
+		t.Fatalf("inject 记账 = %v, want 恰一行且为己线 %s", rows, en.HandoffID)
+	}
+}
+
+// TestDshHandoffContinueSwitchOnStaleOrConsumedNil 开关=true 的保守面：己线
+// 交接过期（播种新鲜度口径）/已消耗（强续消耗）→ 不附，仍 context nil——
+// 绝不端旧快照；同目录别的线程的交接任何情况不冒充己线。
+func TestDshHandoffContinueSwitchOnStaleOrConsumedNil(t *testing.T) {
+	const sid = "session-8a8a8a8a-8a8a-48a8-88a8-8a8a8a8a8a8a"
+	build := func(t *testing.T, consume bool) *wenvT {
+		w := newDshContEnv(t)
+		w.d.Cfg.GateDshHandoffOnContinue = true
+		writeDshSession(t, w.d.Cfg.Watch.DshSessionsDir, sid, dshHeaderFor(sid), contProduction())
+		w.led.TouchFull("dsh", sid, filepath.Join(w.tmp, "sid.jsonl"), w.t0-10, 10, "C:/proj", "", 0, 0)
+		w.store.SaveHandoff(sid, "dsh", "C:/proj", "己线", isoUTC(w.t0-1000), "fresh", "md-own") // covers 落后>60s
+		w.store.SaveHandoff("sibling-src", "dsh", "C:/proj", "别的线程", isoUTC(w.t0-5), "fresh", "md-sib-fresh")
+		if consume {
+			// 换新己线再消耗（强续消耗形态）：与过期案合走一表双验
+			w.store.SaveHandoff(sid, "dsh", "C:/proj", "己线新", isoUTC(w.t0-5), "fresh", "md-own-new")
+			w.store.ConsumeHandoffs("dsh", sid)
+		}
+		return w
+	}
+	t.Run("己线过期不附", func(t *testing.T) {
+		w := build(t, false)
+		if r := w.d.DshHandoff("C:/proj", sid); r["context"] != nil {
+			t.Fatalf("过期己线不得附: %v", r["context"])
+		}
+	})
+	t.Run("己线已消耗不附", func(t *testing.T) {
+		w := build(t, true)
+		if r := w.d.DshHandoff("C:/proj", sid); r["context"] != nil {
+			t.Fatalf("已消耗己线不得附（绝不端旧快照）: %v", r["context"])
+		}
+	})
+}
+
+// TestDshHandoffContinueSwitchOnNoOwnLineNil 开关=true 且无己线（同目录只有
+// 别的线程的交接）：不猜别的线、不附清单——context nil。
+func TestDshHandoffContinueSwitchOnNoOwnLineNil(t *testing.T) {
+	w := newDshContEnv(t)
+	w.d.Cfg.GateDshHandoffOnContinue = true
+	sid := "session-8b8b8b8b-8b8b-48b8-88b8-8b8b8b8b8b8b"
+	writeDshSession(t, w.d.Cfg.Watch.DshSessionsDir, sid, dshHeaderFor(sid), contProduction())
+	w.store.SaveHandoff("sibling-src", "dsh", "C:/proj", "别的线程", isoUTC(w.t0-5), "fresh", "md-sib")
+	if r := w.d.DshHandoff("C:/proj", sid); r["context"] != nil {
+		t.Fatalf("无己线不得附别的线程交接/清单: %v", r["context"])
+	}
+}
+
+// TestDshHandoffNewSessionBehaviorUnchanged 真新会话（转录无可解析事件）既有
+// 归还行为逐字不变：头行 only（宿主 created 即落头部行——size>0 不得误判）
+// 与头行+纯用户侧首步（A4② 晚到交接补注面）都按新会话走 Restore。
+func TestDshHandoffNewSessionBehaviorUnchanged(t *testing.T) {
+	save2 := func(e *wenvT) {
+		e.store.SaveHandoff("s1", "dsh", "C:/proj", "h1", isoUTC(e.t0-100), "fresh", "md1")
+		e.store.SaveHandoff("s2", "dsh", "C:/proj", "h2", isoUTC(e.t0-200), "fresh", "md2")
+	}
+
+	// 头行 only：多候选清单逐字不变
+	w := newDshContEnv(t)
+	sidNew := "session-99999999-9999-4999-8999-999999999999"
+	writeDshSession(t, w.d.Cfg.Watch.DshSessionsDir, sidNew, dshHeaderFor(sidNew))
+	save2(w)
+	ctx, _ := w.d.DshHandoff("C:/proj", sidNew)["context"].(string)
+	if !strings.HasPrefix(ctx, "[Ferryman] 本项目有 2 份可用交接——这个目录跑过多个会话") {
+		t.Fatalf("真新会话（头行 only）清单行为逐字不变: %q", ctx)
+	}
+
+	// 头行+纯用户侧首步（turn/start+user/message，无机器产出）：仍按新会话
+	// 供材料——A4② 补注面不被续用判定误伤
+	w2 := newDshContEnv(t)
+	sidFirst := "session-9a9a9a9a-9a9a-49a9-89a9-9a9a9a9a9a9a"
+	writeDshSession(t, w2.d.Cfg.Watch.DshSessionsDir, sidFirst, dshHeaderFor(sidFirst),
+		dshQwUserSide(2, 1790905227100))
+	save2(w2)
+	ctx2, _ := w2.d.DshHandoff("C:/proj", sidFirst)["context"].(string)
+	if !strings.HasPrefix(ctx2, "[Ferryman] 本项目有 2 份可用交接") {
+		t.Fatalf("首条用户消息形态（无机器产出）＝新会话开场: %q", ctx2)
+	}
+
+	// 锚定：新会话开场的锚定文档+原话形态逐字不变（头行 only）
+	w3 := newDshContEnv(t)
+	sidAnchor := "session-9b9b9b9b-9b9b-49b9-89b9-9b9b9b9b9b9b"
+	writeDshSession(t, w3.d.Cfg.Watch.DshSessionsDir, sidAnchor, dshHeaderFor(sidAnchor))
+	w3.store.SaveHandoff("blocked-src", "dsh", "C:/proj", "被拦线程", isoUTC(w3.t0-30), "fresh",
+		"<<<INJECT>>>\n锚定正文\n<<</INJECT>>>")
+	w3.store.SavePendingPromptFor("dsh", "C:/proj", "blocked-src", "被拦原话Z")
+	ctx3, _ := w3.d.DshHandoff("C:/proj", sidAnchor)["context"].(string)
+	if !strings.Contains(ctx3, "[Ferryman 交接 ·") || !strings.Contains(ctx3, "锚定正文") ||
+		!strings.Contains(ctx3, "被拦原话Z") {
+		t.Fatalf("真新会话锚定归还形态逐字不变: %q", ctx3)
+	}
+}
+
+// TestDshHandoffContinuationTranscriptMissingFailOpen 判据面 fail-open：会话
+// 目录不存在/根不存在 → 按真新会话对待（既有归还行为），不炸不误拦。
+func TestDshHandoffContinuationTranscriptMissingFailOpen(t *testing.T) {
+	w := newDshContEnv(t)
+	w.store.SaveHandoff("s1", "dsh", "C:/proj", "h1", isoUTC(w.t0-100), "fresh", "md1")
+	// 目录不存在（sid 无转录）
+	ghost := "session-9c9c9c9c-9c9c-49c9-89c9-9c9c9c9c9c9c"
+	if ctx, _ := w.d.DshHandoff("C:/proj", ghost)["context"].(string); ctx == "" {
+		t.Fatalf("转录缺位＝新会话,应照常供材料: %v", ctx)
+	}
+	// 根不存在（未装 dsh 的机器）
+	w.d.Cfg.Watch.DshSessionsDir = filepath.Join(w.tmp, "no-such-root")
+	if ctx, _ := w.d.DshHandoff("C:/proj", ghost)["context"].(string); ctx == "" {
+		t.Fatalf("根缺位 fail-open＝新会话: %v", ctx)
+	}
+}
