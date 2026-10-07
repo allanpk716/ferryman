@@ -12,7 +12,7 @@ Ferryman 的 DSH 会话热缓存压缩链（拦截之前趁缓存还热自动压
 
 ## User Stories
 
-1. 作为用户，我想要静置的 DSH 会话也能被自动压缩，以便任何时候回来都零选择直接继续 ——**受 F2 约束暂停**（见活动约束）
+1. 作为用户，我想要静置的 DSH 会话也能被自动压缩，以便任何时候回来都零选择直接继续（F2 已解除，续跑实施）
 2. 作为用户，我想要执行臂偶发卡死时有超时保护与账目痕迹，以便压缩链不静默失明、后续指令不被挂死占位吞掉
 3. 作为运维者，我想要守护指令无人领取时看到日志与一次性告警，以便送达断链五分钟定位而不是四十分钟
 
@@ -30,17 +30,31 @@ Ferryman 的 DSH 会话热缓存压缩链（拦截之前趁缓存还热自动压
 - 指令过期无人领取：一行日志 `[compact] 指令过期无人领取（第 N 轮）：<sid16>`（sid 16 位截断同款）
 - 同一会话连续 3 轮无人领取：每会话只告警一次（gate.log 一行 warn，防刷屏）；会话再有成功压缩/新指令入槽则重置计数
 
-### 注册表全量播种（受 F2 约束暂停——设计与验收断言在此部分存在未解除矛盾）
+### 注册表全量播种（三钟分工终版，round2 双家复审 AGREE、用户拍板 D8）
 
-- 方向（已评审认可的骨架）：插件启动后首轮轮询前 + 每 5 分钟重播，从宿主 `sessions` 服务 `getListSnapshot()`（sid/cwd/running/updatedAt/origin）+ `agents.get(sid)`（活引用）拉式播种；Plan B = `workspaceRegistry.list()` + `agents.get()`；容错降级回事件喂养；subagent 条目照登
-- **F2 矛盾**：rev1 把 busyLive 衰减输入绑在注册表闲置钟（随快照 updatedAt 推进），宿主内部噪声推进 updatedAt 时（a）与"噪声不清零闲置钟"验收断言互斥（b）busyLive 300s 衰减被重播周期性重置——"源无关兜底"声称在机制上不成立
-- 解除条件（候选设计，未评审）：三钟分工——①daemon 文件面闲置钟=触发权威（现状，不动）②插件事件面专属时钟（只由五个事件位推进，播种与 updatedAt 永不触碰）=busyLive 衰减输入 ③注册表 lastActivityAt=纯信息性 idle_s 上报（噪声无 critical 依赖）；验收断言随之改"噪声推 updatedAt 不影响事件时钟/busyLive 成熟"；kimi 建议（事件 busy 新鲜时不被快照 false 覆盖的护栏）并入同轮修订
+插件启动后首轮轮询前 + 每 5 分钟重播，从宿主 `sessions` 服务 `getListSnapshot()`（sid/cwd/running/updatedAt/origin）+ `agents.get(sid)`（活引用）拉式播种；Plan B = `workspaceRegistry.list()` + `agents.get()`；容错降级回事件喂养；subagent 条目照登。
+
+**三钟分工**：
+
+| 钟 | 载体 | 推进者 | 消费者 | 播种可触碰 |
+|---|---|---|---|---|
+| ① 守护文件面闲置钟 | daemon 台账 LastWrite | 转录文件写入 | 触发线与闸门权威 | 否（结构性独立） |
+| ② 事件面专属时钟 lastEventAt | 插件注册表新字段 | 仅宿主事件面五事件位 | busyLive 衰减唯一输入（busyLive := busy ∧ (now−lastEventAt)<300s） | 否（永不可；条目创建时初始化不算触碰——round2 措辞澄清） |
+| ③ 注册表时钟 lastActivityAt | 插件注册表现字段 | 事件 + 播种（仅 updatedAt 实际推进时，单调） | 纯信息性 idle_s 上报 | 是（无执行语义依赖） |
+
+**busy 合并（终版）**：播种以快照 running 覆盖 busy（校正陈旧）；护栏=事件面 busy=true 且 lastEventAt<300s（新鲜）时不被快照 false 覆盖；busyLive 一律走钟②（源无关、播种不可重置）。
+
+**Plan B（终版）**：首次播种钟②/③=播种时刻（创建初始化）；重播不推进任何已播种条目的两钟（宁 stale 勿清零）；不做 busy 校真（无 running 字段），靠事件面+钟②衰减兜底；触发权威钟①与插件侧独立。
+
+**验收断言（六条，适用面标注——round2 建议）**：①"噪声推 updatedAt → 钟②不受影响 → busyLive 照常成熟"（两路通用）②"stale 事件 busy 被快照校真"（主路）③"事件新鲜 busy 不被快照 false 覆盖"（主路）④"重播推进钟③仅当 updatedAt 实际推进且不影响钟②"（**仅主路**——Plan B 无 updatedAt 源故不适用）⑤"Plan B 重播不推进已播种条目钟②/③"（**仅 Plan B**）⑥既有断言保留（播种新建时钟来源/agent 只补 null/subagent 照登/mock 形状契约）。
+
+timeout 账目口径注记：timeout ≠ 未压缩（超时后底层实际完成不记成效账，单行性取舍）。
 
 ### D7 探针批次（实现期动作，随播种票执行）
 
 1. `sessions` 服务可注入性（主路/Plan B 分岔）
 2. 静置会话快照 `running` 与实际装载态比对（可信度注记，兜底不依赖）
-3. 静置会话 `updatedAt` 是否随宿主内部写入推进（三钟设计的实证输入）
+3. 静置会话 `updatedAt` 是否随宿主内部写入推进（纯注记——三钟设计对结果结构性免疫）
 4. workspaceRegistry 是否有更新时间字段（Plan B 时钟源升级）
 5. 探针跑通后：真实 `getListSnapshot()` 字段清单回写为沙箱 mock 形状断言（防"沙箱绿真机红"）
 
@@ -58,6 +72,6 @@ Ferryman 的 DSH 会话热缓存压缩链（拦截之前趁缓存还热自动压
 
 ## Further Notes
 
-- 本链评审全程：round0 四问题（超时迟到/合并规则/Plan B/mock 契约）→ rev1 → round1 分裂裁决（F1/F3/F4 双家解除；F2 codex 抓到噪声时钟残留矛盾，kimi 判解除，主会话复核 codex 成立）——机器账 .xcheck/20261007-123057 与 20261007-123925
+- 本链评审全程：round0 四问题→rev1→round1 分裂裁决（F2 codex 抓到噪声时钟残留）→rev2 三钟分工（用户拍板 D8）→round2 双家 AGREE 收敛——机器账 .xcheck/20261007-123057/123925/141529
 - 生产实锚背景见 .xcheck/20261007-123057/context.md（宿主事件稀疏、bb5d5e37 八连拒时间线、asar 服务面）
 - 术语遵守仓库 CONTEXT.md；sid 截断 16 位（v0.9.3 票4 纪律）
