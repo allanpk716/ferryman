@@ -11,12 +11,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"ferryman/internal/accounts"
 	"ferryman/internal/mathx"
 	"ferryman/internal/pathsx"
+	"ferryman/internal/store"
 )
 
 // saveCand 造一条交接（covers 由新到旧用 t0-i 控制 RestoreCandidates 排序）。
@@ -420,5 +423,75 @@ func TestRestoreCcSameStaleDataUnchanged(t *testing.T) {
 	ctx2, _ := r2["context"].(string)
 	if !strings.Contains(ctx2, "会话 旧线") || !strings.Contains(ctx2, "[Ferryman 交接 ·") {
 		t.Fatalf("cc 无锚：过期交接应照旧注入（逐字旧行为）: %q", ctx2)
+	}
+}
+
+// ---- 票02（dsh-first-live-followups）：RestoreCandidates 排序全序 ----
+//
+// covers_until desc → created_at desc → handoff_id/路径字典序（三键全序）；
+// 同状态连续 10 次查询应答逐字节一致（候选集因 MarkInjected/消耗的变化是
+// 合法状态迁移，不要求跨状态一致）。spec 决策「restore 确定性」。
+
+// TestRestoreCandidatesTotalOrderAndDeterministic 三键全序钉子：
+//   - 主键 covers desc：created 最新的旧 covers 条排最末（created desc 会把它
+//     放最前——两键冲突时 covers 赢）；
+//   - 次键 created_at desc：同 covers 组内新建在前（保存序的逆序——原两键
+//     SliceStable 对 covers 平局按保存序,此钉反转之）；
+//   - 第三键 handoff_id/路径字典序：同秒双条兜底全序。
+// 期望序由 spec 比较器独立复算（不调被测函数）。
+func TestRestoreCandidatesTotalOrderAndDeterministic(t *testing.T) {
+	e := newGateEnv(t)
+	var ents []store.Entry
+	save := func(sid string, coversAgo float64, sleep time.Duration) {
+		t.Helper()
+		if sleep > 0 {
+			time.Sleep(sleep) // 1.1s 间隔保证 created_at（秒级串）必不同
+		}
+		ents = append(ents, e.store.SaveHandoff(sid, "cc", "C:/proj", sid,
+			isoUTC(e.t0-coversAgo), "fresh", "md"))
+	}
+	save("s-old1", 100, 0)
+	save("s-old2", 100, 1100*time.Millisecond)
+	save("s-old3", 100, 1100*time.Millisecond)
+	save("s-old4", 100, 0)               // 与 old3 同秒（大概率；跨秒也按 spec 复算）
+	save("s-older-covers", 500, 1100*time.Millisecond) // created 最新但 covers 最旧
+
+	want := append([]store.Entry(nil), ents...)
+	sort.Slice(want, func(i, j int) bool {
+		if want[i].CoversUntilS != want[j].CoversUntilS {
+			return want[i].CoversUntilS > want[j].CoversUntilS
+		}
+		if want[i].CreatedAt != want[j].CreatedAt {
+			return want[i].CreatedAt > want[j].CreatedAt
+		}
+		if want[i].HandoffID != want[j].HandoffID {
+			return want[i].HandoffID < want[j].HandoffID
+		}
+		return want[i].Path < want[j].Path
+	})
+	if len(want) != 5 {
+		t.Fatalf("夹具条数 = %d, want 5", len(want))
+	}
+	// 主键钉：older-covers（created 最新、covers 最旧）必须排最末
+	if want[len(want)-1].SessionID != "s-older-covers" {
+		t.Fatalf("covers 应为主键（created 最新不得越位）: %+v", want)
+	}
+	got := e.store.RestoreCandidates("cc", "C:/proj")
+	if len(got) != len(want) {
+		t.Fatalf("候选数 = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].HandoffID != want[i].HandoffID {
+			t.Fatalf("order[%d] = %s(%s), want %s(%s)"+
+				"（covers desc → created_at desc → handoff_id/路径字典序）",
+				i, got[i].HandoffID, got[i].CreatedAt, want[i].HandoffID, want[i].CreatedAt)
+		}
+	}
+	// 同状态连续 10 次查询应答逐字节一致
+	first := fmt.Sprint(got)
+	for i := 0; i < 10; i++ {
+		if again := fmt.Sprint(e.store.RestoreCandidates("cc", "C:/proj")); again != first {
+			t.Fatalf("第 %d 次查询应答与首次不一致（同状态须逐字节一致）", i+1)
+		}
 	}
 }

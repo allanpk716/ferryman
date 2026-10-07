@@ -39,6 +39,36 @@ func (d *Daemon) Restore(agent, cwd, sessionID string) map[string]any {
 	return d.restoreNewest(agent, cwd, sessionID)
 }
 
+// restoreContinue 票02（dsh-first-live-followups）续用归还：同会话续用（转录
+// 已有机器产出事件，判定见 dsh_receive.go dshTranscriptHasProduction）的交接
+// 查询单点（仅 dsh 经此，cc/codex 零涉足）。2026-10-07 15:41 同轮三注入案
+// （+33% 前缀冗余的己线旧文档全文＋两份内容冲突清单）的行为矛盾统一为默认
+// 零注入——上下文本就在会话内，压缩已把冷重付压到小前缀。
+//
+// 开关 [gate] dsh_handoff_on_continue（默认 false＝助手推荐、用户未拍板，
+// D3——翻转=config 一行）：false=续用只有横幅（横幅走 gate additional_context，
+// 不经本路）；true=续用在横幅外恰附一份最新己线交接文档（源会话=本会话、
+// 未消耗、播种新鲜度同口径 coversFreshForDsh——过期/已消耗/无己线一律不附，
+// 绝不端旧快照）。开关只控制己线交接文档、不控制候选清单——清单任何档位
+// 都不附续用会话（D4 设计判断：同轮双清单冲突与"点名前不许开干"指令和
+// 强续开场即新任务打架的实证，非用户确认项）。
+func (d *Daemon) restoreContinue(cwd, sessionID string) map[string]any {
+	if !d.Cfg.GateDshHandoffOnContinue {
+		return map[string]any{"context": nil, "continuation": true}
+	}
+	for _, c := range d.Store.RestoreCandidates("dsh", cwd) { // covers desc：首个己线=最新
+		if c.SessionID == sessionID && d.coversFreshForDsh("dsh", c) {
+			// 续用档回话带 continuation 标记（夜链终局评审小修）：插件据此把
+			// {"context":null} 与"材料未到稍后重试"区分开——见标记即清欠账
+			// 止问；真新会话（走 Restore）回话无此键＝旧插件旧行为兼容。
+			r := d.injectHandoff("dsh", cwd, sessionID, c, "")
+			r["continuation"] = true
+			return r
+		}
+	}
+	return map[string]any{"context": nil, "continuation": true}
+}
+
 // restoreAnchored 锚定归还：被拦会话钉死。
 func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPrompt) map[string]any {
 	pending := d.Store.PopPendingPrompt(p.SessionID, sessionID) // 交付即消费

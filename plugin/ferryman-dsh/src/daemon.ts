@@ -7,8 +7,11 @@
 //     suppressOriginalPrompt?,handoff_path?}（internal/daemon/gate.go:120-259,
 //     表驱动契约 dsh_receive_test.go:70-141）——block 映射 reject（桥同款）
 //     reason 即用户可见理由。
-//   - /dsh/handoff 回话：{context:string|null}（internal/daemon/restore.go:80-111,
-//     单候选注入截 6000 码点;多候选列清单;无候选 null）。
+//   - /dsh/handoff 回话：{context:string|null, continuation?:boolean}
+//     （internal/daemon/restore.go:80-111,
+//     单候选注入截 6000 码点;多候选列清单;无候选 null;continuation=true=
+//     续用档（restoreContinue 三分支恒带）——插件据此清欠账止问;旧 daemon
+//     无此键=false=保守置账,旧行为）。
 //   - /dsh/event 回话：{ok:true[,skipped:<因>]}——坏形静默收窄不 5xx
 //     （dsh_receive.go:100-183）;skipped 语义=daemon 收下但不动作（如白名单外
 //     事件）,非错误,不重试。
@@ -88,17 +91,34 @@ export async function askGate(
 // ---- /dsh/handoff 交接查询 ----
 
 /**
- * 取同 Agent＋cwd 的交接 MD。无交接/故障 → null（调用方不注入）;正常取回
- * 非空 md 字符串（Restore 侧已截 6000 码点）。
+ * /dsh/handoff 答话形状（夜链终局评审小修）：
+ *   - md 非空＝交接 MD（Restore 侧已截 6000 码点,调用方注入）;
+ *   - md=null 且 continuation=true＝续用档（daemon 判同会话续用,上下文已在
+ *     本会话内零注入）——调用方据此清欠账止问,不再与"材料未到稍后重试"
+ *     混为一谈;
+ *   - md=null 且 continuation=false＝材料未到（含 daemon 不可达/故障/旧
+ *     daemon 无键）——保守置账,既有重试行为零变化。
  */
+export interface HandoffAnswer {
+  md: string | null;
+  continuation: boolean;
+}
+
 export async function askHandoff(
   ep: DaemonEndpoint,
   body: { cwd: string; session_id: string },
-): Promise<string | null> {
+): Promise<HandoffAnswer> {
   const r = await postJSON(ep, "/dsh/handoff", body);
-  if (!r.ok || typeof r.data !== "object" || r.data === null) return null;
-  const ctx = (r.data as Record<string, unknown>)["context"];
-  return typeof ctx === "string" && ctx.length > 0 ? ctx : null;
+  // daemon 不可达/非 200/坏形：continuation 钉 false——不清账,保留重试。
+  if (!r.ok || typeof r.data !== "object" || r.data === null) {
+    return { md: null, continuation: false };
+  }
+  const d = r.data as Record<string, unknown>;
+  const ctx = d["context"];
+  return {
+    md: typeof ctx === "string" && ctx.length > 0 ? ctx : null,
+    continuation: d["continuation"] === true, // 无键（旧 daemon）/非 true → false
+  };
 }
 
 // ---- /dsh/poll 指令轮询与 /dsh/compacted 压缩上报（票05 热压缩执行臂） ----

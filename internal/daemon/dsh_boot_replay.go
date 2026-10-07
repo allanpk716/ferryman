@@ -36,6 +36,8 @@ import (
 
 	"ferryman/internal/accounts"
 	"ferryman/internal/clock"
+	"ferryman/internal/dshtrans"
+	"ferryman/internal/jsonl"
 	"ferryman/internal/ledger"
 	"ferryman/internal/pathsx"
 	"ferryman/internal/store"
@@ -109,6 +111,63 @@ func dshReplayPeak(a *accounts.Accounts, sid, lineage string, now float64) int {
 		}
 	}
 	return best
+}
+
+// dshGatePeakBackfill 票03（dsh-first-live-followups）闸门路径同步兜底
+//（dshAutoContinue 专用，"先补后记"的补）：强续时刻 PeakCtx=0（重启贫血且
+// 本文件回放无料——接法乙 2026-10-03 前的历史流量无归因键，生产实锚
+// session-5167d69a 横幅"约 0 tokens"实付 17,693）→ 优先账本回放
+//（dshReplayPeak 复用，不新建回放通道），无行按转录粗估 token 量级
+//（dshTranscriptRoughTokens）。返回 0 = 无任何补值来源（横幅降级"重付额度
+// 未知"）。只读（账本月文件＋转录文件），不写台账、不动 bootReplayed 标记
+//——补值只喂横幅与 bypass 行，粗估是量级不是真值，不入共享态。
+//
+// st 缺位（理论不可达：闸门分支2 台账 miss 已放行，防御同 dshAutoContinue）
+// 时键全取入参：sid=sessionID、lineage=归一化 transcriptPath；转录读路径
+// 优先宿主刚报的 transcriptPath（最鲜活），空则回落台账路径。
+func dshGatePeakBackfill(a *accounts.Accounts, st *ledger.SessionState,
+	sessionID, transcriptPath string, now float64) int {
+	sid, path := sessionID, transcriptPath
+	lineage := pathsx.NormPath(transcriptPath)
+	if st != nil {
+		sid = st.SessionID
+		lineage = pathsx.NormPath(st.TranscriptPath)
+		if path == "" {
+			path = st.TranscriptPath
+		}
+	}
+	if sid == "" {
+		return 0
+	}
+	if p := dshReplayPeak(a, sid, lineage, now); p > 0 {
+		return p
+	}
+	return dshTranscriptRoughTokens(path)
+}
+
+// dshTranscriptRoughTokens 转录粗估 token 量级（票03）：可解析事件行
+//（jsonl dict 解码成功）的字节和 / 4——量级估计，不做精确 tokenizer（票面
+// 背景材料口径）。读法＝dshtrans.TailText 全量（zstd 逐帧解/明文残行扣留，
+// 压缩形态按 .zstd 物理后缀判——代文件名解析不参与，转录路径可能是任意
+// 代）；读失败/坏帧 → 已解出的部分照估（前缀量级仍有效），全无 → 0。
+// 无可解析行 → 0（调用方按"无来源"降级）。防御收口同包纪律：不向调用方
+// 抛错。
+func dshTranscriptRoughTokens(path string) int {
+	if path == "" {
+		return 0
+	}
+	res := dshtrans.TailText(path, strings.HasSuffix(path, ".zstd"), 0)
+	total := 0
+	for _, line := range strings.Split(res.Text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, ok := jsonl.DecodeDict(line); ok {
+			total += len(line)
+		}
+	}
+	return total / 4
 }
 
 // dshBilledInput 条目的计费输入三列之和（宽松取值：缺列/坏形按 0——账本行

@@ -113,6 +113,14 @@ toast = true
 #[thresholds]
 # cache_warn_s = 720    # 闲置12分钟的纯提醒：缓存已死、本条全价（0=关）
 
+#[gate]
+# 同会话续用（强续首条/压缩后回来首条）时是否自动附上摆渡交接文档。
+# 默认值 false = 助手推荐值（待用户确认，尚未拍板）；false=续用只有横幅、
+# 零注入；true=续用在横幅之外恰附一份最新己线交接文档（过期/已消耗/无己线
+# 则不附）。开关只控制己线交接文档，不控制候选清单——候选清单任何情况
+# 都不附续用会话（设计判断）。
+# dsh_handoff_on_continue = false
+
 #[watch]
 # codex_extra_dirs = []   # 额外 codex 会话目录；Orca 运行时目录
 #                         # (%APPDATA%\orca\codex-runtime-home\home\sessions) 存在时自动追加

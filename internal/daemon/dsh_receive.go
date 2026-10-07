@@ -47,10 +47,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"ferryman/internal/accounts"
 	"ferryman/internal/clock"
+	"ferryman/internal/dshtrans"
 )
 
 // isDshReceivePath 接收面路径判定（makeHandler 拦截与 doDshReceive 分派共用）。
@@ -317,8 +320,79 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 
 // DshHandoff 交接查询业务口：agent 钉 "dsh" 交 Restore 整体复用（归还播种＝
 // CC /restore 同一套：锚定/清单/INJECT 提取/记账/MarkInjected）。
+// 票02（dsh-first-live-followups）续用单点挡：目标会话转录可解析出机器产出
+// 事件＝同会话续用（强续首条/压缩后回来首条）——默认零注入（上下文本就
+// 在会话内），改走 restoreContinue（开关档）；真新会话（转录无事件）锚定/
+// 清单行为逐字不变。判定单点在 daemon（本口回 null 即不注入）。续用档回话
+// 带 "continuation": true——即续用档（含零注入各分支），插件侧据此清欠账
+// 止问（旧插件忽略新键＝旧行为；新插件遇旧 daemon 无键＝保守置账）。
 func (d *Daemon) DshHandoff(cwd, sessionID string) map[string]any {
+	if d.dshTranscriptHasProduction(cwd, sessionID) {
+		return d.restoreContinue(cwd, sessionID)
+	}
 	return d.Restore("dsh", cwd, sessionID)
+}
+
+// dshTranscriptHasProduction 续用判定（票02，daemon 单点）：目标会话的转录
+// 代文件可解析出**机器产出事件**（assistant/message、compaction/*——
+// dshChunkHasProduction 同口径，与闲置锚的 Touch 判据同源）＝续用。判据主
+// 依据=转录解析而非 size>0（宿主新会话 created 即落头部行——头行
+// type:"session" 不是事件，机器产出判据天然排除之；纯用户侧首步 turn/start
+// +user/message 也不算——A4② 晚到交接补注面不得误伤）；peak_ctx 不参与
+// （票03 已证闸门时刻读 0，不作主判据或捷径）。转录定位=dsh 会话根下
+// ProjectKey(cwd)/EncodeSegment(session_id) 目录取数值最高代文件（dshtrans
+// 布局与代选择基建，不自造格式解析；watcher 的 dshDir 三源同序）。目录缺位/
+// 读不动/解析异常 → false（按真新会话对待＝既有归还行为，fail-open）。
+func (d *Daemon) dshTranscriptHasProduction(cwd, sessionID string) bool {
+	if cwd == "" || sessionID == "" {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[dsh-handoff] 续用判定异常（按新会话对待,忽略继续）: %v\n", r)
+		}
+	}()
+	root := d.dshSessionsRoot()
+	if root == "" {
+		return false
+	}
+	proj, err := dshtrans.ProjectKey(cwd)
+	if err != nil {
+		return false
+	}
+	seg, err := dshtrans.EncodeSegment(sessionID)
+	if err != nil {
+		return false
+	}
+	gen, ok := dshtrans.LatestGeneration(filepath.Join(root, proj, seg))
+	if !ok {
+		return false
+	}
+	res := dshtrans.TailText(gen.Path, gen.Zstd, 0)
+	if res.Err != nil && res.Text == "" {
+		return false // 首帧即坏/读不动：无证据不判续用（保守面）
+	}
+	return dshChunkHasProduction(res.Text)
+}
+
+// dshSessionsRoot dsh 会话根三源（watcher.go dshDir 同序：配置 >
+// $DSH_HOME/sessions 覆盖 > ~/.dsh/sessions；未装 dsh 的机器根不存在，
+// LatestGeneration 自然落空）。
+func (d *Daemon) dshSessionsRoot() string {
+	if d.Cfg == nil {
+		return ""
+	}
+	if d.Cfg.Watch.DshSessionsDir != "" {
+		return d.Cfg.Watch.DshSessionsDir
+	}
+	if dh := os.Getenv("DSH_HOME"); dh != "" {
+		return filepath.Join(dh, "sessions")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".dsh", "sessions")
 }
 
 // dshStatusOf agent/status 的 status 收形：data.status 优先、顶层 status 兜底

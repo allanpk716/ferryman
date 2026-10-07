@@ -156,6 +156,14 @@ type Config struct {
 	// 交接，镜像手动强续）。缺省 false（保守发版：存量行为零变化）；生产
 	// config.toml [gate] dsh_auto_continue = true 点亮。cc/codex 永不受本键影响。
 	GateDshAutoContinue bool
+	// GateDshHandoffOnContinue 票02（dsh-first-live-followups，2026-10-07）：
+	// 同会话续用（强续首条/压缩后回来首条——转录可解析出机器产出事件）的
+	// 交接注入开关。false=续用零注入（只有横幅）；true=续用在横幅外恰附
+	// 一份最新己线交接文档。开关只控制己线交接文档、不控制候选清单——
+	// 清单任何档位都不附续用会话（设计判断）。默认 false＝**助手推荐值、
+	// 用户未拍板**（D3：晨报置顶待确认，翻转=config 一行）。cc/codex 永不
+	// 受本键影响。
+	GateDshHandoffOnContinue bool
 	Thresholds    ThresholdCfg
 	Watch         WatchCfg
 	Server        ServerCfg
@@ -304,6 +312,9 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		}
 		if v, ok := g["dsh_auto_continue"]; ok {
 			cfg.GateDshAutoContinue = pyBool(v)
+		}
+		if v, ok := g["dsh_handoff_on_continue"]; ok { // 票02（dsh-first-live-followups）
+			cfg.GateDshHandoffOnContinue = pyBool(v)
 		}
 	}
 	if raw, ok := data["thresholds"]; ok {

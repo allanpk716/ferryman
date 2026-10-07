@@ -324,6 +324,31 @@ test("busyLive 输入=钟②（票03 三钟分工）：播种推进钟③（idle
   );
 });
 
+test("票01·无活 agent 引用不白领：播种条目（registry 在、agent 缺）→ 领取即上报 {ok:false, reason:'no-agent'},不碰压缩", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  // 播种形态：条目在 poll 体里（能领到指令）但无宿主 agent 活引用（bb5d5e37
+  // 194 次触发 0 执行的根因形态）
+  registry.seedRegister(SID, { cwd: "C:/proj" });
+  assert.equal(registry.get(SID)?.agent, undefined, "前置：无 agent 引用");
+  const { engine, rec } = makeEngine();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["compaction", engine]])),
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
+  flag.on = false;
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["session_id"], SID);
+  assert.equal(body["ok"], false);
+  assert.equal(body["reason"], "no-agent", "领取即上报不可执行（不再静默跳过）");
+  assert.equal(rec.calls.length, 0, "无 agent 引用无从执行");
+  assert.equal(logger.errors.length, 0, "预期态：不走 error 通道");
+});
+
 // （ttl_s 应答覆盖热窗的旧测试随「闲置<TTL」腿一并退役——v0.9.4 热窗语义删除,
 //  bb5d5e37 实锚;ttl_s 字段解析保留待「poll 应答补发 ttl_s」留底小票复用。）
 

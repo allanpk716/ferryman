@@ -36,7 +36,7 @@
 //（internal/daemon/dsh_dedup.go）——插件只管把事件如实直报,接管/让位由
 // daemon 收口。
 
-import { askGate, askHandoff, sendEvent, type DaemonEndpoint } from "./daemon.ts";
+import { askGate, askHandoff, sendEvent, type DaemonEndpoint, type HandoffAnswer } from "./daemon.ts";
 import { SessionRegistry } from "./compact.ts";
 import { BannerStore } from "./banner.ts";
 import { injectedMessage, type UserMessageLike } from "./usermessage.ts";
@@ -127,8 +127,16 @@ export interface EventDeps {
   /** session/title 跟踪的最近标题（键=会话头行 id;随后续上报带出） */
   titles: Map<string, string>;
   /** 欠交接账本（键=会话头行 id,多会话互不串）：created 问空记一笔,
-   *  用户步重问拿到即清;dispose 终局清（A4② 持续重试,2026-10-06 票05） */
+   *  用户步重问拿到即清;dispose 终局清（A4② 持续重试,2026-10-06 票05;
+   *  票02 补:created 拿到也清——15:41 陈欠账根因,拿到即债务清偿） */
   handoffPending: Map<string, boolean>;
+  /** 同轮交接注入去重账本（票02 dsh-first-live-followups,键=会话头行 id）：
+   *  值=轮游标（lastTurn）+本轮已注入材料的首句模板键集;同会话同轮内同族
+   *  材料只注入一份（15:41 双清单案——全文比对拦不住内容不同的重复）。
+   *  用户步 turn 前进=新轮（清键集）;created 不清（重铸 agent 连发两问正是
+   *  双清单形态的活路径）;dispose 终局清。可选字段：makeEventDeps 恒置;
+   *  手构测试替身可缺省＝该面去重关闭（helpers 判缺直放,不炸） */
+  handoffDedup?: Map<string, HandoffDedupRec>;
   /** 被拦事件仓（票08：拦截现场缓存,浏览器卡片数据源;宿主进程生命周期） */
   blocked: BlockedStore;
   /** 会话注册表（票05 热压缩）：五事件位维护 sid→{agent 活引用,闲置时钟,忙位};
@@ -149,6 +157,7 @@ export function makeEventDeps(ep: DaemonEndpoint, logger: LoggerLike): EventDeps
     logger,
     titles: new Map(),
     handoffPending: new Map(),
+    handoffDedup: new Map(),
     blocked: new BlockedStore(),
     now,
     registry: new SessionRegistry(now),
@@ -173,6 +182,63 @@ export function blocksToText(messages: MessageInput[]): string {
     .filter((b) => b?.type === "text" && typeof b.text === "string")
     .map((b) => b.text as string)
     .join("");
+}
+
+// ---- 票02（dsh-first-live-followups）：同轮交接注入去重（首句模板判重） ----
+
+/** 同轮去重账本的单会话记录：lastTurn=已见最大用户轮号;keys=本轮已注入
+ * 材料的首句模板键集 */
+export interface HandoffDedupRec {
+  lastTurn: number;
+  keys: Set<string>;
+}
+
+/**
+ * 交接材料的首句模板键：首行（到首个换行）中数字段折叠为 "#" 后比对。
+ * daemon 注入材料的可变部都在首行数字位——"本项目有 N 份可用交接"（N 与
+ * 清单内容可变）与"[Ferryman 交接 · 日期 时间 · 会话 X]"（正文可变）。
+ * 2026-10-07 15:41 双清单案：全文比对拦不住内容不同的重复,模板键不同 N/
+ * 不同清单也同键;不同首句（清单族 vs 文档族 vs 不同标题文档）不同键。
+ */
+export function handoffTemplateKey(md: string): string {
+  const firstLine = (md.split("\n")[0] ?? "").trim();
+  return firstLine.replace(/[0-9]+/g, "#");
+}
+
+/**
+ * 记账式判重：同会话本轮已注入同模板键 → true（拦下）;否则记账返回 false。
+ * 空键（首行为空——非 [Ferryman] 形态的防御面）与缺账本（手构替身）不判重
+ * 直放。created 不清账（重铸 agent 连发两问正是双清单形态的活路径）——轮
+ * 推进只在 handoffRoundAdvance（用户步）。
+ */
+function handoffDedupMark(deps: EventDeps, sid: string, md: string): boolean {
+  if (deps.handoffDedup === undefined) return false;
+  let rec = deps.handoffDedup.get(sid);
+  if (rec === undefined) {
+    rec = { lastTurn: 0, keys: new Set() };
+    deps.handoffDedup.set(sid, rec);
+  }
+  const key = handoffTemplateKey(md);
+  if (key === "") return false;
+  if (rec.keys.has(key)) return true;
+  rec.keys.add(key);
+  return false;
+}
+
+/** 用户步轮推进（step===1 处调用）：turn 前进＝新轮——清该会话模板账
+ * （同轮判重,不跨轮）;turn 未前进（同轮重试/工具循环）不动账;缺账本
+ * （手构替身）直过 */
+function handoffRoundAdvance(deps: EventDeps, sid: string, turn: number): void {
+  if (deps.handoffDedup === undefined) return;
+  const rec = deps.handoffDedup.get(sid);
+  if (rec === undefined) {
+    deps.handoffDedup.set(sid, { lastTurn: turn, keys: new Set() });
+    return;
+  }
+  if (turn > rec.lastTurn) {
+    rec.lastTurn = turn;
+    rec.keys.clear();
+  }
 }
 
 // ---- block 文案（票10 · F2 止血） ----
@@ -351,8 +417,11 @@ export function stripBypassPrefix(text: string): string | null {
  * 晚到交接重问（A4②）：created 记了欠账的会话,每个用户步（step===1）在此
  * 独立补问一次（不依赖闸门结果,allow/fail-open 都问）;拿到 → injectedMessage
  * 追加进当前步 downstream.messages（additional_context 同位先例）并清账;
- * 没拿到 → 账留着静默放行,绝不阻塞用户消息。block 步无下游可注入,不问
- * 不清账;循环步（step>1）照旧短路。
+ * 没拿到 → 账留着静默放行,绝不阻塞用户消息;答续用（continuation=true,夜链
+ * 终局评审小修）→ 清账止问（上下文本就在会话内,零注入）。block 步无下游可注入,不问
+ * 不清账;循环步（step>1）照旧短路。票02 补两道：用户轮前进即推进去重轮
+ * 游标（新轮清模板账）;补注注入过同轮同族材料（首句模板同键）→ 拦下不
+ * 重复注入（欠账照清——材料已在会话内）。
  *
  * 票08（F1）：block 落账被拦事件仓（浏览器选择框卡片数据源）;allow 的
  * 「强续 <原话>」做手打对账（精确同文 → 待处理卡转 done）。
@@ -373,6 +442,9 @@ export async function onPreStep(
   // 票06：用户步=横幅的「下次发消息」——压缩横幅展示一次即撤（允许/拦截都撤:
   // 用户已回流,横幅使命结束,滞留反成假承诺）;循环步（step>1）不算用户回流
   if (sid) deps.banner.clear(sid);
+  // 票02 同轮注入去重：用户轮前进＝新轮——清该会话本轮已注入模板账（在
+  // 补注重问之前推进,本轮 created/重试已记的键随上一轮作废）
+  if (sid) handoffRoundAdvance(deps, sid, payload.turn);
   const text = blocksToText(payload.messages);
   const gate = await askGate(deps.ep, {
     session_id: sid,
@@ -413,15 +485,26 @@ export async function onPreStep(
   if (downstream.kind !== "enter") return downstream;
   const extras: UserMessageLike[] = [];
   if (sid && deps.handoffPending.get(sid)) {
-    let md: string | null = null;
+    let ans: HandoffAnswer = { md: null, continuation: false };
     try {
-      md = await askHandoff(deps.ep, { cwd: cwdOf(payload.agent), session_id: sid });
+      ans = await askHandoff(deps.ep, { cwd: cwdOf(payload.agent), session_id: sid });
     } catch {
-      md = null; // 防御带：askHandoff 契约不抛;真抛等同没拿到,放行不阻不噪
+      // 防御带：askHandoff 契约不抛;真抛等同没拿到,放行不阻不噪
     }
-    if (md) {
+    if (ans.md) {
       deps.handoffPending.delete(sid);
-      extras.push(injectedMessage(md));
+      // 票02 同轮去重：同族材料本轮已注入（首句模板同键）→ 拦下不补注
+      //（材料已在会话内,欠账照清）;warn 一行留可观测痕
+      if (handoffDedupMark(deps, sid, ans.md)) {
+        deps.logger.warn(`[ferryman-dsh] 同轮交接注入去重（首句模板相同,已拦）: ${sid}`);
+      } else {
+        extras.push(injectedMessage(ans.md));
+      }
+    } else if (ans.continuation) {
+      // 续用档（夜链终局评审小修）：daemon 判同会话续用——上下文本就在会话
+      // 内,零注入;与"材料未到稍后重试"就此可区分,清账止问（否则每条用户
+      // 消息重问＋daemon 每问全量读解转录）。
+      deps.handoffPending.delete(sid);
     }
   }
   if (gate?.additional_context) {
@@ -437,8 +520,14 @@ export async function onPreStep(
  * 同 Agent＋cwd 的交接 MD 经 agent.inject() 播种（赶首请求——serial awaited
  * 位保证,见文件头钉点）。askHandoff 空（交接还没铸好,含 daemon 暂不可达）→
  * 记欠账 handoffPending,此后每个用户步重问补注（A4② 持续重试）;置账静默。
- * 无键/抛错 → 不置账（fail-open:欠账只在「确实问过且确实空」时记）;永不抛
- *（throw 会弄失败 agent creation,runtime-types.ts:253-254）。
+ * 空但 continuation=true（夜链终局评审小修）＝续用档零注入——清欠账不置账
+ *（止问）;无键/抛错 → 不置账（fail-open:欠账只在「确实问过且确实空」时记）;
+ * 永不抛（throw 会弄失败 agent creation,runtime-types.ts:253-254）。
+ *
+ * 票02（dsh-first-live-followups）两道补：①拿到即清欠账（15:41 陈欠账根因
+ * ——此前拿到不清,用户步又重问,同轮双注入）;②同轮去重——同族材料（首句
+ * 模板同键）本轮已注入（重铸 agent 连发两问的活路径）拦下不重复播种,warn
+ * 一行留可观测痕。
  */
 export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promise<void> {
   try {
@@ -448,9 +537,18 @@ export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promi
     // 会话注册表（票05）：created 即登记（闲置时钟起点）,agent 活引用留给执行臂
     deps.registry.touch(sid, cwdOf(agent), agent);
     if (typeof agent?.inject !== "function") return;
-    const md = await askHandoff(deps.ep, { cwd: cwdOf(agent), session_id: sid });
-    if (md) {
-      agent.inject(injectedMessage(md));
+    const ans = await askHandoff(deps.ep, { cwd: cwdOf(agent), session_id: sid });
+    if (ans.md) {
+      deps.handoffPending.delete(sid); // 拿到即清欠账（票02:15:41 陈欠账根因）
+      if (handoffDedupMark(deps, sid, ans.md)) {
+        deps.logger.warn(`[ferryman-dsh] 同轮交接注入去重（首句模板相同,已拦）: ${sid}`);
+        return;
+      }
+      agent.inject(injectedMessage(ans.md));
+    } else if (ans.continuation) {
+      // 续用档（夜链终局评审小修）：daemon 判同会话续用——上下文本就在会话
+      // 内,零注入;清欠账止问,不置账（与"材料未到稍后重试"就此可区分）。
+      deps.handoffPending.delete(sid);
     } else {
       deps.handoffPending.set(sid, true);
     }
@@ -591,6 +689,7 @@ export function onDisposed(deps: EventDeps, payload: DisposedPayload): void {
   const sid = sessionIdOf(payload?.agent);
   if (sid) {
     deps.handoffPending.delete(sid); // 会话终局清欠账,不跨会话泄漏
+    deps.handoffDedup?.delete(sid); // 票02：终局清同轮去重账（同纪律）
     deps.blocked.clearSession(sid); // 会话终局清被拦缓存（票08 返工:原话全文不缓跑累积）
     deps.banner.clear(sid); // 会话终局清横幅（票06;与 blocked/handoffPending 同纪律）
     deps.registry.remove(sid); // 会话终局出注册表（票05:不再进 poll 会话清单）
