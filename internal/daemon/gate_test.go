@@ -1883,6 +1883,130 @@ func TestGateDshAutoContinue(t *testing.T) {
 
 // e0Tmp 已并入各子测试内取 e.tmp。
 
+// ---- 票03（dsh-first-live-followups）：强续横幅/bypass 记账 0 tokens ----
+//
+// 生产实锚（2026-10-07 15:41:18）：session-5167d69a 强续横幅"约 0 tokens"、
+// 实付 17,693——boot replay 按归因键回放，接法乙（2026-10-03）前的历史流量
+// 无键可回，峰值停 0。修法＝闸门路径同步兜底（先补后记）：优先账本回放
+//（dshReplayPeak 复用）、无行按转录粗估 token 量级；两者皆无 → 横幅降级
+// "重付额度未知"，绝不显示"约 0"。横幅与 bypass 行同源取补值；peak 非零的
+// 常规强续与 cc/codex 路径零变化（TestGateDshAutoContinue 既有子测试护栏）。
+
+// TestGateDshAutoContinuePeakBackfill 票03：PeakCtx=0 的同步兜底三面——
+// 粗估补值（转录非空）、回放优先（账本有行）、双无降级（重付额度未知）。
+func TestGateDshAutoContinuePeakBackfill(t *testing.T) {
+	newEnv := func(t *testing.T) *compactEnv {
+		e := newCompactEnv(t, 100)
+		e.d.Cfg.GateDsh = "enforce"
+		e.d.Cfg.GateDshAutoContinue = true
+		e.d.Cfg.Thresholds = config.ThresholdCfg{
+			SummarizeS: testSummarizeS, BlockS: testBlockS, MinCtxTokens: testMinCtx,
+			CacheWarnS: 720,
+		}
+		return e
+	}
+	proj := "C:/proj"
+
+	t.Run("重启贫血+账本无行+zstd转录非空→粗估补值非零", func(t *testing.T) {
+		e := newEnv(t)
+		// zstd 转录（生产形态 session.v4.jsonl.zstd）：头行+两条事件行，全部
+		// 可解析 → 粗估 = 可解析行字节和/4。账本 e.acc 空＝重启贫血且历史
+		// 流量无归因键形态（回放无料）。
+		l1 := `{"type":"session","version":4,"id":"s1","createdAt":1790905220031}`
+		l2 := `{"type":"turn/start","seq":1,"time":1790905221000}`
+		l3 := `{"type":"user/message","seq":2,"time":1790905222000,"data":{"text":"hi"}}`
+		path := filepath.Join(e.tmp, "backfill.v4.jsonl.zstd")
+		if err := os.WriteFile(path,
+			zstdBatches(l1+"\n"+l2+"\n"+l3+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		e.led.TouchFull("dsh", compactSID, path, e.t0-(testBlockS+3600), 10,
+			proj, "", 0, 0)
+		r := e.d.Gate(gateBodyAgent("dsh", compactSID, path, proj, "继续干活"))
+		if r["decision"] != "allow" || r["reason"] != "auto-strong-continue" {
+			t.Fatalf("decision/reason = %v/%v, want allow/auto-strong-continue",
+				r["decision"], r["reason"])
+		}
+		want := (len(l1) + len(l2) + len(l3)) / 4
+		ctx, _ := r["additional_context"].(string)
+		if !strings.Contains(ctx, fmt.Sprintf("冷重付约 %d tokens", want)) {
+			t.Fatalf("横幅应报粗估额度 %d: %q", want, ctx)
+		}
+		if strings.Contains(ctx, "约 0 ") || strings.Contains(ctx, "额度未知") {
+			t.Fatalf("横幅不得降级（补值有料）: %q", ctx)
+		}
+		// 时序断言（先补后记）：行值=粗估补值 ⇒ bypass 记账取值发生在兜底
+		// 补值之后——若先记后补，行必为 0。横幅同值＝两处同源。
+		rows := e.acc.Read(accounts.ReadOpts{Kind: "bypass", Session: compactSID})
+		if len(rows) != 1 {
+			t.Fatalf("bypass 行数 = %d, want 1", len(rows))
+		}
+		if pt, _ := rows[0]["prefix_tokens"].(float64); pt != float64(want) {
+			t.Fatalf("bypass prefix_tokens = %v, want %d（同源粗估，且证明先补后记）",
+				pt, want)
+		}
+	})
+	t.Run("账本回放优先于粗估", func(t *testing.T) {
+		e := newEnv(t)
+		// 转录也可粗估（单头行，量级远小），账本有历史行 62090（生产对照行
+		// 口径）→ 兜底必须取回放值，不取粗估。
+		path := filepath.Join(e.tmp, "replay.v4.jsonl.zstd")
+		if err := os.WriteFile(path, zstdBatches(
+			`{"type":"session","version":4,"id":"s1"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dshBootAccRow(t, e.acc, "usage", e.t0-3600, compactSID, "", 20000, 42090, 0)
+		e.led.TouchFull("dsh", compactSID, path, e.t0-(testBlockS+3600), 10,
+			proj, "", 0, 0)
+		r := e.d.Gate(gateBodyAgent("dsh", compactSID, path, proj, "继续干活"))
+		ctx, _ := r["additional_context"].(string)
+		if !strings.Contains(ctx, "冷重付约 62090 tokens") {
+			t.Fatalf("横幅应取账本回放值 62090: %q", ctx)
+		}
+		rows := e.acc.Read(accounts.ReadOpts{Kind: "bypass", Session: compactSID})
+		if len(rows) != 1 || rows[0]["prefix_tokens"] != 62090.0 {
+			t.Fatalf("bypass 行应同源回放值 62090: %v", rows)
+		}
+	})
+	t.Run("无回放无粗估→降级重付额度未知", func(t *testing.T) {
+		e := newEnv(t)
+		// 转录存在但无可解析事件（非 JSON 行）；账本空 → 双无。
+		path := filepath.Join(e.tmp, "opaque.jsonl")
+		if err := os.WriteFile(path, []byte("not json\n{{{}}}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		e.led.TouchFull("dsh", compactSID, path, e.t0-(testBlockS+3600), 10,
+			proj, "", 0, 0)
+		r := e.d.Gate(gateBodyAgent("dsh", compactSID, path, proj, "继续干活"))
+		if r["decision"] != "allow" || r["reason"] != "auto-strong-continue" {
+			t.Fatalf("双无仍应自动强续放行: %v/%v", r["decision"], r["reason"])
+		}
+		ctx, _ := r["additional_context"].(string)
+		if !strings.Contains(ctx, "重付额度未知") {
+			t.Fatalf("横幅应降级'重付额度未知': %q", ctx)
+		}
+		if strings.Contains(ctx, "约 0") || strings.Contains(ctx, "冷重付约") {
+			t.Fatalf("降级横幅不得出现'约 0'或数字额度: %q", ctx)
+		}
+		// bypass 行如实记 0（白名单必填，无真值不编造）。
+		rows := e.acc.Read(accounts.ReadOpts{Kind: "bypass", Session: compactSID})
+		if len(rows) != 1 || rows[0]["prefix_tokens"] != 0.0 {
+			t.Fatalf("bypass 行 = %v, want prefix_tokens=0（无真值不编造）", rows)
+		}
+	})
+	t.Run("转录缺失同降级", func(t *testing.T) {
+		e := newEnv(t)
+		path := filepath.Join(e.tmp, "no-such.jsonl.zstd")
+		e.led.TouchFull("dsh", compactSID, path, e.t0-(testBlockS+3600), 10,
+			proj, "", 0, 0)
+		r := e.d.Gate(gateBodyAgent("dsh", compactSID, path, proj, "继续干活"))
+		ctx, _ := r["additional_context"].(string)
+		if !strings.Contains(ctx, "重付额度未知") || strings.Contains(ctx, "约 0") {
+			t.Fatalf("转录缺失也应降级: %q", ctx)
+		}
+	})
+}
+
 func TestGateCompactedShortPrefix(t *testing.T) {
 	cases := []struct {
 		name         string

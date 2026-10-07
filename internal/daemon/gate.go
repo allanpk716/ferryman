@@ -477,19 +477,38 @@ func (d *Daemon) dshAutoContinue(sessionID, transcriptPath string, st *ledger.Se
 		}
 		d.Store.ConsumeHandoffs("dsh", sid)
 	}
+	// 票03 闸门同步兜底（先补后记——时序前提，TestGateDshAutoContinuePeakBackfill
+	// 钉死）：PeakCtx=0（重启贫血且 dsh_boot_replay 回放无料：接法乙前的历史
+	// 流量无归因键，2026-10-07 生产实锚横幅"约 0 tokens"实付 17,693）→ 优先
+	// 账本回放、无行按转录粗估，横幅与 bypass 行同源取补值；双无 → 横幅降级
+	// "重付额度未知"。补值只喂本函数两处取值（只读账本/转录，不入共享态）。
+	// peak 非零的常规强续零变化；cc/codex 永不走本道。
+	peakKnown := peak > 0
+	if !peakKnown {
+		if p := dshGatePeakBackfill(d.Accounts, st, sessionID, transcriptPath, clock.Now()); p > 0 {
+			peak, peakKnown = p, true
+		}
+	}
 	d.Acct("bypass", st, "dsh", sessionID, transcriptPath,
 		accounts.Fields{"prefix_tokens": peak}) // reason/idle_s 不落账（隐私不变量白名单）——自动/手动的区分归 gate.log mode=auto-continue
 	d.gateWarn("dsh", sessionID, "auto-continue", idle)
 	return map[string]any{"decision": "allow", "reason": "auto-strong-continue",
-		"additional_context": d.autoContinueCtx(idle, peak)}
+		"additional_context": d.autoContinueCtx(idle, peak, peakKnown)}
 }
 
 // autoContinueCtx 自动强续横幅（compactedShortCtx 同款形态）：只报事实
 //（闲置时长＋冷重付量），不加动作指引——本道的设计前提就是用户不想要步骤。
-func (d *Daemon) autoContinueCtx(idle float64, peak int) string {
+// 票03：peak 无任何补值来源（known=false）时价格段降级为"重付额度未知"——
+// 绝不显示"约 0 tokens"（生产实锚 2026-10-07 15:41:18 案）。known=true 的
+// 文案逐字不变（既有用例钉死）。
+func (d *Daemon) autoContinueCtx(idle float64, peak int, known bool) string {
+	price := fmt.Sprintf("本条将全价冷重付约 %d tokens input", peak)
+	if !known {
+		price = "本条将全价冷重付，重付额度未知"
+	}
 	return mathx.RuneTrunc(fmt.Sprintf("[Ferryman] 本会话已闲置 %.0f 分钟（缓存已失效），"+
-		"已自动强续放行、无弹窗直续：本条将全价冷重付约 %d tokens input。"+
-		"若想省这笔，下次可在此会话闲置后让压缩先行（自动），或换新会话开场。", idle/60, peak), WarnContextCap)
+		"已自动强续放行、无弹窗直续：%s。"+
+		"若想省这笔，下次可在此会话闲置后让压缩先行（自动），或换新会话开场。", idle/60, price), WarnContextCap)
 }
 
 // dshCompactPassLine 放行线（v0.9.3 票1 解耦，2026-10-07 首单事故实锚：
