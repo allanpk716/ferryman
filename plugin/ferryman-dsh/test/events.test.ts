@@ -857,3 +857,111 @@ test("continuation：已置账（材料未到）后补问答续用 → 即清账
   }, down);
   assert.equal(calls, 2, "清账后止问:后续用户步零 handoff 请求");
 });
+
+// ---- ⑥b continuation 扩注契约（票02 · dsh-cross-inject,零行为改动） ----
+//
+// daemon 侧（票01）把 {"context":null,"continuation":true} 的含义从"续用档
+// 零注入"扩为"续用档或新会话无料零注入"——无被拦待领原话的新会话不再自动
+// 塞最新交接全文/候选清单（多主题同目录形态,交接串味根因）。插件对该键的
+// 反应本就与 daemon 判定来源无关（md=null+continuation=true → 清欠账/不置
+// 账/止问）,本组契约测试固化三种答话形态的插件侧反应,防两类未来回归:
+//   ① 欠账死循环——回 {context:null} 无键 → 每条用户消息重问＋daemon 每问
+//      全量读解转录（2026-10-07 终局修复刚闭合过的形态）;
+//   ② 扩注吞注入——continuation 键误盖 md 分支 → 有锚注入消失。
+// 测试针对插件对答话形状的反应,mock askHandoff 三种形态分别断言,不依赖
+// 真 daemon。
+
+test("continuation 扩注：新会话 created 问询得 md=null+continuation=true → 清欠账、不置账、零注入、止问", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/handoff", () => ({ status: 200, json: { context: null, continuation: true } }));
+  const deps = depsOver(mock, makeLogger());
+  const injected: UserMessageLike[] = [];
+  const agent = {
+    session: { header: { id: SID, cwd: "C:/proj" } },
+    inject: (m: UserMessageLike) => void injected.push(m),
+  };
+  // 陈欠账在场（重铸 agent 的活路径——前一身 created 问空记过账）：扩注
+  // 语义下该答=零注入终态,拿到即清偿,不置新账
+  deps.handoffPending.set(SID, true);
+  await onCreated(deps, { agent });
+  assert.equal(injected.length, 0, "新会话无料（daemon 零注入终态）零注入");
+  assert.equal(deps.handoffPending.has(SID), false, "陈欠账被清除且不置账");
+
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const out = await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "新会话首条" }] }], turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  assert.equal(out.kind, "enter");
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 1, "止问:后续用户步零 handoff 重问（死循环防护）");
+  if (out.kind === "enter") assert.equal(out.messages.length, 1, "无补注追加");
+});
+
+test("continuation 扩注：欠账会话用户步重问得 continuation=true → 清欠账止问,后续用户步不再问询（死循环回归防护）", async (t) => {
+  const mock = await mockFor(t);
+  let calls = 0;
+  mock.route("/dsh/handoff", () => {
+    calls++;
+    return calls === 1
+      ? { status: 200, json: { context: null } } // 无键空答（材料未到形）→ 保守置账
+      : { status: 200, json: { context: null, continuation: true } }; // 零注入终态 → 清账止问
+  });
+  const deps = depsOver(mock, makeLogger());
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } }, inject: () => {} };
+  await onCreated(deps, { agent });
+  assert.equal(deps.handoffPending.has(SID), true, "无键空答照旧置账（兼容既有行为）");
+
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const down = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [userMsg] });
+  await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "m1" }] }], turn: 1, step: 1,
+  }, down);
+  assert.equal(deps.handoffPending.has(SID), false, "重问得 continuation=true 即清欠账");
+
+  // 清账后连续多个用户步:零重问、零注入——不再每条消息重问（欠账死循环
+  // 形态的回归,在此形态下 handoff 请求数会随消息数线性增长,恰在此拦）
+  for (const [i, text] of ["m2", "m3", "m4"].entries()) {
+    const out = await onPreStep(deps, {
+      agent, messages: [{ content: [{ type: "text", text }] }], turn: i + 2, step: 1,
+    }, down);
+    assert.equal(out.kind, "enter", `第 ${i + 2} 条消息不被阻`);
+    if (out.kind === "enter") assert.equal(out.messages.length, 1, "零注入");
+  }
+  assert.equal(calls, 2, "止问:清账后后续用户步零 handoff 重问");
+});
+
+test("continuation 扩注：有锚 md 非空 → 注入照旧（md 分支优先,continuation 扩注不吞有锚注入）", async (t) => {
+  const mock = await mockFor(t);
+  let calls = 0;
+  mock.route("/dsh/handoff", () => {
+    calls++;
+    // 形态并集防御:daemon 回 md 时即便同带 continuation:true,注入照旧
+    return { status: 200, json: { context: "# 有锚交接\n上一会话精华…", continuation: true } };
+  });
+  const deps = depsOver(mock, makeLogger());
+  const injected: UserMessageLike[] = [];
+  const agent = {
+    session: { header: { id: SID, cwd: "C:/proj" } },
+    inject: (m: UserMessageLike) => void injected.push(m),
+  };
+  await onCreated(deps, { agent });
+  assert.equal(injected.length, 1, "created:md 非空照旧 agent.inject 播种");
+  assert.ok(((injected[0]!.content[0] as { text: string }).text).includes("有锚交接"));
+  assert.equal(deps.handoffPending.has(SID), false, "拿到即清欠账");
+
+  // 用户步欠账重问路径同款:md 非空 → 追加注入当前步
+  deps.handoffPending.set(SID, true);
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const out = await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "重问步" }] }], turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  assert.equal(out.kind, "enter");
+  if (out.kind === "enter") {
+    assert.equal(out.messages.length, 2, "重问:md 非空照旧追加注入");
+    assert.ok(((out.messages[1] as UserMessageLike).content[0] as { text: string }).text.includes("有锚交接"));
+  }
+  assert.equal(deps.handoffPending.has(SID), false, "重问拿到即清欠账");
+  await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "后续" }] }], turn: 2, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  assert.equal(calls, 2, "created 1 次＋重问 1 次,清账后止问");
+});
