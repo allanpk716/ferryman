@@ -29,9 +29,12 @@ package daemon
 //     dsh-event://<键>：按会话唯一、与真转录路径不撞（台账 byPath 键不得为
 //     空——空键会让不同会话经 byPath[""] 互相继承闲置史）；守望随后用真
 //     代文件路径 Touch 同一会话时按 (agent,sid) 收敛到同一条状态。
-//   - /dsh/handoff：agent 钉 "dsh" 后交 Restore 整体复用——锚定归还/多候选
-//     清单/INJECT 提取/记账/MarkInjected 全在既有归还语义内（归还播种与
-//     CC /restore 同一套；agent 钉死＝同 Agent＋cwd 语义，cc 交接不串线）。
+//   - /dsh/handoff（票01 dsh-cross-inject R1）：续用档走 restoreContinue（票02）；
+//     真新会话＋线内有被拦待领原话（LatestPendingFor）→ agent 钉 "dsh" 交
+//     Restore 整体复用（自然落锚定归还分支：锚会话交接+原话/INJECT 提取/
+//     记账/MarkInjected 全在既有语义内；agent 钉死＝同 Agent＋cwd 语义，cc
+//     交接不串线）；真新会话＋无锚 → 零注入终态（restoreNewest 的 dsh 自动
+//     调用废止，本体保留给 CC/Codex 显式 /restore）。
 //
 // 坏形防御（dshtrans 同族纪律：坏输入静默收窄不炸）：空 session_id/未知事件
 // 类型/usage 非对象一律 200＋skipped 标记，不 5xx；坏 JSON 走 badRequest 400
@@ -318,19 +321,32 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 	return map[string]any{"ok": true}
 }
 
-// DshHandoff 交接查询业务口：agent 钉 "dsh" 交 Restore 整体复用（归还播种＝
-// CC /restore 同一套：锚定/清单/INJECT 提取/记账/MarkInjected）。
-// 票02（dsh-first-live-followups）续用单点挡：目标会话转录可解析出机器产出
-// 事件＝同会话续用（强续首条/压缩后回来首条）——默认零注入（上下文本就
-// 在会话内），改走 restoreContinue（开关档）；真新会话（转录无事件）锚定/
-// 清单行为逐字不变。判定单点在 daemon（本口回 null 即不注入）。续用档回话
-// 带 "continuation": true——即续用档（含零注入各分支），插件侧据此清欠账
-// 止问（旧插件忽略新键＝旧行为；新插件遇旧 daemon 无键＝保守置账）。
+// DshHandoff 交接查询业务口。三分支（票01 dsh-cross-inject R1，ADR-0025
+// "自动路径永不激进注入"）：
+//  1. 续用档（目标会话转录可解析出机器产出事件，判定 dshTranscriptHasProduction，
+//     票02）→ restoreContinue（开关档，上下文本就在会话内）；
+//  2. 真新会话＋线内有被拦待领原话（LatestPendingFor("dsh",cwd)，2h 锚窗）
+//     → 既有 d.Restore 自然落锚定归还分支（锚会话交接+原话+inject 记账——
+//     "用户刚被拦、照文案新开同目录会话"的已验收接班体验，逐字不变）；
+//  3. 真新会话＋无锚 → 零注入终态 {"context":null,"continuation":true}——
+//     不再注入最新交接全文、不再注入候选清单（F4；原 restoreNewest 的 dsh
+//     自动调用废止，restoreNewest 本体保留给 CC/Codex 显式 /restore 逐字不动）。
+//
+// continuation 键扩注语义（协议兼容，旧插件 v0.9.7 零改动）：该键在插件侧
+// 的既有契约＝"零注入终态，清欠账止问"（见标记即清 handoffPending 欠账、
+// 不再每条用户消息重问）；本次含义从票02 的"续用档"扩为"续用档或新会话
+// 无料"。**不得**回无 continuation 键的 {context:null}——插件会当"材料未到"
+// 记欠账、每条用户消息重问（欠账死循环形态，2026-10-07 终局修复刚闭合过的
+// 回归）。有锚新会话走 restoreAnchored 原样返回、回话不带该键＝注入即材料
+// 到，无欠账可清。判定单点在 daemon（本口回 null 即不注入）。
 func (d *Daemon) DshHandoff(cwd, sessionID string) map[string]any {
 	if d.dshTranscriptHasProduction(cwd, sessionID) {
 		return d.restoreContinue(cwd, sessionID)
 	}
-	return d.Restore("dsh", cwd, sessionID)
+	if _, ok := d.Store.LatestPendingFor("dsh", cwd); ok {
+		return d.Restore("dsh", cwd, sessionID) // 有锚：Restore 自然落锚定归还分支
+	}
+	return map[string]any{"context": nil, "continuation": true}
 }
 
 // dshTranscriptHasProduction 续用判定（票02，daemon 单点）：目标会话的转录
@@ -342,7 +358,8 @@ func (d *Daemon) DshHandoff(cwd, sessionID string) map[string]any {
 // （票03 已证闸门时刻读 0，不作主判据或捷径）。转录定位=dsh 会话根下
 // ProjectKey(cwd)/EncodeSegment(session_id) 目录取数值最高代文件（dshtrans
 // 布局与代选择基建，不自造格式解析；watcher 的 dshDir 三源同序）。目录缺位/
-// 读不动/解析异常 → false（按真新会话对待＝既有归还行为，fail-open）。
+// 读不动/解析异常 → false（按真新会话对待＝票01 R1 新会话面：无锚零注入
+// 终态、有锚照常锚定归还，fail-open 不吞锚）。
 func (d *Daemon) dshTranscriptHasProduction(cwd, sessionID string) bool {
 	if cwd == "" || sessionID == "" {
 		return false
