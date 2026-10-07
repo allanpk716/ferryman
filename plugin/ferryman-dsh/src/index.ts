@@ -30,7 +30,8 @@ import {
 } from "./events.ts";
 import type { DaemonEndpoint } from "./daemon.ts";
 import { resolveConfig, type FerrymanPluginRawConfig } from "./config.ts";
-import { startPollLoop, type CommandsLike, type CompactionLike, type SessionProjectionsLike } from "./compact.ts";
+import { startPollLoop, type CommandsLike, type CompactionLike, type PollLoopHandle, type SessionProjectionsLike } from "./compact.ts";
+import { startSeedScheduler, type SessionsLike } from "./seed.ts";
 import type { BannerStore } from "./banner.ts";
 import { injectedMessage, type UserMessageLike } from "./usermessage.ts";
 
@@ -78,6 +79,11 @@ export interface PluginContext {
   /** 宿主会话投影注册表鸭子面（session-projection/src/index.ts:182+
    *  SessionProjectionRegistry.stateOf）——压缩后新前缀尽力读（票05） */
   sessionProjections?: SessionProjectionsLike;
+  /** 宿主 sessions 服务鸭子面（票03 播种主路:getListSnapshot 全量清单快照;
+   *  生产 asar 实锚 items[{sessionId,cwd,running,updatedAt,origin,
+   *  parentSessionId,...}]）——同受 inject 执法,经 seed.ts 的懒注入/optionalFace
+   *  取用,勿在本插件顶层直接读 */
+  sessions?: SessionsLike;
 }
 
 /** 五事件位接线（票05 业务实现在 events.ts;deps 注入 daemon 端点/logger/标题跟踪） */
@@ -105,6 +111,10 @@ const REMOTE_METHODS_DESCRIPTOR = "@deepseek-ai/dsh-typert-protocol/remote-metho
 /** 宿主 agents 服务鸭子面（core/agent/src/index.ts:391 create(CreateAgentOptions)） */
 export interface AgentsLike {
   create(options: { sessionId: string; meta?: { cwd?: string } }): Promise<unknown>;
+  /** 按 sid 取活 agent 引用（票03 播种:agents.get(sessionId)——生产 asar 实锚
+   *  返回活 agent 对象;sync/async 皆容,缺/抛=不补 agent,执行臂复查照拒、
+   *  事件面兜底补引用）。可选:老宿主面可能只有 create */
+  get?(sessionId: string): unknown;
 }
 
 /** 工作区鸭子面（attachSession 同 session-controller/src/commands.ts:131-141 用法） */
@@ -333,10 +343,13 @@ export function selfcheckOnce(
 /**
  * 插件入口：解析配置（token 读取接线,FERRYMAN_* 环境约定与自家钩子脚本对齐
  * ——config.ts 钉点）→ FERRYMAN_DISABLE 短路 → 挂五事件位 → 提供被拦反馈
- * Remote 面（票08;provide 由宿主重启加载）→ 起热压缩轮询执行臂（票05:立即
- * 首轮＋setInterval 节律;返回卸载 disposer 清 interval——cordis 约定 apply
- * 返回函数即卸载 disposer,vendor/cordis/src/fiber.ts:359-362 typeof function
- * → collect）→ 触发挂载自检（非阻塞,自检失败仅 logger 可见）。
+ * Remote 面（票08;provide 由宿主重启加载）→ 起注册表播种调度＋热压缩轮询
+ * 执行臂（票03:启动首轮 poll 前播种一次——播种落定（成功或降级）再起臂,
+ * 静置会话在首轮 poll 就进会话清单;失败静默降级回事件喂养,轮询照起——
+ * 票05:立即首轮＋setInterval 节律）;返回卸载 disposer 清重播表与 interval
+ * ——cordis 约定 apply 返回函数即卸载 disposer,vendor/cordis/src/fiber.ts:
+ * 359-362 typeof function → collect）→ 触发挂载自检（非阻塞,自检失败仅
+ * logger 可见）。
  * 返回值：宿主卸载时调用的清理函数（disabled 短路时为 undefined）。
  */
 export function apply(ctx: PluginContext, config: FerrymanPluginConfig = {}): void | (() => void) {
@@ -350,11 +363,23 @@ export function apply(ctx: PluginContext, config: FerrymanPluginConfig = {}): vo
   const deps = makeEventDeps(ep, ctx.logger ?? console);
   registerHooks(ctx, deps);
   registerBlockedRemote(ctx, deps);
+  // 票03:会话注册表播种调度(与轮询循环同生命周期)——重播表先挂(每 5min);
+  // 首轮播种由下方 seedOnce() 驱动,落定后再起轮询臂(静置会话赶上首轮 poll)
+  const seed = startSeedScheduler({ logger: deps.logger, registry: deps.registry, ctx });
   // 票05：热压缩轮询执行臂（与五事件位共用同一 deps/注册表——会话清单与复查同源）;
   // 票06：banner 仓随臂递入——压缩成功+上报送达置位,横幅经上方 Remote list 上浏览器
-  const loop = startPollLoop({ ep, logger: deps.logger, registry: deps.registry, ctx, banner: deps.banner, reportSettleMs: config.reportSettleMs });
+  let loop: PollLoopHandle | undefined;
+  let disposed = false;
+  void seed.seedOnce().catch(() => { /* seedOnce 契约不抛,防御带 */ }).finally(() => {
+    if (disposed) return; // 播种在途时宿主已卸载:不起臂
+    loop = startPollLoop({ ep, logger: deps.logger, registry: deps.registry, ctx, banner: deps.banner, reportSettleMs: config.reportSettleMs });
+  });
   void selfcheckOnce(ctx, { ...resolved, fetchImpl: config.fetchImpl });
-  return () => loop.stop();
+  return () => {
+    disposed = true;
+    seed.stop();
+    loop?.stop();
+  };
 }
 
 // 类型再导出（下游/测试引用面）。

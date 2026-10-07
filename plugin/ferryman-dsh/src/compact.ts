@@ -4,9 +4,10 @@
 //     建议可调,取 max(建议, 10000ms) 下限）;每轮 POST {daemon}/dsh/poll,体=
 //     本宿主会话清单 {agent:"dsh", sessions:[{sid, idle_s}]}（会话注册表由
 //     五事件位维护,见 events.ts 各 handler 的 touch/setStatus/remove）。
-//   - 指令执行前双重复查（N1 插件侧,v0.9.4 修订）：①agent 在册且宿主拿得到
-//     ∧ ②busy 位新鲜（置位后 300s 内才算忙——宿主未送 status=idle 时挂死的
-//     busy 不再永拒）。任一不过 → POST /dsh/compacted {ok:false,
+//   - 指令执行前双重复查（N1 插件侧,v0.9.4 修订;票03 输入改钟②）：①agent 在册
+//     且宿主拿得到 ∧ ②busy 位新鲜（busyLive := busy ∧ (now−lastEventAt)<300s,
+//     输入=事件面专属时钟——宿主未送 status=idle 时挂死的 busy 不再永拒;播种
+//     不可触碰钟②,源无关）。任一不过 → POST /dsh/compacted {ok:false,
 //     reason:"expired-or-busy"},不执行。「闲置<TTL 热窗」腿已删（2026-10-07
 //     bb5d5e37 实锚:宿主 idle 缺送时指令恒迟于 TTL=永拒;冷压缩照样省——
 //     0592c18d 同日实锚 60562→20562）。
@@ -70,6 +71,7 @@ import type { LoggerLike } from "./events.ts";
 import type { BannerStore } from "./banner.ts";
 import type { PluginContext } from "./index.ts";
 import {
+  EVENT_FRESH_WINDOW_MS,
   SessionRegistry,
   type RegistryEntry,
   type RegistrySnapshot,
@@ -414,16 +416,21 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
       if (delivered && deps.banner !== undefined) deps.banner.set(sid);
     };
     try {
-      // N1 双重复查（v0.9.4 生产实锚修订,2026-10-07 bb5d5e37 八连 expired-or-busy）：
+      // N1 双重复查（v0.9.4 生产实锚修订,2026-10-07 bb5d5e37 八连 expired-or-busy;
+      // 票03 三钟分工:②的输入自 idleS 改为事件面专属时钟 lastEventAt——播种只
+      // 推进钟③ lastActivityAt/idleS,若仍拿 idleS 当「事件新鲜」判据,播种拨新
+      // idleS 会救活挂死 busy 而永拒;busyLive 一律走钟②,源无关、播种不可重置）：
       // ①agent 在册且宿主拿得到（无登记/无 agent 引用＝会话已终局或仅剩事件流残影,
-      // 不硬压）;②busy 位带 5min 衰减——宿主未送 status=idle 时 busy 挂死,而真在途
-      // 的回合事件流持续喂注册表、idle 恒小,衰减窗不误放。「闲置 < TTL 热窗」腿已删:
+      // 不硬压）;②busy 位带 300s 事件钟衰减（busyLive := busy ∧
+      // (now−lastEventAt)<EVENT_FRESH_WINDOW_MS——宿主未送 status=idle 时挂死的
+      // busy 不再永拒,真在途回合的事件流持续喂钟②恒新鲜）。事件位在 registry.ts
+      // touch/setStatus 内推进钟②;seed 路径结构性不碰。「闲置 < TTL 热窗」腿已删:
       // daemon 触发是压缩时机的权威（触发线 0.8×TTL 自带热窗语义）,宿主 idle 缺送时
       // 指令恒迟于 TTL,此腿等于永不执行;冷压缩照样把下次重付砍 2/3（同日 0592c18d
       // 实锚 60562→20562）。
-      const idle = deps.registry.idleS(sid);
-      const entry = idle === undefined ? undefined : deps.registry.get(sid);
-      const busyLive = entry !== undefined && entry.busy === true && (idle ?? Infinity) < 300;
+      const entry = deps.registry.get(sid);
+      const busyLive = entry !== undefined && entry.busy === true
+        && (deps.registry.eventAgeMs(sid) ?? Infinity) < EVENT_FRESH_WINDOW_MS;
       if (entry === undefined || entry.agent === undefined || entry.agent === null || busyLive) {
         await report({ ok: false, reason: "expired-or-busy" });
         return;

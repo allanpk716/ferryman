@@ -37,6 +37,7 @@ import {
   type LoggerLike,
 } from "../src/events.ts";
 import { BannerStore } from "../src/banner.ts";
+import { EVENT_FRESH_WINDOW_MS } from "../src/registry.ts";
 import { apply, inject as pluginInject, type PluginContext } from "../src/index.ts";
 import {
   startMockDaemon,
@@ -205,6 +206,10 @@ test("poll_hint_s 下限可注入（沙箱/E2E 压秒级用）:0.005s 建议 × 
 });
 
 // ---- ④ 双重复查（N1 插件侧） ----
+// （票03 三钟分工:busyLive 衰减唯一输入自 v0.9.4 的 idleS 改为事件面专属时钟
+//   lastEventAt（钟②）——播种只推进钟③ lastActivityAt,idleS 不再能当「事件
+//   新鲜」判据。下列既有用例的 touch/setStatus 均为事件面动作,两种输入下行为
+//   一致（零回归）;断言语义按钟②注明,用例不删。）
 
 test("双重复查·忙：agent running → 上报 expired-or-busy,不碰 compaction", async (t) => {
   const mock = await mockFor(t);
@@ -213,7 +218,7 @@ test("双重复查·忙：agent running → 上报 expired-or-busy,不碰 compac
   const registry = new SessionRegistry(() => clock);
   const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
   registry.touch(SID, "C:/proj", agent);
-  registry.setStatus(SID, "running"); // 用户回来了:agent 忙
+  registry.setStatus(SID, "running"); // 用户回来了:agent 忙(事件面置位,钟②即新鲜)
   const { engine, rec } = makeEngine();
   const logger = makeLogger();
   const handle = await startSettled(t, mock, {
@@ -260,7 +265,7 @@ test("双重复查·冷窗已删（v0.9.4）：闲置 1800s 无忙位照样执�
   assert.equal(body2["reason"], "expired-or-busy", "宿主已不持有该会话=复查不过");
 });
 
-test("busy 衰减（v0.9.4）：置位 300s 后不再算忙——挂死 busy 不永拒", async (t) => {
+test("busy 衰减（v0.9.4;票03 输入改钟②）：事件钟 300s 出窗后不再算忙——挂死 busy 不永拒", async (t) => {
   const mock = await mockFor(t);
   const { flag } = dispatchRoute(mock);
   let clock = 1_000_000_000_000;
@@ -268,7 +273,10 @@ test("busy 衰减（v0.9.4）：置位 300s 后不再算忙——挂死 busy 不
   const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
   registry.touch(SID, "C:/proj", agent);
   registry.setStatus(SID, "running"); // 宿主未送 idle（bb5d5e37 实锚形态）:busy 挂死
-  clock += 400_000; // 400s 无任何事件——busy 已陈（>300s 衰减窗）
+  // 票03 语义注明:400s 无任何**事件**——钟② lastEventAt 停在置位时刻,出 300s
+  // 衰减窗（busyLive := busy ∧ (now−lastEventAt)<300s）;钟③/idleS 同步变陈
+  // （纯事件面场景两钟同值,本用例在两种输入下行为一致=零回归）
+  clock += 400_000;
   const { engine, rec } = makeEngine();
   const logger = makeLogger();
   const handle = await startSettled(t, mock, {
@@ -281,6 +289,39 @@ test("busy 衰减（v0.9.4）：置位 300s 后不再算忙——挂死 busy 不
   const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
   assert.equal(body["ok"], true, "挂死 busy 过衰减窗=执行");
   flag.on = false;
+});
+
+test("busyLive 输入=钟②（票03 三钟分工）：播种推进钟③（idle_s 归零）不救活挂死 busy——旧 idleS 输入下会误拒", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  let clock = 1_000_000_000_000;
+  const registry = new SessionRegistry(() => clock);
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } } };
+  registry.touch(SID, "C:/proj", agent);
+  registry.setStatus(SID, "running"); // 宿主未送 idle:busy 挂死（bb5d5e37 形态）
+  clock += 400_000; // 钟②出窗:busyLive 成熟
+  // 模拟主路播种重播:快照 updatedAt 实际推进把钟③拨新（idle_s 归 ~1s）——钟②纹丝不动
+  registry.seedAdvanceActivity(SID, clock - 1_000);
+  assert.equal(registry.idleS(SID), 1, "钟③已被播种拨新（旧 idleS 输入会判 <300s=忙而误拒）");
+  assert.ok(
+    (registry.eventAgeMs(SID) ?? 0) >= EVENT_FRESH_WINDOW_MS,
+    "钟②仍陈旧（播种永不可触碰——三钟分工换输入的根因）",
+  );
+  const { engine, rec } = makeEngine();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, ctx: ctxWithServices(logger, new Map([["compaction", engine]])),
+    readPrefixTokens: () => 4567,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => rec.calls.length >= 1 && mock.requestsFor("/dsh/compacted").length >= 1);
+  flag.on = false;
+  assert.equal(
+    (mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>)["ok"],
+    true,
+    "busyLive 唯一输入=钟②:播种拨新钟③不得救活挂死 busy",
+  );
 });
 
 // （ttl_s 应答覆盖热窗的旧测试随「闲置<TTL」腿一并退役——v0.9.4 热窗语义删除,
@@ -876,4 +917,9 @@ test("apply 接线：起轮询循环（挂载即首轮 /dsh/poll）;返回卸载
   release({ status: 200, json: { commands: [] } });
   disposer!();
   assert.doesNotThrow(() => disposer!(), "disposer 幂等");
+  // 票03:apply 起播种调度(首轮 poll 前播种一次);本测试 ctx 无宿主服务面
+  // (sessions/workspaceRegistry 皆缺)→ 静默降级回事件喂养,warn 一行——
+  // 「降级:服务缺面→静默回事件喂养,加载与轮询不受影响」验收在本用例成立
+  // (上方断言已证首轮 poll 照发)
+  assert.equal(logger.warns.filter((w) => w.includes("播种")).length, 1, "播种降级 warn 恰一行");
 });
