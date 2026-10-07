@@ -965,3 +965,86 @@ test("continuation 扩注：有锚 md 非空 → 注入照旧（md 分支优先,
   }, async () => ({ kind: "enter", messages: [userMsg] }));
   assert.equal(calls, 2, "created 1 次＋重问 1 次,清账后止问");
 });
+
+// ---- ⑦ 子代理硬禁（票04 · dsh-cross-inject R3,T5 探针结论实施） ----
+//
+// T5 探针（e2e-driver-20261007T154835Z/t5-subagent-probe.md）钉死三件事:
+//   ① 子代理会话创建触发 agent/created=true（锚窗探针判定法）;
+//   ② 可识别形态=会话头行 {origin:"subagent",parentSession,delegationDepth:1}
+//     （子会话目录=裸 uuid,不带 session- 前缀）;
+//   ③ 实测线内被拦待领锚会被子代理抢先消费（inject 痕=1,consumed_by 子=true）
+//     ——本该给用户新会话的接班材料被子代理吃掉。
+// → onCreated 对子代理形态跳过问询注入段:不 fetch /dsh/handoff、不置
+// handoffPending、不 inject;registry.touch 照旧（子会话仍在注册表,账面随父）。
+// 识别判据锚定 origin=subagent＋parentSession（与 buildEventBody 的
+// parent_session_id 同款鸭子形;T5 裁定原话「识别字段以头行 origin+
+// parentSession 为准」）——刻意不收裸 parentSession:一键新会话接班链
+// （index.ts newSession meta {parentSession,cwd},fork-session.ts 先例）同带
+// parentSession 而无 origin=subagent,裸判会误伤已验收归还链。
+
+test("子代理硬禁：created 子代理形态（origin=subagent+parentSession）→ 零问询零置账零注入,锚不被吃（registry touch 保留）", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/handoff", () => ({
+    status: 200,
+    // 线内锚在场（daemon 会给全文）——最坏形态:子代理若问询必吃锚
+    json: { context: "# 被拦待领锚\n被拦原话：继续部署验证…" },
+  }));
+  const logger = makeLogger();
+  const deps = depsOver(mock, logger);
+  const injected: UserMessageLike[] = [];
+  // T5:子会话目录=裸 uuid,不带 session- 前缀
+  const CHILD = "8fc7cad1-830f-4a5c-9d1e-2b3c4d5e6f70";
+  const subAgent = {
+    session: { header: { id: CHILD, cwd: "C:/proj", origin: "subagent", parentSession: SID, delegationDepth: 1 } },
+    inject: (m: UserMessageLike) => void injected.push(m),
+  };
+  await onCreated(deps, { agent: subAgent });
+
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 0, "零问询:不 fetch /dsh/handoff");
+  assert.equal(injected.length, 0, "零注入:锚不被子代理抢先消费");
+  assert.equal(deps.handoffPending.has(CHILD), false, "不置欠账");
+  assert.ok(deps.registry.get(CHILD) !== undefined, "registry touch 保留（created 即登记照旧）");
+  assert.equal(logger.warns.length, 0, "跳过静默,不刷 warn");
+});
+
+test("子代理硬禁：一键新会话接班形态（parentSession 在场,无 origin=subagent）→ 照旧问询播种（归还链零误伤）", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/handoff", () => ({ status: 200, json: { context: "# 交接\n被拦原话：…" } }));
+  const deps = depsOver(mock, makeLogger());
+  const injected: UserMessageLike[] = [];
+  const NEW_SID = "session-99999999-9999-4999-8999-999999999999";
+  // index.ts newSession meta {parentSession,cwd} 落头行的形态（fork-session
+  // 先例）——无 origin=subagent,是已验收接班链,硬禁不得碰
+  const handoverAgent = {
+    session: { header: { id: NEW_SID, cwd: "C:/proj", parentSession: SID } },
+    inject: (m: UserMessageLike) => void injected.push(m),
+  };
+  await onCreated(deps, { agent: handoverAgent });
+
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 1, "接班新会话照旧问询一次");
+  assert.equal(injected.length, 1, "锚定归还播种照旧（已验收接班体验不变）");
+  assert.equal(deps.handoffPending.has(NEW_SID), false, "拿到即清欠账,照旧不置账");
+});
+
+test("子代理硬禁：同目录同线,子代理创建零消耗,锚留给正常会话（T5 实锚形态反演）", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/handoff", () => ({ status: 200, json: { context: "# 待领锚\n上一会话精华…" } }));
+  const deps = depsOver(mock, makeLogger());
+  const injected: UserMessageLike[] = [];
+  const CHILD = "8fc7cad1-830f-4a5c-9d1e-2b3c4d5e6f70";
+  // 先子代理（父会话派生）,后用户新会话——T5 事故序:锚曾被子代理抢先
+  await onCreated(deps, {
+    agent: {
+      session: { header: { id: CHILD, cwd: "C:/proj", origin: "subagent", parentSession: SID, delegationDepth: 1 } },
+      inject: () => {},
+    },
+  });
+  await onCreated(deps, {
+    agent: {
+      session: { header: { id: SID, cwd: "C:/proj" } },
+      inject: (m: UserMessageLike) => void injected.push(m),
+    },
+  });
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 1, "子代理零问询,正常会话恰问一次");
+  assert.equal(injected.length, 1, "锚由正常会话领走（接班体验不受子代理影响）");
+});

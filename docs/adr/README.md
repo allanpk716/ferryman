@@ -3,7 +3,7 @@
 > 架构决策记录（ADR）总索引。一句话主旨从各篇标题/首段提炼，细节以文件原文为准。
 > 撞号说明：0016 与 0018 各有两篇（历史编号重复），文件名不改，以文件名后缀区分；本表用别名注记消歧（见下节）。
 
-## 索引（0001–0022，共 24 篇）
+## 索引（0001–0025，共 27 篇）
 
 | 编号 | 文件 | 别名 | 一句话主旨 |
 |---|---|---|---|
@@ -32,6 +32,8 @@
 | 0021 | [0021-workbench-single-desktop-shell.md](0021-workbench-single-desktop-shell.md) | — | 工作台升格：widget 为唯一桌面壳，七视图、mock-first、15900 全套平替后退役；10-05 修订＝设置视图先行分期 |
 | 0022 | [0022-settings-view-editable.md](0022-settings-view-editable.md) | — | 设置视图可编辑：写经 daemon 写入器、密钥能存不能看、风险分层、配置快照还原、写盘＋安全重启 |
 | 0023 | [0023-blocked-feedback-browser-face.md](0023-blocked-feedback-browser-face.md) | — | 被拦反馈（选择框）住在浏览器侧插件面（双面包）；宿主侧插件零 UI 是生态现状，0021/0022 已被工作台夜链占用故跳号 |
+| 0024 | [0024-same-model-off-and-warming-tier-discipline.md](0024-same-model-off-and-warming-tier-discipline.md) | — | 同模型摆渡关停＋保温升降档纪律：任何保温泳道默认 off，升档先过 observe 演练且经济账为正，enforce 期连续两个评估窗净亏即降档 |
+| 0025 | [0025-auto-inject-explicit-intent.md](0025-auto-inject-explicit-intent.md) | — | 自动注入挂显式意图信号：自动路径永不激进注入，注入只挂三信号（被拦待领锚/用户显式命令/明确开关）；锚定归还按线不按人、子代理硬禁为第一应用 |
 
 ## 撞号消歧与引用注意
 
