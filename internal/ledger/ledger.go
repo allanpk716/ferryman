@@ -526,13 +526,12 @@ func (l *Ledger) DshFamilyRunning(sid string) bool {
 	return l.dshFamilyRunningWindow(sid, 0, DshRunStaleS)
 }
 
-// DshFamilyRunningAfter v0.9.4 运行态新鲜度判定（dsh-hot-compaction 触发面）：
-// 运行信号晚于 sinceTS 才算真在途。生产实锚（2026-10-07 bb5d5e37 八连
-// expired-or-busy）：宿主未送 status=idle 时运行态挂满 DshRunStaleS(1h)，
-// 触发被陈旧 running 信号推迟到闲置 1h——比文件写入还老的运行信号在「闲置
-// 已过触发线」的语境里是陈货（真在途的长生成会持续写转录，LastWrite 会推过
-// running 置位时刻）。触发面以 lastWrite+宽限 为界调用；闸门豁免/qwatch 沿用
-// 原语义不动。
+// DshFamilyRunningAfter 运行态新鲜度判定（dsh-hot-compaction 触发面）：运行信
+// 号晚于 sinceTS 才算真在途。v0.9.4→v0.9.4b 两轮生产实锚（2026-10-07 bb5d5e37）：
+// ①宿主未送 status=idle 时运行态挂满 DshRunStaleS(1h)——触发被陈货推迟到闲置 1h；
+// ②宿主重载会话补发一次性 running 尖峰（无后续写入）——与 lastWrite 比对会永久
+// 堵死。终态语义=绝对新鲜度（调用方传 now-300s）：真在途的长生成事件流持续刷新
+// 运行信号恒在窗内;孤立尖峰 5min 自然过期。闸门豁免/qwatch 沿用原语义不动。
 func (l *Ledger) DshFamilyRunningAfter(sid string, sinceTS float64) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

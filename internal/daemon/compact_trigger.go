@@ -85,10 +85,11 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 	if peak < dc.MinPeakTokens {
 		return // 条件②peak 不足（压缩红利盖不过冷重付，不值得压）
 	}
-	if w.Ledger.DshFamilyRunningAfter(sid, lastWrite+dshCompactRunGraceS) {
-		return // 条件③在途（运行信号晚于最后写入+宽限——v0.9.4 新鲜度语义：宿主
-		// 未送 status=idle 时运行态挂 1h 的陈货不再挡触发；真在途的长生成持续写
-		// 转录，运行信号恒新于 lastWrite，保护不丢）
+	if w.Ledger.DshFamilyRunningAfter(sid, clock.Now()-dshCompactRunGraceS) {
+		return // 条件③在途（运行信号 300s 内有刷新——v0.9.4b 绝对新鲜度：宿主重载/未送
+		// idle 都会留一次性 running 尖峰且无后续写入,与 lastWrite 比对会永久堵死;
+		// 真在途的长生成事件流持续刷新信号(usage/agent 事件→DshRunRefresh),恒在
+		// 窗内。误放兜底=插件侧 busyLive(其注册表 idle<300 才认忙)再拦一道）
 	}
 	if _, _, active := w.Daemon.DshCompressedActive(sid); active {
 		return // 条件④有效 compressed 标记（刚压过、红利未消费完，不重复压）
