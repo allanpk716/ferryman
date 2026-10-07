@@ -323,8 +323,9 @@ func (d *Daemon) DshEvent(body map[string]any) map[string]any {
 // 票02（dsh-first-live-followups）续用单点挡：目标会话转录可解析出机器产出
 // 事件＝同会话续用（强续首条/压缩后回来首条）——默认零注入（上下文本就
 // 在会话内），改走 restoreContinue（开关档）；真新会话（转录无事件）锚定/
-// 清单行为逐字不变。判定单点在 daemon——插件侧无需感知续用与否（本口回
-// null 即不注入）。
+// 清单行为逐字不变。判定单点在 daemon（本口回 null 即不注入）。续用档回话
+// 带 "continuation": true——即续用档（含零注入各分支），插件侧据此清欠账
+// 止问（旧插件忽略新键＝旧行为；新插件遇旧 daemon 无键＝保守置账）。
 func (d *Daemon) DshHandoff(cwd, sessionID string) map[string]any {
 	if d.dshTranscriptHasProduction(cwd, sessionID) {
 		return d.restoreContinue(cwd, sessionID)

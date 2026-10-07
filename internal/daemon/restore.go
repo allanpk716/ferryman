@@ -54,14 +54,19 @@ func (d *Daemon) Restore(agent, cwd, sessionID string) map[string]any {
 // 强续开场即新任务打架的实证，非用户确认项）。
 func (d *Daemon) restoreContinue(cwd, sessionID string) map[string]any {
 	if !d.Cfg.GateDshHandoffOnContinue {
-		return map[string]any{"context": nil}
+		return map[string]any{"context": nil, "continuation": true}
 	}
 	for _, c := range d.Store.RestoreCandidates("dsh", cwd) { // covers desc：首个己线=最新
 		if c.SessionID == sessionID && d.coversFreshForDsh("dsh", c) {
-			return d.injectHandoff("dsh", cwd, sessionID, c, "")
+			// 续用档回话带 continuation 标记（夜链终局评审小修）：插件据此把
+			// {"context":null} 与"材料未到稍后重试"区分开——见标记即清欠账
+			// 止问；真新会话（走 Restore）回话无此键＝旧插件旧行为兼容。
+			r := d.injectHandoff("dsh", cwd, sessionID, c, "")
+			r["continuation"] = true
+			return r
 		}
 	}
-	return map[string]any{"context": nil}
+	return map[string]any{"context": nil, "continuation": true}
 }
 
 // restoreAnchored 锚定归还：被拦会话钉死。

@@ -799,3 +799,61 @@ test("created：拿到交接即清欠账（15:41 陈欠账根因）——用户�
   assert.equal(calls, 1, "created 拿到即清欠账,用户步不再重问");
   if (out.kind === "enter") assert.equal(out.messages.length, 1, "无补注追加");
 });
+
+// ---- ⑥ continuation 标记（夜链终局评审小修）：续用会话 /dsh/handoff 回
+// {"context":null} 与"材料未到稍后重试"不可区分 → 插件 handoffPending 欠账
+// 永不满足、每条用户消息重问＋daemon 每问全量读解转录。daemon 续用档回话
+// 带 continuation:true——插件见标记清欠账止问;旧 daemon 无键＝保守置账
+//（既有行为,兼容由 {md:null,continuation:false} 收形保底,既有"daemon 故障
+// 欠账保留"与"连续空持续重问"两用例已覆盖）。
+
+test("continuation：created 答续用（continuation:true）→ 不置账,后续用户步零 /dsh/handoff 请求", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/handoff", () => ({ status: 200, json: { context: null, continuation: true } }));
+  const deps = depsOver(mock, makeLogger());
+  const injected: UserMessageLike[] = [];
+  const agent = {
+    session: { header: { id: SID, cwd: "C:/proj" } },
+    inject: (m: UserMessageLike) => void injected.push(m),
+  };
+  await onCreated(deps, { agent });
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 1, "created 恰问一次");
+  assert.equal(injected.length, 0, "续用档零注入");
+  assert.equal(deps.handoffPending.has(SID), false, "续用档不置欠账（上下文已在本会话内）");
+
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const out = await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "续用首条" }] }], turn: 1, step: 1,
+  }, async () => ({ kind: "enter", messages: [userMsg] }));
+  assert.equal(out.kind, "enter");
+  assert.equal(mock.requestsFor("/dsh/handoff").length, 1, "无欠账,用户步零 handoff 重问");
+  if (out.kind === "enter") assert.equal(out.messages.length, 1, "无补注追加");
+});
+
+test("continuation：已置账（材料未到）后补问答续用 → 即清账止问,后续步零 handoff 请求", async (t) => {
+  const mock = await mockFor(t);
+  let calls = 0;
+  mock.route("/dsh/handoff", () => {
+    calls++;
+    return calls === 1
+      ? { status: 200, json: { context: null } } // 无标记的空答（旧 daemon 形）→ 保守置账
+      : { status: 200, json: { context: null, continuation: true } }; // 续用档 → 清账止问
+  });
+  const deps = depsOver(mock, makeLogger());
+  const agent = { session: { header: { id: SID, cwd: "C:/proj" } }, inject: () => {} };
+  await onCreated(deps, { agent });
+  assert.equal(deps.handoffPending.has(SID), true, "无标记的空答照旧置账（兼容既有行为）");
+
+  const userMsg = { role: "user", content: [], source: { kind: "user" } } as never;
+  const down = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [userMsg] });
+  await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "m1" }] }], turn: 1, step: 1,
+  }, down);
+  assert.equal(calls, 2, "欠账在,用户步照旧重问一次");
+  assert.equal(deps.handoffPending.has(SID), false, "补问答续用（continuation:true）即清账");
+
+  await onPreStep(deps, {
+    agent, messages: [{ content: [{ type: "text", text: "m2" }] }], turn: 2, step: 1,
+  }, down);
+  assert.equal(calls, 2, "清账后止问:后续用户步零 handoff 请求");
+});

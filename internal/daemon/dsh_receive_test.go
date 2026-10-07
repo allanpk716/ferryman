@@ -1004,8 +1004,8 @@ func TestDshHandoffContinuationDefaultZeroInjection(t *testing.T) {
 	if !ok || ctx != nil {
 		t.Fatalf("续用默认零注入, want {context:nil}: %v", r)
 	}
-	if len(r) != 1 {
-		t.Fatalf("回话应只有 context 键: %v", r)
+	if r["continuation"] != true {
+		t.Fatalf("续用回话应带 continuation:true（插件据此清欠账止问）: %v", r)
 	}
 	if rows := w.acc.Read(accounts.ReadOpts{Kind: "inject"}); len(rows) != 0 {
 		t.Fatalf("续用不得记 inject 行: %v", rows)
@@ -1167,5 +1167,57 @@ func TestDshHandoffContinuationTranscriptMissingFailOpen(t *testing.T) {
 	w.d.Cfg.Watch.DshSessionsDir = filepath.Join(w.tmp, "no-such-root")
 	if ctx, _ := w.d.DshHandoff("C:/proj", ghost)["context"].(string); ctx == "" {
 		t.Fatalf("根缺位 fail-open＝新会话: %v", ctx)
+	}
+}
+
+// TestDshHandoffContinuationFlag 夜链终局评审小修：续用回话带
+// "continuation":true——{"context":null} 与"材料未到稍后重试"就此可区分
+//（插件 handoffPending 欠账见标记即清,不再每条用户消息重问＋daemon 每问
+// 全量读解转录）。restoreContinue 三分支（开关 false 的 nil / injectHandoff
+// 命中 / 无新鲜己线 nil）均带键；真新会话（走 Restore）回话无该键＝旧插件
+// 忽略新键即旧行为的兼容锚。
+func TestDshHandoffContinuationFlag(t *testing.T) {
+	sid := "session-6c6c6c6c-6c6c-4c6c-8c6c-6c6c6c6c6c6c"
+
+	// 分支一:开关 false（默认零注入档）——nil 分支。
+	w := newDshContEnv(t)
+	writeDshSession(t, w.d.Cfg.Watch.DshSessionsDir, sid, dshHeaderFor(sid), contProduction())
+	w.store.SaveHandoff("sibling-src", "dsh", "C:/proj", "别的线程", isoUTC(w.t0-5), "fresh", "md-sib")
+	if r := w.d.DshHandoff("C:/proj", sid); r["context"] != nil || r["continuation"] != true {
+		t.Fatalf("续用默认零注入档应 {context:nil,continuation:true}: %v", r)
+	}
+
+	// 分支二:开关 true 且己线 fresh——injectHandoff 命中分支（结果包装后加键）。
+	w2 := newDshContEnv(t)
+	w2.d.Cfg.GateDshHandoffOnContinue = true
+	writeDshSession(t, w2.d.Cfg.Watch.DshSessionsDir, sid, dshHeaderFor(sid), contProduction())
+	w2.led.TouchFull("dsh", sid, filepath.Join(w2.tmp, "sid.jsonl"), w2.t0-10, 10, "C:/proj", "", 0, 0)
+	w2.store.SaveHandoff(sid, "dsh", "C:/proj", "己线", isoUTC(w2.t0-5), "fresh",
+		"<<<INJECT>>>\n己线正文\n<<</INJECT>>>")
+	r2 := w2.d.DshHandoff("C:/proj", sid)
+	if _, ok := r2["context"].(string); !ok || r2["continuation"] != true {
+		t.Fatalf("续用注入档应带 context 串＋continuation:true: %v", r2)
+	}
+
+	// 分支三:开关 true 但己线过期——无新鲜己线 nil 分支,仍带键。（播种新鲜度
+	// 需台账基线:无登记的源会话按新鲜放行,故 Touch 锚 LastWrite 与既有
+	// StaleOrConsumed 夹具同形。）
+	w3 := newDshContEnv(t)
+	w3.d.Cfg.GateDshHandoffOnContinue = true
+	writeDshSession(t, w3.d.Cfg.Watch.DshSessionsDir, sid, dshHeaderFor(sid), contProduction())
+	w3.led.TouchFull("dsh", sid, filepath.Join(w3.tmp, "sid.jsonl"), w3.t0-10, 10, "C:/proj", "", 0, 0)
+	w3.store.SaveHandoff(sid, "dsh", "C:/proj", "己线", isoUTC(w3.t0-1000), "fresh", "md-own") // covers 落后>60s
+	if r3 := w3.d.DshHandoff("C:/proj", sid); r3["context"] != nil || r3["continuation"] != true {
+		t.Fatalf("无新鲜己线档应 {context:nil,continuation:true}: %v", r3)
+	}
+
+	// 真新会话（转录无可解析事件,走 Restore）:回话不得带 continuation 键。
+	w4 := newDshContEnv(t)
+	sidNew := "session-6d6d6d6d-6d6d-4d6d-8d6d-6d6d6d6d6d6d"
+	writeDshSession(t, w4.d.Cfg.Watch.DshSessionsDir, sidNew, dshHeaderFor(sidNew))
+	w4.store.SaveHandoff("s1", "dsh", "C:/proj", "h1", isoUTC(w4.t0-100), "fresh", "md1")
+	r4 := w4.d.DshHandoff("C:/proj", sidNew)
+	if _, has := r4["continuation"]; has {
+		t.Fatalf("真新会话回话不得带 continuation 键（旧插件兼容锚）: %v", r4)
 	}
 }
