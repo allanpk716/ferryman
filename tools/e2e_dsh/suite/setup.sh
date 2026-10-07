@@ -16,6 +16,18 @@
 #   4. 重启 daemon（吃新 config；不清数据目录——token/台账延续）＋重启 web
 #      实例（吃新插件；重写 web.log 便于取登录 token）＋健康检查。
 #
+# 票03（dsh-cross-inject）拓扑矩阵追加：
+#   5. 会话转录落明文：profiles/web/cordis.patch.yml 追加 session-persistence-jsonl
+#      的 compression=none 覆写——矩阵硬门禁要 driver 直读新会话转录验「无交接
+#      文本」；明文与 zstd 都是 dsh 原生实录形态（dshtrans 两形态同解析），仅编码
+#      差异。none 模式后端对根内既有 .jsonl.zstd 工件拒绝启动（encodingMismatch，
+#      实测）——顺带清空沙箱 sessions 目录（每次 run 全新会话面；账本旧行无害：
+#      断言全按 session_id 过滤）。
+#   6. 第二 profile（web2，跨 profile 拓扑 T6 用）：profiles/web 整目录拷贝（插件
+#      换装+明文覆写已就位后再拷）＋独立端口起第二个 web 实例——与 web1 共享
+#      DSH_HOME（sessions/storages 同根；多 profile 并行共用一个 home 是既有生产
+#      形态，实测可并行）。env 追加 web2 口与 token。
+#
 # 全程零人工介入；幂等可重复跑。输出：driver.mjs 所需 env（run.sh 统一导出）。
 set -euo pipefail
 
@@ -24,7 +36,11 @@ STACK_DIR="$(cd "$HERE/.." && pwd)"
 # shellcheck disable=SC1091
 . "$STACK_DIR/lib.sh"
 
-echo "== [suite/setup 1/6] 起沙箱栈（幂等） =="
+# 票03：web2 实例口（跨 profile 拓扑；铁闸同 25xxx 段）
+E2E_DSH_WEB2_PORT="${E2E_DSH_WEB2_PORT:-25903}"
+require_port_25xxx "web2" "$E2E_DSH_WEB2_PORT" || exit 1
+
+echo "== [suite/setup 1/7] 起沙箱栈（幂等） =="
 if ! bash "$STACK_DIR/start.sh"; then
   echo "[suite] start.sh 首跑失败，拆栈后重起一次兜底" >&2
   bash "$STACK_DIR/stop.sh" || true
@@ -36,7 +52,7 @@ LOGS="$(sandbox_logs)"
 ROOT_MIX="$(mix_path "$(sandbox_root)")"
 RUNSTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
-echo "== [suite/setup 2/6] 插件换装 + 模型路由改指沙箱可用供应商 =="
+echo "== [suite/setup 2/7] 插件换装 + 模型路由改指沙箱可用供应商 =="
 PLUGIN_SRC="$E2E_DSH_REPO_ROOT/plugin/ferryman-dsh"
 [ -f "$PLUGIN_SRC/src/compact.ts" ] || {
   echo "[suite] 工作树插件缺 src/compact.ts（夜链票05 产物）——源不完整" >&2; exit 1; }
@@ -79,7 +95,46 @@ EOF
 fi
 echo "  模型路由已改指 zai-coding-cn/glm-5.3＋挂 pi-ai 适配器（沙箱凭据自含）"
 
-echo "== [suite/setup 3/6] config 调参（追加 [heartbeat]+[dsh_compact]） =="
+echo "== [suite/setup 3/7] 转录落明文 + sessions 清空 + web2 profile 备料（票03） =="
+PROFILE_PATCH="$HOMEDIR/profiles/web/cordis.patch.yml"
+if ! grep -q 'compression: none' "$PROFILE_PATCH"; then
+  cat >> "$PROFILE_PATCH" <<'EOF'
+# ---- 票03 E2E suite 追加（tools/e2e_dsh/suite/setup.sh）：会话转录落明文 ----
+# 多会话拓扑矩阵的硬门禁要求 driver 直读会话转录（「新会话转录无交接文本」断言）；
+# 明文与 zstd 都是 dsh 原生实录形态（dshtrans 两形态同解析），仅编码差异。
+# id 定向 patch 是整段 config 替换——root 用与 base bundle 相同的 dshHomePath
+# 表达式原样重述（用户层 patch 与 bundle patch 同一 include 方言/求值上下文）。
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+EOF
+fi
+grep -q 'compression: none' "$PROFILE_PATCH" \
+  || { echo "[suite] 明文覆写未写入 $PROFILE_PATCH" >&2; exit 1; }
+# none 模式后端对根内既有 .jsonl.zstd 工件拒绝启动（encodingMismatch，实测）——
+# 清空沙箱 sessions（旧 run 会话/陈旧草稿不带入，跨 run 确定性）
+rm -rf "$HOMEDIR/sessions"
+mkdir -p "$HOMEDIR/sessions"
+# web2 profile：web 整目录拷贝（换装插件+明文覆写已就位后再拷；bak 残留不带）。
+# 先拆在跑的 web2 实例（上一 run 留守或本机手试进程）——进程占用目录会使 rm 失败。
+# （port_pid 在端口空闲时 grep 无命中，pipefail 下回非零——`|| true` 防 set -e 静默死）
+WEB2_DIR="$HOMEDIR/profiles/web2"
+pid="$(port_pid "$E2E_DSH_WEB2_PORT" || true)"
+if [ -n "$pid" ]; then
+  kill_pid_tree "$pid"
+  wait_port_free "$E2E_DSH_WEB2_PORT" 15 || true
+fi
+rm -rf "$WEB2_DIR"
+cp -r "$HOMEDIR/profiles/web" "$WEB2_DIR"
+find "$WEB2_DIR" -maxdepth 1 -name '*.bak-*' -exec rm -f {} + 2>/dev/null || true
+{ [ -f "$WEB2_DIR/ferryman-dsh/index.mjs" ] && [ -f "$WEB2_DIR/package.json" ]; } \
+  || { echo "[suite] web2 profile 备料缺件" >&2; exit 1; }
+isolation_scan "$PROFILE_PATCH" "$WEB2_DIR/cordis.patch.yml" "$WEB2_DIR/package.json" || exit 1
+echo "  转录=明文（compression: none）· sessions 已清空 · web2 profile 已备料"
+
+echo "== [suite/setup 4/7] config 调参（追加 [heartbeat]+[dsh_compact]） =="
 # start.sh 每次运行都重写 config.toml（write_sandbox_config），追加节天然幂等
 # （不会叠出重复节）。阈值面（summarize 45/block 90）沿用栈缺省不动。
 E2E_SUITE_TTL_S="${E2E_SUITE_TTL_S:-60}"
@@ -115,7 +170,7 @@ compressed_flag_ttl_ratio = $E2E_SUITE_MARK_RATIO
 EOF
 echo "  ttl_s=$E2E_SUITE_TTL_S trigger@${E2E_SUITE_TRIGGER_RATIO}x min_peak=$E2E_SUITE_MIN_PEAK mark=${E2E_SUITE_MARK_RATIO}xTTL"
 
-echo "== [suite/setup 4/6] 重启沙箱 daemon（吃新 config；数据目录不清） =="
+echo "== [suite/setup 5/7] 重启沙箱 daemon（吃新 config；数据目录不清） =="
 TOKEN_FILE="$(sandbox_data)/daemon.token"
 if daemon_stats_ok "$E2E_DSH_DAEMON_PORT" "$TOKEN_FILE"; then
   shutdown_daemon "$E2E_DSH_DAEMON_PORT" "$TOKEN_FILE" && echo "  /shutdown 已发"
@@ -144,7 +199,7 @@ done
   tail -30 "$LOGS"/daemon-suite-$RUNSTAMP.log >&2 || true; exit 1; }
 echo "  daemon 就绪（新参数已生效；日志 daemon-suite-$RUNSTAMP.log）"
 
-echo "== [suite/setup 5/6] 重启 web 实例（吃新插件；重取登录 token） =="
+echo "== [suite/setup 6/7] 重启 web 实例（吃新插件；重取登录 token） =="
 pid="$(port_pid "$E2E_DSH_WEB_PORT")"
 [ -z "$pid" ] || { kill_pid_tree "$pid"; wait_port_free "$E2E_DSH_WEB_PORT" 15 || true; }
 : > "$LOGS/web.log"
@@ -171,7 +226,33 @@ done
 [ -n "$WEB_TOKEN" ] || { echo "[suite] 30s 内未在 web.log 捕到登录 token" >&2; exit 1; }
 echo "  web 实例就绪（win PID $(cat "$(sandbox_run)/web.win.pid")，token 已捕获）"
 
-echo "== [suite/setup 6/6] 健康检查 =="
+echo "== [suite/setup 7/7] web2 实例（票03 跨 profile 拓扑）＋健康检查 =="
+# 与 web1 并行共用 DSH_HOME（生产多 profile 形态）；口独立、日志独立、token 独立。
+pid="$(port_pid "$E2E_DSH_WEB2_PORT" || true)"
+[ -z "$pid" ] || { kill_pid_tree "$pid"; wait_port_free "$E2E_DSH_WEB2_PORT" 15 || true; }
+: > "$LOGS/web2.log"
+env -u FERRYMAN_DISABLE \
+    DSH_HOME="$(mix_path "$HOMEDIR")" \
+    FERRYMAN_PORT="$E2E_DSH_DAEMON_PORT" \
+    FERRYMAN_TOKEN_FILE="$(mix_path "$(sandbox_data)")/daemon.token" \
+    "$DSH_CLI" web2 --no-open --port "$E2E_DSH_WEB2_PORT" >>"$LOGS/web2.log" 2>&1 &
+echo $! > "$(sandbox_run)/web2.msys.pid"
+ok=0
+for _ in $(seq 1 120); do
+  if web_http_ok "$E2E_DSH_WEB2_PORT"; then ok=1; break; fi
+  sleep 1
+done
+[ "$ok" = "1" ] || { echo "[suite] web2 实例 120s 未就绪，日志尾部：" >&2
+  tail -30 "$LOGS/web2.log" >&2 || true; exit 1; }
+port_pid "$E2E_DSH_WEB2_PORT" > "$(sandbox_run)/web2.win.pid"
+WEB2_TOKEN=""
+for _ in $(seq 1 30); do
+  WEB2_TOKEN="$(grep -ao 'token=[^[:space:]]*' "$LOGS/web2.log" | tail -1 | cut -d= -f2 || true)"
+  [ -n "$WEB2_TOKEN" ] && break
+  sleep 1
+done
+[ -n "$WEB2_TOKEN" ] || { echo "[suite] 30s 内未在 web2.log 捕到登录 token" >&2; exit 1; }
+echo "  web2 实例就绪（win PID $(cat "$(sandbox_run)/web2.win.pid")，token 已捕获）"
 bash "$STACK_DIR/health.sh"
 
 # ---- 供 run.sh/driver.mjs 消费的 env（mixed 路径=node 可直接用；落沙箱不落仓库） ----
@@ -185,6 +266,8 @@ E2E_SUITE_DAEMON_LOG=$(mix_path "$LOGS/daemon-suite-$RUNSTAMP.log")
 E2E_SUITE_DAEMON_PORT=$E2E_DSH_DAEMON_PORT
 E2E_SUITE_WEB_PORT=$E2E_DSH_WEB_PORT
 E2E_SUITE_WEB_TOKEN=$WEB_TOKEN
+E2E_SUITE_WEB2_PORT=$E2E_DSH_WEB2_PORT
+E2E_SUITE_WEB2_TOKEN=$WEB2_TOKEN
 E2E_SUITE_TTL_S=$E2E_SUITE_TTL_S
 E2E_SUITE_TRIGGER_RATIO=$E2E_SUITE_TRIGGER_RATIO
 E2E_SUITE_MIN_PEAK=$E2E_SUITE_MIN_PEAK
@@ -193,4 +276,4 @@ E2E_SUITE_MARK_RATIO=$E2E_SUITE_MARK_RATIO
 E2E_SUITE_BLOCK_S=90
 E2E_SUITE_RUNSTAMP=$RUNSTAMP
 EOF
-echo "[suite] 整备完成（env.driver 已写至 $(sandbox_run)/env.driver；runStamp $RUNSTAMP）"
+echo "[suite] 整备完成（env.driver 已写至$(sandbox_run)/env.driver；runStamp $RUNSTAMP）"
