@@ -84,7 +84,7 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 	if w.Ledger.DshFamilyRunning(sid) {
 		return // 条件③在途（族系运行态在效——长生成/子代理在跑，此刻不该压）
 	}
-	if _, active := w.Daemon.DshCompressedActive(sid); active {
+	if _, _, active := w.Daemon.DshCompressedActive(sid); active {
 		return // 条件④有效 compressed 标记（刚压过、红利未消费完，不重复压）
 	}
 	if w.Daemon.dshCompactSlotFresh(sid) {
@@ -95,7 +95,7 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 		return // enabled/TTL 复验败（运行时翻转）——本链路静默，绝不炸守望
 	}
 	fmt.Printf("[compact] dsh 触发热缓存压缩：%s 闲置 %.0fs ≥ 线 %.0fs（指令 %.0fs 内有效）\n",
-		runeCap8(sid), idle, dc.TriggerRatio*ttl, w.Daemon.compactCommandTTLS())
+		runeCap16(sid), idle, dc.TriggerRatio*ttl, w.Daemon.compactCommandTTLS())
 	// 并行交接：既有 L1 摆渡管线异步生成交接文档——与指令独立、互不阻塞
 	//（指令已在槽内，交接失败只日志不回滚）。防重同 regen 两道：常规线本版
 	// 已接管（handedOff ≥ lastWrite）或库中已有有效交接覆盖当前内容 → 不重摆；
@@ -114,5 +114,5 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 		return
 	}
 	fmt.Printf("[compact] dsh 交接入队失败（队满？）——压缩指令不受影响（%s）\n",
-		runeCap8(sid))
+		runeCap16(sid))
 }

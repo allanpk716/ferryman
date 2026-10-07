@@ -148,9 +148,14 @@ type DockCfg struct {
 
 // Config 全量配置（字段=Python dataclass 1:1）。
 type Config struct {
-	GateCC        string // 验证期默认 observe（DESIGN §6.2）
+	GateCC string // 验证期默认 observe（DESIGN §6.2）
 	GateCodex     string // E0b 后再议
 	GateDsh       string // dsh-gate-ux P3 前置：独立档；空=未设置＝闸门处决点回落 codex_mode（老配置零变化）
+	// GateDshAutoContinue v0.9.3 票2（2026-10-07 用户拍板）：dsh 拦截改自动强续
+	// 无卡直续（bypass 记账 reason=auto-strong-continue＋横幅报冷重付价＋消耗
+	// 交接，镜像手动强续）。缺省 false（保守发版：存量行为零变化）；生产
+	// config.toml [gate] dsh_auto_continue = true 点亮。cc/codex 永不受本键影响。
+	GateDshAutoContinue bool
 	Thresholds    ThresholdCfg
 	Watch         WatchCfg
 	Server        ServerCfg
@@ -211,10 +216,14 @@ func Default() *Config {
 		},
 		Tuning: TuningCfg{Mode: "recommend", WindowDays: TuningWindowDays, MinEvents: TuningMinEvents},
 		// 票02（dsh-hot-compaction）：压缩适配默认全开（spec 钉死六键缺省）。
+		// v0.9.3 票1 加放行线两键（pass_floor_tokens/pass_ratio）——与
+		// min_peak_tokens（值得压）解耦。
 		DshCompact: DshCompactCfg{
 			Enabled:                true,
 			TriggerRatio:           0.8,
 			MinPeakTokens:          20000,
+			PassFloorTokens:        12000,
+			PassRatio:              0.5,
 			CommandTTLRatio:        0.2,
 			PollHintS:              30.0,
 			CompressedFlagTTLRatio: 2.0,
@@ -292,6 +301,9 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		}
 		if v, ok := g["dsh_mode"]; ok {
 			cfg.GateDsh = pyStr(v)
+		}
+		if v, ok := g["dsh_auto_continue"]; ok {
+			cfg.GateDshAutoContinue = pyBool(v)
 		}
 	}
 	if raw, ok := data["thresholds"]; ok {
@@ -447,6 +459,14 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		if err != nil {
 			return err
 		}
+		pft, err := pyInt(get(dc, "pass_floor_tokens", cfg.DshCompact.PassFloorTokens))
+		if err != nil {
+			return err
+		}
+		pr, err := pyFloat(get(dc, "pass_ratio", cfg.DshCompact.PassRatio))
+		if err != nil {
+			return err
+		}
 		ctr, err := pyFloat(get(dc, "command_ttl_ratio", cfg.DshCompact.CommandTTLRatio))
 		if err != nil {
 			return err
@@ -463,6 +483,8 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			Enabled:                pyBool(get(dc, "enabled", cfg.DshCompact.Enabled)),
 			TriggerRatio:           tr,
 			MinPeakTokens:          mpt,
+			PassFloorTokens:        pft,
+			PassRatio:              pr,
 			CommandTTLRatio:        ctr,
 			PollHintS:              phs,
 			CompressedFlagTTLRatio: cfr,
@@ -741,6 +763,14 @@ func Validate(c *Config, relaxMinGap bool) error {
 	if dc.MinPeakTokens < 0 {
 		problems = append(problems, fmt.Sprintf("dsh_compact.min_peak_tokens 须 >= 0（当前 %d）",
 			dc.MinPeakTokens))
+	}
+	if dc.PassFloorTokens < 0 {
+		problems = append(problems, fmt.Sprintf("dsh_compact.pass_floor_tokens 须 >= 0（当前 %d）",
+			dc.PassFloorTokens))
+	}
+	if dc.PassRatio < 0 || dc.PassRatio > 1 {
+		problems = append(problems, fmt.Sprintf("dsh_compact.pass_ratio 须 ∈ [0,1]（当前 %g）",
+			dc.PassRatio))
 	}
 	if dc.CommandTTLRatio < 0 {
 		problems = append(problems, fmt.Sprintf("dsh_compact.command_ttl_ratio 须 >= 0（当前 %g）",

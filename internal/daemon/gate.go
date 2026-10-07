@@ -221,13 +221,16 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		}
 		// 票04 dsh-hot-compaction gate 联动：已压缩短前缀不拦——拦窗内先查压缩
 		// 标记（判定单源票02 DshCompressedActive：标记在∧未过死线∧标记后无
-		// 机器产出流量，gate 只消费不重复实现）：有效 ∧ 当前前缀 <
-		// min_peak_tokens → 全量重付的前提不成立（前缀已短，冷重付也便宜），
-		// 放行不拦。pending 同 hot-allow 款清掉（红利失效后再长闲置从分支7
-		// 重新起圈，保护不丢）；否则照旧拦。标记唯一置位口 = /dsh/compacted
-		//（票02），只挂 dsh 会话——cc/codex 查无标记＝行为零变化。
-		if prefix, ok := d.DshCompressedActive(snap.sid); ok &&
-			prefix < d.Cfg.DshCompact.MinPeakTokens {
+		// 机器产出流量，gate 只消费不重复实现）：有效 ∧ 当前前缀低于放行线
+		// （v0.9.3 票1 解耦：dshCompactPassLine＝max(pass_floor_tokens,
+		// pass_ratio×压前峰值)，不再与 min_peak_tokens 共用一条线——首单事故
+		// 2026-10-07 实锚：60562 压到 20562 撞 20000 线照样拦，放行线必须自成
+		// 一线）→ 全量重付的前提不成立，放行不拦。pending 同 hot-allow 款清掉
+		//（红利失效后再长闲置从分支7 重新起圈，保护不丢）；否则照旧拦。标记
+		// 唯一置位口 = /dsh/compacted（票02），只挂 dsh 会话——cc/codex 查无
+		// 标记＝行为零变化。
+		if prefix, prePeak, ok := d.DshCompressedActive(snap.sid); ok &&
+			prefix < d.dshCompactPassLine(prePeak) {
 			d.Pending.Clear(key)
 			d.gateWarn(agent, snap.sid, "compacted-short-prefix", idle)
 			return map[string]any{"decision": "allow",
@@ -259,6 +262,9 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		return allowAllow(d.cacheInfoCtx(idle, th))
 	}
 	h := d.Store.ValidHandoff(agent, cwd, snap.coversBar())
+	if agent == "dsh" && d.Cfg.GateDshAutoContinue { // 票2：无卡直续（先于分支5/6 一切副作用）
+		return d.dshAutoContinue(sessionID, transcriptPath, st, snap.peak, idle)
+	}
 	if h != nil { // 分支 5
 		d.Pending.Clear(key)
 		d.Stats.addBlocks()
@@ -451,6 +457,56 @@ func (d *Daemon) compactedShortCtx(idle float64) string {
 		"会被正常拦（交接自动备好）。", idle/60), WarnContextCap)
 }
 
+// dshAutoContinue v0.9.3 票2（2026-10-07 用户拍板）：dsh 拦截改自动强续无卡
+// 直续。用户工作流里手动强续是唯一真实选择，卡只添一步点击；压缩链接管
+// 「省钱」职责后，拦截的「知情」职责改由横幅（additional_context 报冷重付
+// 价）承担。语义镜像步1 手动强续：清 pending（06703fbd 跑步机案同款）、消耗
+// 现行交接（D2：绝不端旧快照）、bypass 记账（reason 区分自动/手动）；gate.log
+// 落 auto-continue 痕（与手动强续可区分可数）。cc/codex 永不走本道（调用点
+// agent=="dsh" 钉死，行为零变化）。缺省关（config [gate].dsh_auto_continue）。
+func (d *Daemon) dshAutoContinue(sessionID, transcriptPath string, st *ledger.SessionState, peak int, idle float64) map[string]any {
+	d.Stats.addBypass()
+	if st != nil {
+		d.Pending.Clear([2]string{"dsh", st.SessionID})
+	}
+	d.Pending.Clear([2]string{"dsh", sessionID})
+	if d.Store != nil { // D2 消耗语义同手动强续（票02）；台账 miss 回落原始 id 同口径
+		sid := sessionID
+		if st != nil {
+			sid = st.SessionID
+		}
+		d.Store.ConsumeHandoffs("dsh", sid)
+	}
+	d.Acct("bypass", st, "dsh", sessionID, transcriptPath,
+		accounts.Fields{"prefix_tokens": peak}) // reason/idle_s 不落账（隐私不变量白名单）——自动/手动的区分归 gate.log mode=auto-continue
+	d.gateWarn("dsh", sessionID, "auto-continue", idle)
+	return map[string]any{"decision": "allow", "reason": "auto-strong-continue",
+		"additional_context": d.autoContinueCtx(idle, peak)}
+}
+
+// autoContinueCtx 自动强续横幅（compactedShortCtx 同款形态）：只报事实
+//（闲置时长＋冷重付量），不加动作指引——本道的设计前提就是用户不想要步骤。
+func (d *Daemon) autoContinueCtx(idle float64, peak int) string {
+	return mathx.RuneTrunc(fmt.Sprintf("[Ferryman] 本会话已闲置 %.0f 分钟（缓存已失效），"+
+		"已自动强续放行、无弹窗直续：本条将全价冷重付约 %d tokens input。"+
+		"若想省这笔，下次可在此会话闲置后让压缩先行（自动），或换新会话开场。", idle/60, peak), WarnContextCap)
+}
+
+// dshCompactPassLine 放行线（v0.9.3 票1 解耦，2026-10-07 首单事故实锚：
+// 60562 压到 20562 撞 min_peak 20000 线照样拦——一个旋钮两个语义的耦合 bug）：
+// max(pass_floor_tokens, pass_ratio×压前峰值)。地板盖压得干净的会话
+//（glm-5.3 提示地板≈9.4K，压好落 9~12K）；比例腿盖肥会话——压掉一半以上＝
+// 剩余冷重付已是系统可达下限，再拦只逼「更贵强续」或「丢活上下文」二选一。
+// min_peak_tokens 只管「值得压」（触发面条件②），与放行无关。PrePeak=0
+//（不可得：未 harvest/历史标记）→ 比例腿失效只剩地板。
+func (d *Daemon) dshCompactPassLine(prePeak int) int {
+	line := d.Cfg.DshCompact.PassFloorTokens
+	if r := int(d.Cfg.DshCompact.PassRatio * float64(prePeak)); r > line {
+		line = r
+	}
+	return line
+}
+
 // warnCtx _warn_ctx（server.py:279-289；cc 逐字）。
 // observe 永不拦——"将被拦"只在 enforce 成立（2026-09-18 文案缺陷修复：
 // 两模式共用一句空头支票，用户按文案预期被拦却没拦）。
@@ -512,6 +568,15 @@ func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float
 func runeCap8(s string) string {
 	if rs := []rune(s); len(rs) > 8 {
 		return string(rs[:8])
+	}
+	return s
+}
+
+// runeCap16 按码点截 16 位（v0.9.3 票4）：dsh 会话键 "session-<uuid>" 的前 8
+// 位全被 "session-" 吃掉，日志侧一律用本款（shortSid 16 位同动机）。
+func runeCap16(s string) string {
+	if rs := []rune(s); len(rs) > 16 {
+		return string(rs[:16])
 	}
 	return s
 }

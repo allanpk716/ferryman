@@ -172,7 +172,8 @@ func (d *Daemon) DshCompacted(body map[string]any) map[string]any {
 		}
 		d.Ledger.Mu().Lock()
 		if st != nil {
-			st.DshCompressed = &ledger.DshCompressMark{TS: now, Expires: expires}
+			prePeak := st.PeakCtx // v0.9.3 票1：压前峰值入标记（放行线比例腿基准）
+			st.DshCompressed = &ledger.DshCompressMark{TS: now, Expires: expires, PrePeak: prePeak}
 			st.PeakCtx = prefix // prefix 覆盖（enrich 只增不减，新流量照常刷新）
 		}
 		d.Ledger.Mu().Unlock()
@@ -182,19 +183,21 @@ func (d *Daemon) DshCompacted(body map[string]any) map[string]any {
 
 // DshCompressedActive 压缩标记有效判定（票02 语义单源；gate 联动票04 消费）：
 // 标记在 ∧ 未过死线（now < expires，不再续期）∧ 标记后无机器产出流量
-//（LastWrite ≤ 标记时刻——压缩红利只领一次）。prefix＝覆盖后的前缀现值
-//（PeakCtx，闸门拿它与 min_peak_tokens 比）。无标记/无台账 → (0, false)。
-func (d *Daemon) DshCompressedActive(sid string) (int, bool) {
+//（LastWrite ≤ 标记时刻——压缩红利只领一次）。返回 (prefix, prePeak, true)：
+// prefix＝覆盖后的前缀现值（PeakCtx），prePeak＝压前峰值（v0.9.3 票1 放行线
+// 比例腿基准；0＝不可得）。放行比较归 gate 的 dshCompactPassLine（本处只报
+// 值不判线）。无标记/无台账 → (0, 0, false)。
+func (d *Daemon) DshCompressedActive(sid string) (int, int, bool) {
 	d.Ledger.Mu().Lock()
 	defer d.Ledger.Mu().Unlock()
 	st := d.Ledger.GetLocked("dsh", sid)
 	if st == nil || st.DshCompressed == nil {
-		return 0, false
+		return 0, 0, false
 	}
 	m := st.DshCompressed
 	now := clock.Now()
 	if now >= m.Expires || st.LastWrite > m.TS {
-		return 0, false
+		return 0, 0, false
 	}
-	return st.PeakCtx, true
+	return st.PeakCtx, m.PrePeak, true
 }

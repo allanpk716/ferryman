@@ -17,7 +17,9 @@ import (
 )
 
 // appendGateWarn 警告行落盘。字段：时间/决策/agent/会话短 id/模式/闲置秒。
-// 会话 id 取前 8 位足够对照台账且不撑日志；idle 取整秒。
+// 会话 id 取前 16 位（v0.9.3 票4：前 8 位对 dsh 的 "session-" 前缀正好全吃掉，
+// 生产 gate.log 全是 sid=session- 无法对照台账——16 位含 8 位 uuid 前缀可辨）；
+// idle 取整秒。
 func appendGateWarn(dataDir, agent, sid, mode string, idleS float64) {
 	if dataDir == "" {
 		return
@@ -39,10 +41,11 @@ var appendLineBestEffort = func(path, line string) error {
 	return err
 }
 
-// shortSid 会话短 id（前 8 位；短于 8 原样）。
+// shortSid 会话短 id（前 16 位；短于 16 原样。v0.9.3 票4：8→16，见
+// appendGateWarn 头注）。
 func shortSid(sid string) string {
-	if len(sid) > 8 {
-		return sid[:8]
+	if len(sid) > 16 {
+		return sid[:16]
 	}
 	return sid
 }

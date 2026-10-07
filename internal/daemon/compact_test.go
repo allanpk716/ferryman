@@ -197,6 +197,36 @@ func TestDshCompactEnqueueNeedsTTL(t *testing.T) {
 
 // ---- compacted：账本行＋compressed 标记＋prefix 覆盖 ----
 
+// TestDshCompactPassLineTable 放行线纯函数表（v0.9.3 票1 解耦）：max(地板,
+// ratio×压前峰值)。min_peak_tokens 不在公式内——解耦实锚（首单事故 60562 压到
+// 20562 撞 min_peak 20000 线照样拦）。
+func TestDshCompactPassLineTable(t *testing.T) {
+	e := newCompactEnv(t, 100)
+	cases := []struct {
+		name    string
+		prePeak int
+		floor   int
+		ratio   float64
+		want    int
+	}{
+		{"缺省:压前不可得→地板", 0, 12000, 0.5, 12000},
+		{"缺省:肥会话50K→比例腿25K", 50000, 12000, 0.5, 25000},
+		{"缺省:首单实锚60562→30281", 60562, 12000, 0.5, 30281},
+		{"缺省:瘦会话10K→比例腿5K不敌地板", 10000, 12000, 0.5, 12000},
+		{"可配:地板抬高独走", 50000, 40000, 0.1, 40000},
+		{"可配:比例1.0=压多少放多少", 50000, 0, 1.0, 50000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e.d.Cfg.DshCompact.PassFloorTokens = tc.floor
+			e.d.Cfg.DshCompact.PassRatio = tc.ratio
+			if got := e.d.dshCompactPassLine(tc.prePeak); got != tc.want {
+				t.Fatalf("passLine(%d) = %d, want %d", tc.prePeak, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDshCompactedOkSetsFlagAndPrefix(t *testing.T) {
 	e := newCompactEnv(t, 100) // 标记有效期 2.0×100=200s
 	e.regCompact(compactSID, 100, 50000)
@@ -227,8 +257,11 @@ func TestDshCompactedOkSetsFlagAndPrefix(t *testing.T) {
 	if got := e.compactPeak(compactSID); got != 1234 {
 		t.Fatalf("prefix 覆盖后 PeakCtx = %d, want 1234", got)
 	}
-	if prefix, ok := e.d.DshCompressedActive(compactSID); !ok || prefix != 1234 {
+	if prefix, _, ok := e.d.DshCompressedActive(compactSID); !ok || prefix != 1234 {
 		t.Fatalf("DshCompressedActive = (%d,%v), want (1234,true)", prefix, ok)
+	}
+	if got := e.compactMark(compactSID).PrePeak; got != 50000 {
+		t.Fatalf("标记 PrePeak = %d, want 50000（压前峰值入标记——v0.9.3 放行线比例腿基准）", got)
 	}
 }
 
@@ -263,7 +296,7 @@ func TestDshCompactedTableDriven(t *testing.T) {
 			if got := e.compactMark(compactSID) != nil; got != tc.wantMark {
 				t.Fatalf("标记在=%v, want %v", got, tc.wantMark)
 			}
-			if _, ok := e.d.DshCompressedActive(compactSID); ok != tc.wantMark {
+			if _, _, ok := e.d.DshCompressedActive(compactSID); ok != tc.wantMark {
 				t.Fatalf("Active=%v, want %v", ok, tc.wantMark)
 			}
 		})
@@ -301,11 +334,11 @@ func TestDshCompressedFlagExpiry(t *testing.T) {
 	e.regCompact(compactSID, 100, 50000)
 	e.d.DshCompacted(map[string]any{"session_id": compactSID, "ok": true, "prefix_tokens": 1234})
 	e.advance(199)
-	if _, ok := e.d.DshCompressedActive(compactSID); !ok {
+	if _, _, ok := e.d.DshCompressedActive(compactSID); !ok {
 		t.Fatal("死线内应有效")
 	}
 	e.advance(2) // 越过 200s 死线
-	if _, ok := e.d.DshCompressedActive(compactSID); ok {
+	if _, _, ok := e.d.DshCompressedActive(compactSID); ok {
 		t.Fatal("过死线应无效（不再续期）")
 	}
 }
@@ -316,19 +349,19 @@ func TestDshCompressedFlagVoidedByTraffic(t *testing.T) {
 	e.led.TouchFull("dsh", compactSID, path, e.t0-100, 10, "C:/proj", "", 50000, 0)
 	e.d.DshCompacted(map[string]any{"session_id": compactSID, "ok": true, "prefix_tokens": 1234})
 	// 标记后无流量：同刻 LastWrite（== 标记 TS，压缩自身落盘写不越过）仍有效
-	if _, ok := e.d.DshCompressedActive(compactSID); !ok {
+	if _, _, ok := e.d.DshCompressedActive(compactSID); !ok {
 		t.Fatal("无流量应有效")
 	}
 	// 新流量（机器产出 Touch 推进 LastWrite 越过标记时刻）→ 立即作废（红利只领一次）
 	e.led.TouchFull("dsh", compactSID, path, e.t0+10, 10, "C:/proj", "", 50001, 0)
-	if _, ok := e.d.DshCompressedActive(compactSID); ok {
+	if _, _, ok := e.d.DshCompressedActive(compactSID); ok {
 		t.Fatal("标记后有流量应作废")
 	}
 }
 
 func TestDshCompressedActiveNoState(t *testing.T) {
 	e := newCompactEnv(t, 100)
-	if _, ok := e.d.DshCompressedActive("nobody"); ok {
+	if _, _, ok := e.d.DshCompressedActive("nobody"); ok {
 		t.Fatal("无台账/无标记应无效")
 	}
 }
@@ -337,7 +370,7 @@ func TestDshCompressedFlagZeroTTLInvalid(t *testing.T) {
 	e := newCompactEnv(t, 0) // ttl_s 未配置：expires 钉死在置位时刻 → 恒无效
 	e.regCompact(compactSID, 10, 50000)
 	e.d.DshCompacted(map[string]any{"session_id": compactSID, "ok": true, "prefix_tokens": 1234})
-	if _, ok := e.d.DshCompressedActive(compactSID); ok {
+	if _, _, ok := e.d.DshCompressedActive(compactSID); ok {
 		t.Fatal("TTL 不可得标记应恒无效（保守面）")
 	}
 	if got := e.compactPeak(compactSID); got != 1234 {

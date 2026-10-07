@@ -22,7 +22,7 @@ func TestAppendGateWarnWritesCountableLine(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("应落 2 行, got %d", len(lines))
 	}
-	if !strings.Contains(lines[0], "[warn] cc sid=abcdefgh mode=observe idle=2100s") {
+	if !strings.Contains(lines[0], "[warn] cc sid=abcdefgh1234 mode=observe idle=2100s") {
 		t.Fatalf("行 1 字段不符: %q", lines[0])
 	}
 	if !strings.Contains(lines[1], "mode=enforce idle=2160s") {
@@ -35,11 +35,18 @@ func TestAppendGateWarnEmptyDirSilent(t *testing.T) {
 }
 
 func TestShortSid(t *testing.T) {
-	if got := shortSid("abcdefghijklmnop"); got != "abcdefgh" {
+	// v0.9.3 票4：8→16 位（dsh "session-" 前缀 8 位全吃掉的事故）。
+	if got := shortSid("abcdefghijklmnop"); got != "abcdefghijklmnop" {
+		t.Fatalf("16 位串应原样, got %q", got)
+	}
+	if got := shortSid("abcdefghijklmnopq"); got != "abcdefghijklmnop" {
 		t.Fatalf("shortSid = %q", got)
 	}
 	if got := shortSid("abc"); got != "abc" {
 		t.Fatalf("shortSid 短串应原样, got %q", got)
+	}
+	if got := shortSid("session-44444444-4444"); got != "session-44444444" {
+		t.Fatalf("dsh 键应保住 uuid 前缀可辨, got %q", got)
 	}
 }
 

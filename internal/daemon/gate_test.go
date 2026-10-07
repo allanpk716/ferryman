@@ -1791,30 +1791,119 @@ func TestGateBlockAcctIdleAnchoredToDecisionAnchor(t *testing.T) {
 // ---- 票04（dsh-hot-compaction）gate 联动：已压缩短前缀不拦 ----
 //
 // 命中拦截条件（拦窗内）先查 compressed 标记（判定单源票02 DshCompressedActive，
-// gate 只消费不重复实现）：标记有效 ∧ 当前前缀 < [dsh_compact].min_peak_tokens
-// → 放行（reason="compacted-short-prefix"，gate.log 落 mode=compacted-short-
-// prefix 可 grep 行，pending 同 hot-allow 款清掉）；标记过期 / 被流量作废 /
-// 无标记 / 前缀不短 → 照旧拦（分支5，不放宽任何其他判定）。夹具复用票02
-// compactEnv（真 Accounts＋TTL 可配），gate 档显式钉 enforce（compactEnv 沿
-// Default：dsh 空→回落 GateCodex=off，非本票面）。
+// gate 只消费不重复实现）：标记有效 ∧ 当前前缀 < dshCompactPassLine（v0.9.3 票1
+// 解耦：max(pass_floor_tokens=12000, pass_ratio=0.5×压前峰值)，不再与
+// min_peak_tokens 共用——2026-10-07 首单事故实锚：60562 压到 20562 撞 20000
+// 线照样拦）→ 放行（reason="compacted-short-prefix"，gate.log 落 mode=
+// compacted-short-prefix 可 grep 行，pending 同 hot-allow 款清掉）；标记过期 /
+// 被流量作废 / 无标记 / 前缀不短 → 照旧拦（分支5，不放宽任何其他判定）。
+// 夹具复用票02 compactEnv（真 Accounts＋TTL 可配），gate 档显式钉 enforce
+//（compactEnv 沿 Default：dsh 空→回落 GateCodex=off，非本票面）。
+
+// TestGateDshAutoContinue v0.9.3 票2：dsh 拦截改自动强续无卡直续（[gate].
+// dsh_auto_continue，缺省关）。开=allow reason=auto-strong-continue＋横幅报
+// 冷重付价＋pending 清＋交接消耗（D2）＋bypass 记账（reason 可区分手动）＋
+// gate.log auto-continue 痕；关=照旧拦（缺省行为零变化）；cc 永不受影响。
+func TestGateDshAutoContinue(t *testing.T) {
+	newEnv := func(t *testing.T) *compactEnv {
+		e := newCompactEnv(t, 100)
+		e.d.Cfg.GateDsh = "enforce"
+		e.d.Cfg.Thresholds = config.ThresholdCfg{
+			SummarizeS: testSummarizeS, BlockS: testBlockS, MinCtxTokens: testMinCtx,
+			CacheWarnS: 720,
+		}
+		return e
+	}
+	proj := "C:/proj"
+
+	t.Run("开=无卡直续", func(t *testing.T) {
+		e := newEnv(t)
+		path := filepath.Join(e.tmp, compactSID+".jsonl.zstd")
+		e.d.Cfg.GateDshAutoContinue = true
+		e.regCompact(compactSID, testBlockS+3600, 50000)
+		e.store.SaveHandoff(compactSID, "dsh", proj, "t", isoUTC(e.t0+30), "fresh", "md")
+		if h := e.d.Store.ValidHandoff("dsh", proj, e.t0+40); h == nil {
+			t.Fatal("前置：交接应在库")
+		}
+		r := e.d.Gate(gateBodyAgent("dsh", compactSID, path, proj, "继续干活"))
+		if r["decision"] != "allow" || r["reason"] != "auto-strong-continue" {
+			t.Fatalf("decision/reason = %v/%v, want allow/auto-strong-continue",
+				r["decision"], r["reason"])
+		}
+		if ctx, _ := r["additional_context"].(string); ctx == "" ||
+			!strings.Contains(ctx, "冷重付") {
+			t.Fatalf("横幅应报冷重付价: %q", ctx)
+		}
+		if _, pok := e.d.Pending.Get([2]string{"dsh", compactSID}); pok {
+			t.Fatal("自动强续不得留 pending（06703fbd 跑步机同款）")
+		}
+		if got := e.store.PopPendingPrompt(compactSID, ""); got != "" {
+			t.Fatalf("不得存被拦原话（本道无被拦）: %q", got)
+		}
+		if h := e.d.Store.ValidHandoff("dsh", proj, e.t0+40); h != nil {
+			t.Fatal("现行交接应被消耗（D2：绝不端旧快照）")
+		}
+		var row map[string]any
+		for _, r := range e.acc.Read(accounts.ReadOpts{Kind: "bypass"}) {
+			if r["session_id"] == compactSID {
+				row = r
+			}
+		}
+		if row == nil || row["prefix_tokens"] != 50000.0 {
+			t.Fatalf("bypass 行 = %v（want peak=50000；reason/idle_s 不落账——隐私不变量，自动/手动区分在 gate.log）", row)
+		}
+		data, err := os.ReadFile(filepath.Join(e.tmp, "data", "gate.log"))
+		if err != nil || !strings.Contains(string(data), "mode=auto-continue") {
+			t.Fatalf("gate.log 缺 auto-continue 痕: %q err=%v", string(data), err)
+		}
+	})
+	t.Run("关=照旧拦（缺省）", func(t *testing.T) {
+		e := newEnv(t) // 缺省 false
+		path := filepath.Join(e.tmp, compactSID+".jsonl.zstd")
+		e.regCompact(compactSID, testBlockS+3600, 50000)
+		e.store.SaveHandoff(compactSID, "dsh", proj, "t", isoUTC(e.t0+30), "fresh", "md")
+		r := e.d.Gate(gateBodyAgent("dsh", compactSID, path, proj, "继续干活"))
+		if r["decision"] != "block" {
+			t.Fatalf("缺省关应照旧拦: %v", r["decision"])
+		}
+	})
+	t.Run("cc 零变化（开着也拦）", func(t *testing.T) {
+		e := newEnv(t)
+		e.d.Cfg.GateCC = "enforce"
+		e.d.Cfg.GateDshAutoContinue = true
+		cc := "cc-sid-autocontinue"
+		e.reg(cc, filepath.Join(e.tmp, "cc.jsonl"), proj, testBlockS+3600, 50000)
+		e.store.SaveHandoff(cc, "cc", proj, "t", isoUTC(e.t0+30), "fresh", "md")
+		r := e.d.Gate(gateBodyAgent("cc", cc, filepath.Join(e.tmp, "cc.jsonl"), proj, "继续"))
+		if r["decision"] != "block" {
+			t.Fatalf("cc 永不走自动强续: %v", r["decision"])
+		}
+	})
+}
+
+// e0Tmp 已并入各子测试内取 e.tmp。
 
 func TestGateCompactedShortPrefix(t *testing.T) {
 	cases := []struct {
 		name         string
 		compact      bool    // 经 /dsh/compacted 置标记（ok=true＋prefix 覆盖）
 		prefix       int     // 上报 prefix_tokens（=标记后 PeakCtx 现值）
-		minPeak      int     // >0 时改配 min_peak_tokens（阈值同配可验）
+		minPeak      int     // >0 时改配 min_peak_tokens（已解耦：不再影响放行）
+		markPrePeak  *int    // 非 nil 时改写标记 PrePeak（模拟压前峰值不可得）
 		advanceS     float64 // 置标记后推进秒数（标记过期态）
 		voidByWriter bool    // 置标记后 Touch 推进 LastWrite（流量作废态）
 		wantDecision string
 		wantReason   string
 	}{
-		{"有效标记+短前缀→放行", true, 1234, 0, 0, false, "allow", "compacted-short-prefix"},
-		{"标记过期→照拦", true, 1234, 0, 201, false, "block", ""},
-		{"标记被流量作废→照拦", true, 1234, 0, testBlockS + 600, true, "block", ""},
-		{"无标记→照拦", false, 0, 0, 0, false, "block", ""},
-		{"标记有效但前缀不短→照拦", true, 25000, 0, 0, false, "block", ""},
-		{"阈值同配min_peak=1000→照拦", true, 1234, 1000, 0, false, "block", ""},
+		{"有效标记+短前缀→放行", true, 1234, 0, nil, 0, false, "allow", "compacted-short-prefix"},
+		{"标记过期→照拦", true, 1234, 0, nil, 201, false, "block", ""},
+		{"标记被流量作废→照拦", true, 1234, 0, nil, testBlockS + 600, true, "block", ""},
+		{"无标记→照拦", false, 0, 0, nil, 0, false, "block", ""},
+		{"标记有效但前缀压线(=0.5×PrePeak)→照拦", true, 25000, 0, nil, 0, false, "block", ""},
+		{"首单事故实锚:60562压到20562→放行", true, 20562, 0, nil, 0, false, "allow", "compacted-short-prefix"},
+		{"min_peak已解耦:同配1000→照放", true, 1234, 1000, nil, 0, false, "allow", "compacted-short-prefix"},
+		{"PrePeak不可得:过地板→照拦", true, 30000, 0, &[]int{0}[0], 0, false, "block", ""},
+		{"PrePeak不可得:地板内→放行", true, 11999, 0, &[]int{0}[0], 0, false, "allow", "compacted-short-prefix"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1835,6 +1924,13 @@ func TestGateCompactedShortPrefix(t *testing.T) {
 			if tc.compact {
 				e.d.DshCompacted(map[string]any{"session_id": compactSID,
 					"ok": true, "prefix_tokens": tc.prefix})
+			}
+			if tc.markPrePeak != nil { // 压前峰值不可得态（历史标记/未 harvest）
+				e.d.Ledger.Mu().Lock()
+				if st := e.d.Ledger.GetLocked("dsh", compactSID); st != nil && st.DshCompressed != nil {
+					st.DshCompressed.PrePeak = *tc.markPrePeak
+				}
+				e.d.Ledger.Mu().Unlock()
 			}
 			if tc.voidByWriter { // 标记后新流量：LastWrite 越过标记时刻即作废
 				e.led.TouchFull("dsh", compactSID, path, e.t0+10, 10, proj, "", 50001, 0)
