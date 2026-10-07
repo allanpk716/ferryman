@@ -124,6 +124,11 @@ test("inject 数组不变：零宿主服务依赖声明保持空数组（验收�
   assert.deepEqual(pluginInject, []);
 });
 
+test("执行臂超时常量（票02）：生产缺省 180_000ms;值可注入覆盖（用例内压毫秒级）", async () => {
+  const m = await import("../src/compact.ts");
+  assert.equal(m.DEFAULT_COMPACT_TIMEOUT_MS, 180_000, "缺省 180s（票面钉点）");
+});
+
 // ---- ① 轮询循环起停 ----
 
 test("轮询循环起停（注入定时器）：默认 30000ms 挂表;stop 清表且幂等", () => {
@@ -629,6 +634,132 @@ test("在途防双跑：同会话两指令一轮 → compactNow 恰一次、上�
   await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1);
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(mock.requestsFor("/dsh/compacted").length, 1, "恰一次上报（上一臂自会报）");
+});
+
+// ---- ⑤c 执行臂超时+作废纪元（票02;两道共用一道超时,F1 解除证据=epoch 机制） ----
+
+/** 慢 executor 门：impl 挂在 gate promise 上,release() 才回话（超时/迟到用例共用） */
+function makeGate<T>(value: T): { gate: Promise<T>; release: () => void } {
+  let release!: () => void;
+  const gate = new Promise<T>((r) => { release = () => r(value); });
+  return { gate, release };
+}
+
+test("执行臂超时（票02）：慢 executor 到点上报 {ok:false, reason:'timeout'}+source+warn;在途位放行", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { gate, release } = makeGate<unknown>(null);
+  t.after(() => release()); // 兜底:慢臂不许跨用例悬挂
+  const { commands, rec } = makeCommands(() => gate);
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry,
+    ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+    compactTimeoutMs: 25, // 不真等 180s——超时值可注入（票面钉点）
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 3000);
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["session_id"], SID);
+  assert.equal(body["ok"], false);
+  assert.equal(body["reason"], "timeout");
+  assert.equal(body["source"], COMPACT_SOURCE, "source 同源常量（daemon 账本 kind=compacted 随行）");
+  assert.ok(logger.warns.some((w) => w.includes("超时")), "超时一行 warn（用户可见通道）");
+  assert.equal(rec.calls.length, 1, "超时前恰一次执行");
+  // 在途位已放行：旧臂仍挂在 gate 上,新指令立即可开第二臂（不等旧臂收口）
+  rec.impl = async () => ({ commandId: "cmd-t1b", result: { kind: "success", text: "fast" } });
+  await handle.tick();
+  await waitUntil(() => rec.calls.length >= 2, 2000);
+  assert.equal(rec.calls.length, 2, "超时清 inFlight:同会话新指令立即执行");
+  flag.on = false;
+  release();
+});
+
+test("迟到丢弃（票02）：超时上报后慢 promise 才 resolve → 无第二条上报、横幅不亮", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  // 迟到回话=成功形 CommandExecution——若实现漏了作废,会看见第二条 ok:true+横幅,
+  // 正是本用例要拦的形态
+  const { gate, release } = makeGate<unknown>({ commandId: "cmd-late", result: { kind: "success", text: "late" } });
+  t.after(() => release());
+  const { commands } = makeCommands(() => gate);
+  const banner = new BannerStore();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, banner,
+    ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+    compactTimeoutMs: 25,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 3000);
+  assert.equal((mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>)["reason"], "timeout");
+  release(); // 迟到完成（纪元已作废）
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(mock.requestsFor("/dsh/compacted").length, 1, "迟到完成静默丢弃:不上报");
+  assert.equal(banner.has(SID), false, "迟到完成不亮横幅");
+  flag.on = false;
+});
+
+test("超时后恢复（票02）：同会话下一条指令正常执行并上报 ok:true;横幅置位", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { gate, release } = makeGate<unknown>(null);
+  t.after(() => release());
+  const { commands, rec } = makeCommands(() => gate);
+  const banner = new BannerStore();
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry, banner,
+    ctx: ctxWithServices(logger, new Map([["commands", commands]])),
+    compactTimeoutMs: 25,
+    readPrefixTokens: () => 3456,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 3000); // 超时上报
+  rec.impl = async () => ({ commandId: "cmd-r1", result: { kind: "success", text: "recovered" } });
+  await handle.tick(); // 纪元继续递增:新执行带新纪元
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 2, 3000);
+  flag.on = false;
+  const body2 = mock.requestsFor("/dsh/compacted")[1]!.body as Record<string, unknown>;
+  assert.equal(body2["ok"], true, "超时后下一条指令正常执行");
+  assert.equal(body2["prefix_tokens"], 3456);
+  assert.equal(body2["source"], COMPACT_SOURCE);
+  assert.equal(banner.has(SID), true, "恢复成功+上报送达=横幅置位");
+  release();
+});
+
+test("服务面同超时（票02 两道共用）：compactNow 挂起 → 同 {ok:false, reason:'timeout'}", async (t) => {
+  const mock = await mockFor(t);
+  const { flag } = dispatchRoute(mock);
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } });
+  const { gate, release } = makeGate<unknown>(null);
+  t.after(() => release());
+  const { engine } = makeEngine(() => gate); // 无 commands 面 → 落服务面
+  const logger = makeLogger();
+  const handle = await startSettled(t, mock, {
+    logger, registry,
+    ctx: ctxWithServices(logger, new Map([["compaction", engine]])),
+    compactTimeoutMs: 25,
+  });
+  flag.on = true;
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/compacted").length >= 1, 3000);
+  flag.on = false;
+  const body = mock.requestsFor("/dsh/compacted")[0]!.body as Record<string, unknown>;
+  assert.equal(body["ok"], false);
+  assert.equal(body["reason"], "timeout");
+  assert.equal(body["source"], COMPACT_SOURCE);
+  release();
 });
 
 // ---- ⑥ 失败静默与上报重试 ----

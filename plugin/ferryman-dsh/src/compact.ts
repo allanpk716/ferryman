@@ -44,6 +44,11 @@
 //      code 含 'busy' 或 message 形态匹配）→ 上报 {ok:false, reason:"busy"};
 //      其余失败 → {ok:false, reason:"error"}＋logger.warn 一行。
 //     两道皆缺 → {ok:false, reason:"no-compaction-channel"}＋warn 指因。
+//     超时+作废纪元（票02,两道共用一道）：整臂（命令道尝试+服务面回落）挂
+//     180s 竞速（compactTimeoutMs 可注入,沙箱/测试压毫秒级）——到点清在途位、
+//     纪元+1 作废、上报 {ok:false, reason:"timeout"};迟到的完成回调纪元不符→
+//     静默丢弃（不上报/不亮横幅/不写）。超时后同会话新指令带新纪元正常执行;
+//     在途防双跑的静默跳过不认领纪元（不碰在途臂的纪元,其上报权不动）。
 //   - 成功：尽力读新前缀（ctx.sessionProjections 投影 contextPressure 的
 //     projectedTokens ?? pressureTokens,packages/llm/token-meter/src/
 //     projection.ts:30-48;不可得省略键）→ {ok:true, prefix_tokens?,
@@ -64,6 +69,16 @@ import {
 import type { LoggerLike } from "./events.ts";
 import type { BannerStore } from "./banner.ts";
 import type { PluginContext } from "./index.ts";
+import {
+  SessionRegistry,
+  type RegistryEntry,
+  type RegistrySnapshot,
+} from "./registry.ts";
+
+// 票02 预重构：会话注册表整段抽至 registry.ts（纯搬家零行为变化,给后续播种票
+// 的稳定落点）;此处转发导出保既有 import 面兼容（events.ts/test 从本文件取
+// SessionRegistry/RegistryEntry/RegistrySnapshot 不动）。
+export { SessionRegistry, type RegistryEntry, type RegistrySnapshot };
 
 // ---- 常量（spec 钉点） ----
 
@@ -90,6 +105,12 @@ export const COMPACT_SOURCE = "host-plugin";
  * 不可感。
  */
 export const REPORT_SETTLE_MS = 2_000;
+/**
+ * 压缩执行臂超时 ms（票02;生产缺省 180s,compactTimeoutMs 可注入覆盖）。两道
+ * 共用一道：整臂（命令道尝试+服务面回落）挂同一竞速——到点清在途位、纪元+1
+ * 作废、上报 {ok:false, reason:"timeout"};迟到的完成回调纪元不符→静默丢弃。
+ */
+export const DEFAULT_COMPACT_TIMEOUT_MS = 180_000;
 
 // ---- 宿主服务鸭子面（未声明 inject 的属性读取即抛,一律 optionalFace 取用） ----
 
@@ -157,85 +178,6 @@ function optionalFace<T>(get: () => T | undefined): T | undefined {
   }
 }
 
-// ---- 会话注册表（五事件位维护;poll 体与复查的唯一事实源） ----
-
-export interface RegistryEntry {
-  sid: string;
-  cwd: string;
-  /** 宿主 agent 活引用——只活在本进程,绝不外泄出宿主面（blocked 仓同纪律） */
-  agent: unknown;
-  /** 闲置时钟起点（ms epoch;created/pre-step/session/event 触碰刷新） */
-  lastActivityAt: number;
-  /** agent/status 维护的运行位（true=running） */
-  busy: boolean;
-}
-
-export type RegistrySnapshot = RegistryEntry & { idleS: number };
-
-export class SessionRegistry {
-  private readonly entries = new Map<string, RegistryEntry>();
-  private readonly now: () => number;
-
-  constructor(now: () => number = Date.now) {
-    this.now = now;
-  }
-
-  /**
-   * 登记/触碰：created（起点）、pre-step（用户步）、session/event（活动流）
-   * 三处调用。agent 引用只增不覆盖（session/event 只有 SessionRef,不得抹掉
-   * 既有 agent 活引用）;cwd 非空才覆盖（无 cwd 头的事件不得清掉既有值）。
-   */
-  touch(sid: string, cwd: string, agent?: unknown): void {
-    const t = this.now();
-    const e = this.entries.get(sid);
-    if (e === undefined) {
-      this.entries.set(sid, {
-        sid,
-        cwd: cwd || "",
-        agent: agent ?? undefined,
-        lastActivityAt: t,
-        busy: false,
-      });
-      return;
-    }
-    if (cwd) e.cwd = cwd;
-    if (agent !== undefined && agent !== null) e.agent = agent;
-    e.lastActivityAt = t;
-  }
-
-  /** agent/status 忙位;未知 sid 忽略,非 idle/running 值忽略。 */
-  setStatus(sid: string, status: unknown): void {
-    const e = this.entries.get(sid);
-    if (e === undefined) return;
-    if (status === "running" || status === "idle") e.busy = status === "running";
-  }
-
-  /** 会话终局移除（agent/disposed;与 handoffPending/blocked 同纪律,不跨会话泄漏） */
-  remove(sid: string): void {
-    this.entries.delete(sid);
-  }
-
-  get(sid: string): RegistryEntry | undefined {
-    return this.entries.get(sid);
-  }
-
-  /** 闲置秒数（向下取整,负值钳 0）;未知 sid → undefined。 */
-  idleS(sid: string): number | undefined {
-    const e = this.entries.get(sid);
-    if (e === undefined) return undefined;
-    return Math.max(0, Math.floor((this.now() - e.lastActivityAt) / 1000));
-  }
-
-  /** 快照（poll 体用）：含现算闲置秒。 */
-  list(): RegistrySnapshot[] {
-    const t = this.now();
-    return [...this.entries.values()].map((e) => ({
-      ...e,
-      idleS: Math.max(0, Math.floor((t - e.lastActivityAt) / 1000)),
-    }));
-  }
-}
-
 // ---- 轮询循环 ----
 
 export interface PollDeps {
@@ -258,6 +200,9 @@ export interface PollDeps {
   /** 成功上报前落盘稳定窗 ms;缺省 REPORT_SETTLE_MS（常量头注:标记自杀竞态
    *  的闭窗;沙箱/测试压秒级可注入小值） */
   reportSettleMs?: number;
+  /** 压缩执行臂超时 ms（票02,两道共用）;缺省 DEFAULT_COMPACT_TIMEOUT_MS
+   *  =180_000。沙箱/测试压毫秒级可注入小值,不真等 180s */
+  compactTimeoutMs?: number;
   /** 压缩成功横幅仓（票06,src/banner.ts）:ok:true 上报送达即置位,浏览器经
    *  ferrymanBlocked list 信封 banner 布尔拉取;缺省=不置位（纯测试驱动/老接线） */
   banner?: BannerStore;
@@ -394,6 +339,16 @@ function readPrefixFromProjections(
 }
 
 /**
+ * 执行臂裁决（票02 重构:执行与上报分离）——runArm 只执行并落裁决,上报统一
+ * 走竞速胜者路径+纪元门收口（迟到臂的裁决构造性不被读取）。
+ */
+type ArmVerdict =
+  | { kind: "success" }
+  | { kind: "busy" }
+  | { kind: "error"; text: string }
+  | { kind: "no-channel" };
+
+/**
  * 起轮询执行臂：挂表→立即首轮→（应答带 poll_hint_s/ttl_s 时就地调参）→
  * 逐条派发 compact 指令（fire-and-forget,单条执行不阻塞下一轮节律）。
  */
@@ -408,6 +363,9 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
   let stopped = false;
   let ticking = false;
   const inFlight = new Set<string>();
+  // 票02 作废纪元（每会话递增;F1 解除证据=epoch 机制）：每次执行开始认领新
+  // 纪元;超时处理纪元+1 作废在途臂——迟到的完成回调纪元不符→静默丢弃。
+  const epochs = new Map<string, number>();
   const lazy: { compaction?: CompactionLike; projections?: SessionProjectionsLike; commands?: CommandsLike } = {};
 
   hookLazyInjection(deps.ctx, lazy);
@@ -472,43 +430,78 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
       }
       if (inFlight.has(sid)) return; // 同会话压缩在途——上一臂自会上报,不双跑
       inFlight.add(sid);
+      // 票02 超时+作废纪元：执行开始认领新纪元（在途防双跑的静默跳过在上行
+      // return,不认领——在途臂的纪元与上报权不动）。超时值可注入,生产 180s。
+      const epoch = (epochs.get(sid) ?? 0) + 1;
+      epochs.set(sid, epoch);
+      const timeoutMs = normalizePositive(deps.compactTimeoutMs) ?? DEFAULT_COMPACT_TIMEOUT_MS;
+      let ownsInFlight = true; // 超时放行后为 false——不得误删继任臂的在途位
+      let timer: unknown;
       try {
-        // ①命令道（首选,头注「执行」节克隆钉点）：宿主 UI /compact 同款入口
-        const commandsFace = resolveCommands(deps.ctx, lazy);
-        const runCommand = commandsFace !== undefined
-          ? commandsFace.execute?.bind(commandsFace) // receiver 铁律:bind 整体调用
-          : undefined;
-        if (typeof runCommand === "function") {
-          // 空附件跳过收件准入（commands/src/index.ts:390 length>0 才走）;signal
-          // 永不 abort=命令跑到底
-          const outcome = await runCommand(entry.agent, "/compact", [], new AbortController().signal);
-          if (outcome !== undefined) {
-            // 命令道终局:成功/错误都是已执行的真结果,不回落服务面
-            const parsed = parseCommandOutcome(outcome);
-            if (parsed.ok) {
-              await reportSuccess(entry);
-            } else if (parsed.reason === "busy") {
-              await report({ ok: false, reason: "busy" });
-            } else {
-              logger.warn(`[ferryman-dsh] 压缩命令失败: ${sid} ${parsed.text}`);
-              await report({ ok: false, reason: "error" });
+        // 两道执行臂（纯执行不上报——上报由竞速胜者路径+纪元门统一收口）
+        const runArm = async (): Promise<ArmVerdict> => {
+          // ①命令道（首选,头注「执行」节克隆钉点）：宿主 UI /compact 同款入口
+          const commandsFace = resolveCommands(deps.ctx, lazy);
+          const runCommand = commandsFace !== undefined
+            ? commandsFace.execute?.bind(commandsFace) // receiver 铁律:bind 整体调用
+            : undefined;
+          if (typeof runCommand === "function") {
+            // 空附件跳过收件准入（commands/src/index.ts:390 length>0 才走）;signal
+            // 永不 abort=命令跑到底
+            const outcome = await runCommand(entry.agent, "/compact", [], new AbortController().signal);
+            if (outcome !== undefined) {
+              // 命令道终局:成功/错误都是已执行的真结果,不回落服务面
+              const parsed = parseCommandOutcome(outcome);
+              if (parsed.ok) return { kind: "success" };
+              if (parsed.reason === "busy") return { kind: "busy" };
+              return { kind: "error", text: parsed.text };
             }
-            return;
+            // undefined=该 agent 视图无 compact 命令（commands/src/index.ts:367-370
+            // 语法/名字未解析）→ 落服务面
           }
-          // undefined=该 agent 视图无 compact 命令（commands/src/index.ts:367-370
-          // 语法/名字未解析）→ 落服务面
-        }
-        // ②服务面（次选）
-        const engine = resolveCompaction(deps.ctx, lazy);
-        const compactNow = engine?.compactNow?.bind(engine); // receiver 铁律:bind 整体调用
-        if (typeof compactNow !== "function") {
-          logger.warn(`[ferryman-dsh] 压缩指令无法执行：宿主无压缩通道（commands 服务面与 compaction 服务面皆缺）: ${sid}`);
-          await report({ ok: false, reason: "no-compaction-channel" });
+          // ②服务面（次选）
+          const engine = resolveCompaction(deps.ctx, lazy);
+          const compactNow = engine?.compactNow?.bind(engine); // receiver 铁律:bind 整体调用
+          if (typeof compactNow !== "function") return { kind: "no-channel" };
+          await compactNow(entry.agent, new AbortController().signal);
+          return { kind: "success" };
+        };
+        const timeoutP = new Promise<"timeout">((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), timeoutMs);
+          try {
+            // 同轮询表:脱钩事件循环,宿主进程生命周期另有把手
+            (timer as { unref?: () => void } | undefined)?.unref?.();
+          } catch { /* 非 Node 定时器替身 */ }
+        });
+        const raced = await Promise.race([runArm(), timeoutP]);
+        if (raced === "timeout") {
+          // 超时（票02）：纪元+1 作废在途臂→放行在途位（继任臂立即可跑,且
+          // 本臂 finally 不得误删）→上报 timeout。放行在先=上报网络窗内新指令
+          // 已可执行。
+          epochs.set(sid, (epochs.get(sid) ?? epoch) + 1);
+          ownsInFlight = false;
+          inFlight.delete(sid);
+          logger.warn(`[ferryman-dsh] 压缩执行超时（${timeoutMs}ms）,作废在途臂: ${sid}`);
+          await report({ ok: false, reason: "timeout" });
           return;
         }
-        await compactNow(entry.agent, new AbortController().signal);
-        await reportSuccess(entry);
+        // 纪元门（F1）:竞速败者的完成构造性不被读取（裁决无人消费）;此处纪元
+        // 不符=防御带,同样静默丢弃——不上报、不亮横幅、不写任何东西。
+        if (epochs.get(sid) !== epoch) return;
+        if (raced.kind === "success") {
+          await reportSuccess(entry);
+        } else if (raced.kind === "busy") {
+          await report({ ok: false, reason: "busy" });
+        } else if (raced.kind === "no-channel") {
+          logger.warn(`[ferryman-dsh] 压缩指令无法执行：宿主无压缩通道（commands 服务面与 compaction 服务面皆缺）: ${sid}`);
+          await report({ ok: false, reason: "no-compaction-channel" });
+        } else {
+          logger.warn(`[ferryman-dsh] 压缩命令失败: ${sid} ${raced.text}`);
+          await report({ ok: false, reason: "error" });
+        }
       } catch (e) {
+        // 迟到拒绝已被 race 吞（竞速已定时,败者后续 settlement 不再冒泡）——
+        // 到此只可能是胜者的立即拒绝,纪元必符。
         if (isBusyError(e)) {
           await report({ ok: false, reason: "busy" });
         } else {
@@ -516,7 +509,10 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
           await report({ ok: false, reason: "error" });
         }
       } finally {
-        inFlight.delete(sid);
+        if (ownsInFlight) inFlight.delete(sid);
+        if (timer !== undefined) {
+          try { clearTimeout(timer as ReturnType<typeof setTimeout>); } catch { /* 替身清除失败不碍收口 */ }
+        }
       }
     } catch {
       // 兜底带：上报链路意外也不得冒 unhandled rejection（daemon 侧指令槽已在
