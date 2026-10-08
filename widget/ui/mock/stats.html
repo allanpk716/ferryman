@@ -1,0 +1,410 @@
+<!-- 界面初稿:kimi 产出(2026-10-08 夜链票02);数据=真实账本快照 stats.data.js -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>用量统计 · Ferryman</title>
+<style>
+:root{
+  --bg:#0b0d12; --wbg:#101218; --panel:#171b26; --panel2:#1c2230;
+  --line:rgba(255,255,255,.09); --txt:#E8EAF0; --txt-dim:#8b93a7;
+  --blue:#5B9BD5; --blue-t:#9CC4E8;
+  --amber:#E8A33D; --purple:#9B7EDE; --green:#6BBF8A; --cyan:#4FC3C8;
+  --alert-y:#E8C33D; --alert-r:#E85D5D;
+  /* 热力正梯度(蓝,暗→亮 4 级) */
+  --heat0:#1a2030; --heat1:#16324f; --heat2:#2b5a8a; --heat3:#5B9BD5; --heat4:#9CC4E8;
+  /* 负值日梯度(青绿冷色,暗→亮 4 级) */
+  --neg1:#123f42; --neg2:#1e6b70; --neg3:#2f9aa0; --neg4:#4FC3C8;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:16px}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:18px;font-weight:600;margin:0}
+.sub{color:var(--txt-dim);font-size:12px;margin-top:4px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:14px}
+.num{font-variant-numeric:tabular-nums}
+
+/* KPI */
+.kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+@media(min-width:900px){.kpis{grid-template-columns:repeat(5,1fr)}}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.kpi .label{color:var(--txt-dim);font-size:12px;display:flex;align-items:center;gap:4px}
+.kpi .value{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:6px}
+.kpi .note{color:var(--txt-dim);font-size:11px;margin-top:6px;line-height:1.4}
+.badge{display:inline-block;background:var(--panel2);border:1px solid var(--alert-y);color:var(--alert-y);
+  border-radius:4px;font-size:11px;padding:1px 6px;margin-top:6px;font-weight:600}
+.info{cursor:help;color:var(--txt-dim);border:1px solid var(--line);border-radius:50%;
+  width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;font-size:10px}
+
+/* 分段切换 */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{background:transparent;border:0;color:var(--txt-dim);padding:4px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+.seg button.on{background:var(--panel2);color:var(--blue-t)}
+.seg button:disabled{opacity:.4;cursor:not-allowed}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap}
+
+/* 热力图 */
+.heat-scroll{overflow-x:auto;margin-top:12px;padding-bottom:4px}
+.heat{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,11px);grid-auto-columns:11px;gap:2px;width:max-content}
+.cell{width:11px;height:11px;border-radius:2px;background:var(--heat0)}
+.cell.l1{background:var(--heat1)}.cell.l2{background:var(--heat2)}.cell.l3{background:var(--heat3)}.cell.l4{background:var(--heat4)}
+.cell.n1{background:var(--neg1)}.cell.n2{background:var(--neg2)}.cell.n3{background:var(--neg3)}.cell.n4{background:var(--neg4)}
+.cell:hover{outline:1px solid var(--blue-t)}
+.months{display:grid;grid-auto-flow:column;gap:2px;width:max-content;margin-left:32px;font-size:10px;color:var(--txt-dim)}
+.months span{width:11px;overflow:visible;white-space:nowrap}
+.heat-row{display:flex}
+.dows{display:grid;grid-template-rows:repeat(7,11px);gap:2px;margin-right:4px;font-size:9px;color:var(--txt-dim);width:28px}
+.dows span{height:11px;line-height:11px}
+.legend{display:flex;align-items:center;gap:6px;color:var(--txt-dim);font-size:11px;margin-top:10px;flex-wrap:wrap}
+.legend .sw{width:11px;height:11px;border-radius:2px;display:inline-block}
+.tip{position:fixed;z-index:50;background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+  padding:8px 10px;font-size:11px;pointer-events:none;display:none;max-width:260px;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+.tip .d{color:var(--blue-t);font-weight:600;margin-bottom:2px}
+.tip .dim{color:var(--txt-dim)}
+
+/* 明细表 */
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+.filters label{color:var(--txt-dim);font-size:11px;display:flex;align-items:center;gap:4px}
+.filters input{background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--txt);
+  padding:4px 8px;font-size:12px;font-family:inherit;color-scheme:dark}
+.tbl-scroll{overflow-x:auto;margin-top:10px}
+table{border-collapse:collapse;width:100%;min-width:760px;font-size:12px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--txt-dim);font-weight:600;font-size:11px}
+td.num,th.num{text-align:right}
+tbody tr:hover{background:var(--panel2)}
+.ellipsis{max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.pager{display:flex;align-items:center;gap:10px;margin-top:10px;justify-content:flex-end}
+.pager button{background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--txt);
+  padding:4px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+.pager button:disabled{opacity:.4;cursor:not-allowed}
+.pager span{color:var(--txt-dim);font-size:11px}
+
+footer{color:var(--txt-dim);font-size:11px;margin:16px 0 8px;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>用量统计</h1>
+  <div class="sub" id="subtitle"></div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div style="font-weight:600">用量热力图</div>
+        <div class="sub">逐日用量</div>
+      </div>
+      <div class="seg" id="seg"></div>
+    </div>
+    <div class="heat-scroll">
+      <div class="months" id="months"></div>
+      <div class="heat-row">
+        <div class="dows"><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span><span>日</span></div>
+        <div class="heat" id="heat"></div>
+      </div>
+    </div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:600">请求明细</div>
+    <div class="filters">
+      <label>从 <input type="date" id="f-from"></label>
+      <label>到 <input type="date" id="f-to"></label>
+      <label>项目 <input type="text" id="f-project" placeholder="包含…" size="14"></label>
+      <label>模型 <input type="text" id="f-model" placeholder="包含…" size="12"></label>
+    </div>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr>
+          <th>时间</th><th>项目</th><th>会话</th><th>模型</th>
+          <th class="num">输入</th><th class="num">输出</th><th class="num">缓存读</th><th class="num">缓存写</th><th class="num">成本</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <button id="prev">上一页</button>
+      <span id="pageinfo"></span>
+      <button id="next">下一页</button>
+    </div>
+  </div>
+
+  <footer id="footer"></footer>
+</div>
+
+<div class="tip" id="tip"></div>
+
+<!-- 泳道机械修复注记:kimi 原产物写于 stats/stats.html,已移至票面钦定路径 mock/stats.html 并把数据 src 修正为 stats/stats.data.js(2026-10-08 夜链票02);布局/配色/交互未动 -->
+<script src="stats/stats.data.js"></script>
+<script>
+(function(){
+"use strict";
+var D = window.STATS_DATA;
+var $ = function(id){ return document.getElementById(id); };
+
+/* ---------- 格式化 ---------- */
+function fmtTok(n){
+  if(n==null) return "—";
+  if(n>=1e9) return (n/1e9).toFixed(1)+"B";
+  if(n>=1e6) return (n/1e6).toFixed(1)+"M";
+  if(n>=1e3) return (n/1e3).toFixed(1)+"K";
+  return String(n);
+}
+function fmtInt(n){ return n==null ? "—" : Number(n).toLocaleString("en-US"); }
+function fmtCredits(n){ return n==null ? "—" : Number(n).toFixed(2); }
+function fmtPct(r){ return r==null ? "—" : (r*100).toFixed(2)+"%"; }
+function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+
+/* ---------- 副标题 ---------- */
+var dayCount = D.days.length;
+var startDate = D.days[0].date;
+var endDate = D.days[dayCount-1].date;
+$("subtitle").textContent = "数据区间 "+startDate+" ~ "+endDate+"(共 "+dayCount+" 天)· 生成于 "+D.generated_at;
+
+/* ---------- KPI 五卡 ---------- */
+var k = D.kpi;
+var tokTotal = k.tokens.input + k.tokens.cache_read + k.tokens.cache_creation + k.tokens.output;
+var kpisHtml = "";
+
+/* 总成本(不可算态) */
+if(k.cost.computable){
+  kpisHtml += kpiCard("总成本", fmtCredits(k.cost.value)+" "+esc(k.cost.unit), "");
+}else{
+  kpisHtml += kpiCard("总成本", '<span class="badge">不可算</span>',
+    '<div class="note">'+esc(k.cost.note)+"</div>");
+}
+/* 总请求数 */
+kpisHtml += kpiCard("总请求数", '<span class="num">'+fmtInt(k.requests)+"</span>", "");
+/* 真实消耗 Tokens */
+kpisHtml += kpiCard("真实消耗 Tokens", '<span class="num">'+fmtTok(tokTotal)+"</span>",
+  '<div class="note">输入/输出/缓存读/缓存写 四列合计</div>');
+/* 缓存命中率(带公式 tooltip) */
+kpisHtml += kpiCard(
+  '缓存命中率 <span class="info" title="命中=缓存读/(缓存读+新输入)">i</span>',
+  '<span class="num">'+fmtPct(k.cache_hit.rate)+"</span>",
+  '<div class="note">'+fmtTok(k.cache_hit.hit)+" / "+fmtTok(k.cache_hit.base)+"</div>");
+/* 节省额(不可算态,仍展示交接成本) */
+if(k.savings.computable){
+  kpisHtml += kpiCard("节省额", '<span class="num">'+fmtCredits(k.savings.net)+"</span> "+esc(k.savings.unit),
+    '<div class="note">毛省 '+fmtCredits(k.savings.gross)+" − 注入 "+fmtCredits(k.savings.inject_cost)+"</div>");
+}else{
+  var c = k.savings.counts;
+  kpisHtml += kpiCard("节省额", '<span class="badge">不可算</span>',
+    '<div class="note">'+esc(k.savings.note)+"</div>"+
+    '<div class="note" style="margin-top:8px">仅交接成本可计(积分):<span class="num" style="color:var(--amber);font-weight:600">'+
+    fmtCredits(k.savings.handoff_cost)+"</span> "+esc(k.savings.unit)+"</div>"+
+    '<div class="note">交接 '+c.handoff+" · 注入 "+c.inject+" · 窗口 "+c.window+" · 拦截 "+c.block+" · 放行 "+c.bypass+"</div>");
+}
+$("kpis").innerHTML = kpisHtml;
+function kpiCard(label, value, extra){
+  return '<div class="kpi"><div class="label">'+label+'</div><div class="value">'+value+"</div>"+extra+"</div>";
+}
+
+/* ---------- 热力图 ---------- */
+var MODES = [
+  {key:"tokens",   label:"Tokens"},
+  {key:"requests", label:"请求"},
+  {key:"cost",     label:"成本",    disabled:!k.cost.computable,    hint:k.cost.note},
+  {key:"savings",  label:"节省额",  disabled:!k.savings.computable, hint:k.savings.note}
+];
+var curMode = "tokens";
+var seg = $("seg");
+MODES.forEach(function(m){
+  var b = document.createElement("button");
+  b.textContent = m.label;
+  b.dataset.key = m.key;
+  if(m.disabled){ b.disabled = true; b.title = m.hint || "不可算"; }
+  if(m.key===curMode) b.className = "on";
+  b.addEventListener("click", function(){
+    curMode = m.key;
+    Array.prototype.forEach.call(seg.children,function(x){ x.className = x.dataset.key===curMode ? "on" : ""; });
+    renderHeat();
+  });
+  seg.appendChild(b);
+});
+
+function dayValue(d, mode){
+  if(mode==="tokens") return d.input + d.cache_read + d.cache_creation + d.output;
+  if(mode==="requests") return d.requests;
+  return null;
+}
+function quartiles(vals){
+  var s = vals.slice().sort(function(a,b){return a-b;});
+  function q(p){ return s[Math.min(s.length-1, Math.floor(p*s.length))]; }
+  return [q(0.25), q(0.5), q(0.75)];
+}
+function level(v, qs){
+  if(v<=qs[0]) return 1;
+  if(v<=qs[1]) return 2;
+  if(v<=qs[2]) return 3;
+  return 4;
+}
+
+/* 列=周(首列从 days[0] 所在周的周一算起),行=周一..周日 */
+function monIdx(dateStr){ /* 周一=0 .. 周日=6 */
+  var dt = new Date(dateStr+"T00:00:00");
+  return (dt.getDay()+6)%7;
+}
+
+function renderHeat(){
+  var vals = D.days.map(function(d){ return dayValue(d,curMode); });
+  var nz = vals.filter(function(v){ return v>0; });
+  var qs = nz.length ? quartiles(nz) : [1,2,3];
+  var hasNeg = D.days.some(function(d){ return d.neg; });
+
+  var heat = $("heat");
+  heat.innerHTML = "";
+  var pad = monIdx(D.days[0].date); /* 首列前置空格 */
+  for(var i=0;i<pad;i++){
+    var blank = document.createElement("div");
+    blank.style.cssText = "width:11px;height:11px";
+    heat.appendChild(blank);
+  }
+  D.days.forEach(function(d,i){
+    var cell = document.createElement("div");
+    cell.className = "cell";
+    var v = vals[i];
+    if(d.neg && v>0){
+      cell.classList.add("n"+level(v,qs));
+    }else if(v>0){
+      cell.classList.add("l"+level(v,qs));
+    }
+    cell.dataset.idx = i;
+    heat.appendChild(cell);
+  });
+
+  /* 月份标签:每列(周)首日为新月则标 */
+  var months = $("months");
+  months.innerHTML = "";
+  var totalSlots = pad + D.days.length;
+  var cols = Math.ceil(totalSlots/7);
+  var prevM = "";
+  for(var c=0;c<cols;c++){
+    var slot = c*7; /* 该列第一个 slot 对应 days 下标 slot-pad */
+    var di = slot - pad;
+    var label = "";
+    for(var r=0;r<7;r++){
+      var j = slot + r - pad;
+      if(j>=0 && j<D.days.length){
+        var m = D.days[j].date.slice(0,7);
+        if(m!==prevM){ label = m.slice(5)+"月"; prevM = m; }
+        break;
+      }
+    }
+    var sp = document.createElement("span");
+    sp.textContent = label;
+    sp.style.gridColumn = (c+1);
+    months.appendChild(sp);
+    void di;
+  }
+
+  /* 图例 */
+  var lg = $("legend");
+  var h = '少 <span class="sw" style="background:var(--heat1)"></span>'+
+          '<span class="sw" style="background:var(--heat2)"></span>'+
+          '<span class="sw" style="background:var(--heat3)"></span>'+
+          '<span class="sw" style="background:var(--heat4)"></span> 多';
+  if(hasNeg){
+    h += '<span style="margin-left:14px">负值日 <span class="sw" style="background:var(--neg2)"></span>'+
+         '<span class="sw" style="background:var(--neg4)"></span></span>';
+  }
+  lg.innerHTML = h;
+}
+
+/* 格子 tooltip */
+var tip = $("tip");
+$("heat").addEventListener("mouseover", function(e){
+  var t = e.target;
+  if(!t.classList || !t.classList.contains("cell") || t.dataset.idx===undefined) return;
+  var d = D.days[Number(t.dataset.idx)];
+  var v = dayValue(d,curMode);
+  var modeLabel = {tokens:"Tokens",requests:"请求"}[curMode] || curMode;
+  var ev = d.events;
+  tip.innerHTML =
+    '<div class="d">'+d.date+"</div>"+
+    "<div>"+modeLabel+': <b class="num">'+fmtTok(v)+"</b>"+(d.neg?' <span style="color:var(--cyan)">(负值日)</span>':"")+"</div>"+
+    '<div class="dim num">输入 '+fmtTok(d.input)+" · 缓存读 "+fmtTok(d.cache_read)+"<br>缓存写 "+fmtTok(d.cache_creation)+" · 输出 "+fmtTok(d.output)+"</div>"+
+    '<div class="dim num">请求 '+d.requests+" · 交接 "+ev.handoff+" · 注入 "+ev.inject+"<br>窗口 "+ev.window+" · 拦截 "+ev.block+" · 放行 "+ev.bypass+"</div>";
+  tip.style.display = "block";
+  var r = t.getBoundingClientRect();
+  var x = r.left, y = r.bottom + 6;
+  tip.style.left = "0px"; tip.style.top = "0px";
+  var tw = tip.offsetWidth, th = tip.offsetHeight;
+  if(x+tw > window.innerWidth-8) x = window.innerWidth - tw - 8;
+  if(y+th > window.innerHeight-8) y = r.top - th - 6;
+  tip.style.left = x+"px"; tip.style.top = y+"px";
+});
+$("heat").addEventListener("mouseleave", function(){ tip.style.display = "none"; });
+$("heat").addEventListener("mouseout", function(e){
+  if(!e.relatedTarget || !e.relatedTarget.classList || !e.relatedTarget.classList.contains("cell"))
+    tip.style.display = "none";
+});
+
+renderHeat();
+
+/* ---------- 明细表 ---------- */
+var PAGE = 20, page = 0;
+var fFrom = $("f-from"), fTo = $("f-to"), fProj = $("f-project"), fModel = $("f-model");
+
+function dateOf(ts){ return ts.slice(0,10); }
+function filtered(){
+  var a = fFrom.value, b = fTo.value;
+  var p = fProj.value.trim().toLowerCase(), m = fModel.value.trim().toLowerCase();
+  return D.details.filter(function(r){
+    var d = dateOf(r.ts_iso);
+    if(a && d < a) return false;
+    if(b && d > b) return false;
+    if(p && r.project.toLowerCase().indexOf(p)<0) return false;
+    if(m && r.model.toLowerCase().indexOf(m)<0) return false;
+    return true;
+  });
+}
+function shortProject(p){
+  var parts = p.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length-1] : p;
+}
+function renderTable(){
+  var rows = filtered();
+  var pages = Math.max(1, Math.ceil(rows.length/PAGE));
+  if(page >= pages) page = pages-1;
+  var slice = rows.slice(page*PAGE, page*PAGE+PAGE);
+  var html = "";
+  slice.forEach(function(r){
+    html += "<tr>"+
+      "<td class=num>"+esc(r.ts_iso.slice(0,16).replace("T"," "))+"</td>"+
+      '<td class="ellipsis" title="'+esc(r.project)+'">'+esc(shortProject(r.project))+"</td>"+
+      "<td>"+esc(r.session)+"</td>"+
+      "<td>"+esc(r.model)+"</td>"+
+      '<td class="num">'+fmtInt(r.input_tokens)+"</td>"+
+      '<td class="num">'+fmtInt(r.output_tokens)+"</td>"+
+      '<td class="num">'+fmtInt(r.cache_read_tokens)+"</td>"+
+      '<td class="num">'+fmtInt(r.cache_creation_tokens)+"</td>"+
+      '<td class="num">'+(r.cost==null ? "—" : fmtCredits(r.cost))+"</td>"+
+    "</tr>";
+  });
+  if(!slice.length) html = '<tr><td colspan="9" style="color:var(--txt-dim);text-align:center">无匹配记录</td></tr>';
+  $("tbody").innerHTML = html;
+  $("pageinfo").textContent = "第 "+(page+1)+" / "+pages+" 页 · 共 "+rows.length+" 条";
+  $("prev").disabled = page<=0;
+  $("next").disabled = page>=pages-1;
+}
+[fFrom,fTo,fProj,fModel].forEach(function(el){
+  el.addEventListener("input", function(){ page=0; renderTable(); });
+});
+$("prev").addEventListener("click", function(){ if(page>0){page--; renderTable();} });
+$("next").addEventListener("click", function(){ page++; renderTable(); });
+renderTable();
+
+/* ---------- 页脚 ---------- */
+$("footer").innerHTML =
+  "生成时间:"+esc(D.generated_at)+"<br>"+
+  "数据源:本地账本快照("+esc(D.source)+"),经 stats.data.js 加载<br>"+
+  "本页为界面 mock(评审用),非生产页面";
+})();
+</script>
+</body>
+</html>
