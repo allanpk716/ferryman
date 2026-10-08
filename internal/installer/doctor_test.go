@@ -256,14 +256,132 @@ func TestCodexHooksAndFlag(t *testing.T) {
 
 func TestDaemonProbe(t *testing.T) {
 	tmp := t.TempDir()
-	c := CheckDaemon(func() map[string]any { return nil }, filepath.Join(tmp, "no.pid"))
+	c := CheckDaemon(func() map[string]any { return nil }, filepath.Join(tmp, "no.pid"), nil, "")
 	if c.OK || !strings.Contains(c.Msg, "未运行") {
 		t.Fatalf("daemon 死应失败: %+v", c)
 	}
 	c = CheckDaemon(func() map[string]any { return map[string]any{"health_alert": false} },
-		filepath.Join(tmp, "no.pid"))
+		filepath.Join(tmp, "no.pid"), nil, "")
 	if !c.OK || !strings.Contains(c.Msg, "ok") {
 		t.Fatalf("daemon 活应通过: %+v", c)
+	}
+}
+
+// ---- dsh-host-guard 票04：daemon_liveness 误报修正（监听事实优先） ----
+
+// TestDaemonLivenessListeningWins 事故回归钉（2026-10-08 16:0x 实测形态：
+// daemon 双口 LISTENING、台账持续更新，doctor 仍报 fail）：控制口在听而
+// /stats 探针失败（token/超时/非 JSON 成因全被探针压成 nil）→ liveness 必
+// pass；探针正常应答时行为不变。真口真拨号（realDialTCP），临时口不探生产。
+func TestDaemonLivenessListeningWins(t *testing.T) {
+	tmp := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	notProdPort(t, ln.Addr().(*net.TCPAddr).Port)
+	addr := ln.Addr().String()
+	// 事故形态：口在听、探针 nil。
+	c := CheckDaemon(func() map[string]any { return nil }, filepath.Join(tmp, "no.pid"),
+		realDialTCP, addr)
+	if !c.OK {
+		t.Fatalf("口在听而探针未答应 pass（监听事实优先）: %+v", c)
+	}
+	if !strings.Contains(c.Msg, "在听") {
+		t.Fatalf("pass 文案应点明监听事实: %+v", c)
+	}
+	// 探针正常应答：既有路径零漂移。
+	c = CheckDaemon(func() map[string]any { return map[string]any{"health_alert": false} },
+		filepath.Join(tmp, "no.pid"), realDialTCP, addr)
+	if !c.OK || !strings.Contains(c.Msg, "daemon 活着") {
+		t.Fatalf("探针应答应照旧 pass: %+v", c)
+	}
+}
+
+// TestDaemonLivenessDeadPortFails 真死回归钉（spec G）：口无监听（拨号拒绝）
+// 且探针 nil → 必 fail，文案保留「daemon 未运行」。
+func TestDaemonLivenessDeadPortFails(t *testing.T) {
+	tmp := t.TempDir()
+	dead := freeListenPort(t) // 绑完即关：无人听
+	c := CheckDaemon(func() map[string]any { return nil }, filepath.Join(tmp, "no.pid"),
+		realDialTCP, fmt.Sprintf("127.0.0.1:%d", dead))
+	if c.OK || !strings.Contains(c.Msg, "daemon 未运行") {
+		t.Fatalf("口不听且探针 nil 应 fail: %+v", c)
+	}
+}
+
+// TestDaemonLivenessPidFileForms 验收第 4 条两形态各归其位（真口真拨号）：
+//   - pid 文件在但进程死（残留 pid）+ 口不听 → fail 不误 pass，文案点名残留；
+//   - 进程在但端口未就绪（活 pid=本测试进程）+ 口不听 → 同判 fail（启动窗/
+//     半死形态不因「pid 文件在」放行）；doctor 座位对两形态不可分辨，同款文案；
+//   - pid 在 + 口在听 → 监听事实优先 pass，pid 注记随行。
+func TestDaemonLivenessPidFileForms(t *testing.T) {
+	tmp := t.TempDir()
+	dead := freeListenPort(t)
+	deadAddr := fmt.Sprintf("127.0.0.1:%d", dead)
+	pidFile := filepath.Join(tmp, "daemon.pid")
+	if err := os.WriteFile(pidFile, []byte(`{"pid":999999,"port":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 残留形态：fail 且点名 pid 与残留。
+	c := CheckDaemon(func() map[string]any { return nil }, pidFile, realDialTCP, deadAddr)
+	if c.OK || !strings.Contains(c.Msg, "daemon 未运行") ||
+		!strings.Contains(c.Msg, "999999") || !strings.Contains(c.Msg, "残留") {
+		t.Fatalf("pid 残留而口不听应 fail 且点名残留: %+v", c)
+	}
+	// 进程在但端口未就绪：活 pid 写入，同判 fail（不误 pass）。
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf(`{"pid":%d}`, os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c = CheckDaemon(func() map[string]any { return nil }, pidFile, realDialTCP, deadAddr)
+	if c.OK || !strings.Contains(c.Msg, "daemon 未运行") {
+		t.Fatalf("活 pid 而口不听（启动窗/半死）应同判 fail 不误 pass: %+v", c)
+	}
+	// pid 在 + 口在听：见证赢 → pass，pid 注记随行。
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	notProdPort(t, ln.Addr().(*net.TCPAddr).Port)
+	c = CheckDaemon(func() map[string]any { return nil }, pidFile, realDialTCP, ln.Addr().String())
+	if !c.OK || !strings.Contains(c.Msg, fmt.Sprintf("pid %d", os.Getpid())) {
+		t.Fatalf("口在听应 pass 且 pid 注记随行: %+v", c)
+	}
+}
+
+// TestDoctorResultsLivenessWitnessWiring 接线钉：doctorResults 把 cfg 解析的
+// 控制口装配为拨号见证（d.DialTCP + cfg.Server.Port 同源）——探针 nil 而口
+// 在听时 daemon_liveness 聚合面 pass（事故回归的 doctorResults 形态）；见证
+// 未装配（greenDoctorDeps 缺省）时其余用例走探针单源旧判不受扰。
+func TestDoctorResultsLivenessWitnessWiring(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	notProdPort(t, port)
+	deps, _ := greenDoctorDeps(t, func() map[string]any { return nil }) // 探针 nil＝事故形态
+	deps.LoadCfg = func() (*config.Config, error) {
+		cfg := config.Default()
+		cfg.Server.Port = port
+		return cfg, nil
+	}
+	deps.DialTCP = realDialTCP
+	found := false
+	for _, r := range doctorResults(deps) {
+		if r.Name != "daemon_liveness" {
+			continue
+		}
+		found = true
+		if r.Status != StatusPass {
+			t.Fatalf("接线后口在听而探针 nil 应 pass: %+v", r)
+		}
+	}
+	if !found {
+		t.Fatal("daemon_liveness 项缺失")
 	}
 }
 

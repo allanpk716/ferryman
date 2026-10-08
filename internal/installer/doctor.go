@@ -340,20 +340,68 @@ func splitGateMissing(hooks map[string]any) (others []string, gate bool) {
 	return
 }
 
-// CheckDaemon probe() 返回 /stats dict（活）或 nil（死）（doctor.py check_daemon 逐字）。
-func CheckDaemon(probe func() map[string]any, pidFile string) Check {
+// CheckDaemon daemon 活性判定（dsh-host-guard 票04 修正：监听事实优先）。
+//
+// 现行判据（读码结论，2026-10-08）：修正前＝/stats 探针单源——probe() 即
+// realStatsProbe（读 <dataDir>/daemon.token → GET 127.0.0.1:<port>/stats，2s
+// 超时），返回 nil 即判「daemon 未运行」；pid 文件只进文案、从不进判定——
+// 「pid 文件陈旧误配致误判」候选经读码排除。probe 的 nil 把四种互异成因压成
+// 一个布尔：①token 文件读不到；②拨号失败（口拒绝=目标口不对/守护不在；2s
+// 超时=守护忙，Health 侧锁面+账本扫描）；③应答非 JSON；④读体失败。
+//
+// 误报成因（2026-10-08 16:0x 实测：daemon 15700/15722 双口 LISTENING、台账
+// 持续更新，MCP 面 doctor 仍报 fail——即 probe() nil 而守护事实活着；具体踩中
+// ①~④ 哪条已不可事后分辨，probe 不留成因痕迹）。候选归因（推理，非实测）：
+// MCP 进程在自身启动时经 config.Load 解析一次并冻结探针目标（internal/mcp
+// Run→New→defaultDoctorFunc）——守护换口/换数据目录后，长命 MCP 进程仍探旧
+// 目标即恒 nil（7311→15700 迁移有「旧会话 MCP 钉死旧口」先例）；守护忙时 2s
+// 超时为同症状次候选。
+//
+// 修正（spec G「监听事实优先」）：probe nil 时对控制口（cfg.Server.Port，只绑
+// 127.0.0.1）做 TCP 拨号见证——口在听即 pass（监听＝事实活着，/stats 存取级
+// 失败只作注记不作死刑）；口也不听才判死。判死文案对两类形态各归其位、不谎报：
+//   - pid 文件在而口无监听＝残留（进程死）或启动窗/半死（进程在端口未就绪；
+//     排水窗「监听口先关、进程后走」为在库实测先例，v0.1.1 演练）——doctor
+//     座位两者不可分辨，点名形态、同判死：不因残留误 pass，不因启动窗误 pass；
+//   - 见证未装配（dial nil 或目标口未解析）＝探针单源旧判（配置坏由
+//     ferry_provider 项如实报，此处不二次归因）。
+//
+// 已知既有误报面（读码发现，本票不修另立票）：realStatsProbe 不看 HTTP 状态码
+// ——401 的 {"error":"unauthorized"} 是合法 JSON，probe 返回非 nil，误 pass
+// 方向（假活）；与本案误 fail 反向，不因本票扩大。
+func CheckDaemon(probe func() map[string]any, pidFile string,
+	dial func(addr string, timeout time.Duration) error, dialAddr string) Check {
 	st := probe()
-	if st == nil {
-		return Check{false, "daemon 未运行（钩子自举会拉起，或手动 start-daemon.cmd）"}
-	}
-	extra := ""
+	pidNote := ""
 	if rawData, err := os.ReadFile(pidFile); err == nil {
 		var pid struct {
 			PID int `json:"pid"`
 		}
 		if json.Unmarshal(rawData, &pid) == nil {
-			extra = fmt.Sprintf("（pid %d）", pid.PID)
+			pidNote = fmt.Sprintf("pid %d", pid.PID)
 		}
+	}
+	if st == nil {
+		// 票04「监听事实优先」：探针 nil 先问控制口——口在听即守护事实活着
+		//（控制口排他绑定 127.0.0.1，internal/daemon ListenAndServe）；拨号
+		// 超时同渡口监听检查（dockListenTimeout，同款 2s TCP 拨号语义）。
+		if dial != nil && dialAddr != "" && dial(dialAddr, dockListenTimeout) == nil {
+			extra := ""
+			if pidNote != "" {
+				extra = "（" + pidNote + "）"
+			}
+			return Check{true, "daemon 在听 " + dialAddr +
+				"（/stats 探测未答——存取级异常不判死，监听事实优先）" + extra}
+		}
+		if pidNote != "" {
+			return Check{false, "daemon 未运行（pid 文件残留 " + pidNote +
+				" 而控制口无监听——进程已死或启动窗/半死形态；钩子自举会拉起，或手动 start-daemon.cmd）"}
+		}
+		return Check{false, "daemon 未运行（钩子自举会拉起，或手动 start-daemon.cmd）"}
+	}
+	extra := ""
+	if pidNote != "" {
+		extra = "（" + pidNote + "）"
 	}
 	alert := " · ok"
 	if v, ok := st["health_alert"].(bool); ok && v {
@@ -868,7 +916,15 @@ func doctorResults(d doctorDeps) []CheckResult {
 		out = append(out, c.named("hook_script:"+filepath.Base(scripts[i])))
 	}
 	out = append(out, CheckCodex(d.CodexHooks, d.CodexConfig).named("codex_hooks"))
-	out = append(out, CheckDaemon(d.Probe, filepath.Join(dataDir, "daemon.pid")).named("daemon_liveness"))
+	// 票04：daemon_liveness 增控制口拨号见证（监听事实优先）——目标口与探针
+	// 同源（cfg.Server.Port）；config 加载失败/cfg nil → 目标口未解析＝探针单源
+	// 旧判（坏配置由 ferry_provider 项如实报，此处不二次归因）。
+	livenessDialAddr := ""
+	if err == nil && cfg != nil {
+		livenessDialAddr = fmt.Sprintf("127.0.0.1:%d", cfg.Server.Port)
+	}
+	out = append(out, CheckDaemon(d.Probe, filepath.Join(dataDir, "daemon.pid"),
+		d.DialTCP, livenessDialAddr).named("daemon_liveness"))
 	// 票02 常驻保障两查：deps 未装配（agent 面测试密闭形态）→ not_checked；
 	// CLI 面恒装配，人面输出不变。
 	if d.Autostart == nil {
