@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"ferryman/internal/config"
 	"ferryman/internal/ferry"
@@ -658,9 +659,10 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	// 票02 起：+2 = Run 键自启 + 看门计划任务两查；票06 起：+1 = MCP 注册在位；
 	// 升级链票06 起：+1 = 升级事务残留检查；服务商接管票05 起：+3 = CC 指向/
 	// codex 指向/orca codex 健康三项（[dock] 未配置形态按 not_checked 计入）；
-	// 票11 起：+1 = pi 生效链（provider_pi_dock，同上按 not_checked 计入）。
-	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1,
-		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1)
+	// 票11 起：+1 = pi 生效链（provider_pi_dock，同上按 not_checked 计入）；
+	// dsh-host-guard 票03 起：+1 = 宿主插件哨兵（dsh_poller_sentinel）。
+	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1+1,
+		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1+1)
 	if !strings.Contains(got, want) {
 		t.Fatalf("结论计数不符:\nwant: %s\ngot:\n%s", want, got)
 	}
@@ -1240,6 +1242,7 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		// 缺 → not_checked）
 		"provider_cc_dock", "provider_codex_dock", "provider_orca_codex",
 		"provider_pi_dock",
+		"dsh_poller_sentinel", // dsh-host-guard 票03：续接末位（顺序零漂移纪律）
 	}
 	if len(got) != len(want) {
 		t.Fatalf("项数 = %d, want %d: %+v", len(got), len(want), got)
@@ -1252,8 +1255,8 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 			t.Fatalf("三要素不齐: %+v", r)
 		}
 		// 夹具 [dock] 未配置：provider 四项按 not_checked 如实标注（不伪造），
-		// 其余项全 pass。
-		notCheckedOK := i >= len(want)-4
+		// 其余项全 pass（哨兵在夹具探针下无 poller 数据 → pass 注记）。
+		notCheckedOK := i >= len(want)-5
 		if r.Status != StatusPass && !(notCheckedOK && r.Status == StatusNotChecked) {
 			t.Fatalf("全绿夹具应 pass（provider 四项可 not_checked）: %+v", r)
 		}
@@ -1445,13 +1448,15 @@ func TestDoctorProviderTakeoverChecksPass(t *testing.T) {
 	// + dock 组 6（dock_rewrite/dock_upstream/三条未激活缺钥提示/dock_listening
 	//   not_checked——migratedDock 表形态）
 	// + provider 四项 4（票11 pi 生效链续接末位；夹具家目录无 ~/.pi →
-	//   provider_pi_dock not_checked 如实标注，不产红）= 27。
-	if len(res) != 27 {
+	//   provider_pi_dock not_checked 如实标注，不产红）
+	// + 宿主插件哨兵 1（dsh-host-guard 票03 续接末位；夹具探针无 poller 数据 →
+	//   pass 注记）= 28。
+	if len(res) != 28 {
 		names := make([]string, 0, len(res))
 		for _, r := range res {
 			names = append(names, r.Name+":"+string(r.Status))
 		}
-		t.Fatalf("应 27 项(17+6+4), got %d: %v", len(res), names)
+		t.Fatalf("应 28 项(17+6+4+1), got %d: %v", len(res), names)
 	}
 	for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
 		if r := providerCheckByName(t, res, n); r.Status != StatusPass {
@@ -1682,5 +1687,107 @@ func TestDoctorJSONExitCodeFollowsFails(t *testing.T) {
 	if rep.OK || code != 1 || rep.Summary.Fail == 0 {
 		t.Fatalf("有 fail 应 ok=false 且退 1: ok=%v code=%d fail=%d",
 			rep.OK, code, rep.Summary.Fail)
+	}
+}
+
+// ---- dsh-host-guard 票03：宿主插件哨兵（CheckDshPollerSentinel + 接线） ----
+
+// sentinelProbe /stats 探针替身：pollers 段条目与 daemon wire 形同源（realStatsProbe
+// 解析产物形态——name/last_seen epoch 秒 float64/age_s/state）。变参为空＝有应答
+// 但无 poller 数据；需要「不可达」形态传 sentinelProbeDead。
+func sentinelProbe(pollers ...map[string]any) func() map[string]any {
+	return func() map[string]any {
+		arr := make([]any, 0, len(pollers))
+		for _, p := range pollers {
+			arr = append(arr, p)
+		}
+		return map[string]any{"health_alert": false, "pollers": arr}
+	}
+}
+
+// sentinelProbeDead daemon 不可达形态（realStatsProbe 任何失败 → nil 同形）。
+func sentinelProbeDead() func() map[string]any { return func() map[string]any { return nil } }
+
+// TestDoctorDshPollerSentinel 哨兵判定全分支（spec E）：stale（应在线而沉默）
+// → fail 且点名（含 poller 名与最近心跳）；offline/retired/online → pass 注记；
+// 无 poller 数据（首建前盲区）→ pass 注记；daemon 不可达 → pass 注记不叠加
+// 误报（daemon 死由既有 daemon_liveness 报）；坏形条目不误报。
+func TestDoctorDshPollerSentinel(t *testing.T) {
+	const t0 = float64(1_800_000_000)
+	ts := time.Unix(int64(t0), 0).Format("2006-01-02 15:04:05")
+
+	// 不可达：pass 注记且指向 daemon_liveness。
+	c := CheckDshPollerSentinel(sentinelProbeDead())
+	if !c.OK || !strings.Contains(c.Msg, "daemon_liveness") {
+		t.Fatalf("不可达应 pass 注记且指向 daemon_liveness: %+v", c)
+	}
+	// 无 poller 数据：pass 注记（首建前盲区不判沉默）。
+	c = CheckDshPollerSentinel(sentinelProbe())
+	if !c.OK {
+		t.Fatalf("无 poller 数据应 pass 注记: %+v", c)
+	}
+	// stale：fail 且点名。
+	c = CheckDshPollerSentinel(sentinelProbe(map[string]any{
+		"name": "desktop", "last_seen": t0, "age_s": 91.0, "state": "stale"}))
+	if c.OK {
+		t.Fatalf("stale 应 fail: %+v", c)
+	}
+	if !strings.Contains(c.Msg, "desktop") || !strings.Contains(c.Msg, ts) {
+		t.Fatalf("fail 应点名 poller（名+最近心跳 %s）: %s", ts, c.Msg)
+	}
+	// offline / retired / online：pass 注记（名字在案、状态点明）。
+	for _, tc := range []struct{ state, wantSub string }{
+		{"offline", "已下线"},
+		{"retired", "已退役"},
+		{"online", "在线"},
+	} {
+		c = CheckDshPollerSentinel(sentinelProbe(map[string]any{
+			"name": "web", "last_seen": t0, "age_s": 0.0, "state": tc.state}))
+		if !c.OK || !strings.Contains(c.Msg, "web") || !strings.Contains(c.Msg, tc.wantSub) {
+			t.Fatalf("%s 应 pass 注记（含名与状态）: %+v", tc.state, c)
+		}
+	}
+	// 混合形态：online 不改判，fail 行点名 stale 者。
+	c = CheckDshPollerSentinel(sentinelProbe(
+		map[string]any{"name": "web", "last_seen": t0, "age_s": 0.0, "state": "online"},
+		map[string]any{"name": "desktop", "last_seen": t0, "age_s": 120.0, "state": "stale"}))
+	if c.OK || !strings.Contains(c.Msg, "desktop") {
+		t.Fatalf("混合形态应 fail 且点名 stale 者: %+v", c)
+	}
+	// 坏形条目（缺 name/state）→ 不误报（如实注记）。
+	c = CheckDshPollerSentinel(sentinelProbe(map[string]any{"oops": 1}))
+	if !c.OK {
+		t.Fatalf("坏形条目不得误报: %+v", c)
+	}
+}
+
+// TestDoctorResultsPollerSentinelWiring 接线钉：哨兵项续接 doctorResults 末位；
+// stale → doctor 全局 fail（退出 1，人面点名）；daemon 不可达 → 哨兵 pass 注记
+// 不叠加误报，活性 fail 只由 daemon_liveness 独报（验收红线）。
+func TestDoctorResultsPollerSentinelWiring(t *testing.T) {
+	deps, _ := greenDoctorDeps(t, sentinelProbe(map[string]any{
+		"name": "desktop", "last_seen": float64(1_800_000_000), "age_s": 91.0, "state": "stale"}))
+	res := doctorResults(deps)
+	if last := res[len(res)-1]; last.Name != "dsh_poller_sentinel" || last.Status != StatusFail {
+		t.Fatalf("末位应为哨兵项且 stale 判 fail: %+v", last)
+	}
+	var out strings.Builder
+	deps.Out = &out
+	if code := runDoctor(deps); code != 1 || !strings.Contains(out.String(), "desktop") {
+		t.Fatalf("stale 应令 doctor 退出 1 且人面点名:\n%s", out.String())
+	}
+
+	// 不可达：哨兵 pass、daemon_liveness 独 fail。
+	deps2, _ := greenDoctorDeps(t, sentinelProbeDead())
+	res2 := doctorResults(deps2)
+	byName := map[string]CheckResult{}
+	for _, r := range res2 {
+		byName[r.Name] = r
+	}
+	if r := byName["dsh_poller_sentinel"]; r.Status != StatusPass {
+		t.Fatalf("不可达时哨兵应 pass 注记（不叠加误报）: %+v", r)
+	}
+	if r := byName["daemon_liveness"]; r.Status != StatusFail {
+		t.Fatalf("不可达时活性应仍由 daemon_liveness 报 fail: %+v", r)
 	}
 }

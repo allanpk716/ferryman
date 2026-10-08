@@ -902,6 +902,10 @@ func doctorResults(d doctorDeps) []CheckResult {
 	// 失败 → 四项显式 not_checked（接管目标不可判——如实标注不伪造）。续接
 	// 末位：既有检查项顺序零漂移。
 	out = append(out, providerCheckResults(cfg, err, d)...)
+	// dsh-host-guard 票03：宿主插件哨兵——续接末位（顺序零漂移纪律）。与
+	// daemon_liveness 同一探针（d.Probe）；daemon 不可达时本项 pass 注记不叠加
+	// 误报（活性 fail 由 daemon_liveness 独报，见 CheckDshPollerSentinel）。
+	out = append(out, CheckDshPollerSentinel(d.Probe).named("dsh_poller_sentinel"))
 	return out
 }
 
@@ -1085,6 +1089,60 @@ func runDoctor(d doctorDeps) int {
 		return 1
 	}
 	return 0
+}
+
+// CheckDshPollerSentinel 宿主插件哨兵（dsh-host-guard 票03，spec E 判定/F 暴露面）：
+// 读 daemon /stats 的 pollers 段（与 daemon_liveness/dock_listening 同一 Probe——
+// realStatsProbe 解析产物，数字为 float64）。判定单源 daemon 侧生命周期状态机
+// （poller_baseline.go dshPollerStateOf，state 字段即现值），本处只做换装不重算：
+//   - stale（24h 内有心跳 ∧ 无下线标记 ∧ 静默>90s＝应在线而沉默）→ fail 且点名；
+//   - offline/retired（显式下线/24h 自然退役，spec E 视界外）→ pass 注记；
+//   - 无 poller 数据（首建前盲区/无任何心跳）→ pass 注记不误报；
+//   - daemon 不可达（probe nil）→ pass 注记不叠加误报——daemon 死由既有
+//     daemon_liveness 报，哨兵只管「daemon 活着时宿主插件死没死」。
+func CheckDshPollerSentinel(probe func() map[string]any) Check {
+	st := probe()
+	if st == nil {
+		return Check{true, "daemon 不可达——宿主插件哨兵不判（daemon 活性由 daemon_liveness 报）"}
+	}
+	raw, _ := st["pollers"].([]any)
+	if len(raw) == 0 {
+		return Check{true, "无宿主插件心跳记录（poller 基线为空——首建前盲区不判沉默）"}
+	}
+	var stale, notes []string
+	for _, it := range raw {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := m["name"].(string)
+		state, _ := m["state"].(string)
+		lastSeen, _ := m["last_seen"].(float64)
+		seen := "时刻未知"
+		if lastSeen > 0 {
+			seen = time.Unix(int64(lastSeen), 0).Format("2006-01-02 15:04:05")
+		}
+		switch state {
+		case "stale":
+			stale = append(stale, fmt.Sprintf("%s（最近心跳 %s，静默>90s）", name, seen))
+		case "online":
+			notes = append(notes, fmt.Sprintf("%s 在线", name))
+		case "offline":
+			notes = append(notes, fmt.Sprintf("%s 已下线（最近心跳 %s）", name, seen))
+		case "retired":
+			notes = append(notes, fmt.Sprintf("%s 已退役（>24h 无心跳，最近 %s）", name, seen))
+		default:
+			notes = append(notes, fmt.Sprintf("%s 状态 %q（形态异常，不判）", name, state))
+		}
+	}
+	if len(stale) > 0 {
+		return Check{false, "宿主插件静默（应在线而无心跳——查宿主进程是否存活，重开宿主/插件即恢复）: " +
+			strings.Join(stale, "；")}
+	}
+	if len(notes) == 0 { // pollers 段在但条目全坏形——如实注记，不误报
+		return Check{true, "poller 数据形态异常（无可用条目——不判沉默）"}
+	}
+	return Check{true, "宿主插件哨兵: " + strings.Join(notes, "；")}
 }
 
 // realStatsProbe /stats 探针：Bearer token 读 data_dir，2s 超时；任何失败 → nil

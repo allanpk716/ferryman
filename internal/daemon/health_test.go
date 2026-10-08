@@ -5,6 +5,7 @@ package daemon
 // /stats 全字段名逐字即 API 契约——本文件逐一钉死。
 
 import (
+	"encoding/json"
 	"testing"
 
 	"ferryman/internal/accounts"
@@ -180,6 +181,79 @@ func TestHealthGracePeriodAfterDaemonRestart(t *testing.T) {
 	e.d.StartedAt = *e.now - 601 // 宽限期已过，同条件才告警
 	if (e.d.Health())["health_alert"] != true {
 		t.Fatal("宽限期已过应告警")
+	}
+}
+
+// ---- dsh-host-guard 票03（spec F 主动暴露面）：/stats 增 pollers 段 ----
+
+// TestStatsPollersSegment /stats 应答增 pollers 段：形状逐字段钉死——name /
+// last_seen（epoch 秒，与 last_request_ts 同风格）/ age_s / state（online|
+// stale|retired|offline）。状态=票02 基线读面（dshPollerStates）的纯计算现值：
+// 读面不评估、不落盘、不打跃迁行；首建前盲区＝空数组、键恒在（消费方按
+// 「无 poller 数据」注记不误报）。末段钉 wire 形状：JSON 序列化后字段名
+// snake_case（/stats 经 writeJSON 出网的样子）。
+func TestStatsPollersSegment(t *testing.T) {
+	e := newPollerEnv(t)
+
+	// 首建前盲区：键恒在、空数组。
+	h := e.d.Health()
+	pl, ok := h["pollers"].([]map[string]any)
+	if !ok {
+		t.Fatalf("pollers 段应恒在且为数组: %T", h["pollers"])
+	}
+	if len(pl) != 0 {
+		t.Fatalf("首建前 pollers 应为空: %v", pl)
+	}
+
+	// 心跳后：单条目全字段（online；冻结时钟下 age_s=0）。
+	e.d.dshPollerBeat("desktop", false, e.t0)
+	h = e.d.Health()
+	pl = h["pollers"].([]map[string]any)
+	if len(pl) != 1 {
+		t.Fatalf("应恰一条 poller: %v", pl)
+	}
+	p := pl[0]
+	if p["name"] != "desktop" || p["state"] != "online" {
+		t.Fatalf("name/state 不符: %v", p)
+	}
+	if p["last_seen"] != int64(e.t0) {
+		t.Fatalf("last_seen 应为 epoch 秒 %v, got %v (%T)", int64(e.t0), p["last_seen"], p["last_seen"])
+	}
+	if p["age_s"] != 0.0 {
+		t.Fatalf("age_s 应为 0: %v", p["age_s"])
+	}
+
+	// 静默越 90s 窗 → 读面现值 stale（age_s 同步前进）。
+	e.advance(91)
+	h = e.d.Health()
+	p = h["pollers"].([]map[string]any)[0]
+	if p["state"] != "stale" {
+		t.Fatalf("静默 91s 读面应 stale: %v", p)
+	}
+	if p["age_s"] != 91.0 {
+		t.Fatalf("age_s 应为 91: %v", p["age_s"])
+	}
+
+	// wire 形状：JSON 往返后逐字段 snake_case、last_seen 整数 epoch 秒。
+	raw, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Pollers []struct {
+			Name     string  `json:"name"`
+			LastSeen int64   `json:"last_seen"`
+			AgeS     float64 `json:"age_s"`
+			State    string  `json:"state"`
+		} `json:"pollers"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("pollers 段 JSON 往返失败: %v\n%s", err, raw)
+	}
+	if len(wire.Pollers) != 1 || wire.Pollers[0].Name != "desktop" ||
+		wire.Pollers[0].LastSeen != int64(e.t0) || wire.Pollers[0].AgeS != 91 ||
+		wire.Pollers[0].State != "stale" {
+		t.Fatalf("wire 形状不符: %s", raw)
 	}
 }
 
