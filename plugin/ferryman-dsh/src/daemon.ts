@@ -142,10 +142,18 @@ export interface PollResponse {
 
 /**
  * 取压缩指令。单次尝试,失败回 null＝轮询失败静默（spec 钉点:下轮再试）。
+ * 体扩展（dsh-host-guard 票01 spec A;旧 daemon 忽略未知键,前向兼容）：
+ * 顶层 `poller`＝宿主身份名;每会话 `live`＝注册表条目是否持活 agent 引用
+ *（true/false;本插件恒显式携带——键缺失只可能来自更旧版本）。
  */
 export async function askPoll(
   ep: DaemonEndpoint,
-  body: { agent: string; sessions: Array<{ sid: string; idle_s: number }> },
+  body: {
+    agent: string;
+    /** 宿主身份名（compact.ts 从 import.meta.url 推导）;缺省＝不携带 */
+    poller?: string;
+    sessions: Array<{ sid: string; idle_s: number; live?: boolean }>;
+  },
 ): Promise<PollResponse | null> {
   const r = await postJSON(ep, "/dsh/poll", body);
   if (!r.ok || typeof r.data !== "object" || r.data === null) return null;
@@ -173,6 +181,24 @@ export async function reportCompacted(ep: DaemonEndpoint, body: CompactedReport)
     if (!r.ok) return false;
   }
   return true;
+}
+
+// ---- 卸载下线上报（dsh-host-guard 票02 spec E） ----
+
+/** 下线上报体：poll 体的 offline 变体——顶层 offline:true＋空 sessions 清单;
+ *  daemon 侧置 offline 基线标记（生命周期 offline 态,下一轮真实心跳即消除）。 */
+export interface OfflineReport {
+  agent: string;
+  poller: string;
+}
+
+/**
+ * 下线上报（插件 dispose 尽力而为一次）。单次尝试、失败静默不重试（spec E
+ * F9 显式取舍:恰逢 daemon 不可达则丢标记,最长 24h fail 误报窗、下轮心跳即
+ * 消除）。postJSON 永不抛,回值丢弃——卸载路径绝不冒烟。
+ */
+export async function reportOffline(ep: DaemonEndpoint, body: OfflineReport): Promise<void> {
+  await postJSON(ep, "/dsh/poll", { ...body, offline: true, sessions: [] });
 }
 
 // ---- /dsh/event 事件上报 ----

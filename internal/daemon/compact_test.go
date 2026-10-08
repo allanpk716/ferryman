@@ -66,6 +66,8 @@ func newCompactEnv(t *testing.T, ttls float64) *compactEnv {
 		acc, 0, nil)
 	resetCompactMiss()  // 守护可见性票01 包级态测试卫生：防跨用例渗漏（freezeClock 还原同纪律）
 	resetCompactClaims() // 票01 在飞领取窗包级态同款卫生
+	resetDshLiveReports() // dsh-host-guard 票01：live 聚合记忆同款卫生
+	resetCompactBackoff() // dsh-host-guard 票01：no-agent 退避表同款卫生
 	return e
 }
 
@@ -115,6 +117,16 @@ func pollBody(sids ...string) map[string]any {
 		sessions = append(sessions, map[string]any{"sid": sid, "idle_s": float64(i * 100)})
 	}
 	return map[string]any{"agent": "dsh", "sessions": sessions}
+}
+
+// pollBodyLive 带 live 值的 poll 体（dsh-host-guard 票01 spec A 三值面）：
+// live=nil＝缺键（旧协议体＝未知）；&true/&false＝显式上报。
+func pollBodyLive(sid string, live *bool) map[string]any {
+	m := map[string]any{"sid": sid, "idle_s": 100.0}
+	if live != nil {
+		m["live"] = *live
+	}
+	return map[string]any{"agent": "dsh", "poller": "test-host", "sessions": []any{m}}
 }
 
 // ---- 指令槽：入槽/覆盖/清槽/过期丢弃（N1） ----
@@ -488,10 +500,11 @@ func captureCompactLog(t *testing.T) *strings.Builder {
 }
 
 // resetCompactMiss 清空包级连续无人领取计数（newCompactEnv 开头调用，包级态
-// 跨用例渗漏防护）。
+// 跨用例渗漏防护）。dsh-host-guard 票01：同锁下另清退避轮计数（claim-miss）。
 func resetCompactMiss() {
 	dshCompactMissMu.Lock()
 	dshCompactMissN = map[string]int{}
+	dshCompactClaimMissN = map[string]int{}
 	dshCompactMissMu.Unlock()
 }
 
@@ -749,6 +762,9 @@ func TestDshCompactClaimOkFalseKeepsWindow(t *testing.T) {
 // TestCompactClaimTimeoutRounds 领取后执行窗超时计轮表（票01）：与"过期无人
 // 领取"同计数同告警路径——1、2 轮只日志；第 3 轮恰 gateWarn 一行；4 轮不再
 // 叠加；日志文案带"领取后执行窗"与轮号、sid16。
+// dsh-host-guard 票01 rework（2026-10-08 夜链协调者）：退避上线后,第 3 轮起
+// 结算行前多一行"连续 N 轮…进入 30 分钟退避"（engage/续期,compact.go 退避面）
+// ——本用例补正向断言：退避行数 = max(0, rounds-2),结算行序列不变。
 func TestCompactClaimTimeoutRounds(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -770,16 +786,31 @@ func TestCompactClaimTimeoutRounds(t *testing.T) {
 			if got, s := e.undeliveredAlerts(); got != tc.wantAlerts {
 				t.Fatalf("gate.log compact-undelivered 行 = %d, want %d\n%s", got, tc.wantAlerts, s)
 			}
-			lines := strings.Split(strings.TrimSpace(log.String()), "\n")
-			if len(lines) != tc.rounds {
-				t.Fatalf("日志行 = %d, want %d（每结算一行）\n%q", len(lines), tc.rounds, log.String())
-			}
-			for i, ln := range lines {
-				want := fmt.Sprintf("[compact] dsh 指令领取后执行窗内无成功上报(第 %d 轮):%s",
-					i+1, runeCap16(compactSID))
-				if ln != want {
-					t.Fatalf("日志行 %d = %q, want %q", i+1, ln, want)
+			settlements, backoffs := 0, 0
+			for _, ln := range strings.Split(strings.TrimSpace(log.String()), "\n") {
+				if ln == "" {
+					continue
 				}
+				if strings.Contains(ln, "进入 30 分钟退避") {
+					backoffs++
+					continue
+				}
+				want := fmt.Sprintf("[compact] dsh 指令领取后执行窗内无成功上报(第 %d 轮):%s",
+					settlements+1, runeCap16(compactSID))
+				if ln != want {
+					t.Fatalf("结算行 %d = %q, want %q\n全量: %q", settlements+1, ln, want, log.String())
+				}
+				settlements++
+			}
+			if settlements != tc.rounds {
+				t.Fatalf("结算行 = %d, want %d（每结算一行）\n%q", settlements, tc.rounds, log.String())
+			}
+			wantBackoffs := tc.rounds - 2
+			if wantBackoffs < 0 {
+				wantBackoffs = 0
+			}
+			if backoffs != wantBackoffs {
+				t.Fatalf("退避行 = %d, want %d（第 3 轮起每轮一行 engage/续期）\n%q", backoffs, wantBackoffs, log.String())
 			}
 		})
 	}
@@ -811,4 +842,57 @@ func TestCompactMissCounterSharedAcrossPaths(t *testing.T) {
 			t.Fatalf("日志行 %d = %q, want %q", i+1, ln, wantMsg[i])
 		}
 	}
+}
+
+// ---- dsh-host-guard 票01：live 三值派发路由（spec C 逐字） ----
+//
+// 指令在槽内时 DshPoll 应答从「谁把 sid 列进清单就给谁」收口为：本次轮询对该
+// sid 报 live=true → 可领取；报 live=false → 不派给（即便列了该 sid）；键缺失
+//（旧协议体）→ 可领取（兼容例外，维持现状）。派发判定只看本次轮询体里的
+// live 值，不依赖跨轮询记忆。
+
+// TestDshCompactPollLiveRouting 派发路由三分支＋交错领取：false 宿主先轮询不
+// 得（指令留槽），活宿主/旧体宿主后到照领。
+func TestDshCompactPollLiveRouting(t *testing.T) {
+	tt, ff := true, false
+	t.Run("live=false不派留槽,live=true可领", func(t *testing.T) {
+		e := newCompactEnv(t, 100)
+		if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+			t.Fatal("入槽应成功")
+		}
+		if cmds := e.d.DshPoll(pollBodyLive(compactSID, &ff))["commands"].([]map[string]any); len(cmds) != 0 {
+			t.Fatalf("live=false 宿主列了该 sid 也不派, got %v", cmds)
+		}
+		if e.slotPeek(compactSID) == nil {
+			t.Fatal("false 宿主轮询不得清槽——指令留给持活 agent 的宿主")
+		}
+		if cmds := e.d.DshPoll(pollBodyLive(compactSID, &tt))["commands"].([]map[string]any); len(cmds) != 1 {
+			t.Fatalf("live=true 宿主应领取, got %v", cmds)
+		}
+		if e.slotPeek(compactSID) != nil {
+			t.Fatal("领取即清槽（既有语义）")
+		}
+	})
+	t.Run("缺键旧体可领取(false宿主之后旧体宿主照领)", func(t *testing.T) {
+		e := newCompactEnv(t, 100)
+		if !e.d.EnqueueDshCompact(compactSID, "C:/proj") {
+			t.Fatal("入槽应成功")
+		}
+		if cmds := e.d.DshPoll(pollBodyLive(compactSID, &ff))["commands"].([]map[string]any); len(cmds) != 0 {
+			t.Fatalf("live=false 不派, got %v", cmds)
+		}
+		// 前向兼容硬约束：旧协议体（无 live 键）与今天行为完全一致——可领取
+		if cmds := e.d.DshPoll(pollBodyLive(compactSID, nil))["commands"].([]map[string]any); len(cmds) != 1 {
+			t.Fatalf("缺键（旧协议体）宿主应可领取（兼容例外）, got %v", cmds)
+		}
+	})
+	t.Run("非布尔live坏形按缺键宽容领取", func(t *testing.T) {
+		e := newCompactEnv(t, 100)
+		e.d.EnqueueDshCompact(compactSID, "C:/proj")
+		body := map[string]any{"agent": "dsh", "sessions": []any{
+			map[string]any{"sid": compactSID, "idle_s": 3.0, "live": "yes"}}}
+		if cmds := e.d.DshPoll(body)["commands"].([]map[string]any); len(cmds) != 1 {
+			t.Fatalf("非布尔 live＝非显式上报,按缺键宽容领取（坏形静默收窄）, got %v", cmds)
+		}
+	})
 }

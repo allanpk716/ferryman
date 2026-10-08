@@ -91,6 +91,20 @@ func (d *Daemon) Health() map[string]any {
 	// （心跳自产重放与管理口流量不在内，口径见 dock.Server）；DockSnap nil＝
 	// 未启用 0/0。"零请求视为静默成立"由消费方（票02）判定，此处如实暴露。
 	dockInflight, dockLastTS := d.dockProxyStats()
+	// dsh-host-guard 票03（spec F 主动暴露面）：pollers 段——票02 基线读面单源
+	//（dshPollerStates 纯计算现值，读面不评估、不落盘、不打跃迁行）。形状：
+	// {name, last_seen(epoch 秒——与 last_request_ts 同风格), age_s, state}；
+	// 空表（首建前盲区）＝空数组、键恒在——消费方（doctor 哨兵/看门）按
+	// 「无 poller 数据」注记，不误报。
+	pollerRows := make([]map[string]any, 0)
+	for _, p := range d.dshPollerStates() {
+		pollerRows = append(pollerRows, map[string]any{
+			"name":      p.Name,
+			"last_seen": int64(p.LastSeen),
+			"age_s":     mathx.Round(now-p.LastSeen, 1),
+			"state":     p.State,
+		})
+	}
 	return map[string]any{
 		"version":                     ver,
 		"gate_calls_total":            total,
@@ -104,5 +118,6 @@ func (d *Daemon) Health() map[string]any {
 		"qwatch":                      qw,
 		"dock_inflight":               dockInflight,
 		"last_request_ts":             dockLastTS,
+		"pollers":                     pollerRows,
 	}
 }

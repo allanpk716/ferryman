@@ -73,3 +73,13 @@ test("remove：终局移除;他会话不牵连;remove 后 get/idleS 归 undefine
   assert.equal(r.get("s2")!.sid, "s2", "他会话不受牵连");
   assert.doesNotThrow(() => r.remove("s1"), "重复移除幂等");
 });
+
+test("list() 快照含 agent 引用——live 上报判空的事实源（dsh-host-guard 票01）", () => {
+  const r = new SessionRegistry();
+  const agent = { session: { header: { id: "s1" } } };
+  r.touch("s1", "C:/a", agent);
+  r.seedRegister("s2", { cwd: "C:/b" }); // 播种条目:无活 agent 引用
+  const bySid = new Map(r.list().map((e) => [e.sid, e.agent]));
+  assert.equal(bySid.get("s1"), agent, "活引用随快照外露（判空即 live 值:agent 非空=true）");
+  assert.equal(bySid.get("s2"), undefined, "播种条目快照 agent 缺——live=false 的来源");
+});

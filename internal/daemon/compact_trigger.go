@@ -11,6 +11,11 @@ package daemon
 //	（族系运行态 DshFamilyRunning）∧ 无有效 compressed 标记 ∧ 无在飞领取窗
 //	（票01）∧ 无未过期在槽指令
 //
+// dsh-host-guard 票01（2026-10-08 事故）在六条件前加两道宿主防护闸（先于一切
+// 条件判定、后于在飞窗结算）：no-agent 退避早退（spec D——连续领取后无成功
+// 上报满阈值 → 30 分钟不入槽）；live 聚合压制（spec B——近窗内显式上报全部
+// live=false 才压制；任一 true 或无显式上报照旧，前向兼容硬约束）。
+//
 // → EnqueueDshCompact 入槽（expires_at=now+command_ttl_ratio×TTL，票02 槽
 // 语义经票01 收窄：槽内未过期指令不覆盖、在飞领取窗内不重入槽——poll 应答
 // 清槽后由在飞窗接棒节流，"领取→不执行→30s 重发"空转环就此闭死）；同时按
@@ -86,6 +91,19 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 	// 票01：在飞领取窗结算先于一切判定——过期未结（领取后窗内无 ok 上报）在
 	// 此计一轮未送达并清领取位；即使后续条件早退，结算也已完成（与触发解耦）。
 	w.Daemon.dshCompactClaimSweep(sid)
+	// dsh-host-guard 票01 D：no-agent 退避早退——连续「领取后无成功上报」满
+	// 阈值后 30 分钟内不入槽不重发不重摆（2026-10-08 事故空转环的端上闸）；
+	// 解除＝该 sid 再被报 live=true（DshPoll 面主动清）或台账 last_write 前进
+	//（用户回流——本判定惰性清）。
+	if dshCompactBackoffActive(sid, clock.Now(), lastWrite) {
+		return
+	}
+	// dsh-host-guard 票01 B：live 聚合压制——近窗（90s）内有显式上报且全部
+	// live=false → 压制不下发；近窗任一 true 或无显式上报（未知）都不在此返
+	// 回（false 不压制 true；旧体缺键＝照旧触发——前向兼容硬约束）。
+	if dshLiveVerdict(sid, clock.Now()) == dshLiveSuppressed {
+		return
+	}
 	if !observed {
 		return // 与摆渡/重铸同纪律：启动后只见登记不动作（重启观察窗内的除外）
 	}

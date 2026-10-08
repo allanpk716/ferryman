@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -387,5 +388,137 @@ func TestWatchdogDockProbeOddityOnlyLogged(t *testing.T) {
 	joined := strings.Join(logs, "\n")
 	if !strings.Contains(joined, "正常退出") || strings.Contains(joined, "半死形态") {
 		t.Fatalf("非拒绝异常只记录不告警半死: %v", logs)
+	}
+}
+
+// ---- dsh-host-guard 票03：看门顺带消费 /stats pollers 段（哨兵面，spec F） ----
+
+// pollersDeps wdDeps 基础上装配日志捕获与 pollers 消费缝。
+func pollersDeps(port int, l *fakeLauncher, logs *[]string,
+	pollers func() []watchdogPoller) WatchdogDeps {
+	return WatchdogDeps{
+		Port: port, Timeout: 2 * time.Second, Probe: probeHTTP, Launch: l.launch,
+		Logf:    func(f string, a ...any) { *logs = append(*logs, fmt.Sprintf(f, a...)) },
+		Pollers: pollers,
+	}
+}
+
+// ①+哨兵：daemon 可达 + 存在 stale → 看门日志记显著行（名+最近心跳），不拉起、
+// 退 0；daemon 有响应仍记正常退出（探活判定不受哨兵发现牵连）。
+func TestWatchdogPollersStaleLine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	l := &fakeLauncher{}
+	var logs []string
+	deps := pollersDeps(port, l, &logs, func() []watchdogPoller {
+		return []watchdogPoller{{Name: "desktop", LastSeen: 1_800_000_000, State: "stale"}}
+	})
+	if got := runWatchdog(deps); got != 0 {
+		t.Fatalf("有 stale 仍应退 0（daemon 活着）, got %d", got)
+	}
+	if l.calls != 0 {
+		t.Fatalf("不应拉起, calls=%d", l.calls)
+	}
+	joined := strings.Join(logs, "\n")
+	want := "[watchdog] poller desktop 静默(>90s 无心跳,最近 " +
+		time.Unix(1_800_000_000, 0).Format("2006-01-02 15:04:05") + ")"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("缺显著行 %q: %v", want, logs)
+	}
+	if !strings.Contains(joined, "正常退出") {
+		t.Fatalf("daemon 有响应仍应记正常退出: %v", logs)
+	}
+}
+
+// ①+哨兵：无 stale（online 条目）→ 与现行行为一致——只正常退出行，零新增。
+func TestWatchdogPollersCleanNoExtraLines(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	l := &fakeLauncher{}
+	var logs []string
+	deps := pollersDeps(port, l, &logs, func() []watchdogPoller {
+		return []watchdogPoller{{Name: "desktop", LastSeen: 1_800_000_000, State: "online"}}
+	})
+	if got := runWatchdog(deps); got != 0 {
+		t.Fatalf("应退 0, got %d", got)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "正常退出") {
+		t.Fatalf("无 stale 应与现行行为一致（恰正常退出一行）: %v", logs)
+	}
+}
+
+// 消费缝未装配（nil，既有测试/最小装配形态）→ 旧行为原样。
+func TestWatchdogPollersNilSeamLegacyBehavior(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	l := &fakeLauncher{}
+	var logs []string
+	deps := pollersDeps(port, l, &logs, nil)
+	if got := runWatchdog(deps); got != 0 {
+		t.Fatalf("应退 0, got %d", got)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "正常退出") {
+		t.Fatalf("消费缝未装配应与旧行为逐字一致: %v", logs)
+	}
+}
+
+// realWatchdogPollers 真装配：token 文件 + FERRYMAN_PORT 临时口——带 Bearer 读
+// /stats 解析 pollers 段；401（token 不被认）/无人听/token 缺 → nil（尽力而为，
+// 判定与日志形态零漂移）。全程临时口（notProdPort 断言），绝不碰生产端口。
+func TestWatchdogPollersFetchReal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "daemon.token"), []byte("tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"version":"x","pollers":[{"name":"desktop","last_seen":1800000000,`+
+			`"age_s":91,"state":"stale"},{"name":"web","last_seen":1800000000,"age_s":0,"state":"online"}]}`)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	notProdPort(t, port)
+	t.Setenv(DaemonPortEnv, strconv.Itoa(port))
+	got := realWatchdogPollers(dir)()
+	if gotAuth != "Bearer tok" {
+		t.Fatalf("应带 Bearer token 请求: %q", gotAuth)
+	}
+	if len(got) != 2 || got[0].Name != "desktop" || got[0].State != "stale" ||
+		got[0].LastSeen != 1_800_000_000 || got[1].Name != "web" || got[1].State != "online" {
+		t.Fatalf("pollers 段解析不符: %+v", got)
+	}
+
+	// 401：鉴权不过 → pollers 无从读 → nil，不炸不误报。
+	srv401 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv401.Close()
+	port401 := srv401.Listener.Addr().(*net.TCPAddr).Port
+	notProdPort(t, port401)
+	t.Setenv(DaemonPortEnv, strconv.Itoa(port401))
+	if got := realWatchdogPollers(dir)(); got != nil {
+		t.Fatalf("401 应 nil: %v", got)
+	}
+
+	// 无人听：nil。
+	dead := freeListenPort(t)
+	t.Setenv(DaemonPortEnv, strconv.Itoa(dead))
+	if got := realWatchdogPollers(dir)(); got != nil {
+		t.Fatalf("无监听应 nil: %v", got)
+	}
+
+	// token 文件缺：nil。
+	if got := realWatchdogPollers(filepath.Join(dir, "nope"))(); got != nil {
+		t.Fatalf("token 缺应 nil: %v", got)
 	}
 }
