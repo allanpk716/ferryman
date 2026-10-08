@@ -29,7 +29,7 @@ func writeSettings(t *testing.T, p string, hooks map[string]any) {
 }
 
 // makeHookRepo 造带钩子脚本的临时仓库根（路径存在性检查的对象；BOM 在位——
-// runDoctor 的 CheckHookScripts 全查 7 件）。
+// runDoctor 的 CheckHookScripts 全查 8 件，verify-dsh 票06 起 +1 gate-dsh 变体）。
 func makeHookRepo(t *testing.T, dir string) string {
 	t.Helper()
 	hooksDir := filepath.Join(dir, "hooks")
@@ -658,9 +658,11 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	// 票02 起：+2 = Run 键自启 + 看门计划任务两查；票06 起：+1 = MCP 注册在位；
 	// 升级链票06 起：+1 = 升级事务残留检查；服务商接管票05 起：+3 = CC 指向/
 	// codex 指向/orca codex 健康三项（[dock] 未配置形态按 not_checked 计入）；
-	// 票11 起：+1 = pi 生效链（provider_pi_dock，同上按 not_checked 计入）。
-	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1,
-		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1)
+	// 票11 起：+1 = pi 生效链（provider_pi_dock，同上按 not_checked 计入）；
+	// verify-dsh 票06 起：+1 = dsh_plugin_static（脚本清单七→八经
+	// len(doctorScriptNames()) 随动，另有 +1 在此显式入账）。
+	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1+1,
+		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1+1)
 	if !strings.Contains(got, want) {
 		t.Fatalf("结论计数不符:\nwant: %s\ngot:\n%s", want, got)
 	}
@@ -1229,7 +1231,8 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 	legal := map[CheckStatus]bool{StatusPass: true, StatusFail: true, StatusNotChecked: true}
 	want := []string{
 		"cc_hooks", "launcher", "ccswitch_snapshots", "ferry_provider",
-		"hook_script:ferryman-gate.ps1", "hook_script:ferryman-restore.ps1",
+		"hook_script:ferryman-gate.ps1", "hook_script:ferryman-gate-dsh.ps1",
+		"hook_script:ferryman-restore.ps1",
 		"hook_script:ferryman-subagent.ps1", "hook_script:ferryman-ensure.ps1",
 		"hook_script:ferryman-gate-codex.ps1", "hook_script:ferryman-restore-codex.ps1",
 		"hook_script:ferryman-subagent-codex.ps1",
@@ -1240,6 +1243,7 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		// 缺 → not_checked）
 		"provider_cc_dock", "provider_codex_dock", "provider_orca_codex",
 		"provider_pi_dock",
+		"dsh_plugin_static", // verify-dsh 票06：末位连续块追加（夹具无 ~/.dsh → not_checked）
 	}
 	if len(got) != len(want) {
 		t.Fatalf("项数 = %d, want %d: %+v", len(got), len(want), got)
@@ -1251,9 +1255,9 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		if r.Detail == "" || !legal[r.Status] {
 			t.Fatalf("三要素不齐: %+v", r)
 		}
-		// 夹具 [dock] 未配置：provider 四项按 not_checked 如实标注（不伪造），
-		// 其余项全 pass。
-		notCheckedOK := i >= len(want)-4
+		// 夹具 [dock] 未配置：provider 四项与 dsh_plugin_static 按 not_checked
+		// 如实标注（不伪造），其余项全 pass。
+		notCheckedOK := i >= len(want)-5
 		if r.Status != StatusPass && !(notCheckedOK && r.Status == StatusNotChecked) {
 			t.Fatalf("全绿夹具应 pass（provider 四项可 not_checked）: %+v", r)
 		}
@@ -1440,18 +1444,20 @@ func TestDoctorProviderTakeoverChecksPass(t *testing.T) {
 	cfg, _ := deps.LoadCfg()
 	cfg.Dock = migratedDock()
 	res := doctorResults(deps)
-	// 计数：基座 17（cc_hooks/launcher/ccswitch/ferry_provider + 7 脚本 +
-	// codex_hooks/daemon/autostart/watchdog/mcp/update_residues）
+	// 计数：基座 19（cc_hooks/launcher/ccswitch/ferry_provider + 8 脚本＋
+	// codex_hooks/daemon/autostart/watchdog/mcp/update_residues＋
+	// dsh_plugin_static not_checked——verify-dsh 票06 起 +1 项、脚本清单
+	// 七→八）
 	// + dock 组 6（dock_rewrite/dock_upstream/三条未激活缺钥提示/dock_listening
 	//   not_checked——migratedDock 表形态）
 	// + provider 四项 4（票11 pi 生效链续接末位；夹具家目录无 ~/.pi →
-	//   provider_pi_dock not_checked 如实标注，不产红）= 27。
-	if len(res) != 27 {
+	//   provider_pi_dock not_checked 如实标注，不产红）= 29。
+	if len(res) != 29 {
 		names := make([]string, 0, len(res))
 		for _, r := range res {
 			names = append(names, r.Name+":"+string(r.Status))
 		}
-		t.Fatalf("应 27 项(17+6+4), got %d: %v", len(res), names)
+		t.Fatalf("应 29 项(19+6+4), got %d: %v", len(res), names)
 	}
 	for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
 		if r := providerCheckByName(t, res, n); r.Status != StatusPass {
