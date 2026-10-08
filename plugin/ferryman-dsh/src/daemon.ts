@@ -142,10 +142,18 @@ export interface PollResponse {
 
 /**
  * 取压缩指令。单次尝试,失败回 null＝轮询失败静默（spec 钉点:下轮再试）。
+ * 体扩展（dsh-host-guard 票01 spec A;旧 daemon 忽略未知键,前向兼容）：
+ * 顶层 `poller`＝宿主身份名;每会话 `live`＝注册表条目是否持活 agent 引用
+ *（true/false;本插件恒显式携带——键缺失只可能来自更旧版本）。
  */
 export async function askPoll(
   ep: DaemonEndpoint,
-  body: { agent: string; sessions: Array<{ sid: string; idle_s: number }> },
+  body: {
+    agent: string;
+    /** 宿主身份名（compact.ts 从 import.meta.url 推导）;缺省＝不携带 */
+    poller?: string;
+    sessions: Array<{ sid: string; idle_s: number; live?: boolean }>;
+  },
 ): Promise<PollResponse | null> {
   const r = await postJSON(ep, "/dsh/poll", body);
   if (!r.ok || typeof r.data !== "object" || r.data === null) return null;

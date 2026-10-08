@@ -2,8 +2,11 @@
 //（.scratch/dsh-hot-compaction/spec.md,改契约=全部受影响票返工）：
 //   - 轮询循环：apply() 起 setInterval（默认 30000ms;daemon 应答 poll_hint_s
 //     建议可调,取 max(建议, 10000ms) 下限）;每轮 POST {daemon}/dsh/poll,体=
-//     本宿主会话清单 {agent:"dsh", sessions:[{sid, idle_s}]}（会话注册表由
-//     五事件位维护,见 events.ts 各 handler 的 touch/setStatus/remove）。
+//     本宿主会话清单 {agent:"dsh", poller, sessions:[{sid, idle_s, live}]}
+//     （dsh-host-guard 票01 spec A:live=注册表条目 agent 引用非空——播种条目
+//     如实报 false,播种宿主从此领不到也压不住;poller=宿主身份名,标准路径
+//     取 profiles 名/非标准 unknown- 后缀。会话注册表由五事件位维护,见
+//     events.ts 各 handler 的 touch/setStatus/remove）。
 //   - 指令执行前三道复查（N1 插件侧,v0.9.4 修订;票03 输入改钟②;夜链票01 再
 //     分叉 no-agent）：①agent 在册且宿主拿得到——条目在但无活 agent 引用（播
 //     种条目/事件残影）→ {ok:false, reason:"no-agent"}（夜链票01:领取即上报
@@ -116,6 +119,45 @@ export const REPORT_SETTLE_MS = 2_000;
  * 作废、上报 {ok:false, reason:"timeout"};迟到的完成回调纪元不符→静默丢弃。
  */
 export const DEFAULT_COMPACT_TIMEOUT_MS = 180_000;
+
+// ---- 宿主身份名（dsh-host-guard 票01 spec A；票 01/02 共用载体） ----
+
+/**
+ * 标准部署形态正则：`~/.dsh/profiles/<name>/node_modules/ferryman-dsh/…`
+ * （import.meta.url 的 file:// 形态；desktop/web/headless 三拷贝各落一个
+ * profiles 名——名字即宿主身份）。
+ */
+const PROFILES_PATH_RE = /\/\.dsh\/profiles\/([^/]+)\/node_modules\/ferryman-dsh\//;
+
+/** unknown 短随机后缀——模块实例内一次生成、进程内稳定；非标准路径的多个
+ *  实例各持各的模块状态、各得各的后缀（F10「区分非标准路径的多个实例」）。 */
+let unknownPollerSuffix: string | undefined;
+
+/**
+ * poller 名推导（spec A 逐字）：标准 profiles 路径取 `<name>`（URL 解码）；
+ * 解析不出 → `unknown-<6 位短随机后缀>`（padEnd 防随机串截短）。纯函数可测
+ * ——本文件调用方传 import.meta.url，测试传各形态 URL。
+ */
+export function derivePollerName(moduleURL: string): string {
+  const m = PROFILES_PATH_RE.exec(moduleURL);
+  if (m !== null && m[1] !== undefined) {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      return m[1]; // 坏编码原样取（宽容面）
+    }
+  }
+  unknownPollerSuffix ??= Math.random().toString(36).slice(2, 8).padEnd(6, "0");
+  return `unknown-${unknownPollerSuffix}`;
+}
+
+let cachedSelfPoller: string | undefined;
+
+/** 本实例的 poller 名（import.meta.url 一次推导缓存；进程内稳定）。 */
+export function pollerName(): string {
+  cachedSelfPoller ??= derivePollerName(import.meta.url);
+  return cachedSelfPoller;
+}
 
 // ---- 宿主服务鸭子面（未声明 inject 的属性读取即抛,一律 optionalFace 取用） ----
 
@@ -543,8 +585,16 @@ export function startPollLoop(deps: PollDeps): PollLoopHandle {
     if (ticking) return; // 单飞:上一轮未落定（慢 HTTP/大清单）本轮跳过
     ticking = true;
     try {
-      const sessions = deps.registry.list().map((e) => ({ sid: e.sid, idle_s: e.idleS }));
-      const res = await askPoll(deps.ep, { agent: "dsh", sessions });
+      // live 三值（dsh-host-guard 票01 spec A/C）：RegistryEntry.agent 非空=
+      // true（本宿主持活 agent 引用,可领取压缩指令）;播种条目/事件残影=
+      // false（daemon 派发面不再派给、触发面聚合压制）;键永远显式携带——旧
+      // 体（缺键）只可能来自旧版本插件,daemon 侧按未知宽容。
+      const sessions = deps.registry.list().map((e) => ({
+        sid: e.sid,
+        idle_s: e.idleS,
+        live: e.agent !== undefined && e.agent !== null,
+      }));
+      const res = await askPoll(deps.ep, { agent: "dsh", poller: pollerName(), sessions });
       if (res === null) return; // 轮询失败静默——下轮再试
       const hintS = normalizePositive(res.poll_hint_s);
       if (hintS !== undefined) {

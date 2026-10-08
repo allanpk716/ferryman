@@ -167,7 +167,9 @@ export class SessionRegistry {
     if (at > e.lastActivityAt) e.lastActivityAt = at;
   }
 
-  /** 快照（poll 体用）：含现算闲置秒。 */
+  /** 快照（poll 体用）：含现算闲置秒。agent 引用随快照外露——判空即 live 上报
+   *  值（dsh-host-guard 票01:agent 非空=live true）;引用本体只活在本进程,
+   *  不外泄出宿主面（blocked 仓同纪律）。 */
   list(): RegistrySnapshot[] {
     const t = this.now();
     return [...this.entries.values()].map((e) => ({

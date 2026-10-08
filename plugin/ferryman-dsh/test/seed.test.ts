@@ -570,7 +570,9 @@ test("端到端:播种的静置会话进首轮 poll 名单;播种 running 条目
   // (compact.test.ts startSettled 同款纪律)
   await new Promise((r) => setTimeout(r, 30));
   const req = mock.requestsFor("/dsh/poll")[0]!;
-  assert.deepEqual((req.body as { sessions: unknown[] })["sessions"], [{ sid: SID, idle_s: 0 }], "播种的静置会话进轮询名单");
+  // dsh-host-guard 票01:poll 体会话条目带 live(注册表 agent 引用非空=true);
+  // 本用例播种经 getAgent 绑了活引用 → live:true
+  assert.deepEqual((req.body as { sessions: unknown[] })["sessions"], [{ sid: SID, idle_s: 0, live: true }], "播种的静置会话进轮询名单");
 
   flag.on = true;
   await loop.tick();
