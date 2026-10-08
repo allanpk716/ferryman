@@ -40,13 +40,23 @@ import (
 // ——usage 行的 project 列与转录均可辨识探针流量）。
 const (
 	probeMsgTemplate = "[ferryman verify-dsh 探针 %s] 请只回复一句话：收到。不要使用任何工具。"
-	svcLaneMsgText   = "[ferryman verify-dsh 探针·服务面腿] 请只回复两个字：就绪。不要使用任何工具。"
 	// svcPreset 服务面腿会话的宿主 preset（minimal 无 /compact 命令注册——命令道
 	// execute 解析 undefined，插件落服务面；见包注「合成组成」）。
 	svcPreset = "minimal"
 	// handoffProbeSID /dsh/handoff 零副作用探针的 sid（空 cwd——selfcheck 先例）。
 	handoffProbeSID = "ferryman-verify-dsh-l2probe"
 )
+
+// svcLaneMsgText 服务面腿消息（垫料）。宿主压缩服务有硬不变量「摘要 framed
+// tokens 必须严格小于被遮蔽内容」，2026-10-08 v0.9.10 三轮实锚钉死其行为：
+// ①短消息（影子 95）摘要地板 ~300 必拒；②异质十段/重复 50 行（影子 364/
+// 447）摘要逐项枚举到 497-627——比值恒 ≥1 仍拒；③E2E 散文灌到 ~13k token
+// 两次压缩全绿（唯一实证过线量级，摘要输出在量级处被封顶）。据此垫料走
+// 量级路线：~1500 行 ≈3.3 万字 ≈12k token 影子，进入实证过线区。marker
+// 「服务面腿」保位（transcriptTurnEnd 锚）。var 而非 const＝strings.Repeat。
+var svcLaneMsgText = "[ferryman verify-dsh 探针·服务面腿] 以下是垫料（同一句例行记录重复约一千五百行，无实际含义，唯一目的是把会话内容堆到压缩摘要必然更小的量级），请通读后按末句作答。\n\n" +
+	strings.Repeat("例行巡检无异常，检查项通过，无需记录细节。\n", 1500) +
+	"\n请只回复两个字：就绪。不要使用任何工具。"
 
 // Probe L2 沙箱探针（dshverify.ProbeRunner 的实现）。
 type Probe struct {
