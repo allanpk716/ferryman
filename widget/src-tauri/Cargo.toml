@@ -1,6 +1,6 @@
 [package]
 name = "ferryman-widget"
-version = "0.2.6"
+version = "0.2.7"
 description = "Ferryman 用量悬浮窗：纯读消费 daemon /widget/summary 的置顶小窗"
 authors = ["allan716"]
 edition = "2021"
