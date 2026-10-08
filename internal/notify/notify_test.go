@@ -10,6 +10,7 @@ package notify
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -178,7 +179,9 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Notify = config.NotifyCfg{Enabled: true, Pushover: true,
-		PushoverToken: "t", PushoverUser: "u", Toast: true}
+		PushoverToken: "t", PushoverUser: "u", Toast: true,
+		// 票02：拦截走 block 事件分派；本段钉双通道形态，显式 both。
+		Events: map[string]config.NotifyEventTier{"block": config.NotifyEventBoth}}
 	NotifyBlock("C:/handoffs/h1.md", "cc", "s123", "", "", cfg)
 
 	if len(*toastCalls) != 1 || !strings.Contains((*toastCalls)[0], "h1.md") {
@@ -219,6 +222,19 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 		t.Fatalf("全路径形态应提取基名: title = %q", form.Get("title"))
 	}
 
+	// 票02：缺省回落——block=toast（D2）：手机不发、桌面发（人被拦时必在电脑
+	// 前）。Events 缺键/nil 回落内置缺省表（未配置即缺省）。
+	cfg.Notify.Events = nil
+	ps.reset()
+	*toastCalls = nil
+	NotifyBlock("C:/handoffs/h5.md", "cc", "s000", "", "", cfg)
+	if n := ps.count(); n != 0 {
+		t.Fatalf("缺省 block=toast：手机不应推送, got %d 次", n)
+	}
+	if n := len(*toastCalls); n != 1 {
+		t.Fatalf("缺省 block=toast：桌面应发一条, got %d 次", n)
+	}
+
 	cfg.Notify.Enabled = false // 总开关关 → 全静默
 	ps.reset()
 	*toastCalls = nil
@@ -235,7 +251,10 @@ func TestNotifyBlockMissingPushoverCredentialsSkipsPush(t *testing.T) {
 	toastCalls := mockToast(t, nil)
 	cfg := config.Default()
 	cfg.Notify = config.NotifyCfg{Enabled: true, Pushover: true,
-		PushoverToken: "", PushoverUser: "", Toast: true}
+		PushoverToken: "", PushoverUser: "", Toast: true,
+		// 显式 both：本例钉「通道开着但缺凭据 → 只走 toast」的凭据回落
+		//（缺省 block=toast 下手机本来就不发，测不到这条路径）。
+		Events: map[string]config.NotifyEventTier{"block": config.NotifyEventBoth}}
 	NotifyBlock("C:/h.md", "cc", "s", "", "", cfg)
 	if len(*toastCalls) != 1 {
 		t.Fatalf("toast 应已发送，got %d", len(*toastCalls))
@@ -250,3 +269,89 @@ func TestNotifyBlockMissingPushoverCredentialsSkipsPush(t *testing.T) {
 // 票14 回填注：test_gate_block_fires_notification_async 已转绿——daemon→notify
 // 生产依赖方向不可被内部测试包引用（成环），落在本目录外部测试包
 // gate_async_e2e_test.go（Daemon.NotifyBlock seam + 最小装配器）。
+
+// ---------- 票02：事件分派核心（NotifyEvent 发送矩阵） ----------
+
+// TestNotifyEventDispatchMatrix 九事件 × 三值 × 通道开关 × 总开关可枚举全覆盖
+//（spec「Testing Decisions」：off 不发 / toast 仅桌面 / both 双通道；通道开关是
+// 通道维度上限（与事件值做与运算）；enabled=false 全静默（总开关优先））。
+func TestNotifyEventDispatchMatrix(t *testing.T) {
+	ps := startPushStub(t, 200)
+	toastCalls := mockToast(t, nil)
+	for _, event := range config.NotifyEventNames {
+		for _, tier := range []config.NotifyEventTier{
+			config.NotifyEventOff, config.NotifyEventToast, config.NotifyEventBoth} {
+			for _, pushCh := range []bool{true, false} {
+				for _, toastCh := range []bool{true, false} {
+					for _, enabled := range []bool{true, false} {
+						name := fmt.Sprintf("%s/%s/push=%v/toast=%v/on=%v",
+							event, tier, pushCh, toastCh, enabled)
+						t.Run(name, func(t *testing.T) {
+							cfg := config.Default()
+							cfg.Notify = config.NotifyCfg{Enabled: enabled,
+								Pushover: pushCh, PushoverToken: "t", PushoverUser: "u",
+								Toast: toastCh,
+								Events: map[string]config.NotifyEventTier{event: tier}}
+							ps.reset()
+							*toastCalls = nil
+							NotifyEvent(event, "标题", "正文", cfg)
+							wantPush, wantToast := 0, 0
+							if enabled {
+								switch tier {
+								case config.NotifyEventToast:
+									if toastCh {
+										wantToast = 1
+									}
+								case config.NotifyEventBoth:
+									if pushCh {
+										wantPush = 1
+									}
+									if toastCh {
+										wantToast = 1
+									}
+								} // off：全静默
+							}
+							if got := ps.count(); got != wantPush {
+								t.Errorf("pushover = %d 次, want %d", got, wantPush)
+							}
+							if got := len(*toastCalls); got != wantToast {
+								t.Errorf("toast = %d 次, want %d", got, wantToast)
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestNotifyEventMissingKeyFallsBackToDefault Events nil/缺键 → 回落内置缺省表
+//（未配置即缺省，spec 用户故事 5）；名单外事件名 → 静默（防御：配置层保证九键
+// 全量，运行期手搓 map 不炸、不误发）。
+func TestNotifyEventMissingKeyFallsBackToDefault(t *testing.T) {
+	ps := startPushStub(t, 200)
+	toastCalls := mockToast(t, nil)
+	cfg := config.Default()
+	cfg.Notify = config.NotifyCfg{Enabled: true, Pushover: true,
+		PushoverToken: "t", PushoverUser: "u", Toast: true} // Events=nil
+
+	NotifyEvent(EventBlock, "t", "m", cfg) // 缺省 block=toast → 仅桌面
+	if n := ps.count(); n != 0 {
+		t.Fatalf("Events=nil 回落缺省 block=toast：手机不应发, got %d", n)
+	}
+	if n := len(*toastCalls); n != 1 {
+		t.Fatalf("Events=nil 回落缺省 block=toast：桌面应发, got %d", n)
+	}
+
+	*toastCalls = nil
+	NotifyEvent("no_such_event", "t", "m", cfg) // 名单外 → 静默
+	if ps.count() != 0 || len(*toastCalls) != 0 {
+		t.Fatalf("名单外事件应静默: push=%d toast=%d", ps.count(), len(*toastCalls))
+	}
+
+	cfg.Notify.Events = map[string]config.NotifyEventTier{} // 空表同缺键
+	NotifyEvent(EventTuning, "t", "m", cfg)                 // 缺省 tuning=off → 静默
+	if ps.count() != 0 || len(*toastCalls) != 0 {
+		t.Fatalf("缺省 tuning=off 应静默: push=%d toast=%d", ps.count(), len(*toastCalls))
+	}
+}

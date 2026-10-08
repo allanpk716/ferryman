@@ -52,7 +52,9 @@ func TestNotifyTuningBubblesRespectFlags(t *testing.T) {
 	toastCalls := mockToast(t, nil)
 	cfg := config.Default()
 	cfg.Notify = config.NotifyCfg{Enabled: true, Pushover: true,
-		PushoverToken: "t", PushoverUser: "u", Toast: true}
+		PushoverToken: "t", PushoverUser: "u", Toast: true,
+		// 票02：调参走 tuning 事件分派（缺省 off=默认静默），显式 both 打开。
+		Events: map[string]config.NotifyEventTier{"tuning": config.NotifyEventBoth}}
 
 	NotifyTuningPending(cfg, "glm", 22, 25, true, "护栏全过")
 	NotifyTuningApplied(cfg, "glm", 22, 24, true)
@@ -76,6 +78,24 @@ func TestNotifyTuningBubblesRespectFlags(t *testing.T) {
 	NotifyTuningApplied(cfg, "glm", 22, 24, true)
 	if ps.count() != 0 || len(*toastCalls) != 0 {
 		t.Fatalf("enabled=false 应全静默: push=%d toast=%d", ps.count(), len(*toastCalls))
+	}
+
+	// 票02 事件分级：显式 tuning=off → 静默（配置可关回）；
+	// Events 缺省回落（缺省 tuning=off）同静默——通道全开也不发。
+	cfg.Notify.Enabled = true
+	cfg.Notify.Events = map[string]config.NotifyEventTier{"tuning": config.NotifyEventOff}
+	ps.reset()
+	*toastCalls = nil
+	NotifyTuningPending(cfg, "glm", 22, 25, true, "")
+	NotifyTuningApplied(cfg, "glm", 22, 24, true)
+	NotifyTuningNotice(cfg, "glm", "样本不足")
+	if ps.count() != 0 || len(*toastCalls) != 0 {
+		t.Fatalf("tuning=off 应静默: push=%d toast=%d", ps.count(), len(*toastCalls))
+	}
+	cfg.Notify.Events = nil // 缺省 tuning=off
+	NotifyTuningNotice(cfg, "glm", "样本不足")
+	if ps.count() != 0 || len(*toastCalls) != 0 {
+		t.Fatalf("缺省 tuning=off 应静默: push=%d toast=%d", ps.count(), len(*toastCalls))
 	}
 }
 

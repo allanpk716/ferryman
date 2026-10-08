@@ -682,77 +682,219 @@ func TestWorkerChainSlidesBooksPerAttemptAndSavesFresh(t *testing.T) {
 	}
 }
 
-// TestWorkerChainDegradeAlertPerSlideSkeletonOnce：两级全死 × 两任务——
-// 级间滑落每次一条（文案含「从 X 级滑落到 Y 级」），滑入骨架进程内仅一次
-// （多次全链降级仍一条）；骨架交接对闸门/恢复面有效；逐任务逐级行可重放。
-func TestWorkerChainDegradeAlertPerSlideSkeletonOnce(t *testing.T) {
+// TestWorkerChainDegradeStateChangeAlertsSkeletonOnce：票02 顺位级状态机制——
+// 全链死首滑一条（链尾死文案）+ 骨架告警进程内一次；同级持续失败零推送；
+// 恢复（链首复活产出 fresh）静默重置；再滑落（链尾接手）一条（链尾存活文案）；
+// 链尾同级存活零推送；再全链死一条（骨架 Once 不重复）。六相位态机走查，
+// 末态=3 条滑落 + 1 条骨架。
+func TestWorkerChainDegradeStateChangeAlertsSkeletonOnce(t *testing.T) {
 	env := newFerryWenv(t)
 	chainNotifyCfg(env.cfg)
 	projects := filepath.Join(env.tmp, "projects")
 	w := NewWorker(env.cfg, env.st, env.acc, env.providers, explodingFerry)
-	w.Chain = []ferry.Provider{
-		{Name: "lvl1", BaseURL: closedChainURL(t), Model: "m1"},
-		{Name: "lvl2", BaseURL: closedChainURL(t), Model: "m2"},
+	bothDead := func() []ferry.Provider {
+		return []ferry.Provider{
+			{Name: "lvl1", BaseURL: closedChainURL(t), Model: "m1"},
+			{Name: "lvl2", BaseURL: closedChainURL(t), Model: "m2"},
+		}
 	}
+	w.Chain = bothDead()
 	w.ChainFerry = ferry.ChainSession
 	runWorkerCtx(t, w)
 	snap, waitN := collectPushover(t)
-	for _, sid := range []string{"chain-dead-1", "chain-dead-2"} {
+
+	runTask := func(sid string) {
+		t.Helper()
 		f := writeWenvSession(t, projects, sid, "C:/proj")
 		w.Enqueue(map[string]any{"transcript_path": f, "agent": "cc",
 			"session_id": sid, "cwd": "C:/proj"})
 	}
-	// 两任务收尾：各 2 行 failed + 骨架可见
-	waitForCond(t, 20*time.Second, func() bool {
-		skeletons := 0
-		for _, e := range env.st.RestoreCandidates("cc", "C:/proj") {
-			if strings.HasPrefix(e.SessionID, "chain-dead-") && e.Status == "skeleton" {
-				skeletons++
+	waitOutcome := func(sid, status string, wantRows int) {
+		t.Helper()
+		waitForCond(t, 20*time.Second, func() bool {
+			found := false
+			for _, e := range env.st.RestoreCandidates("cc", "C:/proj") {
+				if e.SessionID == sid && e.Status == status {
+					found = true
+				}
+			}
+			return found && len(env.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: sid})) == wantRows
+		})
+	}
+	// 末态计数（负面相位给足异步排空窗口再数）。
+	counts := func() (tailDead, tailAlive, normal, skeleton int) {
+		for _, m := range snap() {
+			switch {
+			case strings.Contains(m.title, "全链降级"):
+				skeleton++
+			case strings.Contains(m.message, "已降级骨架"):
+				tailDead++
+			case strings.Contains(m.message, "再失败即骨架"):
+				tailAlive++
+			case strings.Contains(m.message, "接手"):
+				normal++
 			}
 		}
-		rows := len(env.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: "chain-dead-1"})) +
-			len(env.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: "chain-dead-2"}))
-		return skeletons == 2 && rows == 4
-	})
-	// 降级轨迹可从账本重放：每任务两行 failed、chain_pos 0/1、provider 对位、死因在行
-	for _, sid := range []string{"chain-dead-1", "chain-dead-2"} {
-		rows := sortRowsByChainPos(env.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: sid}))
-		if len(rows) != 2 || rows[0]["provider"] != "lvl1" || rows[1]["provider"] != "lvl2" ||
-			rows[0]["outcome"] != "failed" || rows[1]["outcome"] != "failed" {
-			t.Fatalf("%s 降级轨迹不可重放: %v", sid, rows)
-		}
-		for i, r := range rows {
-			if ev, _ := r["err"].(string); ev == "" {
-				t.Fatalf("%s attempt[%d] failed 行缺 err(死因): %v", sid, i, r)
-			}
+		return
+	}
+	assertCounts := func(want [4]int, phase string) {
+		t.Helper()
+		td, ta, nm, sk := counts()
+		got := [4]int{td, ta, nm, sk}
+		if got != want {
+			t.Fatalf("%s 后计数 = 链尾死%d/链尾活%d/普通%d/骨架%d, want %v: %+v",
+				phase, td, ta, nm, sk, want, snap())
 		}
 	}
-	// 骨架交接对闸门有效（ValidHandoff 收 skeleton 档：§6.10-5 status∈{fresh,skeleton}）
-	if h := env.st.ValidHandoff("cc", "C:/proj", clock.Now()); h == nil ||
-		h.Status != "skeleton" || !strings.HasPrefix(h.SessionID, "chain-dead-") {
-		t.Fatalf("骨架交接应对闸门有效（ValidHandoff skeleton 命中）: %v", h)
+
+	// A：全链死 → 首滑一条（链尾死）+ 骨架一次。
+	runTask("chain-dead-1")
+	waitOutcome("chain-dead-1", "skeleton", 2)
+	waitN(2)
+	time.Sleep(300 * time.Millisecond)
+	assertCounts([4]int{1, 0, 0, 1}, "A 全链死")
+
+	// B：同级持续失败（再次全链死）→ 零新增。
+	w.Chain = bothDead()
+	runTask("chain-dead-2")
+	waitOutcome("chain-dead-2", "skeleton", 2)
+	time.Sleep(500 * time.Millisecond)
+	assertCounts([4]int{1, 0, 0, 1}, "B 同级失败")
+
+	// C：恢复——链首复活产出 fresh@0 → 静默重置，零推送。
+	ok1 := newChainFakeUpstream(t)
+	w.Chain = []ferry.Provider{
+		{Name: "lvl1", BaseURL: ok1.srv.URL, Model: "m1"},
+		{Name: "lvl2", BaseURL: closedChainURL(t), Model: "m2"},
 	}
-	// 告警：滑落每任务一条（2 条）+ 骨架一次（1 条）= 3 条
+	runTask("chain-heal-1")
+	waitOutcome("chain-heal-1", "fresh", 1)
+	time.Sleep(500 * time.Millisecond)
+	assertCounts([4]int{1, 0, 0, 1}, "C 恢复")
+
+	// D：再滑落——lvl1 死、lvl2 接住（fresh@1=链尾）→ 一条（链尾存活文案）。
+	ok2 := newChainFakeUpstream(t)
+	w.Chain = []ferry.Provider{
+		{Name: "lvl1", BaseURL: closedChainURL(t), Model: "m1"},
+		{Name: "lvl2", BaseURL: ok2.srv.URL, Model: "m2"},
+	}
+	runTask("chain-slide-1")
+	waitOutcome("chain-slide-1", "fresh", 2)
 	waitN(3)
-	time.Sleep(300 * time.Millisecond) // 异步发送排空后再数（骨架第二次不该来）
-	msgs := snap()
-	var slides, skeletons int
-	for _, m := range msgs {
-		switch {
-		case strings.Contains(m.message, "级滑落到"):
-			slides++
-			if !strings.Contains(m.message, "从 lvl1 级滑落到 lvl2 级") {
-				t.Fatalf("滑落文案不符: %q", m.message)
-			}
-		case strings.Contains(m.title, "全链降级"):
-			skeletons++
+	rows := sortRowsByChainPos(env.acc.Read(accounts.ReadOpts{Kind: "handoff", Session: "chain-slide-1"}))
+	if len(rows) != 2 || rows[1]["chain_pos"] != float64(1) || rows[1]["outcome"] != "fresh" {
+		t.Fatalf("chain-slide-1 应 fresh@顺位1(链尾接手): %v", rows)
+	}
+	time.Sleep(300 * time.Millisecond)
+	assertCounts([4]int{1, 1, 0, 1}, "D 链尾接手")
+
+	// E：链尾同级存活（再一单 lvl2 接住）→ 零新增。
+	runTask("chain-slide-2")
+	waitOutcome("chain-slide-2", "fresh", 2)
+	time.Sleep(500 * time.Millisecond)
+	assertCounts([4]int{1, 1, 0, 1}, "E 链尾同级")
+
+	// F：三级全链死——记录=1，到达=末级 2>1 → 一条（链尾死）；骨架 Once 不重复。
+	w.Chain = []ferry.Provider{
+		{Name: "lvl1", BaseURL: closedChainURL(t), Model: "m1"},
+		{Name: "lvl2", BaseURL: closedChainURL(t), Model: "m2"},
+		{Name: "lvl3", BaseURL: closedChainURL(t), Model: "m3"},
+	}
+	runTask("chain-dead-3")
+	waitOutcome("chain-dead-3", "skeleton", 3)
+	waitN(4)
+	time.Sleep(300 * time.Millisecond)
+	assertCounts([4]int{2, 1, 0, 1}, "F 三级全链死")
+
+	// G：三级链首复活 fresh@0 → 静默重置（记录 2→0），零推送。
+	w.Chain = []ferry.Provider{
+		{Name: "lvl1", BaseURL: ok1.srv.URL, Model: "m1"},
+		{Name: "lvl2", BaseURL: closedChainURL(t), Model: "m2"},
+		{Name: "lvl3", BaseURL: closedChainURL(t), Model: "m3"},
+	}
+	runTask("chain-heal-2")
+	waitOutcome("chain-heal-2", "fresh", 1)
+	time.Sleep(500 * time.Millisecond)
+	assertCounts([4]int{2, 1, 0, 1}, "G 三级恢复")
+
+	// H：三级中位接手 fresh@1——记录 0，到达 1（非链尾）→ 一条（普通滑落文案）。
+	ok3 := newChainFakeUpstream(t)
+	w.Chain = []ferry.Provider{
+		{Name: "lvl1", BaseURL: closedChainURL(t), Model: "m1"},
+		{Name: "lvl2", BaseURL: ok3.srv.URL, Model: "m2"},
+		{Name: "lvl3", BaseURL: closedChainURL(t), Model: "m3"},
+	}
+	runTask("chain-slide-3")
+	waitOutcome("chain-slide-3", "fresh", 2)
+	waitN(5)
+	time.Sleep(300 * time.Millisecond)
+	assertCounts([4]int{2, 1, 1, 1}, "H 三级中位接手")
+}
+
+// TestNextChainAlertStateTransitions 滑落状态机转移表（纯函数直测，不真发送）：
+// 下移推一条 / 同级零推送 / 上移恢复静默重置；新状态恒=本次到达顺位。
+func TestNextChainAlertStateTransitions(t *testing.T) {
+	cases := []struct {
+		recorded, reached, wantState int
+		wantAlert                    bool
+		note                         string
+	}{
+		{0, 0, 0, false, "冷启动首级成功：零推送"},
+		{0, 1, 1, true, "下移一级：推一条"},
+		{0, 2, 2, true, "冷启动跨级下移：一条（非逐级）"},
+		{1, 1, 1, false, "同级持续失败：零推送"},
+		{2, 2, 2, false, "同级（链尾）：零推送"},
+		{2, 1, 1, false, "上移恢复：静默重置"},
+		{2, 0, 0, false, "恢复回链首：静默"},
+		{1, 3, 3, true, "多级下移：一条"},
+		{3, 1, 1, false, "自链尾回落中级：静默重置"},
+	}
+	for _, c := range cases {
+		gotState, gotAlert := nextChainAlertState(c.recorded, c.reached)
+		if gotState != c.wantState || gotAlert != c.wantAlert {
+			t.Errorf("nextChainAlertState(%d, %d) = (%d, %v), want (%d, %v)（%s）",
+				c.recorded, c.reached, gotState, gotAlert, c.wantState, c.wantAlert, c.note)
 		}
 	}
-	if slides != 2 {
-		t.Fatalf("滑落告警 = %d, want 2（每次滑落一条）: %+v", slides, msgs)
+}
+
+// TestChainSlideText 滑落告警文案三形态：非链尾（顺位迁移＋接手级＋原因）、
+// 链尾接手（「再失败即骨架」严重度）、链尾也死（「已降级骨架」）；原因截断
+// 走 runeCapN 120 既有惯例。
+func TestChainSlideText(t *testing.T) {
+	chain := []ferry.Provider{{Name: "lvl1"}, {Name: "lvl2"}, {Name: "lvl3"}}
+
+	msg := chainSlideText(chain, 0, 1, "connection refused", false)
+	for _, want := range []string{"顺位 1→2", "lvl2", "connection refused"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("非链尾文案缺 %q: %q", want, msg)
+		}
 	}
-	if skeletons != 1 {
-		t.Fatalf("骨架告警 = %d, want 1（进程生命周期一次）: %+v", skeletons, msgs)
+	if strings.Contains(msg, "最后一站") {
+		t.Fatalf("非链尾不得带最后一站严重度: %q", msg)
+	}
+
+	msg = chainSlideText(chain, 1, 2, "boom", false)
+	for _, want := range []string{"最后一站 lvl3", "顺位 3/3", "再失败即骨架", "boom"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("链尾接手文案缺 %q: %q", want, msg)
+		}
+	}
+
+	msg = chainSlideText(chain, 0, 2, "boom", true)
+	for _, want := range []string{"最后一站 lvl3", "顺位 3/3", "已降级骨架"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("链尾死文案缺 %q: %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "再失败即骨架") {
+		t.Fatalf("骨架已收场不得再说再失败即骨架: %q", msg)
+	}
+
+	long := strings.Repeat("因", 300) // 原因截断：runeCapN 120＋省略号
+	msg = chainSlideText(chain, 0, 1, long, false)
+	if !strings.HasSuffix(msg, "："+runeCapN(long, 120)) {
+		t.Fatalf("长原因应按 runeCapN(120) 截断: %q…", msg[len(msg)-40:])
 	}
 }
 
