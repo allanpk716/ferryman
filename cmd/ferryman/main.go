@@ -60,11 +60,13 @@ import (
 	"ferryman/internal/config"
 	"ferryman/internal/cutover"
 	"ferryman/internal/daemon"
+	"ferryman/internal/dshverify"
 	"ferryman/internal/installer"
 	"ferryman/internal/mcp"
 	"ferryman/internal/notify"
 	"ferryman/internal/policy"
 	"ferryman/internal/prices"
+	"ferryman/internal/provider"
 	"ferryman/internal/report"
 	"ferryman/internal/tuning"
 	"ferryman/internal/update"
@@ -113,6 +115,8 @@ serve 与面板:
 体检:
   ferryman doctor [--json]  # 一键体检：钩子在位/脚本健康/快照覆盖/daemon 活性
                           #   （--json 机器可读，字段见 doctor 用法页）
+  ferryman verify-dsh [--status]  # DSH 插件验证：三 profile 静态/挂载＋灯色判定＋已知良好档案
+                          #   （--status 只读查档案：当前版本 vs 已知良好 vs 最近流水）
   ferryman version        # 版本号（dev = 非 release 构建）
 
 守护:
@@ -189,6 +193,16 @@ const ccswitchUsage string = `用法:
                               #   provider import-ccswitch
 `
 
+// verifyDshUsage verify-dsh 的用法面（-h/--help 与用法错共用；verify-dsh 票04）。
+const verifyDshUsage string = `用法:
+  ferryman verify-dsh           # DSH 插件验证：L0 静态（三 profile＋生产配置面）→ L1 挂载
+                                #   （daemon /dsh/health）→ 灯色判定＋判定流水落档
+                                #   红＝验证失败/插件失联（推 Pushover/Toast 一条，带降级目标）；
+                                #   黄＝未验证/宿主未运行/未完成验证（不推）；绿＝全过（落锚滚指针）
+  ferryman verify-dsh --status  # 只读档案面：当前 DSH 版本 vs 已知良好 vs 最近流水
+                                #   （不验证不落盘）
+`
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -204,6 +218,8 @@ func run(args []string) int {
 		return cmdServe(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:]) // 恰好一个可选 --json，其余参数拒（票01/票04）
+	case "verify-dsh": // verify-dsh 票04：DSH 插件验证（L0+L1＋灯色＋流水档案）
+		return cmdVerifyDsh(args[1:], os.Stdout)
 	case "status":
 		return cmdStatus(args[1:])
 	case "stop":
@@ -568,6 +584,91 @@ func cmdDoctor(args []string) int {
 		return runDoctorJSONEntry(version)
 	}
 	return runDoctorEntry(version)
+}
+
+// cmdVerifyDsh `ferryman verify-dsh` 入口（verify-dsh 票04；help 安全契约：
+// -h/--help 打印 usage 退 0，用法错退 2）。装配序照 provider apply / cmd status
+// 先例：config 单源派生管理口/token/数据目录/渡口地址；DSH 根自用户目录派生
+// （providerTargetsFromHome 同纪律——<Home>/.dsh）；红灯告警缝接
+// notify.NotifyAlert 双通道（worker 摆渡链降级同通道——复用不新造）；灯色
+// 判定/输出/流水全在 internal/dshverify（可测核心），本函数只装配。
+func cmdVerifyDsh(args []string, w io.Writer) int {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Fprint(w, verifyDshUsage)
+		return 0
+	}
+	fs := flag.NewFlagSet("verify-dsh", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	statusOnly := fs.Bool("status", false, "只读档案面：当前 DSH 版本 vs 已知良好 vs 最近流水")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprint(os.Stderr, verifyDshUsage)
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "未知参数 %q——ferryman verify-dsh 只接受可选的 --status\n%s",
+			fs.Arg(0), verifyDshUsage)
+		return 2
+	}
+	cfg, err := config.Load("", false)
+	if err != nil {
+		fmt.Fprintf(w, "配置加载失败: %v\n", err)
+		return 1
+	}
+	if cfg.Dock == nil {
+		fmt.Fprintln(w, "拒绝：配置无 [dock] 节——渡口未启用，L0 路由项无从比对"+
+			"（先配 [dock] 并跑 ferryman provider apply）")
+		return 1
+	}
+	home, err := osUserHomeDir()
+	if err != nil {
+		fmt.Fprintf(w, "家目录解析失败: %v\n", err)
+		return 1
+	}
+	port := cfg.Server.Port
+	if port == 0 {
+		port = installer.DefaultDaemonPort
+	}
+	dataDir := cfg.DataDir()
+	token, _ := daemon.EnsureToken(dataDir) // 失败留空：端点 401 由 L1「无从求值」如实报
+	hc := &dshverify.HealthClient{
+		BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), Token: token}
+	if *statusOnly {
+		return dshverify.Status(dshverify.StatusOptions{
+			DSHRoot:    filepath.Join(home, ".dsh"),
+			DSHInstall: dshInstallRoot(),
+			Profiles:   dshverify.DefaultProfiles,
+			DataDir:    dataDir,
+			Out:        w,
+		})
+	}
+	return dshverify.Run(dshverify.Options{
+		DSHRoot:     filepath.Join(home, ".dsh"),
+		DSHInstall:  dshInstallRoot(),
+		DockBaseURL: provider.DockURLFromListen(cfg.Dock.Listen),
+		Profiles:    dshverify.DefaultProfiles,
+		Health:      hc,
+		DataDir:     dataDir,
+		CLIVersion:  version,
+		Alert: func(title, message string) { // 旁路尽力而为（NotifyAlert 内已护）
+			notify.NotifyAlert(title, message, cfg)
+		},
+		Out: w,
+	})
+}
+
+// dshInstallRoot DSH 安装树根（dshverify.Input 注释的 Windows 实锚形态：
+// %LOCALAPPDATA%\Programs\DeepSeek Harness）。仓库无既有定位先例（provider
+// 只管 ~/.dsh 家目录），按实锚同形派生；树不在位由 L0 版本检查项如实报红
+// （fail 方向安全——detail 带路径，错位一眼可见）。
+func dshInstallRoot() string {
+	if la := os.Getenv("LOCALAPPDATA"); la != "" {
+		return filepath.Join(la, "Programs", "DeepSeek Harness")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "AppData", "Local", "Programs", "DeepSeek Harness")
 }
 
 func cmdInstallCC(args []string) int {
@@ -1513,8 +1614,6 @@ func cmdTuningRollback(args []string, stdout, stderr io.Writer) int {
 		up, prev.SuggestMin, prev.SourceID)
 	return 0
 }
-
-
 
 // runPanel 只起面板（不带子命令、带面板族 flags 的入口；viewer 原样）：
 // --demo 合成账本 / --port 固定口 / --no-tray / --no-browser / --install-shortcuts。
