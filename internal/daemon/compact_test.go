@@ -762,6 +762,9 @@ func TestDshCompactClaimOkFalseKeepsWindow(t *testing.T) {
 // TestCompactClaimTimeoutRounds 领取后执行窗超时计轮表（票01）：与"过期无人
 // 领取"同计数同告警路径——1、2 轮只日志；第 3 轮恰 gateWarn 一行；4 轮不再
 // 叠加；日志文案带"领取后执行窗"与轮号、sid16。
+// dsh-host-guard 票01 rework（2026-10-08 夜链协调者）：退避上线后,第 3 轮起
+// 结算行前多一行"连续 N 轮…进入 30 分钟退避"（engage/续期,compact.go 退避面）
+// ——本用例补正向断言：退避行数 = max(0, rounds-2),结算行序列不变。
 func TestCompactClaimTimeoutRounds(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -783,16 +786,31 @@ func TestCompactClaimTimeoutRounds(t *testing.T) {
 			if got, s := e.undeliveredAlerts(); got != tc.wantAlerts {
 				t.Fatalf("gate.log compact-undelivered 行 = %d, want %d\n%s", got, tc.wantAlerts, s)
 			}
-			lines := strings.Split(strings.TrimSpace(log.String()), "\n")
-			if len(lines) != tc.rounds {
-				t.Fatalf("日志行 = %d, want %d（每结算一行）\n%q", len(lines), tc.rounds, log.String())
-			}
-			for i, ln := range lines {
-				want := fmt.Sprintf("[compact] dsh 指令领取后执行窗内无成功上报(第 %d 轮):%s",
-					i+1, runeCap16(compactSID))
-				if ln != want {
-					t.Fatalf("日志行 %d = %q, want %q", i+1, ln, want)
+			settlements, backoffs := 0, 0
+			for _, ln := range strings.Split(strings.TrimSpace(log.String()), "\n") {
+				if ln == "" {
+					continue
 				}
+				if strings.Contains(ln, "进入 30 分钟退避") {
+					backoffs++
+					continue
+				}
+				want := fmt.Sprintf("[compact] dsh 指令领取后执行窗内无成功上报(第 %d 轮):%s",
+					settlements+1, runeCap16(compactSID))
+				if ln != want {
+					t.Fatalf("结算行 %d = %q, want %q\n全量: %q", settlements+1, ln, want, log.String())
+				}
+				settlements++
+			}
+			if settlements != tc.rounds {
+				t.Fatalf("结算行 = %d, want %d（每结算一行）\n%q", settlements, tc.rounds, log.String())
+			}
+			wantBackoffs := tc.rounds - 2
+			if wantBackoffs < 0 {
+				wantBackoffs = 0
+			}
+			if backoffs != wantBackoffs {
+				t.Fatalf("退避行 = %d, want %d（第 3 轮起每轮一行 engage/续期）\n%q", backoffs, wantBackoffs, log.String())
 			}
 		})
 	}
