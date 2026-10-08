@@ -183,6 +183,24 @@ export async function reportCompacted(ep: DaemonEndpoint, body: CompactedReport)
   return true;
 }
 
+// ---- 卸载下线上报（dsh-host-guard 票02 spec E） ----
+
+/** 下线上报体：poll 体的 offline 变体——顶层 offline:true＋空 sessions 清单;
+ *  daemon 侧置 offline 基线标记（生命周期 offline 态,下一轮真实心跳即消除）。 */
+export interface OfflineReport {
+  agent: string;
+  poller: string;
+}
+
+/**
+ * 下线上报（插件 dispose 尽力而为一次）。单次尝试、失败静默不重试（spec E
+ * F9 显式取舍:恰逢 daemon 不可达则丢标记,最长 24h fail 误报窗、下轮心跳即
+ * 消除）。postJSON 永不抛,回值丢弃——卸载路径绝不冒烟。
+ */
+export async function reportOffline(ep: DaemonEndpoint, body: OfflineReport): Promise<void> {
+  await postJSON(ep, "/dsh/poll", { ...body, offline: true, sessions: [] });
+}
+
 // ---- /dsh/event 事件上报 ----
 
 export interface EventSendResult {
