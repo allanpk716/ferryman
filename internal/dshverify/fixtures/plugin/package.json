@@ -1,0 +1,28 @@
+{
+  "name": "ferryman-dsh",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "L0 测试夹具——照 plugin/ferryman-dsh/package.json 真实形状（manifest 形状判据的真相源拷贝）",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

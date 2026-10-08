@@ -1,0 +1,5 @@
+# L0 测试夹具：profile 级 cordis.patch.yml。形状照生产 web/headless profile
+# 实锚（dsh plugin add 从插件自带 cordis.patch.yml 复制的 - insert: 块）：
+- insert:
+    - id: ferryman-dsh
+      name: ./ferryman-dsh/index.mjs
