@@ -974,8 +974,10 @@ func (w *Watcher) bookBeat(st *ledger.SessionState, outcome string, result beat.
 	})
 }
 
-// qwatchAlert 告警（仓库既有惯例）：控制台 + 双通道通知异步线程（notify_alert，
-// enabled=False 时静默）。任何故障只吞——通知是尽力而为的旁路。
+// qwatchAlert 告警（仓库既有惯例）：控制台 + 事件分派通知异步线程（票03：
+// NotifyEvent(EventBreaker)——六处熔断/无策略告警（本文件四处＋watcher_dsh.go
+// 两处，后者复用本函数）统一吃 breaker 三值开关，缺省表 both；enabled=False
+// 时静默）。任何故障只吞——通知是尽力而为的旁路。
 // 票08：推送标题走 BuildTitle 降级链（项目名＋台账会话标题，不再含裸
 // session id）；事件名移正文开头，sid 移正文尾部小字（notify.AlertCopy 单源）。
 func (w *Watcher) qwatchAlert(st *ledger.SessionState, evTitle, msg string) {
@@ -983,7 +985,7 @@ func (w *Watcher) qwatchAlert(st *ledger.SessionState, evTitle, msg string) {
 	title, body := w.alertCopy(st, evTitle, msg)
 	go func() {
 		defer func() { _ = recover() }() // 旁路故障绝不影响调度
-		notify.NotifyAlert(title, body, w.Cfg)
+		notify.NotifyEvent(notify.EventBreaker, title, body, w.Cfg)
 	}()
 }
 

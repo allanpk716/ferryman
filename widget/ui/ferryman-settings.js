@@ -778,10 +778,25 @@ function fillNotify() {
   $('#ntUserCur').textContent = '当前：' + keyLabel(n.pushover_user);
   $('#ntTokenIn').value = '';
   $('#ntUserIn').value = '';
+  // 九事件三值选择初值 = 读面生效值（用户显式配置回落内置缺省，服务端恒九键
+  // 全量）。个别键缺席（旧版守护无分级读面）时回落「不发」仅作占位显示。
+  const ev = n.events || {};
+  $$('.nt-ev').forEach((sel) => { sel.value = ev[sel.dataset.ev] || 'off'; });
+}
+/** 表单当前九键分级值（nt-ev 下拉收集，事件名=配置键）。 */
+function formNotifyEvents() {
+  const ev = {};
+  $$('.nt-ev').forEach((sel) => { ev[sel.dataset.ev] = sel.value; });
+  return ev;
 }
 /** notify 提交体：开关三件套 + pushover_user 原样带回（服务端不视其为密钥，
- *  省略会被整写清掉）；密钥字段用户没改就不带（省略=服务端保留现值）。 */
-function notifyBody() {
+ *  省略会被整写清掉）；密钥字段用户没改就不带（省略=服务端保留现值）。
+ *  events 九键完整带回（未改项=回读现值），防节级整写把用户手写的分级整组
+ *  清掉；与内置缺省等值的键由服务端等值省略规范化处理，盘上不物化。
+ *  eventsFromForm：开关即时保存（sw-live）传 false——带回读面现值，分级改动
+ *  必须走「保存」显式提交（拨开关不顺带落盘未确认的分级改动）；主保存传
+ *  true——按表单所见提交。 */
+function notifyBody(eventsFromForm) {
   const n = cfgSec('notify');
   const body = {
     enabled: $('#ntEnabled').checked,
@@ -789,11 +804,12 @@ function notifyBody() {
     toast: $('#ntToast').checked,
   };
   if (typeof n.pushover_user === 'string') body.pushover_user = n.pushover_user;
+  body.events = eventsFromForm ? formNotifyEvents() : (n.events || formNotifyEvents());
   return body;
 }
 $$('.sw-live').forEach((sw) => sw.addEventListener('change', async () => {
   try {
-    await saveSection('notify', notifyBody(), $('#fbNotify'));
+    await saveSection('notify', notifyBody(false), $('#fbNotify'));
     toast(sw.dataset.name + '已' + (sw.checked ? '开启' : '关闭'), 'restart');
   } catch {
     sw.checked = !sw.checked; // 回滚开关位置
@@ -801,7 +817,7 @@ $$('.sw-live').forEach((sw) => sw.addEventListener('change', async () => {
 }));
 $('#btnSaveNotify').addEventListener('click', async () => {
   const fb = $('#fbNotify');
-  const body = notifyBody();
+  const body = notifyBody(true); // 分级九键按表单所见提交
   const token = $('#ntTokenIn').value;
   const user = $('#ntUserIn').value;
   if (token) body.pushover_token = token; // 留空=不带该字段=保留现值
@@ -810,7 +826,7 @@ $('#btnSaveNotify').addEventListener('click', async () => {
     await saveSection('notify', body, fb);
     feedback(fb, '已保存');
     toast('已保存', 'restart');
-    await refreshData(); // 让「当前：••••尾四」跟进新值
+    await refreshData(); // 让「当前：••••尾四」与九事件选择跟进生效值
   } catch { /* feedback 已报 */ }
 });
 

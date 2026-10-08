@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -530,6 +531,247 @@ func TestSettingsWriteSecretMergeKeepsDiskValue(t *testing.T) {
 		t.Fatalf("怪类型 PUT = %d %q, want 400", code, raw)
 	}
 	assertKept("怪类型拒写", "sk-rotate-new-4321")
+}
+
+// swRewriteConfig 覆写夹具配置文件（同一路径、同一沙箱 data_dir），供通知
+// 分级往返测试自定盘上面：notifyExtra 为 [notify] 节内的追加行（如 events
+// 内联表），传空串＝盘上无 events（全缺省形态）。settings_read_test 的通知
+// 分级读例亦复用（同包编译面，与 newSettingsEnv 反向复用同例）。
+func swRewriteConfig(t *testing.T, cfgPath, dataDir, notifyExtra string) {
+	t.Helper()
+	text := `[server]
+port = 15700
+data_dir = "` + filepath.ToSlash(dataDir) + `"
+[notify]
+enabled = false
+pushover = true
+toast = true
+pushover_token = "pushover-token-abcdefgh"
+` + notifyExtra
+	if err := os.WriteFile(cfgPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// swEventsLine 盘上 config.toml 的 events= 行（无则空串）——通知分级「盘上
+// events 相关字节」的对账粒度：节级整写重排键序，逐行内容比对不受键位挪动
+// 干扰；行相等即字节不变，行缺席即盘上无该键（回落缺省语义）。
+func swEventsLine(t *testing.T, cfgPath string) string {
+	t.Helper()
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ln := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(ln)
+		if strings.HasPrefix(trimmed, "events") {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// swNineKeyEvents 九键 events 提交体构造（模拟新 UI notifyBody 回读现值带回
+// 的完整对象）：内置缺省表全量打底，overrides 逐键覆盖。
+func swNineKeyEvents(overrides map[string]string) map[string]any {
+	ev := map[string]any{}
+	for name, tier := range config.DefaultNotifyEvents() {
+		ev[name] = string(tier)
+	}
+	for name, tier := range overrides {
+		ev[name] = tier
+	}
+	return ev
+}
+
+// TestSettingsWriteNotifyEventsRoundTripPreserves 票04/F1 往返回归①：读→
+// 保存（不改 events）→盘上 events 相关字节不变。两形态都钉——①a 旧版 UI/
+// 第三方工具 body 省略 events（「省略保留」语义：events 与「非密钥字段省略
+// =清除」的节级整写语义不同，省略=不动盘上该键）；①b 新 UI body 带回九键
+// 生效值（等值省略规范化后等值键不落盘、显式非缺省键原样保留）。
+func TestSettingsWriteNotifyEventsRoundTripPreserves(t *testing.T) {
+	e, cfgPath := newSettingsEnv(t)
+	dataDir := filepath.ToSlash(e.d.Cfg.DataDir())
+
+	// 盘上：用户显式配置非缺省事件（block=both；内置缺省 toast）。
+	swRewriteConfig(t, cfgPath, dataDir, "events = { block = \"both\" }\n")
+	wantLine := `events = { block = "both" }`
+	if got := swEventsLine(t, cfgPath); got != wantLine {
+		t.Fatalf("夹具 events 行 = %q, want %q", got, wantLine)
+	}
+	// 读面数据源对齐：守护内存 cfg 重载（读面 config 节=内存生效配置）。
+	cfg, err := config.Load(cfgPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.d.Cfg = cfg
+
+	// 读面：生效九键在位（显式覆盖＋缺省回落）——UI 回传的数据源。
+	_, resp := srGet(t, e)
+	notify := resp["config"].(map[string]any)["notify"].(map[string]any)
+	ev, ok := notify["events"].(map[string]any)
+	if !ok || ev["block"] != "both" || len(ev) != len(config.NotifyEventNames) {
+		t.Fatalf("读面 notify.events = %v, want 九键含 block=both", notify["events"])
+	}
+
+	// ①a body 省略 events（旧客户端形态）：盘上 events 字节不动、不新增键。
+	code, raw := swPut(t, e, "notify", map[string]any{
+		"enabled": true, "pushover": true, "toast": true})
+	if code != http.StatusOK {
+		t.Fatalf("省略 events PUT = %d %q, want 200", code, raw)
+	}
+	if got := swEventsLine(t, cfgPath); got != wantLine {
+		t.Fatalf("省略 events 保存后盘上 = %q, want 原样 %q（省略=保留，不得整组清除）", got, wantLine)
+	}
+
+	// ①b body 带回九键生效值（新 UI 形态）：等值省略后盘上 events 字节仍不动。
+	code, raw = swPut(t, e, "notify", map[string]any{
+		"enabled": true, "pushover": true, "toast": true,
+		"events": swNineKeyEvents(map[string]string{"block": "both"})})
+	if code != http.StatusOK {
+		t.Fatalf("九键回传 PUT = %d %q, want 200", code, raw)
+	}
+	if got := swEventsLine(t, cfgPath); got != wantLine {
+		t.Fatalf("九键回传保存后盘上 = %q, want 原样 %q（等值键不落盘）", got, wantLine)
+	}
+	// 盘上生效值对账：显式 block=both 保留，其余八键回落缺省。
+	cfg, err = config.Load(cfgPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Events["block"] != config.NotifyEventBoth {
+		t.Fatalf("盘上 block = %v, want both（显式配置保留）", cfg.Notify.Events["block"])
+	}
+	for name, tier := range config.DefaultNotifyEvents() {
+		if name != "block" && cfg.Notify.Events[name] != tier {
+			t.Fatalf("盘上 %s = %v, want 缺省 %v", name, cfg.Notify.Events[name], tier)
+		}
+	}
+}
+
+// TestSettingsWriteNotifyEventsSingleChangeLands 票04/F1 往返回归②：UI 改一
+// 事件（非缺省值）→盘上仅该键出现，其余八键不物化（等值省略规范化生效）；
+// 生效值九键照常（缺省回落）。
+func TestSettingsWriteNotifyEventsSingleChangeLands(t *testing.T) {
+	e, cfgPath := newSettingsEnv(t)
+	dataDir := filepath.ToSlash(e.d.Cfg.DataDir())
+	swRewriteConfig(t, cfgPath, dataDir, "") // 盘上无 events（全缺省形态）
+
+	// UI 唯一改动：tuning off→toast（非缺省）；notifyBody 带回完整九键。
+	code, raw := swPut(t, e, "notify", map[string]any{
+		"enabled": true, "pushover": true, "toast": true,
+		"events": swNineKeyEvents(map[string]string{"tuning": "toast"})})
+	if code != http.StatusOK {
+		t.Fatalf("PUT = %d %q, want 200", code, raw)
+	}
+	wantLine := `events = { tuning = "toast" }`
+	if got := swEventsLine(t, cfgPath); got != wantLine {
+		t.Fatalf("盘上 events 行 = %q, want %q（仅改动键落盘）", got, wantLine)
+	}
+	cfg, err := config.Load(cfgPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Events["tuning"] != config.NotifyEventToast {
+		t.Fatalf("盘上 tuning = %v, want toast", cfg.Notify.Events["tuning"])
+	}
+	for name, tier := range config.DefaultNotifyEvents() {
+		if name != "tuning" && cfg.Notify.Events[name] != tier {
+			t.Fatalf("盘上 %s = %v, want 缺省 %v（等值键不应物化）", name, cfg.Notify.Events[name], tier)
+		}
+	}
+}
+
+// TestSettingsWriteNotifyEventsDefaultEqualsOmitted 票04/F1 取舍例③（等值
+// 省略取舍，ADR-0026 记账）：显式配置值恰等于当前缺省→规范化后盘上无该键，
+// 该键回落缺省、随缺省演进。两形态：全九键提交但全等缺省（events 整键不落
+// 盘）；盘上有非缺省 block=both、用户把 block 改回缺省 toast（改回缺省＝盘上
+// 键退场、回到跟随缺省）。
+func TestSettingsWriteNotifyEventsDefaultEqualsOmitted(t *testing.T) {
+	e, cfgPath := newSettingsEnv(t)
+	dataDir := filepath.ToSlash(e.d.Cfg.DataDir())
+	swRewriteConfig(t, cfgPath, dataDir, "")
+
+	// 形态一：九键全缺省提交（block="toast" 恰等于缺省）→盘上无 events。
+	code, raw := swPut(t, e, "notify", map[string]any{
+		"enabled": true, "pushover": true, "toast": true,
+		"events": swNineKeyEvents(nil)})
+	if code != http.StatusOK {
+		t.Fatalf("全缺省 PUT = %d %q, want 200", code, raw)
+	}
+	if got := swEventsLine(t, cfgPath); got != "" {
+		t.Fatalf("盘上 events = %q, want 无（等值键不落盘）", got)
+	}
+	cfg, err := config.Load(cfgPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.Notify.Events, config.DefaultNotifyEvents()) {
+		t.Fatalf("盘上生效 events = %v, want 全缺省九键（回落语义不受影响）", cfg.Notify.Events)
+	}
+
+	// 形态二：盘上 block=both，改回缺省 toast →events 整键退场。
+	swRewriteConfig(t, cfgPath, dataDir, "events = { block = \"both\" }\n")
+	code, raw = swPut(t, e, "notify", map[string]any{
+		"enabled": true, "pushover": true, "toast": true,
+		"events": swNineKeyEvents(nil)})
+	if code != http.StatusOK {
+		t.Fatalf("改回缺省 PUT = %d %q, want 200", code, raw)
+	}
+	if got := swEventsLine(t, cfgPath); got != "" {
+		t.Fatalf("改回缺省后盘上 events = %q, want 无（全部等值＝整键不落盘）", got)
+	}
+	cfg, err = config.Load(cfgPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Events["block"] != config.NotifyEventToast {
+		t.Fatalf("改回缺省后 block 生效 = %v, want toast", cfg.Notify.Events["block"])
+	}
+}
+
+// TestSettingsWriteNotifyEventsInvalidRejectedByLoad 非法值不经等值省略裁决：
+// 规范化只省略「能比对且等值」的键，非法值（非三值/未知事件名）原样透传给
+// 票01 写前 Load 校验拒写（写入层既有校验风格，thresholds 阈值差同路径）；
+// config 字节不动、审计行照落 rejected——规范化不得把非法值静默省略掉。
+func TestSettingsWriteNotifyEventsInvalidRejectedByLoad(t *testing.T) {
+	e, cfgPath := newSettingsEnv(t)
+	beforeBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 非法三值。
+	code, raw := swPut(t, e, "notify", map[string]any{
+		"enabled": true, "pushover": true, "toast": true,
+		"events": map[string]any{"block": "bogus"}})
+	if code != http.StatusBadRequest {
+		t.Fatalf("非法值 PUT = %d %q, want 400", code, raw)
+	}
+	// 未知事件名。
+	code, raw = swPut(t, e, "notify", map[string]any{
+		"enabled": true, "pushover": true, "toast": true,
+		"events": map[string]any{"not_an_event": "off"}})
+	if code != http.StatusBadRequest {
+		t.Fatalf("未知事件名 PUT = %d %q, want 400", code, raw)
+	}
+
+	afterBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeBytes, afterBytes) {
+		t.Fatal("非法 events 拒写改动了 config 字节")
+	}
+	lines := swAuditLines(t, e)
+	if len(lines) != 2 {
+		t.Fatalf("审计行数 = %d, want 2（两拒各一行）", len(lines))
+	}
+	for i, ln := range lines {
+		if ln["outcome"] != "rejected" {
+			t.Fatalf("审计行 %d outcome = %v, want rejected", i, ln["outcome"])
+		}
+	}
 }
 
 // TestSettingsWriteTuningNeedsRestartTrue 返工②：节级 PUT 零热应用（调参

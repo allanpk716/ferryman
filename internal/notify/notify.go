@@ -118,11 +118,60 @@ func SendToast(title, message string) bool {
 	return true
 }
 
-// NotifyAlert T51 通用告警（问询守望熔断等）：双通道 best-effort，只发元信息
-// 文案。同步发送、绝不抛出（recover 双保险：通道内部已吞，这里兜组装层）；
-// 是否异步由调用方决定（与 NotifyBlock 同纪律）。
-func NotifyAlert(title, message string, cfg *config.Config) {
-	defer func() { // Python except Exception → print 兜底同位
+// 分派事件名（票02 通知分级）：config.NotifyEventNames 九名单的 notify 侧取用
+// 常量——block/chain_degrade/chain_skeleton/tuning 随票02 落位，
+// breaker/upgrade/hard_cut/drift/tray_reply 随票03 接线落位。字符串值即配置
+// 键（D2：事件名即配置键）。
+const (
+	EventBlock         = "block"
+	EventChainDegrade  = "chain_degrade"
+	EventChainSkeleton = "chain_skeleton"
+	EventBreaker       = "breaker"
+	EventUpgrade       = "upgrade"
+	EventHardCut       = "hard_cut"
+	EventDrift         = "drift"
+	EventTuning        = "tuning"
+	EventTrayReply     = "tray_reply"
+)
+
+// pushoverSend Pushover 通道发送（凭据回落环境变量的单源）：通道开关关/缺凭据
+// → 静默跳过。NotifyEvent 各事件（both 档）共用。
+func pushoverSend(title, message string, n config.NotifyCfg) {
+	if !n.Pushover {
+		return
+	}
+	token := n.PushoverToken
+	if token == "" {
+		token = os.Getenv("PUSHOVER_TOKEN")
+	}
+	user := n.PushoverUser
+	if user == "" {
+		user = os.Getenv("PUSHOVER_USER")
+	}
+	if token != "" && user != "" {
+		SendPushover(title, message, token, user)
+	}
+}
+
+// eventTier 查事件三值：Events 缺键/nil → 回落内置缺省表（未配置即缺省，
+// spec 用户故事 5；配置层保证加载后九键全量，此处是运行期防御——手搓
+// NotifyCfg 字面量的旧调用/测试不炸、不误发）。名单外事件 → ""（分派静默）。
+func eventTier(event string, n config.NotifyCfg) config.NotifyEventTier {
+	if n.Events != nil {
+		if t, ok := n.Events[event]; ok {
+			return t
+		}
+	}
+	return config.DefaultNotifyEvents()[event]
+}
+
+// NotifyEvent 票02 事件分派核心：按 cfg.Notify.Events[event] 三值决定通道——
+// off 不发 / toast 仅桌面 / both 双通道；[notify].pushover/.toast 通道开关是
+// 通道维度上限（事件值与通道开关做与运算）；enabled=false 全静默（总开关
+// 优先）。同步发送、绝不抛出（recover 双保险）；是否异步由调用方决定
+//（与 NotifyBlock 同纪律）。
+func NotifyEvent(event, title, message string, cfg *config.Config) {
+	defer func() {
 		if r := recover(); r != nil {
 			fmt.Printf("[notify] 通知失败（忽略）: %v\n", r)
 		}
@@ -131,25 +180,21 @@ func NotifyAlert(title, message string, cfg *config.Config) {
 	if !n.Enabled {
 		return
 	}
-	if n.Pushover {
-		token := n.PushoverToken
-		if token == "" {
-			token = os.Getenv("PUSHOVER_TOKEN")
+	switch eventTier(event, n) {
+	case config.NotifyEventToast:
+		if n.Toast {
+			SendToast(title, message)
 		}
-		user := n.PushoverUser
-		if user == "" {
-			user = os.Getenv("PUSHOVER_USER")
+	case config.NotifyEventBoth:
+		pushoverSend(title, message, n)
+		if n.Toast {
+			SendToast(title, message)
 		}
-		if token != "" && user != "" {
-			SendPushover(title, message, token, user)
-		}
-	}
-	if n.Toast {
-		SendToast(title, message)
-	}
+	} // off 与未知值：静默
 }
 
-// NotifyBlock 拦截发生：双通道通知（文案带交接路径）。绝不抛出。
+// NotifyBlock 拦截发生：通知走 block 事件分派（票02 D2 缺省 toast——人被拦时
+// 必在电脑前，手机不发、桌面发；配置显式值仍可改回）。绝不抛出。
 // agent 形参保留（Python 签名对齐，文案不带 agent）。
 // 票08：标题走 BuildTitle 降级链（项目名＋会话标题——用户痛点：旧文案只有
 // 裸数字 sid 无法分辨哪个项目哪个会话）；project/sessionTitle 皆空时回落
@@ -171,5 +216,5 @@ func NotifyBlock(handoffPath, agent, sessionID, project, sessionTitle string, cf
 		// 与 watcher 侧 AlertCopy 的 ProjectName 口径一致（评审 R1 补丁）。
 		title = BuildTitle(ProjectName(project), sessionTitle, "")
 	}
-	NotifyAlert(title, message, cfg)
+	NotifyEvent(EventBlock, title, message, cfg)
 }

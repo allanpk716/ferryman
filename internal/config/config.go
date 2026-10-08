@@ -65,6 +65,41 @@ type ServerCfg struct {
 	DataDir string // 空 = ~/ferryman（token/handoffs/index 所在地）
 }
 
+// NotifyEventTier 通知事件三值（票01 通知分级，D2）：off=不发 / toast=仅
+// 桌面 Toast / both=Pushover+Toast 双通道。事件名即 [notify.events] 配置键。
+type NotifyEventTier string
+
+const (
+	NotifyEventOff   NotifyEventTier = "off"
+	NotifyEventToast NotifyEventTier = "toast"
+	NotifyEventBoth  NotifyEventTier = "both"
+)
+
+// NotifyEventNames 九事件名单（D2 固定封闭集合；供解析的笔误防护与文案
+// 渲染）。固定序只为渲染稳定，解析与等值比较都不依赖顺序。
+var NotifyEventNames = [...]string{
+	"block", "chain_degrade", "chain_skeleton", "breaker", "upgrade",
+	"hard_cut", "drift", "tuning", "tray_reply",
+}
+
+// DefaultNotifyEvents 九事件内置缺省表（D2）的防御拷贝：关键故障双通道
+// （链滑落/骨架/熔断/升级/静默门硬切/漂移），block 与托盘回复仅桌面
+// （人被拦时必在电脑前），调参通报不发。读面展示与设置视图写入器的等值
+// 省略规范化共用本单源（票04）。
+func DefaultNotifyEvents() map[string]NotifyEventTier {
+	return map[string]NotifyEventTier{
+		"block":          NotifyEventToast,
+		"chain_degrade":  NotifyEventBoth,
+		"chain_skeleton": NotifyEventBoth,
+		"breaker":        NotifyEventBoth,
+		"upgrade":        NotifyEventBoth,
+		"hard_cut":       NotifyEventBoth,
+		"drift":          NotifyEventBoth,
+		"tuning":         NotifyEventOff,
+		"tray_reply":     NotifyEventToast,
+	}
+}
+
 // NotifyCfg 通知通道。
 type NotifyCfg struct {
 	Enabled       bool // 默认关：未配置不响，测试套件不弹 toast/不出网（T25）
@@ -72,6 +107,12 @@ type NotifyCfg struct {
 	PushoverToken string // 空 → 回落环境变量 PUSHOVER_TOKEN
 	PushoverUser  string // 空 → 回落环境变量 PUSHOVER_USER
 	Toast         bool
+	// Events 九事件通知分级（票01，D2/D5）：事件名 → off/toast/both。解析
+	// 层以内置缺省表为底、events 内联表键显式覆盖——加载完成后恒为九键
+	// 全量（未知事件名与非法值在配置加载时报错拒载）。注意：events 必须写
+	// 在 [notify] 节内作内联表键，不设 [notify.events] 子表头（设置视图对
+	// 带子表节的整写保守拒，整个节将不可写）。
+	Events map[string]NotifyEventTier
 }
 
 // HeartbeatCfg 心跳（T41 仅预留：执行器未实装，设计 §0 授权边界）。
@@ -199,7 +240,7 @@ func Default() *Config {
 			HarvestUsage:   true,
 		},
 		Server: ServerCfg{Port: 15700},
-		Notify: NotifyCfg{Enabled: false, Pushover: true, Toast: true},
+		Notify: NotifyCfg{Enabled: false, Pushover: true, Toast: true, Events: DefaultNotifyEvents()},
 		Heartbeat: HeartbeatCfg{
 			Enabled: false,
 			TTLS:    0.0,
@@ -384,12 +425,17 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		if err != nil {
 			return err
 		}
+		events, err := parseNotifyEvents(n) // 票01 通知分级：缺省表为底＋显式覆盖
+		if err != nil {
+			return err
+		}
 		cfg.Notify = NotifyCfg{
 			Enabled:       pyBool(get(n, "enabled", cfg.Notify.Enabled)),
 			Pushover:      pyBool(get(n, "pushover", cfg.Notify.Pushover)),
 			PushoverToken: pyStr(get(n, "pushover_token", "")),
 			PushoverUser:  pyStr(get(n, "pushover_user", "")),
 			Toast:         pyBool(get(n, "toast", cfg.Notify.Toast)),
+			Events:        events,
 		}
 	}
 	if raw, ok := data["heartbeat"]; ok {
@@ -591,6 +637,46 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		cfg.Dock = dcfg
 	}
 	return nil
+}
+
+// parseNotifyEvents [notify] 节 events 配置组解析（票01 通知分级，D5）：
+// 以内置缺省表（DefaultNotifyEvents）为底，events 内联表键显式覆盖，未配置
+// 键回落缺省、整键省略即全缺省。事件名限于九事件封闭集合（未知键拒绝——
+// ferry.chain 未知供应商同款笔误防护），值限于 off/toast/both，非法值带键名
+// 与原值报错拒载（ferry.chain 引用检查同款解析层错误路径）。
+//
+// 注意：TOML 数据模型里 [notify.events] 子表头与内联表键解码结果同构
+//（BurntSushi v1.6.0 实测逐值相同），加载层无从区分亦不区分——本解析只认
+// notify 节内的 events 键，不存在独立的 "notify.events 节" 解析路径；子表头
+// 形态的禁用是写面纪律（config.example 注记＋设置视图节级整写保守拒）。
+func parseNotifyEvents(n map[string]any) (map[string]NotifyEventTier, error) {
+	events := DefaultNotifyEvents()
+	raw, ok := n["events"]
+	if !ok {
+		return events, nil
+	}
+	ev, err := asTable(raw, "notify.events")
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]struct{}, len(NotifyEventNames))
+	for _, name := range NotifyEventNames {
+		known[name] = struct{}{}
+	}
+	for k, v := range ev {
+		if _, ok := known[k]; !ok {
+			return nil, fmt.Errorf("config: notify.events.%s 不是合法的事件名（可选 %s）",
+				k, pyTuple(NotifyEventNames[:]))
+		}
+		switch tier := NotifyEventTier(pyStr(v)); tier {
+		case NotifyEventOff, NotifyEventToast, NotifyEventBoth:
+			events[k] = tier
+		default:
+			return nil, fmt.Errorf("config: notify.events.%s 非法: %s（可选 %s）",
+				k, pyStr(v), pyTuple([]string{"off", "toast", "both"}))
+		}
+	}
+	return events, nil
 }
 
 // parseDockSection [dock] 节解析单源（Load 与首启迁移共用）。节内缺字段回落

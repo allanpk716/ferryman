@@ -1,9 +1,11 @@
 package daemon
 
 // notify_wiring_test.go — 票08：真实调用点接线（watcher.qwatchAlert →
-// notify.NotifyAlert）。钉死：推送标题走 BuildTitle 降级链（项目名＋台账
-// 会话标题，不再含裸 session id）；正文＝事件名＋原消息＋尾部 sid 小字。
-// Pushover 走 httptest 假端点收包（不出网、不弹 toast）。
+// notify 通知）；票03：接线收编为事件分派（qwatchAlert → NotifyEvent
+// (EventBreaker)）。钉死：推送标题走 BuildTitle 降级链（项目名＋台账
+// 会话标题，不再含裸 session id）；正文＝事件名＋原消息＋尾部 sid 小字；
+// 六处熔断/无策略告警（watcher.go 四处＋watcher_dsh.go 两处）统一吃
+// breaker 三值开关。Pushover 走 httptest 假端点收包（不出网、不弹 toast）。
 
 import (
 	"net/http"
@@ -75,4 +77,39 @@ func TestQwatchAlertDisabledStaysSilent(t *testing.T) {
 	_, w := newWaitDaemonAndWatcher(cfg, led, nil, nil)
 	st, _ := bareSession(t, led, t.TempDir(), "wl-notify-2")
 	w.qwatchAlert(st, "等待窗心跳熔断", "不应外发") // 不 panic 即可
+}
+
+func TestQwatchAlertBreakerEventOffStaysSilent(t *testing.T) {
+	// 票03 接线断言：qwatchAlert 走 breaker 事件分派（NotifyEvent）——显式
+	// breaker="off" 时零推送。旧 NotifyAlert both 直发无视事件表：接线若回退
+	// 成直发，假端点必收包、本测试即红（三值开关失效的可观测形态）。
+	got := make(chan url.Values, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("表单解析失败: %v", err)
+			return
+		}
+		got <- r.PostForm
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	old := notify.PushoverURL
+	notify.PushoverURL = srv.URL
+	t.Cleanup(func() { notify.PushoverURL = old })
+
+	cfg := mergeCfg()
+	cfg.Notify = config.NotifyCfg{Enabled: true, Pushover: true,
+		PushoverToken: "tok", PushoverUser: "usr", Toast: false,
+		Events: map[string]config.NotifyEventTier{"breaker": config.NotifyEventOff}}
+	led := ledger.New()
+	_, w := newWaitDaemonAndWatcher(cfg, led, nil, nil)
+	st, _ := bareSession(t, led, t.TempDir(), "wl-notify-3")
+	w.qwatchAlert(st, "等待窗心跳熔断", "breaker=off 档不得外发")
+
+	select {
+	case form := <-got:
+		t.Fatalf("breaker=off 不得外发（走事件分派应静默）: %s", form.Get("message"))
+	case <-time.After(500 * time.Millisecond):
+		// 静默即预期：分派吃 breaker=off；旧直发形态此窗内必到包
+	}
 }

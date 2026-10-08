@@ -244,7 +244,7 @@ type Options struct {
 	Probe ProbeRunner
 	// CLIVersion daemon 不可达时流水行 daemon 份的代记来源。
 	CLIVersion string
-	// Alert 红灯告警缝（nil＝不推；CLI 装 notify.NotifyAlert 双通道）。
+	// Alert 红灯告警缝（nil＝不推；CLI 装 notify.NotifyEvent(drift) 双通道）。
 	Alert func(title, message string)
 	// Out 输出（CLI 传 os.Stdout；测试注 buffer）。
 	Out io.Writer

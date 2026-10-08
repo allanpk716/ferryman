@@ -43,7 +43,8 @@ type FerryFunc func(path string, pr ferry.Provider, timeoutS float64,
 
 // ChainFerryFunc 链式摆渡执行器签名（票03；生产实现 ferry.ChainSession 经
 // serve 的 wireFerryChain 接线，var 形 = 测试可注入缝）。onAttempt 在每级尝试
-// 完成时同步回放（含成功级）——worker 侧据此即时记账/告警；墙钟超时弃协程时
+// 完成时同步回放（含成功级）——worker 侧据此即时记账（票02 起：滑落告警改
+// 顺位级状态机，链执行收尾统一判定，不再逐次回放即推）；墙钟超时弃协程时
 // 已完成级的行不丢（append-only 账本即时落，不靠终态回传）。
 type ChainFerryFunc func(path string, chain []ferry.Provider, timeoutS float64,
 	agent string, onAttempt func(ferry.ChainAttempt)) (string, map[string]any, error)
@@ -80,6 +81,13 @@ type Worker struct {
 	// chainSkeletonOnce 全链死/墙钟超时 → 骨架的告警闸：进程生命周期一次
 	//（sync.Once；生产一进程一 Worker ≡ 进程级）。级间滑落告警不受此闸。
 	chainSkeletonOnce sync.Once
+
+	// chainPos 滑落状态机的记录顺位（票02 通知分级 D3/D8）＝最近一次到达的
+	// 顺位（成功级；全链死/墙钟超时按末级计），冷启动 0（链首）。仅 doChain
+	// 主流程读写——工人单 goroutine 串行消费（Run→runOne→do→doChain），无需
+	// 锁；onAttempt（链执行协程）不碰本字段。不持久化：重启丢状态、首个滑落
+	// 重推一条属已确认取舍（spec「滑落状态机」）。
+	chainPos int
 
 	// BookHandoff 摆渡记账缝（Python monkeypatch FerryWorker._book_handoff
 	// 的同位注入面；NewWorker 缺省绑 bookHandoffImpl——仅测试注入炸点用）。
@@ -316,10 +324,12 @@ func (w *Worker) doDsh(item map[string]any, sid, agent string, timeoutS float64)
 
 // doChain 票03：链式摆渡单任务。墙钟语义与 do 相同（goroutine + 定时器，
 // 超时弃协程）；逐级尝试经 onAttempt 在执行协程内即时回放——失败级即时落
-// 账（墙钟超时弃协程时已完成级的行不丢）+ 滑落即时告警；成功级的一行在主
-// 流程落（与既有「记账在保存之后」同序，且弃协程后迟到的成功不落账——与
-// 既有超时弃用语义一致）。全链死/墙钟超时 → 链尾骨架兜底行为不变（骨架
-// 保存 + 处置边界回写；骨架产物不另记行——逐尝试行已可重放降级轨迹）。
+// 账（墙钟超时弃协程时已完成级的行不丢）；滑落告警为顺位级状态机（票02
+// 通知分级 D3/D8）：链执行收尾按到达顺位与记录比较，下移推一条 chain_degrade
+// （同级/恢复零推送），不再「每次滑落一条」。成功级的一行在主流程落（与既有
+// 「记账在保存之后」同序，且弃协程后迟到的成功不落账——与既有超时弃用语义
+// 一致）。全链死/墙钟超时 → 链尾骨架兜底行为不变（骨架保存 + 处置边界回写；
+// 骨架产物不另记行——逐尝试行已可重放降级轨迹）。
 func (w *Worker) doChain(item map[string]any, path, agent, sid string, timeoutS float64) {
 	type chainRes struct {
 		md   string
@@ -328,12 +338,11 @@ func (w *Worker) doChain(item map[string]any, path, agent, sid string, timeoutS 
 	}
 	res := make(chan chainRes, 1)
 	books := prices.LoadPrices("") // 逐行 price_ver 的价目（每任务一次读盘）
+	var slide chainSlideTracker
 	onAttempt := func(a ferry.ChainAttempt) {
 		if a.Outcome == ferry.ChainOutcomeFailed {
 			w.bookChainAttempt(item, agent, sid, a, books)
-			if a.Pos+1 < len(w.Chain) {
-				w.alertChainDegrade(a, w.Chain[a.Pos+1])
-			}
+			slide.observe(a) // 状态机原因事实（锁保护：超时弃协程后链协程仍可能追加）
 		}
 	}
 	go func() {
@@ -363,11 +372,26 @@ func (w *Worker) doChain(item map[string]any, path, agent, sid string, timeoutS 
 			e = r.err
 		}
 		fmt.Printf("[ferry] 降级骨架-only（%s）: %v\n", runeCap8(sid), e)
+		// 票02 状态机：骨架收场＝到达顺位取末级（全链死/墙钟超时同规）；滑落
+		// 原因优先取最深失败级死因（无失败回放时回落骨架错误本身——首级即
+		// 挂死到超时的形态）。
+		reason := e.Error()
+		if fa, ok := slide.deepest(); ok {
+			reason = fa.Err
+		}
+		w.chainSlideCheck(len(w.Chain)-1, reason, true)
 		w.alertChainSkeleton(sid, e) // 进程生命周期一次（sync.Once）
 		w.saveSkeleton(path, agent, sid, pyStr(item["cwd"]))
 		return
 	}
 	meta := r.meta
+	// 票02 状态机：到达顺位＝胜出级；滑落原因＝最深失败级死因（首级直成功
+	// 无失败且到达=0，恒不触发推送）。
+	reason := ""
+	if fa, ok := slide.deepest(); ok {
+		reason = fa.Err
+	}
+	w.chainSlideCheck(pyIntOr(meta["chain_pos"], 0), reason, false)
 	w.Store.SaveHandoff(sid, agent, pyStr(item["cwd"]), metaStr(meta, "title"),
 		metaStr(meta, "covers_until_iso"), "fresh", r.md)
 	w.markHandledContent(agent, sid, metaStr(meta, "covers_until_iso"))
@@ -450,30 +474,96 @@ func priceVerFor(books map[string]prices.PriceBook, provider string) any {
 	return nil
 }
 
-// alertChainDegrade 票03：级间滑落告警——每次从某级滑落到下级推一条（既有
-// Pushover/Toast 通道，文案含「从 X 级滑落到 Y 级」）。控制台同步一行 + 双
-// 通道异步 goroutine（qwatchAlert 同款旁路纪律：任何故障只吞，绝不拖链）。
-func (w *Worker) alertChainDegrade(failed ferry.ChainAttempt, next ferry.Provider) {
-	msg := fmt.Sprintf("摆渡链从 %s 级滑落到 %s 级（顺位 %d→%d）：%s",
-		failed.Provider, next.Name, failed.Pos+1, failed.Pos+2, runeCapN(failed.Err, 120))
+// chainSlideTracker 本次链执行的失败事实收集（票02 状态机的原因来源）：
+// onAttempt 在链执行协程回放——墙钟超时弃协程后仍可能继续追加，主流程收尾
+// 读取须锁保护。只存最近一次失败（ChainSession 按序回放 → 最近即顺位最深）。
+type chainSlideTracker struct {
+	mu   sync.Mutex
+	last ferry.ChainAttempt
+}
+
+// observe 记失败尝试（成功级不记——原因是滑落，不是产出）。
+func (t *chainSlideTracker) observe(a ferry.ChainAttempt) {
+	if a.Outcome != ferry.ChainOutcomeFailed {
+		return
+	}
+	t.mu.Lock()
+	t.last = a
+	t.mu.Unlock()
+}
+
+// deepest 最近一次（最深）失败尝试；本次执行无失败回放时 ok=false。
+func (t *chainSlideTracker) deepest() (ferry.ChainAttempt, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.last, t.last.Outcome == ferry.ChainOutcomeFailed
+}
+
+// nextChainAlertState 滑落状态机转移（纯函数，D3/D8；转移表测试直测）：
+// recorded＝记录的最近一次到达顺位（冷启动 0），reached＝本次到达顺位。
+// reached>recorded → 下移推一条；==recorded → 同级持续失败零推送；
+// <recorded → 上移恢复静默重置。新状态恒＝reached（恢复也更新记录——下次
+// 下移从新工作点起算）。
+func nextChainAlertState(recorded, reached int) (newState int, shouldAlert bool) {
+	return reached, reached > recorded
+}
+
+// chainSlideCheck 状态机的 worker 侧封装（票02 通知分级）：比较到达顺位与
+// 记录，下移则推 chain_degrade 事件（文案见 chainSlideText）；同级/恢复静默
+// 更新记录。dead＝本次链执行是否以骨架收场（链尾文案分支）。仅 doChain 主
+// 流程调用（工人单 goroutine，chainPos 无锁）；发送走异步 goroutine＋recover
+// 兜底（qwatchAlert 同款旁路纪律：任何故障只吞，绝不拖链）。
+func (w *Worker) chainSlideCheck(reached int, reason string, dead bool) {
+	from := w.chainPos
+	newState, alert := nextChainAlertState(from, reached)
+	w.chainPos = newState
+	if !alert {
+		return
+	}
+	msg := chainSlideText(w.Chain, from, reached, reason, dead)
 	fmt.Printf("[ferry] ⚠ %s\n", msg)
+	cfg := w.Cfg
 	go func() {
 		defer func() { _ = recover() }()
-		notify.NotifyAlert("Ferryman 摆渡链降级", msg, w.Cfg)
+		notify.NotifyEvent(notify.EventChainDegrade, "Ferryman 摆渡链降级", msg, cfg)
 	}()
 }
 
-// alertChainSkeleton 票03：全链死/墙钟超时 → 骨架的告警，进程生命周期一次
-// （sync.Once——多次全链降级仍一条：首条已把「链不可用」事实带给用户，重复
-// 推送只添噪）。级间滑落告警不受此闸。
+// chainSlideText 顺位下移告警文案（纯函数供直测，不发送）。顺位显示 1 起
+//（与旧文案 Pos+1 同口径）；滑至链尾分两形——存活（再失败即骨架）与已死
+//（本次已降级骨架；全链死/墙钟超时同形：链尾级是否真被试过不可知，不虚报
+//「该站失败」）。reason 由本函数统一 runeCapN 120 截断（既有惯例）。
+func chainSlideText(chain []ferry.Provider, from, reached int, reason string, dead bool) string {
+	capped := runeCapN(reason, 120)
+	name := ""
+	if reached >= 0 && reached < len(chain) {
+		name = chain[reached].Name
+	}
+	if reached == len(chain)-1 {
+		if dead {
+			return fmt.Sprintf("摆渡链滑落至最后一站 %s（顺位 %d/%d），本次已降级骨架：%s",
+				name, reached+1, len(chain), capped)
+		}
+		return fmt.Sprintf("摆渡链滑落至最后一站 %s（顺位 %d/%d）——再失败即骨架：%s",
+			name, reached+1, len(chain), capped)
+	}
+	return fmt.Sprintf("摆渡链滑落（顺位 %d→%d）：现由 %s 接手，上级失败：%s",
+		from+1, reached+1, name, capped)
+}
+
+// alertChainSkeleton 票03：全链死/墙钟超时 → 骨架的告警（票02 走
+// chain_skeleton 事件分派，缺省 both），进程生命周期一次（sync.Once——多次
+// 全链降级仍一条：首条已把「链不可用」事实带给用户，重复推送只添噪）。与
+// 滑落状态机（chain_degrade）相互独立：全链死首滑一条 + 骨架一条各司其职。
 func (w *Worker) alertChainSkeleton(sid string, err error) {
 	w.chainSkeletonOnce.Do(func() {
 		msg := fmt.Sprintf("摆渡链全部顺位失败，已降级为骨架交接（本进程仅告警一次）：%s",
 			runeCapN(err.Error(), 200))
 		fmt.Printf("[ferry] ⚠ [%s] %s\n", runeCap8(sid), msg)
+		cfg := w.Cfg
 		go func() {
 			defer func() { _ = recover() }()
-			notify.NotifyAlert("Ferryman 摆渡全链降级", msg, w.Cfg)
+			notify.NotifyEvent(notify.EventChainSkeleton, "Ferryman 摆渡全链降级", msg, cfg)
 		}()
 	})
 }

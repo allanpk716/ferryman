@@ -147,6 +147,7 @@ func settingsConfigSections(cfg *config.Config) map[string]any {
 			"pushover_token": cfg.Notify.PushoverToken, // 出口统一掩
 			"pushover_user":  cfg.Notify.PushoverUser,  // 毒名单不命中：用户标识非密钥
 			"toast":          cfg.Notify.Toast,
+			"events":         settingsNotifyEventsView(cfg.Notify.Events), // 票04：九键生效值，仅供展示
 		},
 		"heartbeat": map[string]any{
 			"enabled":         cfg.Heartbeat.Enabled,
@@ -215,6 +216,19 @@ func settingsDockSection(dk *config.DockCfg) map[string]any {
 		"bind_retry_s":      dk.BindRetryS,
 		"upstreams":         ups, // 实体集合一：dock.upstreams
 	}
+}
+
+// settingsNotifyEventsView 九事件生效值（票04 通知分级）：加载后恒九键全量
+// （用户显式配置回落内置缺省表，单源 config.DefaultNotifyEvents），转纯串
+// map 供 JSON。读面只做展示（UI 三值选择初值的唯一来源）；「与缺省等值的键
+// 不落盘」的规范化在写面（settings_write.go settingsNormalizeNotifyEvents），
+// 读面不裁剪——生效值如实全量回。
+func settingsNotifyEventsView(ev map[string]config.NotifyEventTier) map[string]string {
+	out := make(map[string]string, len(ev))
+	for k, v := range ev {
+		out[k] = string(v)
+	}
+	return out
 }
 
 // settingsProviders 实体集合二：摆渡供应商（[providers.*]，盘上现读，路径与

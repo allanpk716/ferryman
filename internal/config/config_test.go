@@ -624,3 +624,172 @@ func TestGateDshModeKey(t *testing.T) {
 		t.Fatalf("非法值 err = %v, want 含 dsh_mode", err)
 	}
 }
+
+// ---- 通知分级（票01 通知分级，D2/D5）：[notify] events 内联表键 ----
+
+func TestNotifyEventsDefaultTableVerbatim(t *testing.T) {
+	// 缺省表逐字（D2）：block/tray_reply=toast，tuning=off，其余六键=both；
+	// Default() 集成九键全量。
+	d := Default()
+	want := map[string]NotifyEventTier{
+		"block":          NotifyEventToast,
+		"chain_degrade":  NotifyEventBoth,
+		"chain_skeleton": NotifyEventBoth,
+		"breaker":        NotifyEventBoth,
+		"upgrade":        NotifyEventBoth,
+		"hard_cut":       NotifyEventBoth,
+		"drift":          NotifyEventBoth,
+		"tuning":         NotifyEventOff,
+		"tray_reply":     NotifyEventToast,
+	}
+	if !reflect.DeepEqual(d.Notify.Events, want) {
+		t.Fatalf("默认 events = %+v, want %+v", d.Notify.Events, want)
+	}
+	// 防御拷贝：改一份返回值不得污染另一份（票04 等值比对复用同一单源）。
+	a := DefaultNotifyEvents()
+	b := DefaultNotifyEvents()
+	a["block"] = NotifyEventBoth
+	if b["block"] != NotifyEventToast {
+		t.Fatalf("DefaultNotifyEvents 未返回防御拷贝: b[block] = %q", b["block"])
+	}
+}
+
+func TestNotifyEventsKeyOmittedAllDefaults(t *testing.T) {
+	// events 整键省略 = 九键全缺省；与既有五键共存互不干扰。
+	f := filepath.Join(t.TempDir(), "noev.toml")
+	if err := os.WriteFile(f, []byte(`
+[notify]
+enabled = true
+pushover = false
+toast = false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.Notify.Events, DefaultNotifyEvents()) {
+		t.Fatalf("缺省 events = %+v, want 全缺省表", cfg.Notify.Events)
+	}
+	n := cfg.Notify
+	if !n.Enabled || n.Pushover || n.Toast { // 五键原样解析
+		t.Fatalf("notify = %+v", n)
+	}
+}
+
+func TestNotifyEventsPartialOverride(t *testing.T) {
+	// 显式键覆盖缺省，未配置键回落缺省；加载完成后恒为九键全量。
+	f := filepath.Join(t.TempDir(), "partial.toml")
+	if err := os.WriteFile(f, []byte(`
+[notify]
+enabled = true
+events = { block = "both", tuning = "toast" }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ev := cfg.Notify.Events
+	if ev["block"] != NotifyEventBoth || ev["tuning"] != NotifyEventToast {
+		t.Fatalf("显式键 = block %q / tuning %q, want both/toast", ev["block"], ev["tuning"])
+	}
+	d := DefaultNotifyEvents()
+	for _, name := range NotifyEventNames {
+		if name == "block" || name == "tuning" {
+			continue
+		}
+		if ev[name] != d[name] {
+			t.Fatalf("未配置键 %s = %q, want 回落缺省 %q", name, ev[name], d[name])
+		}
+	}
+	if len(ev) != 9 {
+		t.Fatalf("events 键数 = %d, want 9", len(ev))
+	}
+}
+
+func TestNotifyEventsFullOverride(t *testing.T) {
+	// 九键全显式（三值混合）→ 全部生效。
+	f := filepath.Join(t.TempDir(), "full.toml")
+	if err := os.WriteFile(f, []byte(`
+[notify]
+events = { block = "off", chain_degrade = "toast", chain_skeleton = "off", breaker = "toast", upgrade = "off", hard_cut = "toast", drift = "off", tuning = "both", tray_reply = "both" }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := map[string]NotifyEventTier{
+		"block": NotifyEventOff, "chain_degrade": NotifyEventToast, "chain_skeleton": NotifyEventOff,
+		"breaker": NotifyEventToast, "upgrade": NotifyEventOff, "hard_cut": NotifyEventToast,
+		"drift": NotifyEventOff, "tuning": NotifyEventBoth, "tray_reply": NotifyEventBoth,
+	}
+	if !reflect.DeepEqual(cfg.Notify.Events, want) {
+		t.Fatalf("events = %+v, want %+v", cfg.Notify.Events, want)
+	}
+}
+
+func TestNotifyEventsBadValueRejected(t *testing.T) {
+	// 非法值（非 off/toast/both）配置加载报错拒载，文案带键名与原值。
+	f := filepath.Join(t.TempDir(), "badval.toml")
+	if err := os.WriteFile(f, []byte(`
+[notify]
+events = { block = "loud", tuning = "off" }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(f, false)
+	if err == nil || !strings.Contains(err.Error(), "notify.events.block") || !strings.Contains(err.Error(), "loud") {
+		t.Fatalf("err = %v, want 含 notify.events.block 与 loud", err)
+	}
+}
+
+func TestNotifyEventsUnknownEventRejected(t *testing.T) {
+	// 未知事件名（D2 封闭集合，笔误防护）配置加载报错拒载。
+	f := filepath.Join(t.TempDir(), "badkey.toml")
+	if err := os.WriteFile(f, []byte(`
+[notify]
+events = { blocks = "toast" }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(f, false)
+	if err == nil || !strings.Contains(err.Error(), "notify.events.blocks") {
+		t.Fatalf("err = %v, want 含 notify.events.blocks", err)
+	}
+}
+
+func TestNotifyEventsSubTableHeaderForm(t *testing.T) {
+	// [notify.events] 子表头形态：TOML 数据模型上与内联表解码结果同构
+	//（BurntSushi v1.6.0 实测 DeepEqual 相同、MetaData 相同），加载层无从
+	// 区分亦不区分——本解析只认 notify 节内的 events 键，不存在也不得引入
+	// 独立的 "notify.events 节" 解析路径（不误读 = 五键不被扰动 + 行为有
+	// 定义）。子表头的禁用是写面纪律：设置视图对带子表节的整写保守拒，
+	// 由 config.example 注记与设置视图写面（票04）执行。
+	f := filepath.Join(t.TempDir(), "subtable.toml")
+	if err := os.WriteFile(f, []byte(`
+[notify]
+enabled = true
+pushover = false
+[notify.events]
+block = "both"
+tuning = "toast"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Notify.Enabled || cfg.Notify.Pushover || !cfg.Notify.Toast {
+		t.Fatalf("notify 五键 = %+v, want enabled=true/pushover=false/toast=true（不被子表头扰动）", cfg.Notify)
+	}
+	ev := cfg.Notify.Events
+	if ev["block"] != NotifyEventBoth || ev["tuning"] != NotifyEventToast || ev["upgrade"] != NotifyEventBoth {
+		t.Fatalf("events = %+v, want 与内联表同结果", ev)
+	}
+}

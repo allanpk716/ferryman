@@ -561,10 +561,13 @@ func (d *Daemon) cacheInfoCtx(idle float64, th config.ThresholdCfg) string {
 		"闲置满 %.0f 分钟后会有交接备好，届时可换新会话。", idle/60, th.BlockS/60)
 }
 
-// notifyBlock _notify_block（server.py:300-309 逐字）：T25 Pushover/Toast 双通道
-// （文案带交接路径）；异步 goroutine——gate 返回不等通知，通道内任何故障
-// 自行吞掉（绝不影响 block 决策）。NotifyBlock 字段为注入 seam（Python
-// monkeypatch notify_mod.notify_block 同位；nil 回落真通道）。
+// notifyBlock _notify_block（server.py:300-309 逐字）：T25 拦截通知；异步
+// goroutine——gate 返回不等通知，通道内任何故障自行吞掉（绝不影响 block
+// 决策）。票02 通知分级：真通道 notify.NotifyBlock 内部走 block 事件分派
+//（D2 缺省 toast——人被拦时必在电脑前，手机不发、桌面发；配置显式值仍可
+// 改回）。NotifyBlock 字段为注入 seam（Python monkeypatch notify_mod.
+// notify_block 同位；nil 回落真通道，签名不动——cutover/smoke 空操作注入
+// 不受影响）。
 func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float64) {
 	agent, sid := st.Agent, st.SessionID // goroutine 只碰本地副本（共享引用纪律）
 	// 票08 R1（评审补丁）：Cwd/Title 是可变字段（ai-title 更新），无锁直读与

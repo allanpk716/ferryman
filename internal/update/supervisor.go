@@ -75,7 +75,12 @@ type Config struct {
 	PollInterval time.Duration               // 轮询间隔;0 = 1s
 	ProbeDelay   time.Duration               // 拉起验证探针首测延迟(自拉起计);0 = 2s
 	ProbeTimeout time.Duration               // 拉起验证探针截止(自拉起计);0 = 10s
-	Alert        func(title, message string) // 事务告警通道(cmd 侧装配 notify.NotifyAlert);nil = 只落 Logf
+	Alert func(title, message string) // 事务告警通道(cmd 侧装配 notify.NotifyEvent(EventUpgrade));nil = 只落 Logf
+	// AlertHardCut 静默门硬切兜底告警通道(票03 通知分级:硬切是独立事件
+	// hard_cut,与事务告警 upgrade 的三值开关分列——拆两条缝而非给 Alert 加
+	// 事件参数,update 包不 import notify、不感知事件名,cmd 装配侧各归各事件;
+	// cmd 侧装配 notify.NotifyEvent(EventHardCut));nil = 只落 Logf。
+	AlertHardCut func(title, message string)
 	// WaitQuiet 静默门等待预算(判据不满足时轮询等待的上限):0 = 缺省 60s;
 	// 负值 = 不等待(CLI --wait-quiet=0 的映射哨兵:判据不满足立即进兜底)。
 	WaitQuiet time.Duration
@@ -412,9 +417,9 @@ func (s *Supervisor) verifyLaunch() {
 	}
 }
 
-// alert 事务告警注入缝(cmd 侧装配 notify.NotifyAlert;nil = 只落 Logf,update
-// 包不 import notify,依赖面不拉宽)。尽力而为的旁路(notify 包同纪律):通道
-// 任何故障 recover 吞掉只记日志,绝不影响事务走向。
+// alert 事务告警注入缝(cmd 侧装配 notify.NotifyEvent(EventUpgrade);nil = 只落
+// Logf,update 包不 import notify,依赖面不拉宽)。尽力而为的旁路(notify 包同
+// 纪律):通道任何故障 recover 吞掉只记日志,绝不影响事务走向。
 func (s *Supervisor) alert(title, message string) {
 	if s.cfg.Alert == nil {
 		return // 未接通道:正文已由调用方落 Logf/update.log,不重复
@@ -425,6 +430,20 @@ func (s *Supervisor) alert(title, message string) {
 		}
 	}()
 	s.cfg.Alert(title, message)
+}
+
+// alertHardCut 静默门硬切兜底告警缝(票03:独立于事务告警的 hard_cut 事件缝,
+// 见 Config.AlertHardCut 注)。nil = 只落 Logf(正文已由调用方落 Logf)。
+func (s *Supervisor) alertHardCut(title, message string) {
+	if s.cfg.AlertHardCut == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logf("告警通道故障(忽略): %v", r)
+		}
+	}()
+	s.cfg.AlertHardCut(title, message)
 }
 
 // launchAndVerify 拉起并校验 want 版本;seam C:失败判定前先查 15700 持有者,
@@ -681,7 +700,7 @@ func (s *Supervisor) quietFallback(lastInflight int, lastTS int64, waited time.D
 			return fmt.Errorf("静默门未达成,用户选择放弃升级(已等 %v)", waited.Round(time.Second))
 		default: // 非交互/无法判定/无效输入 → 告警后硬切兜底
 			s.logf("%s", hardCutLine(lastInflight, lastTS, waited, statsOK))
-			s.alert("Ferryman 升级", "静默门未达成，硬切兜底（"+hardCutDetail(lastInflight, lastTS, statsOK)+"）")
+			s.alertHardCut("Ferryman 升级", "静默门未达成，硬切兜底（"+hardCutDetail(lastInflight, lastTS, statsOK)+"）")
 			return nil
 		}
 	}

@@ -1,9 +1,9 @@
 # ADR 索引
 
 > 架构决策记录（ADR）总索引。一句话主旨从各篇标题/首段提炼，细节以文件原文为准。
-> 撞号说明：0016 与 0018 各有两篇（历史编号重复），文件名不改，以文件名后缀区分；本表用别名注记消歧（见下节）。
+> 撞号说明：0016、0018 与 0026 各有两篇（历史编号重复），文件名不改，以文件名后缀区分；本表用别名注记消歧（见下节）。
 
-## 索引（0001–0026，共 28 篇）
+## 索引（0001–0026，共 29 篇）
 
 | 编号 | 文件 | 别名 | 一句话主旨 |
 |---|---|---|---|
@@ -34,7 +34,8 @@
 | 0023 | [0023-blocked-feedback-browser-face.md](0023-blocked-feedback-browser-face.md) | — | 被拦反馈（选择框）住在浏览器侧插件面（双面包）；宿主侧插件零 UI 是生态现状，0021/0022 已被工作台夜链占用故跳号 |
 | 0024 | [0024-same-model-off-and-warming-tier-discipline.md](0024-same-model-off-and-warming-tier-discipline.md) | — | 同模型摆渡关停＋保温升降档纪律：任何保温泳道默认 off，升档先过 observe 演练且经济账为正，enforce 期连续两个评估窗净亏即降档 |
 | 0025 | [0025-auto-inject-explicit-intent.md](0025-auto-inject-explicit-intent.md) | — | 自动注入挂显式意图信号：自动路径永不激进注入，注入只挂三信号（被拦待领锚/用户显式命令/明确开关）；锚定归还按线不按人、子代理硬禁为第一应用 |
-| 0026 | [0026-dsh-plugin-verify-and-known-good.md](0026-dsh-plugin-verify-and-known-good.md) | — | DSH 插件验证与已知良好档案：一次性手动 verify-dsh（L0 静态/L1 挂载 poll 年龄/L2 沙箱探针四痕＋压缩链）；契约锚全绿自动滚动、已知良好只背书验过的版本、红才告警 |
+| 0026 | [0026-dsh-plugin-verify-and-known-good.md](0026-dsh-plugin-verify-and-known-good.md) | 0026-verify | DSH 插件验证与已知良好档案：一次性手动 verify-dsh（L0 静态/L1 挂载 poll 年龄/L2 沙箱探针四痕＋压缩链）；契约锚全绿自动滚动、已知良好只背书验过的版本、红才告警 |
+| 0026 | [0026-notify-tiering.md](0026-notify-tiering.md) | 0026-notify | 通知分级降噪：九事件 off/toast/both 三值开关＋缺省表（手机只收关键故障、拦截与手动应答仅桌面、调参静默），滑落告警改顺位级状态变化制，未配置回落缺省＋等值键不落盘 |
 
 ## 撞号消歧与引用注意
 
@@ -44,5 +45,8 @@
   - 残留笔误注记：`config.example.toml`、`experiments/append-replay-arm/`、`cmd/ferryman/main.go`、`docs/20260930_服务商接管战役计划.md`、`docs/20260930_渡口翻译车道对照表.md` 中写作「ADR-0015」的同模型摆渡引用**实指 0016-ferry**（旧编号残留），与真 0015（锁定映像换装）无关；改正随后续票处理，本表只注记不改。
 - **0018 ×2**：
   - `0018-quiet-gate-over-edge-proxy.md`（静默门，别名 0018-gate）——CONTEXT.md 渡口「空载停机」节、`docs/20260929_升级链可靠性战役计划.md` 引「ADR-0018」指本篇。
-  - `0018-settings-window-resident.md`（设置窗常驻，别名 0018-settings）——widget 0.2.4 设置窗修法依据，widget 侧文档引用指本篇。
-- **引用建议**：新文档引用撞号 ADR 时用别名（ADR-0016-ferry / ADR-0016-widget / ADR-0018-gate / ADR-0018-settings）或文件名全写，不用裸编号。
+  - `0018-settings-window-resident.md`（设置窗常驻，别名 0018-settings）——widget 0.2.4 设置窗常驻修法依据，widget 侧文档引用指本篇。
+- **0026 ×2**（2026-10-08 两夜链并行撞号，先并 main 的为 0026-verify）：
+  - `0026-dsh-plugin-verify-and-known-good.md`（DSH 插件验证，别名 0026-verify）——`internal/dshverify`/`internal/dshledger`/`internal/dshsandbox` 包注释与 `ferryman verify-dsh` 命令引「ADR-0026」指本篇。
+  - `0026-notify-tiering.md`（通知分级降噪，别名 0026-notify）——`internal/notify`、`docs/adr/0026-notify-tiering.md` 及设置视图 notify.events 相关引用指本篇。
+- **引用建议**：新文档引用撞号 ADR 时用别名（ADR-0016-ferry / ADR-0016-widget / ADR-0018-gate / ADR-0018-settings / ADR-0026-verify / ADR-0026-notify）或文件名全写，不用裸编号。
