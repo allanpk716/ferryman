@@ -35,6 +35,7 @@ var queryEndpoints = map[string]queryEndpoint{
 	"/beats":          handleBeats,         // 票03 实现（query_beats.go）
 	"/config_tuning":  handleConfigTuning,  // 票08 实现（query_config_tuning.go）
 	"/widget/summary": handleWidgetSummary, // 用量悬浮窗票08 实现（query_widget.go）
+	"/dsh/health":     handleDshHealth,     // verify-dsh 票01：L1 挂载/宿主旁证只读面（dsh_liveness.go）
 }
 
 // dispatchQuery 查询面分派入口（httpapi.doGet default 分支的单块接线点）：

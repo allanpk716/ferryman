@@ -28,9 +28,9 @@ import {
   type BlockedStore,
   type EventDeps,
 } from "./events.ts";
-import type { DaemonEndpoint } from "./daemon.ts";
+import { reportOffline, type DaemonEndpoint } from "./daemon.ts";
 import { resolveConfig, type FerrymanPluginRawConfig } from "./config.ts";
-import { startPollLoop, type CommandsLike, type CompactionLike, type PollLoopHandle, type SessionProjectionsLike } from "./compact.ts";
+import { pollerName, startPollLoop, type CommandsLike, type CompactionLike, type PollLoopHandle, type SessionProjectionsLike } from "./compact.ts";
 import { startSeedScheduler, type SessionsLike } from "./seed.ts";
 import type { BannerStore } from "./banner.ts";
 import { injectedMessage, type UserMessageLike } from "./usermessage.ts";
@@ -346,7 +346,9 @@ export function selfcheckOnce(
  * Remote 面（票08;provide 由宿主重启加载）→ 起注册表播种调度＋热压缩轮询
  * 执行臂（票03:启动首轮 poll 前播种一次——播种落定（成功或降级）再起臂,
  * 静置会话在首轮 poll 就进会话清单;失败静默降级回事件喂养,轮询照起——
- * 票05:立即首轮＋setInterval 节律）;返回卸载 disposer 清重播表与 interval
+ * 票05:立即首轮＋setInterval 节律）;返回卸载 disposer 清重播表与 interval、
+ * 并尽力上报一次下线（dsh-host-guard 票02 spec E:POST /dsh/poll offline 变体,
+ * 失败静默不重试——F9）
  * ——cordis 约定 apply 返回函数即卸载 disposer,vendor/cordis/src/fiber.ts:
  * 359-362 typeof function → collect）→ 触发挂载自检（非阻塞,自检失败仅
  * logger 可见）。
@@ -376,7 +378,12 @@ export function apply(ctx: PluginContext, config: FerrymanPluginConfig = {}): vo
   });
   void selfcheckOnce(ctx, { ...resolved, fetchImpl: config.fetchImpl });
   return () => {
+    if (disposed) return; // 幂等:重复卸载不重复清理、不重复下线上报（seed/loop stop 本就幂等）
     disposed = true;
+    // dsh-host-guard 票02 spec E：卸载尽力上报下线一次（best-effort,失败静默
+    // 不重试——F9:恰逢 daemon 不可达则丢标记,最长 24h fail 误报窗、下轮心跳
+    // 即消除;防御带 catch,卸载路径绝不冒 unhandled rejection）。
+    void reportOffline(ep, { agent: "dsh", poller: pollerName() }).catch(() => { /* 尽力而为 */ });
     seed.stop();
     loop?.stop();
   };

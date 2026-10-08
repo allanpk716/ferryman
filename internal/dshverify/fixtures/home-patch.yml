@@ -1,0 +1,36 @@
+# L0 测试夹具：home 级 cordis.patch.yml——逐字照抄 internal/provider/dsh.go
+# dshHomePatchYAML 的确定性产物（写入器是真相源），仅把渡口地址换成
+# __DOCK_BASE_URL__ 占位（测试里替换）；写入器形状漂移时本夹具连同
+# provider 自己的字面量钉测试一起报红。
+# ferryman-takeover —— 本文件由 Ferryman provider apply 生成并整体管理。
+# 作用：dsh 的模型流量经 deepseek-official 路由（llm-deepseek 适配器）走本机
+# 渡口，对所有 profile 生效（叠加序里 home 层最后、最高）。接法乙 v2：每请求
+# 恒带 x-deepseek-harness-session-id 会话键，渡口接住后捕获/保温/摆渡/闸门
+# 全套同权。thinking enabled＋effort high＝思考档解锁＋maxTokens 钉值；两个
+# dsh_* 贡献者插件已 disabled（会话明文不上线，渡口另兜底剥除）。切供应商＝
+# ferryman provider switch <名>（翻渡口 [dock].active，本文件不动）；
+# 还原＝ferryman provider apply --restore。手改本文件会被下次 apply 重铸。
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+  config:
+    baseURL: __DOCK_BASE_URL__
+    apiKeyEnv: FERRYMAN_DOCK_TOKEN
+    thinking: enabled
+    reasoningEffort: high
+    maxTokens: 32768
+    models:
+      - id: claude-opus-5
+        contextWindow: 1048576
+      - id: claude-sonnet-5
+        contextWindow: 1048576
+- id: plugin-package-inventory-deepseek
+  name: '@deepseek-ai/dsh-plugin-package-inventory-deepseek'
+  disabled: true
+- id: session-log-deepseek
+  name: '@deepseek-ai/dsh-session-log-deepseek'
+  disabled: true
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: claude-opus-5

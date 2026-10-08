@@ -35,6 +35,7 @@
 package installer
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -132,6 +133,15 @@ func isConnRefused(err error) bool {
 	return errno == syscall.ECONNREFUSED || errno == wsaEConnRefused
 }
 
+// watchdogPoller /stats pollers 段一条（dsh-host-guard 票03 哨兵消费的最小面；
+// 形状与 daemon Health 的 pollers 段同源——name/last_seen/state，age_s 看门不
+// 消费不解析）。State 判定单源 daemon 侧生命周期状态机，看门只按 stale 过滤。
+type watchdogPoller struct {
+	Name     string  `json:"name"`
+	LastSeen float64 `json:"last_seen"`
+	State    string  `json:"state"`
+}
+
 // WatchdogDeps 看门可注入面（测试注 fake 探针/拉起；真装配 realWatchdogDeps）。
 type WatchdogDeps struct {
 	Port    int // 0 = FERRYMAN_PORT 或 15700
@@ -155,6 +165,10 @@ type WatchdogDeps struct {
 	// 验）。>0 = 拉起后睡这么久再探一次并留复核行；0 = 不复核（旧行为）。
 	// 真装配 5s（覆盖冷启实测 3s 余量）。
 	VerifyDelay time.Duration
+	// Pollers /stats pollers 段取值缝（dsh-host-guard 票03 哨兵：看门在 daemon
+	// 可达时顺带消费 poller 基线读面，stale 落显著行）；nil = 不消费（旧行为
+	// ——既有测试/最小装配零改动）。取数失败返回 nil＝尽力而为，判定零影响。
+	Pollers func() []watchdogPoller
 }
 
 // runWatchdog 单次判定（返回进程退出码：0 = 正常/占用告警；1 = 拉起失败/
@@ -191,6 +205,19 @@ func runWatchdog(d WatchdogDeps) int {
 					return 0
 				}
 				logf("[watchdog] 渡口 %d 探测异常（%v）——仅记录，不影响本次判定", dockPort, derr)
+			}
+		}
+		// dsh-host-guard 票03 哨兵：daemon 可达时顺带消费 /stats pollers 段——
+		// stale（应在线而沉默）逐个落显著行（看门日志是计划任务唯一持久留痕，
+		// spec F「既有 5 分钟计划任务节奏原样复用」）；无 stale＝行为与现状
+		// 一致。消费缝未装配/取数失败（nil）→ 静默跳过——看门判定与日志形态
+		// 零漂移；daemon 死活仍由上方探针裁决，此处不重复报警。
+		if d.Pollers != nil {
+			for _, p := range d.Pollers() {
+				if p.State == "stale" {
+					logf("[watchdog] poller %s 静默(>90s 无心跳,最近 %s)", p.Name,
+						time.Unix(int64(p.LastSeen), 0).Format("2006-01-02 15:04:05"))
+				}
 			}
 		}
 		logf("[watchdog] daemon 有响应（%s）——正常退出", url)
@@ -394,16 +421,55 @@ func RunWatchdogCLI() int {
 }
 
 // realWatchdogDeps 真装配：真探针 + 真拉起（点火脚本与 Run 键同款路径）+
-// 日志双写（见 realWatchdogLogf）+ 复位取证/拉起复核（P1，2026-09-30）。
+// 日志双写（见 realWatchdogLogf）+ 复位取证/拉起复核（P1，2026-09-30）+
+// poller 哨兵消费缝（dsh-host-guard 票03）。
 func realWatchdogDeps() WatchdogDeps {
+	dataDir := filepath.Join(homeDir(), "ferryman")
 	return WatchdogDeps{
-		Probe:      probeHTTP,
-		DockProbe:  probeTCPPort,
-		Launch:     func() error { return LaunchDaemon(filepath.Join(homeDir(), "ferryman", LauncherName)) },
-		Logf:       realWatchdogLogf,
-		DataDir:    filepath.Join(homeDir(), "ferryman"),
-		PidAlive:   update.PIDAlive,
+		Probe:       probeHTTP,
+		DockProbe:   probeTCPPort,
+		Launch:      func() error { return LaunchDaemon(filepath.Join(dataDir, LauncherName)) },
+		Logf:        realWatchdogLogf,
+		DataDir:     dataDir,
+		PidAlive:    update.PIDAlive,
 		VerifyDelay: 5 * time.Second,
+		Pollers:     realWatchdogPollers(dataDir),
+	}
+}
+
+// realWatchdogPollers /stats pollers 段真取值（dsh-host-guard 票03 哨兵）：
+// Bearer token 读 dataDir 的 daemon.token，GET /stats（DaemonPort 同一探活口）
+// 解析 pollers 段；任何失败（token 缺/网错/坏 JSON）→ nil——尽力而为，看门
+// 判定与既有日志形态零漂移（spec F「顺带检查」语义；daemon 死活仍由探针
+// 裁决，此处不重复报警）。
+func realWatchdogPollers(dataDir string) func() []watchdogPoller {
+	return func() []watchdogPoller {
+		tokenRaw, err := os.ReadFile(filepath.Join(dataDir, "daemon.token"))
+		if err != nil {
+			return nil
+		}
+		req, err := http.NewRequest(http.MethodGet, DaemonProbeURL(DaemonPort()), nil)
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokenRaw)))
+		client := &http.Client{Timeout: watchdogTimeout}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return nil
+		}
+		var st struct {
+			Pollers []watchdogPoller `json:"pollers"`
+		}
+		if json.Unmarshal(data, &st) != nil {
+			return nil
+		}
+		return st.Pollers
 	}
 }
 

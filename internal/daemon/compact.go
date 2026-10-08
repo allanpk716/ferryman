@@ -10,11 +10,15 @@ package daemon
 //     watcher）经 EnqueueDshCompact 入槽；poll 应答即清槽并起**在飞执行窗**
 //     （票01：领取不再是终点，窗内无 ok 上报计未送达轮）——先到先得，多宿主
 //     同 sid 天然去重；应答时 expires_at 已过即丢弃不派发（N1：过期不执行）。
-//   - POST /dsh/poll：请求 {agent:"dsh", sessions:[{sid, idle_s}]}（插件报其
-//     宿持有会话）；应答 {commands:[{action:"compact", session_id, cwd}],
-//     poll_hint_s}——只回请求清单内且未过期的（插件只执行其宿持有的会话，
-//     未 poll 到的指令留在槽内等其宿）；poll_hint_s＝配置建议轮询间隔，插件
-//     取 max(提示, 10s)。
+//   - POST /dsh/poll：请求 {agent:"dsh", poller?, sessions:[{sid, idle_s,
+//     live?}]}（插件报其宿持有会话；dsh-host-guard 票01 spec A 扩展：live=true
+//     该宿主持活 agent 引用/false 无（播种条目·事件残影）/缺键=未知旧体，
+//     poller=宿主身份名——票01 daemon 只消费 live，其余未知键一律忽略）；
+//     应答 {commands:[{action:"compact", session_id, cwd}], poll_hint_s}
+//     ——只回请求清单内且未过期的（插件只执行其宿持有的会话，未 poll 到的
+//     指令留在槽内等其宿）；live=false 的宿主不派给（spec C 派发路由——播种
+//     宿主从此领不到）；缺键旧体可领取（前向兼容硬约束，空转由退避兜底）；
+//     poll_hint_s＝配置建议轮询间隔，插件取 max(提示, 10s)。
 //   - POST /dsh/compacted：请求 {session_id, ok, reason?, prefix_tokens?,
 //     source?}；恒落账本 kind=compacted（字段齐全＝请求带来的字段全量入行）；
 //     ok=true 且 prefix_tokens>0 时更新 gate 会话状态：compressed 标记（带
@@ -99,8 +103,13 @@ func (d *Daemon) EnqueueDshCompact(sid, cwd string) bool {
 // DshPoll 轮询取指令业务口（/dsh/poll 端点与测试共用）：只应答请求清单内的
 // 会话；应答即清槽（先到先得）；过期指令丢弃不派发（N1）——丢弃逐轮打日志、
 // 连续 3 轮 gateWarn 告警一次（守护可见性票01）；指令被领取（派发应答）即起
-// 在飞执行窗（票01：窗内无 ok 上报由守望 sweep 计未送达轮）。坏形（sessions
-// 非数组/元素非对象）静默收窄——照常回空应答不 5xx（DshEvent 同纪律）。
+// 在飞执行窗（票01：窗内无 ok 上报由守望 sweep 计未送达轮）。live 三值派发
+// 路由（dsh-host-guard 票01 spec C，判定只看本次轮询体不依赖跨轮询记忆）：
+// 报 live=true → 可领取；报 live=false → 不派给（即便列了该 sid——指令留槽
+// 等其活宿主）；缺键（旧协议体）→ 可领取（兼容例外，维持现状）。显式上报
+// 同时入 live 聚合记忆（spec B，触发面消费）；live=true 另清该 sid 退避
+//（spec D 解除①）。坏形（sessions 非数组/元素非对象/live 非布尔）静默收窄
+// ——照常回空应答不 5xx（DshEvent 同纪律）。
 func (d *Daemon) DshPoll(body map[string]any) map[string]any {
 	hint := 30.0
 	enabled := false
@@ -112,23 +121,45 @@ func (d *Daemon) DshPoll(body map[string]any) map[string]any {
 	resp := map[string]any{"commands": cmds, "poll_hint_s": hint}
 	// 请求清单：只应答插件报其持有的会话（多宿主先到先得的匹配面）。
 	list, _ := body["sessions"].([]any)
+	now := clock.Now()
 	wanted := map[string]bool{}
+	liveTrue := map[string]bool{}  // 本次体显式 live=true 的 sid（C：可领取）
+	liveFalse := map[string]bool{} // 本次体显式 live=false 的 sid（C：不派）
 	for _, s := range list {
 		m, ok := s.(map[string]any)
 		if !ok {
 			continue
 		}
-		if sid := pyStr(m["sid"]); sid != "" {
-			wanted[sid] = true
+		sid := pyStr(m["sid"])
+		if sid == "" {
+			continue
+		}
+		wanted[sid] = true
+		if lv, present := m["live"]; present {
+			b, isBool := lv.(bool)
+			if !isBool {
+				continue // 非布尔坏形＝非显式上报：不聚合不拦截（缺键同待遇）
+			}
+			dshLiveReport(sid, b, now) // B 聚合记忆：显式上报入近窗（跨轮询态）
+			if b {
+				liveTrue[sid] = true
+				dshCompactBackoffClear(sid) // D 解除①：该 sid 再被报 live=true 即解除退避
+			} else {
+				liveFalse[sid] = true
+			}
 		}
 	}
 	if !enabled || len(wanted) == 0 {
 		return resp
 	}
-	now := clock.Now()
 	var expired, claimed []string
 	d.compactMu.Lock()
 	for sid := range wanted {
+		// C 派发路由：本次报 live=false 的宿主不派——指令留槽等其活宿主
+		//（同体混列 true/false 取 true：单宿主注册表一 sid 一条目，混列必坏形）。
+		if liveFalse[sid] && !liveTrue[sid] {
+			continue
+		}
 		cmd := d.dshCompactSlot[sid]
 		if cmd == nil {
 			continue
@@ -264,10 +295,13 @@ var compactLogf = func(format string, args ...any) {
 // dshCompactMissN 会话"未送达"连续轮数（票01，两路共用）。包级态＋独立小锁
 // ——daemon.go 不在票01 改动路径、Daemon 字段挂不进；单守护进程现实下等价
 // Daemon 字段（测试经 resetCompactMiss 复位防跨用例渗漏）。锁内纯内存，绝不
-// 与 compactMu 嵌套（头注并发纪律）。
+// 与 compactMu 嵌套（头注并发纪律）。dshCompactClaimMissN 另计「领取后无成功
+// 上报」连续轮（dsh-host-guard 票01 spec D 退避计数——只有执行窗结算轮参与，
+// "过期无人领取"路不计；唯一清零点与未送达计数同＝ok=true 成功上报）。
 var (
-	dshCompactMissMu sync.Mutex
-	dshCompactMissN  = map[string]int{}
+	dshCompactMissMu     sync.Mutex
+	dshCompactMissN      = map[string]int{}
+	dshCompactClaimMissN = map[string]int{}
 )
 
 // dshCompactExecWindowS 领取后执行窗秒数（票01）＝插件执行臂超时 180s
@@ -324,12 +358,25 @@ func (d *Daemon) dshCompactClaimSweep(sid string) {
 // noteDshCompactMiss 单会话计一轮未送达（票01 两路共用）：逐轮一行日志（文
 // 案带因与轮号，sid 经 runeCap16 截 16 位）；连续满 dshCompactMissAlertRounds
 // 轮经 gateWarn 告警一次（落 <DataDir>/gate.log，失败静默——appendGateWarn
-// 尽力而为同纪律）。
+// 尽力而为同纪律）。执行窗结算轮（claimedTimeout）另计退避轮数（dsh-host-guard
+// 票01 spec D）：连续满 dshCompactBackoffRounds 轮 → 进入固定 30 分钟退避
+//（台账读取在锁外——小锁内纯内存纪律）。
 func (d *Daemon) noteDshCompactMiss(sid string, claimedTimeout bool) {
 	dshCompactMissMu.Lock()
 	dshCompactMissN[sid]++
 	n := dshCompactMissN[sid]
+	engage, rounds := false, 0
+	if claimedTimeout {
+		dshCompactClaimMissN[sid]++
+		rounds = dshCompactClaimMissN[sid]
+		engage = rounds >= dshCompactBackoffRounds
+	}
 	dshCompactMissMu.Unlock()
+	if engage {
+		d.dshCompactBackoffEngage(sid) // D：连续领取后无成功上报满阈值 → 30 分钟退避
+		compactLogf("[compact] dsh 连续 %d 轮领取后无成功上报,进入 %.0f 分钟退避:%s\n",
+			rounds, dshCompactBackoffS/60, runeCap16(sid))
+	}
 	if claimedTimeout {
 		compactLogf("[compact] dsh 指令领取后执行窗内无成功上报(第 %d 轮):%s\n", n, runeCap16(sid))
 	} else {
@@ -350,9 +397,157 @@ func (d *Daemon) noteDshCompactUndelivered(sids []string) {
 // dshCompactMissReset 未送达连续计数清零（票01，唯一清零钩子）：成功压缩上报
 //（DshCompacted ok=true）＝指令真送达且有产出，既往未送达一笔勾销，下轮从 1
 // 重新起算。票01 修订：领取不再清零（bb5d5e37 实锚：领了不执行把告警永久
-// 消音——领取不是送达证据）。
+// 消音——领取不是送达证据）。退避轮计数（claim-miss）同钩子清零
+//（dsh-host-guard 票01：成功上报＝链路有产出，连续 no-agent 断流）。
 func dshCompactMissReset(sid string) {
 	dshCompactMissMu.Lock()
 	delete(dshCompactMissN, sid)
+	delete(dshCompactClaimMissN, sid)
 	dshCompactMissMu.Unlock()
+}
+
+// ---- live 聚合记忆（dsh-host-guard 票01，spec B 逐字） ----
+//
+// 触发面聚合是跨轮询的记忆态：daemon 记每 sid 最近显式 live 上报（true 与
+// any 各一笔时刻），触发扫描按近窗三分（钉死语义，实现不得自创第三种）：
+//   - 近窗内任一 poller 报 live=true → 可执行（照常六条件触发；false 不压制
+//     true——「健康双宿主形态」桌面 true + web 播种 false 交错恒可执行）；
+//   - 仅当近窗内有显式上报、且全部 live=false → 压制（不下发）；
+//   - 近窗内无任何显式 live 上报（全缺键/无轮询）→ 未知 → 照旧触发（与今天
+//     行为一致；旧插件空转由 D 退避兜底）。
+// HTTP 线程写（DshPoll）／守望线程读（触发面）：独立小锁串行化，锁内纯内存、
+// 绝不嵌套（compactMu/dshCompactClaimMu 同纪律；daemon.go 不在本票路径，包级
+// 态；测试经 resetDshLiveReports 复位防渗漏）。
+
+// dshLiveWindowS 聚合近窗秒数（spec B 钉死 90s＝3× 缺省轮询间隔 30s）。
+const dshLiveWindowS = 90.0
+
+// 聚合三分返回（spec B；触发面只对 suppressed 早退，另两支行为同为「照旧」
+// 但语义分立——可执行＝有活宿主背书，未知＝无证据不改变现状）。
+const (
+	dshLiveExecutable = iota // 近窗任一 true——可执行
+	dshLiveSuppressed        // 近窗有显式上报且全 false——压制
+	dshLiveUnknown           // 近窗无显式上报——未知，照旧触发
+)
+
+var (
+	dshLiveMu       sync.Mutex
+	dshLiveTrueAt   = map[string]float64{} // sid → 最近显式 live=true 上报时刻
+	dshLiveReportAt = map[string]float64{} // sid → 最近显式 live 上报时刻（true/false 皆计）
+)
+
+// dshLiveReport 显式 live 上报入记忆（DshPoll 解析面调用；缺键/非布尔不上报
+// ——spec A「键缺失=未知」）。
+func dshLiveReport(sid string, live bool, now float64) {
+	dshLiveMu.Lock()
+	dshLiveReportAt[sid] = now
+	if live {
+		dshLiveTrueAt[sid] = now
+	}
+	dshLiveMu.Unlock()
+}
+
+// dshLiveVerdict 触发面聚合判定（守望单线程调用）：只看近窗内的显式上报——
+// true 出窗即失效（窗外的旧 true 不得救活窗内全 false 的压制判定）。
+func dshLiveVerdict(sid string, now float64) int {
+	dshLiveMu.Lock()
+	defer dshLiveMu.Unlock()
+	if now-dshLiveTrueAt[sid] <= dshLiveWindowS {
+		return dshLiveExecutable
+	}
+	if now-dshLiveReportAt[sid] <= dshLiveWindowS {
+		return dshLiveSuppressed
+	}
+	return dshLiveUnknown
+}
+
+// resetDshLiveReports 聚合记忆清空（测试卫生，resetCompactMiss 同纪律）。
+func resetDshLiveReports() {
+	dshLiveMu.Lock()
+	dshLiveTrueAt = map[string]float64{}
+	dshLiveReportAt = map[string]float64{}
+	dshLiveMu.Unlock()
+}
+
+// ---- no-agent 退避（dsh-host-guard 票01，spec D 逐字） ----
+//
+// 同一会话连续 no-agent（执行窗结算的「领取后无成功上报」轮）满阈值后进入
+// 固定 30 分钟退避（F7：固定不递增——噪音有界＝稳态每 30 分钟一轮，如实接
+// 受；递增律不引入）。退避期内触发扫描对它早退（不再入槽不再重发——2026-10-08
+// 事故"播种宿主领走指令执行不了、每 270s 重发一下午"的端上闸）；「领取即上报
+// no-agent」的既有行为保留（可观测性）。解除条件（任一）：该 sid 再被报
+// live=true（DshPoll 面主动清）；台账 last_write 前进（用户回流——读侧惰性
+// 清）。与在飞领取窗（dshCompactClaimAt）是两回事：在飞窗节流单轮领取后的
+// 重触发（240s 几何），退避闸连续失败后的整链重发（30min）——互不混用。
+// 包级态＋独立小锁（同上纪律；测试经 resetCompactBackoff 复位）。
+
+const (
+	// dshCompactBackoffS 退避时长（spec D 钉死：固定 30 分钟，不递增）。
+	dshCompactBackoffS = 1800.0
+	// dshCompactBackoffRounds 进退避所需连续「领取后无成功上报」轮数（与未送
+	// 达告警阈值同源：连续满告警线＝结构性空转，告警即退避；阈值后的每轮结算
+	// 续期——稳态一轮/30min）。
+	dshCompactBackoffRounds = dshCompactMissAlertRounds
+)
+
+// dshCompactBackoff 一条退避记录：死线＋进退避时的台账 last_write 快照
+//（此后前进即解除——用户回流的判定基准）。
+type dshCompactBackoff struct {
+	Until     float64
+	LastWrite float64
+}
+
+var (
+	dshCompactBackoffMu sync.Mutex
+	dshCompactBackoffs  = map[string]*dshCompactBackoff{}
+)
+
+// dshCompactBackoffEngage 进入/续期退避（noteDshCompactMiss 执行窗结算路调
+// 用；台账读在退避锁外——小锁内纯内存纪律）。
+func (d *Daemon) dshCompactBackoffEngage(sid string) {
+	lastWrite := 0.0
+	if d.Ledger != nil {
+		if st := d.Ledger.Get("dsh", sid); st != nil {
+			d.Ledger.Mu().Lock()
+			lastWrite = st.LastWrite
+			d.Ledger.Mu().Unlock()
+		}
+	}
+	dshCompactBackoffMu.Lock()
+	dshCompactBackoffs[sid] = &dshCompactBackoff{
+		Until:     clock.Now() + dshCompactBackoffS,
+		LastWrite: lastWrite,
+	}
+	dshCompactBackoffMu.Unlock()
+}
+
+// dshCompactBackoffClear 退避解除①：该 sid 再被报 live=true（DshPoll 面调用）。
+func dshCompactBackoffClear(sid string) {
+	dshCompactBackoffMu.Lock()
+	delete(dshCompactBackoffs, sid)
+	dshCompactBackoffMu.Unlock()
+}
+
+// dshCompactBackoffActive 退避中判定（触发面调用）：死线已过或台账 last_write
+// 已前进（用户回流）都视作解除——惰性清（条目即删）。lastWrite 由调用方在
+// 台账锁内抄出后传入（守望既有纪律）。
+func dshCompactBackoffActive(sid string, now, lastWrite float64) bool {
+	dshCompactBackoffMu.Lock()
+	defer dshCompactBackoffMu.Unlock()
+	b := dshCompactBackoffs[sid]
+	if b == nil {
+		return false
+	}
+	if now >= b.Until || lastWrite > b.LastWrite {
+		delete(dshCompactBackoffs, sid)
+		return false
+	}
+	return true
+}
+
+// resetCompactBackoff 退避表清空（测试卫生）。
+func resetCompactBackoff() {
+	dshCompactBackoffMu.Lock()
+	dshCompactBackoffs = map[string]*dshCompactBackoff{}
+	dshCompactBackoffMu.Unlock()
 }
