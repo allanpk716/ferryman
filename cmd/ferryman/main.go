@@ -60,6 +60,7 @@ import (
 	"ferryman/internal/config"
 	"ferryman/internal/cutover"
 	"ferryman/internal/daemon"
+	"ferryman/internal/dshsandbox"
 	"ferryman/internal/dshverify"
 	"ferryman/internal/installer"
 	"ferryman/internal/mcp"
@@ -641,6 +642,24 @@ func cmdVerifyDsh(args []string, w io.Writer) int {
 			Out:        w,
 		})
 	}
+	// L2 装配（票05 接缝）：沙箱探针需要渡口上游表——active 条目即「最便宜
+	// 上游」承载面；无 active 上游时 Probe 留 nil（输出「L2 未装配」，黄）。
+	var probe dshverify.ProbeRunner
+	if n, up := cfg.Dock.ActiveUpstream(); up != nil {
+		probe = dshsandbox.NewProbe(dshsandbox.Options{
+			DockUpstreams: map[string]dshsandbox.DockUpstream{n: {
+				BaseURL:    up.BaseURL,
+				APIKey:     up.APIKey,
+				ModelMap:   up.ModelMap,
+				TextOnly:   up.TextOnly,
+				BalanceURL: up.BalanceURL,
+				Dialect:    up.Dialect,
+				Codex:      up.Codex,
+				Pi:         up.Pi,
+			}},
+			DockActive: n,
+		})
+	}
 	return dshverify.Run(dshverify.Options{
 		DSHRoot:     filepath.Join(home, ".dsh"),
 		DSHInstall:  dshInstallRoot(),
@@ -648,6 +667,7 @@ func cmdVerifyDsh(args []string, w io.Writer) int {
 		Profiles:    dshverify.DefaultProfiles,
 		Health:      hc,
 		DataDir:     dataDir,
+		Probe:       probe,
 		CLIVersion:  version,
 		Alert: func(title, message string) { // 旁路尽力而为（NotifyAlert 内已护）
 			notify.NotifyAlert(title, message, cfg)
