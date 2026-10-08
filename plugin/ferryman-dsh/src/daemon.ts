@@ -10,7 +10,8 @@
 //   - /dsh/handoff 回话：{context:string|null, continuation?:boolean}
 //     （internal/daemon/restore.go:80-111,
 //     单候选注入截 6000 码点;多候选列清单;无候选 null;continuation=true=
-//     续用档（restoreContinue 三分支恒带）——插件据此清欠账止问;旧 daemon
+//     零注入终态＝续用档或新会话无料（票02 dsh-cross-inject 扩注;续用档
+//     restoreContinue 三分支恒带）——插件据此清欠账止问;旧 daemon
 //     无此键=false=保守置账,旧行为）。
 //   - /dsh/event 回话：{ok:true[,skipped:<因>]}——坏形静默收窄不 5xx
 //     （dsh_receive.go:100-183）;skipped 语义=daemon 收下但不动作（如白名单外
@@ -91,11 +92,12 @@ export async function askGate(
 // ---- /dsh/handoff 交接查询 ----
 
 /**
- * /dsh/handoff 答话形状（夜链终局评审小修）：
+ * /dsh/handoff 答话形状（夜链终局评审小修;票02 dsh-cross-inject 扩注）：
  *   - md 非空＝交接 MD（Restore 侧已截 6000 码点,调用方注入）;
- *   - md=null 且 continuation=true＝续用档（daemon 判同会话续用,上下文已在
- *     本会话内零注入）——调用方据此清欠账止问,不再与"材料未到稍后重试"
- *     混为一谈;
+ *   - md=null 且 continuation=true＝零注入终态——续用档或新会话无料
+ *    （daemon 侧零注入终态:续用档=上下文已在本会话内;无被拦待领原话的
+ *     新会话同样回此形,不再自动塞最新交接/候选清单）——调用方据此清欠账
+ *     止问,不再与"材料未到稍后重试"混为一谈;
  *   - md=null 且 continuation=false＝材料未到（含 daemon 不可达/故障/旧
  *     daemon 无键）——保守置账,既有重试行为零变化。
  */

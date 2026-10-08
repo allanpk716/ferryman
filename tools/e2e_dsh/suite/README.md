@@ -1,20 +1,62 @@
-# tools/e2e_dsh/suite — 票08 · E2E Playwright 全链剧本
+# tools/e2e_dsh/suite — 票08 E2E Playwright 全链剧本 ＋ 票03 多会话拓扑矩阵
 
-对票07 沙箱栈的 DSH 热缓存压缩全链验收：一键、零人工、幂等重跑。
+对票07 沙箱栈的双面验收：**多会话拓扑矩阵**（票03 dsh-cross-inject，T1-T8，
+"多会话拓扑"一等测试维度）＋ **DSH 热缓存压缩全链**（票07/08）。一键、零人工、
+幂等重跑。
 
 ```bash
-bash tools/e2e_dsh/suite/run.sh     # 全链剧本（setup + Playwright 断言）
+bash tools/e2e_dsh/suite/run.sh     # setup + 三相剧本（矩阵 → 跨profile → 压缩链）
 ```
 
 ## 组成
 
 | 文件 | 职责 |
 |---|---|
-| `run.sh` | 入口：setup → driver → 汇总退出码 |
-| `setup.sh` | 栈整备：`../start.sh` 起栈 → **夜链工作树插件换装**进沙箱 profile 两落点（`profiles/web/ferryman-dsh` 与 `profiles/web/node_modules/ferryman-dsh`）→ **模型路由改指沙箱凭据自含的 `zai-coding-cn/glm-5.3`**（生产缺省的 deepseek-official 裸跑无密钥——生产本靠已剥离的渡口覆写；`llm-pi-ai` 适配器随 app 自带，挂上+密钥引用即通，密钥随 `~/.dsh` 副本携带，直连 z.ai 零生产接触）→ config 追加 `[heartbeat].ttl_s`（缺省 0＝压缩链静默，必须给值）＋ `[dsh_compact]` 秒级参数 → 重启 daemon（吃新 config，数据目录不清）＋重启 web 实例（吃新插件，重取登录 token）→ 健康检查 |
-| `driver.mjs` | 全链剧本＋断言库（全局 playwright，本仓零依赖；浏览器探针 DOM，账本/gate.log/会话文件断言走沙箱数据目录只读） |
+| `run.sh` | 入口：setup → driver → 汇总退出码；EXIT 时拆 web2 第二实例 |
+| `setup.sh` | 栈整备：`../start.sh` 起栈 → **夜链工作树插件换装**进沙箱 profile 两落点（`profiles/web/ferryman-dsh` 与 `profiles/web/node_modules/ferryman-dsh`）→ **模型路由改指沙箱凭据自含的 `zai-coding-cn/glm-5.3`**（生产缺省的 deepseek-official 裸跑无密钥——生产本靠已剥离的渡口覆写；`llm-pi-ai` 适配器随 app 自带，挂上+密钥引用即通，密钥随 `~/.dsh` 副本携带，直连 z.ai 零生产接触）→ **会话转录落明文**（profile patch 追加 `session-persistence-jsonl` 的 `compression: none`——矩阵硬门禁要 driver 直读转录；none 后端拒收根内 zstd 工件，故顺带清空沙箱 sessions）＋ **web2 第二 profile**（`profiles/web` 整拷＋独立口 25903 起第二实例，跨 profile 拓扑用）→ config 追加 `[heartbeat].ttl_s`（缺省 0＝压缩链静默，必须给值）＋ `[dsh_compact]` 秒级参数 → 重启 daemon（吃新 config，数据目录不清）＋重启 web 实例×2（吃新插件，重取登录 token）→ 健康检查 |
+| `driver.mjs` | 三相剧本＋断言库（全局 playwright，本仓零依赖；浏览器探针 DOM，账本/gate.log/index.json/会话转录断言走沙箱数据目录只读） |
 
-## 剧本与断言（票面清单映射）
+## 票03 · 多会话拓扑矩阵（T1-T8，断言按票01 修复后行为）
+
+三相编排：**A 拓扑矩阵@web1 → B 跨 profile@web2 → C 票08 压缩链@web1**。种子会话
+（同目录四场）并行闲置攒交接后逐幕推进；单场景失败=记录后继续；场景间隔清残留
+锚（残留 pending 会让零注入场景吃到锚定归还→假阳性——逐锚向 `/dsh/gate` 发强续
+bypass 清场，不惊动任何会话 UI）。
+
+| 幕 | 形态 | 断言（门禁层） |
+|---|---|---|
+| T1 接班基线 | 单人：A 被拦 → 手动新开同目录会话 | **硬**：接班（账本 inject 痕＋新会话转录含 `[Ferryman 交接`/被拦原话） |
+| T2 事故复刻 | 同目录多主题：A 收工闲置（交接落盘）→ 新会话 B 问新主题 | **硬**：B 零注入（账本无 kind=inject＋转录无交接文本）；**软**：B 的回答不含 A 主题专名（敦煌星图）——只告警不拦截 |
+| T3 多候选 | 同目录 2+ 会话各有新鲜交接 → 新会话 | **硬**：零注入（候选清单也不进上下文） |
+| T4 锚窗边界 | 窗内（<2h，PendingAnchorS=7200 不动）被拦 / 无被拦待领 | **硬**：窗内→接班；无锚→零注入 |
+| T5 子代理探针 | 被守望会话内模型经原生 `subagent` 工具 spawn 子代理 | **记录事实**（供票04）：created 是否触发（锚窗探针双向判定：线内留未消费锚，触发⟺子会话有注入痕）＋识别形态（子会话头行 `origin=subagent`/`parentSession`/`delegationDepth`；目录名=裸 uuid）；模型不调用=如实记"沙箱不可造" |
+| T6 跨 profile | web/web2 两 profile 同目录各开会话（共用 DSH_HOME） | **硬**（无锚面）：profile2 新会话零注入；**观察项**（窗内锚+跨 profile）：只记录实际行为不断言 |
+| T7 续用/强续 | 强续首条（A 相）／压缩后回来首条（C 相 t7c） | **硬**：放行＋bypass 落账＋零注入（与 v0.9.7 一致） |
+| T8 一键新会话 | 被拦后走卡片「新会话继续」按钮（RPC newSession→agents.create） | **硬**：接班照旧（created 即锚定归还→inject 先落账；首条经宿主网关 `session/prompt` 送达——RPC 创建的 blank 会话不进侧栏列表，run2-4 实锚） |
+
+**硬/软门禁分层（F6）**：硬门禁=账本（`kind=inject` 行有无）＋新会话转录（交接
+文本标记集：`[Ferryman 交接`/`[Ferryman] 本项目有`/`完整交接文档`/`被拦时的原话`）
+两面，红即拦合入；软信号=语义面（B 的回答不含对方主题专名），模型措辞不可控，
+泄漏≠注入回归，独立输出（SOFT-WARN）不拦截。闸门 additional_context 的警告文案
+（「建议新建会话，开场自动注入交接」）不含上述标记，不与交接注入混淆。
+
+**压缩参数与拦截窗的互泳**：种子会话首轮计费即 ≈12-13K（glm-5.3 提示地板 ~9.4K
+＋运行时上下文），普遍过 min_peak=12000 触发线——闲置会话周期性再压缩（标记窗
+180s），拦截窗在「标记失效 ∧ 闲置≥block_s」的开窗段内（run-grace 300s > 标记窗
+180s，每周期留 ~2min 可拦窗）；`waitBlockable` 循环等窗，两发式拦截（首发撞分支7
+警告放行时紧接第二发验分支6）。产物：`matrix-report.md`（全量红绿）＋
+`t5-subagent-probe.md`（探针结论）落 `<沙箱>/logs/e2e-driver-<runstamp>/`。
+
+**矩阵跑出来的两个产品行为注记**（不属本票修复面，供后续票参考）：
+1. **交接按 (agent,cwd) 线去重生成**——同目录多会话并行闲置时，只有"内容最新"的
+   会话拿到自属交接（既有交接 covers+60s 容差盖过后写内容即不再生成）；T3 的
+   "2+ 会话各有新鲜交接"前置靠错峰播种（covers 容差窗越过后再种第二场）造出。
+2. **一键新会话的排队注入会在长闲置后被闸门当用户输入拦下**（2026-10-07 run4
+   实锚：按钮创建的空白会话 3 分钟未发首条，排队的交接注入进 pre-step 批次→
+   gate prompt=注入文本→block，且 pending 被注入文本覆写）——插件面把 injected
+   消息与用户消息同批送审是根因；T8 剧本因此在按钮后立即经网关送首条避开。
+
+## 票08 · 压缩链剧本与断言（票面清单映射，15 项零回归）
 
 | 幕 | 断言 |
 |---|---|
@@ -65,11 +107,14 @@ prefix_tokens 报旧数）；②`min_peak` 4000→12000——glm-5.3 提示地�
 
 ## 失败排查
 
-诊断落 `<沙箱>/logs/e2e-driver-<runstamp>/diag-*.{txt,png,aria.yml}`：本会话全部账本行、
-gate.log 尾、handoffs 目录、daemon/web 日志尾、页面截图与 aria 快照。重跑 `run.sh` 即恢复
-（幂等）。彻底拆栈：`bash tools/e2e_dsh/stop.sh`。
+诊断落 `<沙箱>/logs/e2e-driver-<runstamp>/`：本会话全部账本行、gate.log 尾、
+handoffs 目录、pending_prompts、daemon/web 日志尾、页面截图与 aria 快照，另有
+`matrix-report.md`（矩阵红绿）与 `t5-subagent-probe.md`（T5 结论）。重跑 `run.sh`
+即恢复（幂等）。彻底拆栈：`bash tools/e2e_dsh/stop.sh`（web2 由 run.sh 的 EXIT
+trap 自拆，不留第二实例）。
 
 ## 副作用边界
 
-只碰 25xxx 沙箱口与沙箱数据目录（票07 铁闸继承）；剧本末段停沙箱 daemon（降级·乙所需）——
-重跑恢复；生产 3080/15700/15722/3081/15900 零接触。
+只碰 25xxx 沙箱口（daemon/panel/web/web2 四口铁闸）与沙箱数据目录（票07 铁闸
+继承）；剧本末段停沙箱 daemon（降级·乙所需）——重跑恢复；生产
+3080/15700/15722/3081/15900 零接触。

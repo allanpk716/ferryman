@@ -51,8 +51,11 @@ export interface LoggerLike {
 export interface SessionHeaderRef {
   id?: string;
   cwd?: string;
+  /** 子代理形态字段（T5 探针 20261007T154835Z 同场观测:
+   *  {origin:"subagent",parentSession,delegationDepth:1}） */
   parentSession?: string;
   origin?: string;
+  delegationDepth?: number;
 }
 
 export interface SessionRef {
@@ -173,6 +176,19 @@ function sessionIdOf(agent: AgentRef | undefined): string {
 
 function cwdOf(agent: AgentRef | undefined): string {
   return agent?.session?.header?.cwd ?? process.cwd();
+}
+
+/**
+ * 子代理会话识别（票04 · dsh-cross-inject R3,T5 探针结论 20261007T154835Z）：
+ * 头行 origin=subagent 且 parentSession 在场——T5 裁定原话「识别字段以头行
+ * origin+parentSession 为准」（delegationDepth=1 同场观测,不作判据）。
+ * 与 buildEventBody 的 parent_session_id 判据同一函数,两处共用一只鸭子形。
+ * 刻意不收裸 parentSession：一键新会话接班链（index.ts newSession meta
+ * {parentSession,cwd},fork-session.ts:88-92 先例）同带 parentSession 而无
+ * origin=subagent,裸判会误伤已验收归还链。
+ */
+export function isSubagentHeader(h: SessionHeaderRef | undefined): boolean {
+  return h?.origin === "subagent" && !!h.parentSession;
 }
 
 /** 文本块拍平（官方桥 blocksToText 同位先例,hooks-claude-code/src/index.ts:323-326） */
@@ -417,8 +433,10 @@ export function stripBypassPrefix(text: string): string | null {
  * 晚到交接重问（A4②）：created 记了欠账的会话,每个用户步（step===1）在此
  * 独立补问一次（不依赖闸门结果,allow/fail-open 都问）;拿到 → injectedMessage
  * 追加进当前步 downstream.messages（additional_context 同位先例）并清账;
- * 没拿到 → 账留着静默放行,绝不阻塞用户消息;答续用（continuation=true,夜链
- * 终局评审小修）→ 清账止问（上下文本就在会话内,零注入）。block 步无下游可注入,不问
+ * 没拿到 → 账留着静默放行,绝不阻塞用户消息;答零注入终态（continuation=
+ * true,夜链终局评审小修;票02 dsh-cross-inject 扩注＝续用档或新会话无料,
+ * daemon 侧零注入终态）→ 清账止问（上下文本就在会话内/新会话本无料,零
+ * 注入）。block 步无下游可注入,不问
  * 不清账;循环步（step>1）照旧短路。票02 补两道：用户轮前进即推进去重轮
  * 游标（新轮清模板账）;补注注入过同轮同族材料（首句模板同键）→ 拦下不
  * 重复注入（欠账照清——材料已在会话内）。
@@ -501,9 +519,10 @@ export async function onPreStep(
         extras.push(injectedMessage(ans.md));
       }
     } else if (ans.continuation) {
-      // 续用档（夜链终局评审小修）：daemon 判同会话续用——上下文本就在会话
-      // 内,零注入;与"材料未到稍后重试"就此可区分,清账止问（否则每条用户
-      // 消息重问＋daemon 每问全量读解转录）。
+      // 零注入终态（夜链终局评审小修;票02 dsh-cross-inject 扩注）：续用档
+      // 或新会话无料（daemon 侧零注入终态）——上下文本就在会话内或新会话
+      // 本无料,零注入;与"材料未到稍后重试"就此可区分,清账止问（否则每条
+      // 用户消息重问＋daemon 每问全量读解转录）。
       deps.handoffPending.delete(sid);
     }
   }
@@ -520,7 +539,8 @@ export async function onPreStep(
  * 同 Agent＋cwd 的交接 MD 经 agent.inject() 播种（赶首请求——serial awaited
  * 位保证,见文件头钉点）。askHandoff 空（交接还没铸好,含 daemon 暂不可达）→
  * 记欠账 handoffPending,此后每个用户步重问补注（A4② 持续重试）;置账静默。
- * 空但 continuation=true（夜链终局评审小修）＝续用档零注入——清欠账不置账
+ * 空但 continuation=true（夜链终局评审小修;票02 dsh-cross-inject 扩注）＝
+ * 零注入终态（续用档或新会话无料,daemon 侧零注入终态）——清欠账不置账
  *（止问）;无键/抛错 → 不置账（fail-open:欠账只在「确实问过且确实空」时记）;
  * 永不抛（throw 会弄失败 agent creation,runtime-types.ts:253-254）。
  *
@@ -528,6 +548,12 @@ export async function onPreStep(
  * ——此前拿到不清,用户步又重问,同轮双注入）;②同轮去重——同族材料（首句
  * 模板同键）本轮已注入（重铸 agent 连发两问的活路径）拦下不重复播种,warn
  * 一行留可观测痕。
+ *
+ * 票04（dsh-cross-inject R3 · 子代理硬禁）：头行 origin=subagent+parentSession
+ * 的子代理会话跳过问询注入段——不 fetch /dsh/handoff、不置欠账、不注入
+ * （T5 探针实锚:子代理 created 会问 handoff 且抢先消费线内被拦待领锚;
+ * 子代理上下文只含父会话安排,天然无显式意图信号,ADR-0025 原则的应用面）。
+ * registry.touch 已先行保留（子会话仍在注册表,账面随父入账不动）。
  */
 export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promise<void> {
   try {
@@ -536,6 +562,8 @@ export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promi
     if (!sid) return;
     // 会话注册表（票05）：created 即登记（闲置时钟起点）,agent 活引用留给执行臂
     deps.registry.touch(sid, cwdOf(agent), agent);
+    // 票04 子代理硬禁：跳过问询注入段（识别判据见 isSubagentHeader）
+    if (isSubagentHeader(agent?.session?.header)) return;
     if (typeof agent?.inject !== "function") return;
     const ans = await askHandoff(deps.ep, { cwd: cwdOf(agent), session_id: sid });
     if (ans.md) {
@@ -546,8 +574,9 @@ export async function onCreated(deps: EventDeps, payload: CreatedPayload): Promi
       }
       agent.inject(injectedMessage(ans.md));
     } else if (ans.continuation) {
-      // 续用档（夜链终局评审小修）：daemon 判同会话续用——上下文本就在会话
-      // 内,零注入;清欠账止问,不置账（与"材料未到稍后重试"就此可区分）。
+      // 零注入终态（夜链终局评审小修;票02 dsh-cross-inject 扩注）：续用档
+      // 或新会话无料（daemon 侧零注入终态）——零注入;清欠账止问,不置账
+      //（与"材料未到稍后重试"就此可区分）。
       deps.handoffPending.delete(sid);
     } else {
       deps.handoffPending.set(sid, true);
@@ -591,8 +620,9 @@ export function usageToDaemon(usage: unknown): Record<string, number> | undefine
 /**
  * session/event → /dsh/event body。白名单=turn/start、assistant/message、
  * compaction/*（票04 契约;dsh_receive.go:108-110）;session/title 只作标题
- * 跟踪不上报;子会话（origin=subagent 且 parentSession）带 parent_session_id
- *（daemon 侧随父入账,dsh_receive.go:121 分流同款）。null=不上报。
+ * 跟踪不上报;子会话（isSubagentHeader,票04 与 onCreated 硬禁共用同一判据）
+ * 带 parent_session_id（daemon 侧随父入账,dsh_receive.go:121 分流同款）。
+ * null=不上报。
  */
 export function buildEventBody(
   session: SessionRef,
@@ -613,7 +643,7 @@ export function buildEventBody(
     cwd: h?.cwd ?? "",
     title: titles.get(sid) ?? "",
   };
-  if (h?.origin === "subagent" && h.parentSession) {
+  if (isSubagentHeader(h)) {
     body.parent_session_id = h.parentSession;
   }
   if (type === "assistant/message") {
