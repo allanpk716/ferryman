@@ -20,6 +20,14 @@ package daemon
 //     仅显式非空新值覆盖（清钥走删除整条目）。合并发生在 JSON 渲染 TOML
 //     之前，节级整写因此不会误清真钥；非密钥字段不参与合并（省略=清除，
 //     整写语义不变）。
+//   - 票04 通知分级：[notify].events 配置组写前等值省略规范化（spec「设置
+//     视图读写面适配」）——body 省略 events 时从盘上现值带回（省略=不动盘上
+//     该键，密钥合并同款语义；否则旧版 UI/第三方工具一次保存即清空用户手写
+//     分级），再对带回/提交的各键与内置缺省表（config.DefaultNotifyEvents
+//     单源）逐键比对，等值键不落盘（未配置键保持缺省、盘上不新增、缺省随
+//     代码演进）；全部等值时 events 整键不落盘（盘上无该键=回落缺省语义）。
+//     非法值不经本步裁决，透传给 SetSectionTOML 写前 Load 校验拒写
+//     （thresholds 阈值差同路径）。
 //   - 审计行：<data_dir>/settings-audit.log 追加单行 JSON（ts/entry=settings-ui/
 //     section/outcome=saved|rejected/before/after[/error]），密钥值以 <masked>
 //     替代（毒名单与读面 setIsSecretKey 同源，本包零新增口径）；永不进账本
@@ -159,6 +167,9 @@ func (d *Daemon) settingsPutSection(section string, body map[string]any) (map[st
 		return nil, err
 	}
 
+	// 票04 通知分级：events 等值省略规范化（省略保留＋等值省略，详函数注释）。
+	merged = settingsNormalizeNotifyEvents(section, before, merged)
+
 	tomlBody, err := settingsSectionTOMLBody(merged)
 	if err != nil {
 		auditSettingsWrite(d, section, "rejected", before, merged, err)
@@ -244,6 +255,56 @@ func settingsMergeSecrets(before, body map[string]any) (map[string]any, error) {
 		}
 	}
 	return out, nil
+}
+
+// settingsNormalizeNotifyEvents 票04 通知分级（spec「设置视图读写面适配」
+// F1 等值省略协议）：[notify] 节 events 配置组的写前规范化，两步——
+//
+//  1. 省略保留：body 不带 events（旧版 UI/第三方工具形态）时从盘上现值
+//     （before，settingsDiskSection 已读）带回再走等值省略。events 在此与
+//     「非密钥字段省略=清除」的节级整写语义不同、走密钥合并同款「省略=不
+//     动」——否则不带 events 的一次保存就会把用户手写的分级整组清掉。盘上
+//     也没有该键则无事可做（不凭空物化缺省键：盘上无键=回落缺省语义）。
+//  2. 等值省略：各键与内置缺省表逐键比对（单源 config.DefaultNotifyEvents，
+//     不得复制缺省表），等值键不落盘——未配置键保存后仍缺省、盘上不新增、
+//     缺省可随代码演进；全部键等值时 events 整键不落盘。已知取舍（ADR-0026
+//     记账）：用户显式配置值恰等于当前缺省时被省略，该键回落随缺省演进。
+//
+// 非法值不经本函数裁决：非对象形的 events、非串的键值、非三值与未知事件名
+// 一律原样透传给渲染与 SetSectionTOML 写前 Load 校验拒写（写入层既有校验
+// 风格，thresholds 阈值差同路径）——等值比对只省略「能比对且等值」的键，
+// 不得把非法值静默省略掉。其他节原样返回。返回纯拷贝语义：内层 events 以
+// 新 map 替换，不共享 body/before 的内层表。
+func settingsNormalizeNotifyEvents(section string, before, merged map[string]any) map[string]any {
+	if section != "notify" {
+		return merged
+	}
+	raw, present := merged["events"]
+	if !present {
+		bev, ok := before["events"].(map[string]any) // 省略保留：盘上有则带回
+		if !ok {
+			return merged // 盘上也没有：无 events 可写（不物化缺省键）
+		}
+		raw = bev
+	}
+	src, ok := raw.(map[string]any)
+	if !ok {
+		return merged // 非对象形：透传渲染/写前校验拒写
+	}
+	def := config.DefaultNotifyEvents()
+	norm := make(map[string]any, len(src))
+	for k, v := range src {
+		if s, isStr := v.(string); isStr && config.NotifyEventTier(s) == def[k] {
+			continue // 等值省略：与内置缺省等值的键不落盘
+		}
+		norm[k] = v
+	}
+	if len(norm) == 0 {
+		delete(merged, "events") // 全部等值：events 整键不落盘（无该键=回落缺省）
+	} else {
+		merged["events"] = norm
+	}
+	return merged
 }
 
 // ---- 审计 ----

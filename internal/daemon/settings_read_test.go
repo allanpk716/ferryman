@@ -288,6 +288,48 @@ func TestSettingsReadAllSectionsAndEntities(t *testing.T) {
 	}
 }
 
+// TestSettingsReadNotifyEventsEffective 票04 通知分级读面：notify 段返回
+// events 键——九键生效值（用户显式配置回落内置缺省，加载后恒全量），仅供
+// 展示（UI 九事件三值选择的初值来源；缺省差集在写面等值省略处理）。
+func TestSettingsReadNotifyEventsEffective(t *testing.T) {
+	e, cfgPath := newSettingsEnv(t)
+	// 盘上给一条显式配置（block=both，非当前缺省 toast）；基础夹具不带 events。
+	swRewriteConfig(t, cfgPath, filepath.ToSlash(e.d.Cfg.DataDir()), "events = { block = \"both\" }\n")
+	cfg, err := config.Load(cfgPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.d.Cfg = cfg
+
+	_, resp := srGet(t, e)
+	notify := resp["config"].(map[string]any)["notify"].(map[string]any)
+	ev, ok := notify["events"].(map[string]any)
+	if !ok {
+		t.Fatalf("notify.events 缺席或非对象: %v", notify["events"])
+	}
+	// 九事件名单全在位（生效值恒九键全量，不缺省差集）。
+	for _, name := range config.NotifyEventNames {
+		if _, ok := ev[name]; !ok {
+			t.Fatalf("notify.events 缺事件 %q（现有 %v）", name, keys(ev))
+		}
+	}
+	if len(ev) != len(config.NotifyEventNames) {
+		t.Fatalf("notify.events 键数 = %d, want %d", len(ev), len(config.NotifyEventNames))
+	}
+	// 显式配置如实展示；其余回落内置缺省（缺省表单源 config.DefaultNotifyEvents）。
+	if ev["block"] != "both" {
+		t.Fatalf("events.block = %v, want both（显式配置如实回）", ev["block"])
+	}
+	for name, tier := range config.DefaultNotifyEvents() {
+		if name == "block" {
+			continue
+		}
+		if ev[name] != string(tier) {
+			t.Fatalf("events.%s = %v, want 缺省回落 %v", name, ev[name], tier)
+		}
+	}
+}
+
 func TestSettingsReadEffectsOperationLevel(t *testing.T) {
 	e, _ := newSettingsEnv(t)
 	_, resp := srGet(t, e)

@@ -412,7 +412,7 @@
       <!-- ════════ 7. 通知 ════════ -->
       <section class="sec" id="sec-notify">
         <h2>通知</h2>
-        <p class="lead">会话被闸门拦下时怎么喊你。凭据只存本机，界面上永远只看得到尾四位。</p>
+        <p class="lead">会话被闸门拦下时怎么喊你。凭据只存本机，界面上永远只看得到尾四位。九类事件可分别设定：不发、只弹桌面、还是手机桌面都发。</p>
 
         <div class="card">
           <h3>通知方式 <span class="key">[notify]</span></h3>
@@ -439,8 +439,49 @@
             <input type="password" class="w-mid" id="ntUserIn" placeholder="留空则不修改">
             <span class="hint">留空则回落到环境变量里的凭据（与 claude-notify 插件共用同一对）。</span>
           </div>
+
+          <div class="divider"></div>
+          <h3>通知分级 <span class="sub">按事件选推送渠道 <span class="key">[notify.events]</span></span></h3>
+          <div class="frow">
+            <span class="lb">闸门拦截提醒 <span class="key">block</span></span>
+            <select class="nt-ev" data-ev="block"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="frow">
+            <span class="lb">摆渡链滑落告警 <span class="key">chain_degrade</span></span>
+            <select class="nt-ev" data-ev="chain_degrade"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="frow">
+            <span class="lb">摆渡链滑入骨架 <span class="key">chain_skeleton</span></span>
+            <select class="nt-ev" data-ev="chain_skeleton"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="frow">
+            <span class="lb">熔断告警 <span class="key">breaker</span></span>
+            <select class="nt-ev" data-ev="breaker"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="frow">
+            <span class="lb">升级结果通报 <span class="key">upgrade</span></span>
+            <select class="nt-ev" data-ev="upgrade"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="frow">
+            <span class="lb">静默门硬切 <span class="key">hard_cut</span></span>
+            <select class="nt-ev" data-ev="hard_cut"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="frow">
+            <span class="lb">形态漂移告警 <span class="key">drift</span></span>
+            <select class="nt-ev" data-ev="drift"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="frow">
+            <span class="lb">调参通报 <span class="key">tuning</span></span>
+            <select class="nt-ev" data-ev="tuning"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="frow">
+            <span class="lb">托盘操作回执 <span class="key">tray_reply</span></span>
+            <select class="nt-ev" data-ev="tray_reply"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+          </div>
+          <div class="note" style="margin-top:6px">九类事件相互独立。分级改动要点下面「保存」才落盘（拨上方开关即时保存时不带分级改动）；与程序内置缺省相同的值不写进配置文件——未配置的事件跟随缺省，缺省随程序升级演进。</div>
+
           <div class="savebar">
-            <button class="btn pri" id="btnSaveNotify">保存凭据</button>
+            <button class="btn pri" id="btnSaveNotify">保存</button>
             <span class="feedback" id="fbNotify"></span>
           </div>
         </div>
