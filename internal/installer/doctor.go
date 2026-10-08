@@ -34,6 +34,16 @@
 //     api=anthropic-messages ∧ baseUrl=渡口根地址）；~/.pi 未装 → not_checked
 //     不产红；残留旧 15721 条目但生效链正确 → 绿+警告（F9，非生效残留不阻断）。
 //     结论清单计数再 +1（全绿计数 26→27，见 doctor_test 的结论行公式）。
+//   - verify-dsh 票06（2026-10-08 夜链，DSH 插件验证吸收面，D6/D10）：
+//     dsh_plugin_static——internal/dshverify L0 静态检查汇总（三 profile 安装面
+//     ＋生产配置面＋版本可读，纯读零副作用；~/.dsh 未装或 [dock] 未配置 =
+//     not_checked 不产红）＋ ferryman-gate-dsh.ps1 补进脚本清单（七→八）＋
+//     版本黄灯提示（当前 DSH 版本不在 dshledger 判定流水 → detail 挂黄提示行，
+//     黄只提示不告警不判失败）。协调注：与并行链 dsh_poller_sentinel（dsh-host
+//     -guard 泳道，宿主插件哨兵）互补不重复——本项管安装面静态完整性，彼项管
+//     挂载活性；本票不加任何 poll/活性检查项（原 dsh_poll_age 已撤销，避免同
+//     能力两份实现）。全绿计数 27→29（+1=脚本清单七→八，+1=dsh_plugin_static；
+//     见 doctor_test 的结论行公式）。
 package installer
 
 import (
@@ -53,7 +63,10 @@ import (
 
 	"ferryman/internal/config"
 	"ferryman/internal/dock"
+	"ferryman/internal/dshledger"
+	"ferryman/internal/dshverify"
 	"ferryman/internal/ferry"
+	"ferryman/internal/jsonl"
 	"ferryman/internal/prices"
 	"ferryman/internal/provider"
 	"ferryman/internal/update"
@@ -759,7 +772,13 @@ type doctorDeps struct {
 	// <Home>/AppData/Roaming/orca/codex-runtime-home/home 解析（与
 	// daemon.CodexWatchDirs 的 orca 目录解析同位）。测试注入临时目录。
 	OrcaCodexHome string
-	Out           io.Writer
+	// DSHL0 dsh_plugin_static 检查缝（verify-dsh 票06）：internal/dshverify 的
+	// L0 静态检查产物（RunL0 原样返回——纯读零副作用，agent 面 MCP doctor
+	// 进程内复用安全）。nil = 检查目标未装配（未装 DSH/[dock] 未配置/测试
+	// 密闭形态）→ 该项显式 not_checked（autostart/watchdog 同款，如实标注
+	// 不伪造）。真装配 dshL0Seam 单源（CLI 与 agent 面同一公式）。
+	DSHL0 func() []dshverify.CheckResult
+	Out   io.Writer
 }
 
 // HomeDir / RepoRoot 目标解析导出面（票05：agent 面 MCP doctor 经此取 HOME/
@@ -801,6 +820,12 @@ func realDoctorDeps(version string) doctorDeps {
 	if cfgErr == nil {
 		port = cfg.Server.Port
 	}
+	// verify-dsh 票06：dsh_plugin_static 的渡口目标（[dock] 未配置/配置坏＝
+	// 空串 → dshL0Seam 返回 nil → 该项 not_checked，服务商接管四项同款先例）
+	dockListen := ""
+	if cfgErr == nil && cfg != nil && cfg.Dock != nil {
+		dockListen = cfg.Dock.Listen
+	}
 	return doctorDeps{
 		Home:        home,
 		Repo:        repoRoot(),
@@ -821,16 +846,21 @@ func realDoctorDeps(version string) doctorDeps {
 		// 票02：常驻保障两查真探测（只读注册表 / schtasks /Query，无写副作用）
 		Autostart:    func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) },
 		WatchdogTask: func() (TaskStatus, error) { return queryTask(realTaskDeps()) },
-		Version:      version,
-		Out:          os.Stdout,
+		// verify-dsh 票06：DSH 插件 L0 静态缝（~/.dsh 在位且 [dock] 已配置才
+		// 装配；RunL0 纯读零副作用——与 agent 面 DoctorStructured 同缝单源）
+		DSHL0:   dshL0Seam(home, dockListen),
+		Version: version,
+		Out:     os.Stdout,
 	}
 }
 
 // doctorScriptNames 体检的钩子脚本清单（doctor.py run_doctor scripts 逐字）。
+// verify-dsh 票06 起 +1：ferryman-gate-dsh.ps1（dsh CC 钩子桥指向的闸门变体
+// ——hooks/ 已在位但此前不在清单，BOM/控制字符检查对它缺位；七→八）。
 func doctorScriptNames() []string {
 	return []string{
-		"ferryman-gate.ps1", "ferryman-restore.ps1", "ferryman-subagent.ps1",
-		"ferryman-ensure.ps1", "ferryman-gate-codex.ps1",
+		"ferryman-gate.ps1", "ferryman-gate-dsh.ps1", "ferryman-restore.ps1",
+		"ferryman-subagent.ps1", "ferryman-ensure.ps1", "ferryman-gate-codex.ps1",
 		"ferryman-restore-codex.ps1", "ferryman-subagent-codex.ps1"}
 }
 
@@ -958,6 +988,20 @@ func doctorResults(d doctorDeps) []CheckResult {
 	// 失败 → 四项显式 not_checked（接管目标不可判——如实标注不伪造）。续接
 	// 末位：既有检查项顺序零漂移。
 	out = append(out, providerCheckResults(cfg, err, d)...)
+	// ---- verify-dsh 票06（DSH 插件验证吸收面）：dsh_plugin_static ＋ 版本黄灯 ----
+	// 协调注（票06 改票，合并 main 后复核）：与 dsh_poller_sentinel（dsh-host-guard
+	// 泳道，宿主插件哨兵，见下）互补不重复——本项管安装面静态完整性（L0 纯读），
+	// 彼项管挂载活性（poll 心跳状态机）；本泳道不加任何 poll/活性检查项（原
+	// dsh_poll_age 已撤销，避免同能力两份实现）。
+	if d.DSHL0 == nil {
+		out = append(out, CheckResult{Name: "dsh_plugin_static", Status: StatusNotChecked,
+			Detail: "DSH 插件静态检查未执行（检查目标未装配：~/.dsh 不在位或 [dock] 未配置" +
+				"——如实标注不伪造）"})
+	} else {
+		// 判定流水只读（黄灯判据用；零副作用红线——绝不写盘，读失败降级）
+		rows, ledgerErr := dshVerdictRows(dataDir)
+		out = append(out, dshPluginStaticResult(d.DSHL0(), rows, ledgerErr))
+	}
 	// dsh-host-guard 票03：宿主插件哨兵——续接末位（顺序零漂移纪律）。与
 	// daemon_liveness 同一探针（d.Probe）；daemon 不可达时本项 pass 注记不叠加
 	// 误报（活性 fail 由 daemon_liveness 独报，见 CheckDshPollerSentinel）。
@@ -1019,6 +1063,155 @@ func providerVerdict(name string, v provider.Verdict) CheckResult {
 	return CheckResult{Name: name, Status: st, Detail: v.Detail}
 }
 
+// ---- verify-dsh 票06：dsh_plugin_static（L0 吸收＋版本黄灯） ----
+// 协调注：与并行链 dsh_poller_sentinel 互补不重复——本节管安装面静态完整性
+// （L0 纯读），彼项管挂载活性（poll 心跳状态机）；本泳道无任何 poll/活性
+// 检查项（原 dsh_poll_age 已撤销）。
+
+// dshL0Seam dsh_plugin_static 生产装配（CLI realDoctorDeps 与 agent 面
+// DoctorStructured 同缝——公式单源，绝不两套判据）。nil 返回＝检查目标未装配
+// → 该项 not_checked 不产红，两种情形：
+//   - ~/.dsh 不在位＝未装 DSH（provider planDSH「dsh 未安装——跳过」同语义）；
+//   - [dock] 未配置＝渡口目标不可判（服务商接管四项 not_checked 同款先例——
+//     L0 生产配置面三项须比对渡口地址）。
+//
+// 生产根定位照仓库既有惯例（cmd/ferryman providerTargetsFromHome 同位：
+// <Home>/.dsh）；渡口地址 provider.DockURLFromListen 单源（不自造拼接）；DSH
+// 安装树＝%LocalAppData%/Programs/DeepSeek Harness（dshverify Input 注释的
+// Windows 实锚；env 缺失＝空串＝版本项整体省略，参数缺席≠检查失败）。
+// dshverify.RunL0 纯读零副作用（只 stat/read）——agent 面 MCP doctor 进程内
+// 复用安全（tool_doctor 零副作用红线同守）。
+func dshL0Seam(home, dockListen string) func() []dshverify.CheckResult {
+	if strings.TrimSpace(dockListen) == "" {
+		return nil
+	}
+	dshRoot := filepath.Join(home, ".dsh")
+	if fi, err := os.Stat(dshRoot); err != nil || !fi.IsDir() {
+		return nil
+	}
+	install := filepath.Join(os.Getenv("LocalAppData"), "Programs", "DeepSeek Harness")
+	return func() []dshverify.CheckResult {
+		return dshverify.RunL0(dshverify.Input{
+			DSHRoot:     dshRoot,
+			DSHInstall:  install,
+			DockBaseURL: provider.DockURLFromListen(dockListen),
+		})
+	}
+}
+
+// dshPluginStaticResult internal/dshverify L0 产物 → 单个 doctor 检查项
+// dsh_plugin_static（verify-dsh 票06 吸收面）。汇总语义：
+//   - 任一 L0 项 fail（含配置面/版本项）→ StatusFail，detail 按 profile 列失败项
+//     （<profile>/<项名>: <指位>；配置面/版本项不带 profile 前缀）；
+//   - 全过 → StatusPass，detail 按 profile 汇总各 profile 过项数；
+//   - 黄灯（D10：黄不推，只在 pass 面挂）：当前 DSH 版本（版本项解析）不在判定
+//     流水任何行 → detail 追加黄灯提示行——只提示不告警不判失败、退出码不动；
+//     流水读取失败降级「无法判定」（doctor 只读流水，绝不写盘——零副作用红线）；
+//     版本项缺席/解析不出＝版本未知，黄灯判据无从判定，如实不出提示。
+func dshPluginStaticResult(l0 []dshverify.CheckResult, rows []dshledger.Entry, ledgerErr error) CheckResult {
+	r := CheckResult{Name: "dsh_plugin_static"}
+	var fails []string
+	okByProfile := map[string]int{}
+	profileOrder := []string{}
+	seenProfile := map[string]bool{}
+	for _, c := range l0 {
+		if c.Profile != "" {
+			if !seenProfile[c.Profile] {
+				seenProfile[c.Profile] = true
+				profileOrder = append(profileOrder, c.Profile)
+			}
+			if c.OK {
+				okByProfile[c.Profile]++
+			}
+		}
+		if c.OK {
+			continue
+		}
+		label := c.Name
+		if c.Profile != "" {
+			label = c.Profile + "/" + c.Name
+		}
+		fails = append(fails, label+": "+c.Detail)
+	}
+	if len(fails) > 0 {
+		r.Status = StatusFail
+		r.Detail = fmt.Sprintf("DSH 插件静态检查 %d 项失败: %s", len(fails), strings.Join(fails, "；"))
+		return r
+	}
+	r.Status = StatusPass
+	parts := make([]string, 0, len(profileOrder))
+	for _, p := range profileOrder {
+		parts = append(parts, fmt.Sprintf("%s %d 项全过", p, okByProfile[p]))
+	}
+	r.Detail = fmt.Sprintf("DSH 插件静态检查全过（%s；生产配置面与版本项随 L0 验毕）",
+		strings.Join(parts, "、"))
+	// 黄灯（D10：黄不推）——只挂 pass 面
+	ver := dshCurrentVersion(l0)
+	if ver == "" {
+		return r
+	}
+	switch {
+	case ledgerErr != nil:
+		r.Detail += "；判定流水读取失败——版本验证状态无法判定（" + ledgerErr.Error() + "）"
+	case !dshVersionInLedger(rows, ver):
+		r.Detail += "；黄灯提示: 当前 DSH 版本 " + ver + " 不在判定流水中（版本未验证——" +
+			"跑 ferryman verify-dsh 完成一次全绿验证后入册；黄灯只提示不告警）"
+	}
+	return r
+}
+
+// dshCurrentVersion L0 产物里解析当前 DSH 版本（判据＝版本项 ok）。detail 文案
+// 前缀锚＝dshverify installVersionCheck 的 "DSH 版本 %s（%s）"——dshverify 未
+// 导出专门取值函数，票面指定消费其检查结果（本包不另读版本文件造第二判据）；
+// 解析不出＝版本未知（黄灯判据无从判定，如实不出提示）。
+func dshCurrentVersion(l0 []dshverify.CheckResult) string {
+	for _, c := range l0 {
+		if c.Name != dshverify.ChkInstallVersion || !c.OK {
+			continue
+		}
+		s := strings.TrimPrefix(c.Detail, "DSH 版本 ")
+		if i := strings.Index(s, "（"); i > 0 {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	return ""
+}
+
+// dshVersionInLedger 黄灯判据：当前 DSH 版本是否在任何流水行（含黄/红行——
+// 「验证过」与「全绿」两回事，黄灯只问"这版本验没验过"）。
+func dshVersionInLedger(rows []dshledger.Entry, version string) bool {
+	for _, e := range rows {
+		if e.DSHVersion == version {
+			return true
+		}
+	}
+	return false
+}
+
+// dshVerdictRows 判定流水只读读取（doctor 零副作用红线：不走 dshledger.New
+// ——它 MkdirAll 建目录；只读打开已落盘的 verdicts.jsonl，坏行跳过/缺文件＝
+// 首跑空表，语义与 dshledger.List 同款）。目录布局与 dshledger.New 同名同值
+// （<dataDir>/dshledger/verdicts.jsonl），行形状单源 dshledger.Entry、行读
+// 单源 internal/jsonl——两包测试各自钉住，漂移双双报红。
+func dshVerdictRows(dataDir string) (rows []dshledger.Entry, err error) {
+	err = jsonl.ReadLines(filepath.Join(dataDir, "dshledger", "verdicts.jsonl"), func(line string) bool {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return true
+		}
+		var e dshledger.Entry
+		if json.Unmarshal([]byte(line), &e) != nil {
+			return true // 坏行跳过（宁缺勿炸——dshledger.List 读侧宽容同款）
+		}
+		rows = append(rows, e)
+		return true
+	})
+	if err != nil && os.IsNotExist(err) {
+		return []dshledger.Entry{}, nil
+	}
+	return rows, err
+}
+
 // DoctorStructured 票05：结构化体检导出入口——agent 面 MCP doctor 工具进程内
 // 复用（D6：不经 HTTP）；与 CLI runDoctor 同一套检查函数与聚合序（公式单源）。
 //
@@ -1034,6 +1227,12 @@ func providerVerdict(name string, v provider.Verdict) CheckResult {
 //
 // 纯只读：不打印、不写盘、不拉起 daemon；每次调用独立重算（无缓存）。
 func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, residency bool) []CheckResult {
+	// verify-dsh 票06：dsh_plugin_static 渡口目标（[dock] 未配置 → dshL0Seam
+	// 返回 nil → 该项 not_checked——与 CLI realDoctorDeps 同缝单源）
+	dockListen := ""
+	if cfg.Dock != nil {
+		dockListen = cfg.Dock.Listen
+	}
 	d := doctorDeps{
 		Home:        home,
 		Repo:        repo,
@@ -1051,6 +1250,9 @@ func DoctorStructured(home, repo string, cfg *config.Config, cfgPath string, res
 		Probe:      realStatsProbe(cfg.DataDir(), cfg.Server.Port),
 		// 2026-09-29 复盘件：半死形态检查真探针（渡口 TCP 拨号）
 		DialTCP: realDialTCP,
+		// verify-dsh 票06：DSH 插件 L0 静态缝（RunL0 纯读零副作用——agent 面
+		// MCP doctor 进程内复用安全；未装 DSH/[dock] 未配置 → nil → not_checked）
+		DSHL0: dshL0Seam(home, dockListen),
 	}
 	if residency {
 		d.Autostart = func() (autostartStatus, error) { return autostartStatusOf(realAutostartDeps()) }

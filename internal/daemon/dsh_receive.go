@@ -5,7 +5,8 @@ package daemon
 // POST /dsh/handoff（交接查询）。与 CC 面同构、不另起炉灶：
 // 票02（dsh-hot-compaction）起新增两口 POST /dsh/poll（轮询取压缩指令）、
 // POST /dsh/compacted（压缩结果上报）——业务本体在 compact.go，本文件只挂
-// 同一拦截族（守门序同源）。三口明细：
+// 同一拦截族（守门序同源）；verify-dsh 票01 起 /dsh/poll 到达处顺挂 L1 挂
+// 载记账钩子（noteDshLivenessPoll，dsh_liveness.go——只记账不判定，D1）。三口明细：
 //   - /dsh/gate：body 钉 agent="dsh" 后整体交 Gate——闸门判定入口唯一（台账/
 //     阈值/观察窗/observe-enforce 状态机零复制）；非 cc agent 的模式开关走
 //     gate.codex_mode（既有语义，不另设 dsh 开关）；决策回显与 CC /gate 同形
@@ -103,6 +104,7 @@ func doDshReceive(d *Daemon, token string, w http.ResponseWriter, r *http.Reques
 	case "/dsh/handoff":
 		writeJSON(w, http.StatusOK, d.DshHandoff(pyStr(body["cwd"]), pyStr(body["session_id"])))
 	case "/dsh/poll": // 票02（dsh-hot-compaction）：轮询取压缩指令
+		noteDshLivenessPoll(body) // verify-dsh 票01：L1 挂载记账（D1 只记账不判定不告警）
 		// dsh-host-guard 票02：poll 体顶层 poller→心跳入账（含插件 dispose 的
 		// offline 下线变体;缺 poller 旧体/坏形不入账——spec A 键语义）。入账后
 		// 全表生命周期评估（跃迁日志）＋惰性落盘,收口在 poller_baseline.go。
