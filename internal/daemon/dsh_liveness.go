@@ -58,7 +58,7 @@ const (
 // ---- L1 记账态（包级＋独立小锁，dshCompactMiss 同纪律） ----
 
 var (
-	dshLiveMu sync.Mutex
+	dshL1Mu sync.Mutex
 	// dshLiveLastPoll 全局最近 poll 到达时刻（0=本进程 lifecycle 内未见过 poll）。
 	dshLiveLastPoll float64
 	// dshLiveSidSeen sid → 最近被 poll 见到时刻（宿主近似粒度）。
@@ -74,8 +74,8 @@ var (
 // 脏账）；poll 到达本身无条件盖章全局时刻（payload 空也是"插件活着"证据）。
 func noteDshLivenessPoll(body map[string]any) {
 	now := clock.Now()
-	dshLiveMu.Lock()
-	defer dshLiveMu.Unlock()
+	dshL1Mu.Lock()
+	defer dshL1Mu.Unlock()
 	if dshLiveLastPoll > 0 {
 		if gap := now - dshLiveLastPoll; gap > 0 { // 时钟回拨不记负间隔
 			dshLiveGaps = append(dshLiveGaps, gap)
@@ -119,14 +119,14 @@ func noteDshLivenessPoll(body map[string]any) {
 //     摘要（harness 进程腿∨3080 端口腿，任一即"宿主在跑"）。
 func (d *Daemon) DshHealth() map[string]any {
 	now := clock.Now()
-	dshLiveMu.Lock()
+	dshL1Mu.Lock()
 	lastPoll := dshLiveLastPoll
 	sessions := make(map[string]float64, len(dshLiveSidSeen))
 	for sid, ts := range dshLiveSidSeen {
 		sessions[sid] = mathx.Round(now-ts, 1)
 	}
 	gaps := append([]float64(nil), dshLiveGaps...)
-	dshLiveMu.Unlock()
+	dshL1Mu.Unlock()
 
 	hint := 0.0
 	if d.Cfg != nil {

@@ -83,6 +83,8 @@ func newTrigEnv(t *testing.T, ttls float64) *trigEnv {
 	}, e.t0, acc, e.d, nil, nil)
 	resetCompactMiss()   // 守护可见性票01 包级态卫生（本文件 sweep/计轮用例也要）
 	resetCompactClaims() // 票01 在飞领取窗包级态同款卫生
+	resetDshLiveReports() // dsh-host-guard 票01：live 聚合记忆同款卫生
+	resetCompactBackoff() // dsh-host-guard 票01：no-agent 退避表同款卫生
 	return e
 }
 
@@ -457,4 +459,188 @@ func TestDshCompactTriggerWiredIntoPollDsh(t *testing.T) {
 	if len(enq) != 1 || enq[0] != "dsh/"+sid {
 		t.Fatalf("交接应恰入队一次（常规线被 SummarizeS 挡死，入队只可能来自触发线）: %v", enq)
 	}
+}
+
+// ---- dsh-host-guard 票01：live 聚合（spec B 逐字）＋双宿主混合＋no-agent 退避（spec D） ----
+//
+// 聚合是跨轮询的记忆态（近窗 90s）：近窗内任一 poller 报 live=true → 可执行照
+// 常触发；仅当近窗内有显式上报且全部 live=false → 压制不下发；近窗内无任何显
+// 上报（全缺键/无轮询）→ 未知 → 照旧触发（与今天行为一致）。「健康双宿主形
+// 态」（桌面 true + web 播种 false 交错）恒为可执行——false 不压制 true。
+
+// TestDshCompactTriggerLiveAggregation 聚合三分支表（B 节钉死语义）。
+func TestDshCompactTriggerLiveAggregation(t *testing.T) {
+	tt, ff := true, false
+	cases := []struct {
+		name  string
+		ttls  float64
+		setup func(e *trigEnv)
+		check func(t *testing.T, e *trigEnv)
+	}{
+		{"近窗任一live=true→照常触发", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				e.d.DshPoll(pollBodyLive(trigSID, &tt))
+			},
+			func(t *testing.T, e *trigEnv) {
+				if e.trigSlot(trigSID) == nil {
+					t.Fatal("live=true 在近窗：照常按六条件触发入槽")
+				}
+			}},
+		{"近窗全部显式false→压制", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				e.d.DshPoll(pollBodyLive(trigSID, &ff))
+			},
+			func(t *testing.T, e *trigEnv) { wantNoSlot(t, e) }},
+		{"无显式上报(无轮询)→照旧触发", 100,
+			func(e *trigEnv) { e.regTrig(80, 50000) },
+			func(t *testing.T, e *trigEnv) {
+				if e.trigSlot(trigSID) == nil {
+					t.Fatal("无任何 live 上报＝未知：与现行行为一致照旧触发")
+				}
+			}},
+		{"缺键旧体→照旧触发(前向兼容硬约束)", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				e.d.DshPoll(pollBodyLive(trigSID, nil))
+			},
+			func(t *testing.T, e *trigEnv) {
+				if e.trigSlot(trigSID) == nil {
+					t.Fatal("缺键（旧协议体）＝未知：照旧触发，旧插件行为零变化")
+				}
+			}},
+		{"显式false过90s近窗→未知→照旧触发", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				e.d.DshPoll(pollBodyLive(trigSID, &ff))
+				e.advance(91) // 唯一显式上报出窗
+			},
+			func(t *testing.T, e *trigEnv) {
+				if e.trigSlot(trigSID) == nil {
+					t.Fatal("出窗的 false 不再压制（近窗无显式上报＝未知）")
+				}
+			}},
+		{"true出窗后窗内只剩false→压制", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				e.d.DshPoll(pollBodyLive(trigSID, &tt))
+				e.advance(91)      // true 出窗
+				e.d.DshPoll(pollBodyLive(trigSID, &ff)) // 窗内唯一显式上报=false
+			},
+			func(t *testing.T, e *trigEnv) { wantNoSlot(t, e) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTrigEnv(t, tc.ttls)
+			tc.setup(e)
+			e.run()
+			tc.check(t, e)
+		})
+	}
+}
+
+// TestDshCompactTriggerDualHostMixed 双宿主混合用例（B×C 交钉）：同一 sid 宿主
+// B（播种宿主）报 false、宿主 A（活宿主）报 true，交错轮询 → 触发不被压制（false
+// 不压制 true），且槽内指令只派给 A——B 即便先来也领不走。
+func TestDshCompactTriggerDualHostMixed(t *testing.T) {
+	e := newTrigEnv(t, 100)
+	e.regTrig(80, 50000)
+	tt, ff := true, false
+	e.d.DshPoll(pollBodyLive(trigSID, &ff)) // 宿主 B 先轮询：报 false
+	e.d.DshPoll(pollBodyLive(trigSID, &tt)) // 宿主 A 交错轮询：报 true
+	e.run()                                 // 触发不被压制 → 入槽
+	if e.trigSlot(trigSID) == nil {
+		t.Fatal("双宿主混合（true+false 同窗）：false 不得压制 true,应照常入槽")
+	}
+	// 派发路由：B 报 false 即便列了该 sid 也不派——指令留槽
+	if cmds := e.d.DshPoll(pollBodyLive(trigSID, &ff))["commands"].([]map[string]any); len(cmds) != 0 {
+		t.Fatalf("播种宿主（live=false）不得领取, got %v", cmds)
+	}
+	if e.trigSlot(trigSID) == nil {
+		t.Fatal("false 宿主轮询不得清槽——指令等其活宿主")
+	}
+	// 指令只派给 A
+	if cmds := e.d.DshPoll(pollBodyLive(trigSID, &tt))["commands"].([]map[string]any); len(cmds) != 1 {
+		t.Fatalf("活宿主（live=true）应领取, got %v", cmds)
+	}
+}
+
+// TestDshCompactNoAgentBackoff no-agent 退避（spec D）：同一会话连续「领取后无
+// 成功上报」轮（执行窗结算）满阈值后进入固定 30 分钟退避——退避期内触发扫描
+// 早退不再入槽；解除条件任一：该 sid 再被报 live=true；台账 last_write 前进。
+func TestDshCompactNoAgentBackoff(t *testing.T) {
+	// spinClaimMissRounds 构造 n 轮「触发入槽→领取→执行窗走满」（每轮 ~245s）。
+	// 第 i 轮的结算发生在第 i+1 轮 run() 的 sweep——末轮领取挂账未结，由调用方
+	// 续跑结算（退避正是在那次结算的 run 里生效并早退）。
+	spin := func(e *trigEnv, t *testing.T, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			e.run()
+			if e.trigSlot(trigSID) == nil {
+				t.Fatalf("第 %d/%d 轮应入槽（未到退避阈值）", i+1, n)
+			}
+			if got := len(e.d.DshPoll(pollBody(trigSID))["commands"].([]map[string]any)); got != 1 {
+				t.Fatalf("第 %d/%d 轮应领取, got %d 条", i+1, n, got)
+			}
+			e.advance(dshCompactExecWindowS + 5)
+		}
+	}
+	t.Run("连续no-agent轮后30分钟早退,期满放行", func(t *testing.T) {
+		e := newTrigEnv(t, 100)
+		log := captureCompactLog(t)
+		e.regTrig(80, 50000)
+		spin(e, t, dshCompactMissAlertRounds)
+		e.run() // 结算末轮：连续领取后无成功上报满阈值 → 进退避 → 早退
+		if e.trigSlot(trigSID) != nil {
+			t.Fatal("退避期内触发扫描应早退,不得入槽")
+		}
+		if got := e.enqTryList(); len(got) != 1 {
+			t.Fatalf("退避期内不重摆交接（首摆之外零尝试）, got %v", got)
+		}
+		if !strings.Contains(log.String(), "退避") {
+			t.Fatalf("进退避应落显著日志: %q", log.String())
+		}
+		e.advance(60) // 退避期内（30min）多轮扫描照旧早退
+		e.run()
+		if e.trigSlot(trigSID) != nil {
+			t.Fatal("退避期内多轮扫描照旧早退")
+		}
+		e.advance(30*60 - 60 + 1) // 越过 30 分钟死线
+		e.run()
+		if e.trigSlot(trigSID) == nil {
+			t.Fatal("退避期满应放行重入槽（六条件仍真）")
+		}
+	})
+	t.Run("再报live=true即解除", func(t *testing.T) {
+		e := newTrigEnv(t, 100)
+		e.regTrig(80, 50000)
+		spin(e, t, dshCompactMissAlertRounds)
+		e.run() // 进退避
+		if e.trigSlot(trigSID) != nil {
+			t.Fatal("前置：退避内不得入槽")
+		}
+		tt := true
+		e.d.DshPoll(pollBodyLive(trigSID, &tt)) // 任一宿主再报 live=true → 解除
+		e.run()
+		if e.trigSlot(trigSID) == nil {
+			t.Fatal("live=true 上报应即解除退避,照常入槽")
+		}
+	})
+	t.Run("台账last_write前进即解除", func(t *testing.T) {
+		e := newTrigEnv(t, 100)
+		e.regTrig(80, 50000)
+		spin(e, t, dshCompactMissAlertRounds)
+		e.run() // 进退避
+		if e.trigSlot(trigSID) != nil {
+			t.Fatal("前置：退避内不得入槽")
+		}
+		// 用户回流：台账 last_write 前进到 now-80（闲置仍过触发线）
+		e.led.TouchFull("dsh", trigSID, e.trigPath(), *e.now-80, 10, "C:/proj", "",
+			50000, 0)
+		e.run()
+		if e.trigSlot(trigSID) == nil {
+			t.Fatal("last_write 前进（用户回流）应解除退避,照常入槽")
+		}
+	})
 }

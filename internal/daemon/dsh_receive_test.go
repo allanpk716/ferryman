@@ -374,6 +374,55 @@ func TestDshEventDefensive(t *testing.T) {
 	}
 }
 
+// ---- ⑥ poller 心跳入账（dsh-host-guard 票02）：/dsh/poll 顶层 poller→基线 ----
+
+// TestDshPollerHeartbeatHook 接收面钩子钉子：poll 体顶层 poller→心跳入账;
+// offline 变体（插件 dispose 上报形）→置下线标记;缺 poller（旧协议体）与
+// 非字符串坏形→不入账不判（spec A 键语义）。心跳挂 doDshReceive 拦截器——
+// 直调 DshPoll 的旧测试形态不带心跳（与旧体同待遇）。
+func TestDshPollerHeartbeatHook(t *testing.T) {
+	e := newPollerEnv(t)
+	h := makeHandler(e.d, "tok-dsh", nil, nil)
+
+	// 正常 poll 体带 poller：心跳入账（online）。
+	rec := dshPost(h, "tok-dsh", "/dsh/poll",
+		`{"agent":"dsh","poller":"desktop","sessions":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/dsh/poll = %d %q", rec.Code, rec.Body.String())
+	}
+	if got := pollerStateOfName(e, "desktop"); got != "online" {
+		t.Fatalf("poll 体 poller 应入账 online, got %q", got)
+	}
+
+	// offline 变体（dispose 上报形 {agent, poller, offline:true, sessions:[]}）：
+	// 置下线标记（生命周期 offline,不再判 stale）。
+	rec = dshPost(h, "tok-dsh", "/dsh/poll",
+		`{"agent":"dsh","poller":"desktop","offline":true,"sessions":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("offline 变体 = %d %q", rec.Code, rec.Body.String())
+	}
+	if got := pollerStateOfName(e, "desktop"); got != "offline" {
+		t.Fatalf("offline 变体应置下线标记, got %q", got)
+	}
+
+	// 旧协议体（缺 poller）与坏形（非字符串）：不入账。独立环境——前段心跳已
+	// 落盘的基线在重启等价读面会自盘恢复（roundtrip 语义）,与本断言无关。
+	e2 := newPollerEnv(t)
+	h2 := makeHandler(e2.d, "tok-dsh", nil, nil)
+	for _, body := range []string{
+		`{"agent":"dsh","sessions":[]}`,
+		`{"agent":"dsh","poller":123,"sessions":[]}`,
+	} {
+		rec = dshPost(h2, "tok-dsh", "/dsh/poll", body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("旧体/坏形 = %d %q", rec.Code, rec.Body.String())
+		}
+	}
+	if got := e2.d.dshPollerStates(); len(got) != 0 {
+		t.Fatalf("旧体/坏形不得入账: %+v", got)
+	}
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

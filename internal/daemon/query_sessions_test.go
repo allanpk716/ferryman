@@ -455,9 +455,11 @@ func TestQueryStatsHTTPContractUnchanged(t *testing.T) {
 		"last_gate_call_s_ago", "last_transcript_write_s_ago", "subagents_active",
 		"subagent_events_total", "health_alert", "health_msg", "qwatch",
 		"version",
-		"dock_inflight", "last_request_ts") { // glm_balance 已于 2026-09-25 下线（编码套餐 key 恒失败死面）；
+		"dock_inflight", "last_request_ts",
+		"pollers") { // glm_balance 已于 2026-09-25 下线（编码套餐 key 恒失败死面）；
 		// version 为票02（规格 §A）Go 侧增量字段；dock_inflight/last_request_ts 为
-		// 票01 W1（升级链可靠性 §Implementation Decisions 1）增量字段——字段集变化必须走本钉即改即审
+		// 票01 W1（升级链可靠性 §Implementation Decisions 1）增量字段；pollers 为
+		// dsh-host-guard 票03（spec F 主动暴露面）增量字段——字段集变化必须走本钉即改即审
 		t.Fatalf("/stats 字段集漂移: %v", keys(resp))
 	}
 }

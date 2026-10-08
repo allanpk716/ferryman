@@ -21,6 +21,7 @@ import {
   COMPACT_SOURCE,
   DEFAULT_POLL_INTERVAL_MS,
   SessionRegistry,
+  derivePollerName,
   startPollLoop,
   type PollDeps,
   type PollLoopHandle,
@@ -162,7 +163,7 @@ test("轮询循环真节律：interval 到点真发 /dsh/poll;stop 后不再新�
 
 // ---- ② poll 请求形状 ----
 
-test("poll 请求形状：{agent:'dsh', sessions:[{sid, idle_s}]} + Bearer 鉴权", async (t) => {
+test("poll 请求形状：{agent:'dsh', poller, sessions:[{sid, idle_s, live}]} + Bearer 鉴权", async (t) => {
   const mock = await mockFor(t);
   mock.route("/dsh/poll", () => ({ status: 200, json: { commands: [] } }));
   let clock = 1_000_000_000_000;
@@ -176,7 +177,47 @@ test("poll 请求形状：{agent:'dsh', sessions:[{sid, idle_s}]} + Bearer 鉴�
   const req = mock.requestsFor("/dsh/poll").at(-1)!; // 首轮是挂载即发（idle 0）,取手动轮
   assert.equal(req.path, "/dsh/poll");
   assert.equal(req.auth, "Bearer tok-c5");
-  assert.deepEqual(req.body, { agent: "dsh", sessions: [{ sid: SID, idle_s: 7 }] });
+  const body = req.body as Record<string, unknown>;
+  assert.equal(body["agent"], "dsh");
+  assert.equal(typeof body["poller"], "string", "顶层 poller=宿主身份名（dsh-host-guard spec A）");
+  assert.ok((body["poller"] as string).length > 0, "poller 非空（标准路径取名/非标准 unknown- 后缀）");
+  assert.deepEqual(body["sessions"], [{ sid: SID, idle_s: 7, live: true }],
+    "会话条目带 live（agent 活引用非空=true——spec A）");
+});
+
+// ---- ②b live 三值与 poller 名推导（dsh-host-guard 票01 spec A） ----
+
+test("live 随注册表 agent 引用：活引用=true;播种条目（无 agent）=false——播种宿主从此领不到也压不住", async (t) => {
+  const mock = await mockFor(t);
+  mock.route("/dsh/poll", () => ({ status: 200, json: { commands: [] } }));
+  const registry = new SessionRegistry();
+  registry.touch(SID, "C:/proj", { session: { header: { id: SID, cwd: "C:/proj" } } }); // 活引用
+  registry.seedRegister("s-seeded", { cwd: "C:/proj" }); // 播种条目（2026-10-08 事故形态）
+  assert.equal(registry.get("s-seeded")?.agent, undefined, "前置:播种条目无活 agent 引用");
+  const handle = await startSettled(t, mock, { logger: makeLogger(), registry, intervalMs: 30000 });
+  await handle.tick();
+  await waitUntil(() => mock.requestsFor("/dsh/poll").length >= 2);
+  const sessions = (mock.requestsFor("/dsh/poll").at(-1)!.body as Record<string, unknown>)["sessions"] as Array<Record<string, unknown>>;
+  const bySid = new Map(sessions.map((s) => [s["sid"], s["live"]]));
+  assert.equal(bySid.get(SID), true, "活 agent 引用 → live:true");
+  assert.equal(bySid.get("s-seeded"), false, "播种条目（agent 缺）→ live:false");
+});
+
+test("derivePollerName：标准 profiles 路径取名（URL 解码）;非标准路径 unknown- 后缀进程内稳定", () => {
+  assert.equal(
+    derivePollerName("file:///C:/Users/u/.dsh/profiles/desktop/node_modules/ferryman-dsh/src/compact.ts"),
+    "desktop",
+    "标准三拷贝形态取 <name>",
+  );
+  assert.equal(
+    derivePollerName("file:///C:/Users/u/.dsh/profiles/web%20app/node_modules/ferryman-dsh/src/index.ts"),
+    "web app",
+    "URL 编码名解码",
+  );
+  const a = derivePollerName("file:///C:/somewhere/src/compact.ts");
+  assert.match(a, /^unknown-[a-z0-9]{6}$/, "非标准路径 → unknown-<6 位短随机后缀>");
+  assert.equal(a, derivePollerName("file:///C:/other/src/registry.ts"),
+    "同模块实例内后缀稳定（进程内稳定,非标准路径多实例各持各的模块状态——F10）");
 });
 
 // ---- ③ poll_hint_s 调整与 10s 下限 ----

@@ -40,9 +40,9 @@ func newDshLivenessEnv(t *testing.T) *gateEnv {
 // 进程多用例防跨用例渗漏）＋探针缝与目标口还原（Cleanup 兜底）。
 func resetDshLiveness(t *testing.T) {
 	t.Helper()
-	dshLiveMu.Lock()
+	dshL1Mu.Lock()
 	dshLiveLastPoll, dshLiveSidSeen, dshLiveGaps = 0, nil, nil
-	dshLiveMu.Unlock()
+	dshL1Mu.Unlock()
 	origProbe, origPort := dshHostProbe, dshHostProbePort
 	t.Cleanup(func() { dshHostProbe, dshHostProbePort = origProbe, origPort })
 }

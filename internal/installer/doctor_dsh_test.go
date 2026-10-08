@@ -172,8 +172,11 @@ func TestDoctorDshPluginStaticNotCheckedWithoutAssembly(t *testing.T) {
 	if r.Status != StatusNotChecked {
 		t.Fatalf("缝未装配应 not_checked（如实标注不伪造）: %+v", r)
 	}
-	if res[len(res)-1].Name != "dsh_plugin_static" {
-		t.Fatalf("dsh_plugin_static 应居末位（连续块）: 末项=%s", res[len(res)-1].Name)
+	// 合并 main 后（PR#15）：末位序=dsh_plugin_static → dsh_poller_sentinel
+	//（并行链哨兵续接末位；本项居其前，仍是连续块末段）。
+	last, second := res[len(res)-1].Name, res[len(res)-2].Name
+	if last != "dsh_poller_sentinel" || second != "dsh_plugin_static" {
+		t.Fatalf("末位序应 dsh_plugin_static→dsh_poller_sentinel: 末项=%s,次项=%s", last, second)
 	}
 	var out strings.Builder
 	deps.Out = &out
@@ -263,12 +266,14 @@ func TestDoctorDshL0SeamAssembly(t *testing.T) {
 
 // TestDoctorDshNoPollLivenessItems 撤销项防回归钉子（票06 改票）：本泳道不
 // 新增任何 poll/活性检查项——挂载活性归并行链 dsh_poller_sentinel（互补不
-// 重复），doctor 检查项名面不得出现 dsh_poll*。
+// 重复），doctor 检查项名面不得出现 dsh_poll*。合并 main 后（PR#15）并行链
+// 哨兵已入主干：豁免名单=dsh_poller_sentinel 本尊；本链自建的重复项
+// （原 dsh_poll_age 撤销项）不得以任何名目回流。
 func TestDoctorDshNoPollLivenessItems(t *testing.T) {
 	deps, _ := greenDoctorDeps(t, func() map[string]any { return map[string]any{"health_alert": false} })
 	deps.DSHL0 = func() []dshverify.CheckResult { return okL0("44.0.0") }
 	for _, r := range doctorResults(deps) {
-		if strings.Contains(r.Name, "dsh_poll") {
+		if strings.Contains(r.Name, "dsh_poll") && r.Name != "dsh_poller_sentinel" {
 			t.Fatalf("不得新增 poll/活性检查项（票06 撤销项——归并行链 dsh_poller_sentinel）: %s", r.Name)
 		}
 	}

@@ -105,6 +105,10 @@ func doDshReceive(d *Daemon, token string, w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, d.DshHandoff(pyStr(body["cwd"]), pyStr(body["session_id"])))
 	case "/dsh/poll": // 票02（dsh-hot-compaction）：轮询取压缩指令
 		noteDshLivenessPoll(body) // verify-dsh 票01：L1 挂载记账（D1 只记账不判定不告警）
+		// dsh-host-guard 票02：poll 体顶层 poller→心跳入账（含插件 dispose 的
+		// offline 下线变体;缺 poller 旧体/坏形不入账——spec A 键语义）。入账后
+		// 全表生命周期评估（跃迁日志）＋惰性落盘,收口在 poller_baseline.go。
+		d.dshPollerBeatFromPoll(body)
 		writeJSON(w, http.StatusOK, d.DshPoll(body))
 	case "/dsh/compacted": // 票02：压缩结果上报（账本 kind=compacted＋标记/前缀）
 		writeJSON(w, http.StatusOK, d.DshCompacted(body))
