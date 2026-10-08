@@ -3,9 +3,11 @@
 // 编排序（票面）：L0（本包 RunL0，票02）→ L1（daemon 管理口 GET /dsh/health，
 // 票01，经 health_client.go）→ 灯色判定（Judge，表驱动纯函数）→ dshledger 记
 // 流水（票03；daemon 版本取生产 daemon /stats 自报，守护不在则记 CLI 自身版本
-// 并以 "cli:" 前缀注明）。L2 留显式接缝（ProbeRunner；票05 填充）——未装配时
-// 输出「L2 探针: 未装配」，整体判定降为未完成验证（黄）：不落锚、不滚已知
-// 良好指针、不推告警（没有红灯依据）。
+// 并以 "cli:" 前缀注明）。L2 接缝（ProbeRunner）已由票05 填充：实现＝
+// internal/dshsandbox.Probe（沙箱起栈＋四痕＋压缩链两道探针），装配点在 CLI
+// 层（cmd/ferryman cmdVerifyDsh 传 Options.Probe——本包与 dshsandbox 是被装配
+// 关系，不互相 import）。未装配时输出「L2 探针: 未装配」，整体判定降为未完成
+// 验证（黄）：不落锚、不滚已知良好指针、不推告警（没有红灯依据）。
 //
 // 灯色规则（spec「灯色、输出与告警」节＝契约；红压倒黄、绿优先于「未验证」黄
 // ——verify 跑完即落新行消除未验证态）：
@@ -68,10 +70,11 @@ func FactsFromHealth(h *Health) *L1Facts {
 	return f
 }
 
-// ---- L2 接缝（票05 填充） ----
+// ---- L2 接缝（票05 已填充） ----
 
 // ProbeRunner L2 沙箱探针接缝：nil＝未装配（本轮输出「未装配」、整体判定降为
-// 未完成验证）。票05 用已安装生产 exe 起沙箱第二实例实现；本包只消费结果。
+// 未完成验证）。实现＝internal/dshsandbox.Probe（NewProbe 装配、经 CLI 层注回
+// Options.Probe）；本包只消费结果。
 type ProbeRunner interface {
 	// Run 起沙箱栈跑探针断言。error＝执行出错（沙箱起栈失败等基础设施故障，
 	// 未完成验证非断言失败）；断言失败用 ProbeResult.Green=false 表达。
