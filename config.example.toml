@@ -104,6 +104,19 @@ window = 1048576
 # 拦截通知（T25）：block 时 Pushover（手机）+ Windows Toast（桌面），文案带交接路径。
 # enabled 默认 false；凭据留空则回落环境变量 PUSHOVER_TOKEN / PUSHOVER_USER
 # （与 claude-notify 插件共用同一对，HKCU 用户级）。
+#
+# 通知分级（九事件三值）：每类事件一个开关，off=不发 / toast=仅桌面 /
+# both=双通道。内置缺省：chain_degrade（链滑落，顺位级状态变化制）、
+# chain_skeleton（骨架交接）、breaker（熔断）、upgrade（升级结果）、
+# hard_cut（静默门硬切）、drift（漂移）= both；block（闸门拦截）与
+# tray_reply（托盘回复）= toast；tuning（调参通报）= off。
+# 不写 events 或只写部分键时，其余事件回落内置缺省表（缺省可随升级演进）；
+# 写了的键按显式值生效。
+#
+# events 必须写成 [notify] 节内的内联表键（如下例，整表占一行），不要另立
+# [notify.events] 子表头——设置视图保存时对带子表节的整写会保守拒，
+# 整个 [notify] 节将不可写。
+# events = { block = "both", tuning = "toast" }
 enabled = true
 pushover = true
 toast = true
