@@ -119,17 +119,23 @@ func SendToast(title, message string) bool {
 }
 
 // 分派事件名（票02 通知分级）：config.NotifyEventNames 九名单的 notify 侧取用
-// 常量——本包触发点四个（block/chain_degrade/chain_skeleton/tuning），其余
-// 事件常量随各自接线票落位。字符串值即配置键（D2：事件名即配置键）。
+// 常量——block/chain_degrade/chain_skeleton/tuning 随票02 落位，
+// breaker/upgrade/hard_cut/drift/tray_reply 随票03 接线落位。字符串值即配置
+// 键（D2：事件名即配置键）。
 const (
 	EventBlock         = "block"
 	EventChainDegrade  = "chain_degrade"
 	EventChainSkeleton = "chain_skeleton"
+	EventBreaker       = "breaker"
+	EventUpgrade       = "upgrade"
+	EventHardCut       = "hard_cut"
+	EventDrift         = "drift"
 	EventTuning        = "tuning"
+	EventTrayReply     = "tray_reply"
 )
 
 // pushoverSend Pushover 通道发送（凭据回落环境变量的单源）：通道开关关/缺凭据
-// → 静默跳过。NotifyAlert（both 直发）与 NotifyEvent（事件分派）共用。
+// → 静默跳过。NotifyEvent 各事件（both 档）共用。
 func pushoverSend(title, message string, n config.NotifyCfg) {
 	if !n.Pushover {
 		return
@@ -163,7 +169,7 @@ func eventTier(event string, n config.NotifyCfg) config.NotifyEventTier {
 // off 不发 / toast 仅桌面 / both 双通道；[notify].pushover/.toast 通道开关是
 // 通道维度上限（事件值与通道开关做与运算）；enabled=false 全静默（总开关
 // 优先）。同步发送、绝不抛出（recover 双保险）；是否异步由调用方决定
-//（与 NotifyAlert 同纪律）。
+//（与 NotifyBlock 同纪律）。
 func NotifyEvent(event, title, message string, cfg *config.Config) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -185,27 +191,6 @@ func NotifyEvent(event, title, message string, cfg *config.Config) {
 			SendToast(title, message)
 		}
 	} // off 与未知值：静默
-}
-
-// NotifyAlert T51 通用告警（问询守望熔断等）：双通道 best-effort，只发元信息
-// 文案。同步发送、绝不抛出（recover 双保险：通道内部已吞，这里兜组装层）；
-// 是否异步由调用方决定（与 NotifyBlock 同纪律）。
-// 票02：语义=both 直发（过渡期保留——尚未接事件分派的调用点不破编译；
-// breaker/upgrade/hard_cut/drift/tray_reply 随各自接线票迁移）。
-func NotifyAlert(title, message string, cfg *config.Config) {
-	defer func() { // Python except Exception → print 兜底同位
-		if r := recover(); r != nil {
-			fmt.Printf("[notify] 通知失败（忽略）: %v\n", r)
-		}
-	}()
-	n := cfg.Notify
-	if !n.Enabled {
-		return
-	}
-	pushoverSend(title, message, n)
-	if n.Toast {
-		SendToast(title, message)
-	}
 }
 
 // NotifyBlock 拦截发生：通知走 block 事件分派（票02 D2 缺省 toast——人被拦时

@@ -468,8 +468,8 @@ func updateCheckFlow(eps update.Endpoints, current string, push func(title, msg 
 }
 
 // trayCheckUpdate 托盘「检查更新」点击入口：真实端点只读检查，结论经
-// NotifyAlert 推送（票05 已接线的双通道）；config 载不动就不推——旁路尽力
-// 而为，与 runUpdateExecute 同纪律。
+// NotifyEvent(tray_reply) 分派推送（票05 接线双通道、票03 收编事件分派——
+// 缺省 toast）；config 载不动就不推——旁路尽力而为，与 runUpdateExecute 同纪律。
 func trayCheckUpdate() {
 	var cfg *config.Config
 	if c, err := config.Load("", false); err == nil {
@@ -477,7 +477,7 @@ func trayCheckUpdate() {
 	}
 	updateCheckFlow(update.Endpoints{}, version, func(title, msg string) {
 		if cfg != nil {
-			notify.NotifyAlert(title, msg, cfg)
+			notify.NotifyEvent(notify.EventTrayReply, title, msg, cfg)
 		}
 	})
 }
@@ -814,9 +814,8 @@ func orderFlagPairsFirst(args []string, valueFlags ...string) []string {
 // runUpdateExecute 监督者执行路径（var 形 = main_test 注入缝，不真升级）。
 // 装配：config 可载则用其 DataDir/守护口，载不动回落缺省（~/ferryman、15700）
 // ——升级不应因配置坏而不可用。结果 stdout 报告 + notify 通道推送（seam F，
-// 规格 §C 第10条：NotifyAlert 已是通用双通道函数，notify 包零改动）；同一
-// 通道也接进监督者事务告警（票03 评审移交的生产接线）与静默门兜底告警
-// （票02：门未达成非交互硬切前一条）。
+// 规格 §C 第10条；票03 收编事件分派：升级结果与监督者事务告警走 upgrade
+// 事件，静默门硬切兜底走 hard_cut 事件——两者三值开关分列，各装配各缝）。
 var runUpdateExecute = func(spec string, pre bool, waitQuiet int, force bool, w io.Writer) int {
 	dataDir, port := "", update.DefaultDaemonPort
 	var cfg *config.Config
@@ -837,7 +836,12 @@ var runUpdateExecute = func(spec string, pre bool, waitQuiet int, force bool, w 
 		Force:      force,
 		Alert: func(title, msg string) {
 			if cfg != nil {
-				notify.NotifyAlert(title, msg, cfg) // 旁路尽力而为（NotifyAlert 内已护）
+				notify.NotifyEvent(notify.EventUpgrade, title, msg, cfg) // 旁路尽力而为（NotifyEvent 内已护）
+			}
+		},
+		AlertHardCut: func(title, msg string) {
+			if cfg != nil {
+				notify.NotifyEvent(notify.EventHardCut, title, msg, cfg) // 旁路尽力而为
 			}
 		},
 	}).Run()
@@ -855,7 +859,7 @@ var runUpdateExecute = func(spec string, pre bool, waitQuiet int, force bool, w 
 	}
 	fmt.Fprintln(w, summary)
 	if cfg != nil {
-		notify.NotifyAlert("Ferryman 升级", summary, cfg) // 旁路尽力而为
+		notify.NotifyEvent(notify.EventUpgrade, "Ferryman 升级", summary, cfg) // 旁路尽力而为
 	}
 	if res.Success {
 		return 0

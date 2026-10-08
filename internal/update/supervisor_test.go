@@ -935,8 +935,8 @@ func TestQuietGatePassesAfterTrafficDrains(t *testing.T) {
 }
 
 // TestQuietGateWaitsBudgetThenAlertsHardCut 判据不满足:等满预算后非交互
-// 缺省(测试 stdin 非终端)→ notify 告警一条并硬切放行;logf(update.log)有
-// 硬切兜底记录行(带在途观测)。
+// 缺省(测试 stdin 非终端)→ hard_cut 事件缝告警一条(票03 缝拆分)并硬切放行;
+// logf(update.log)有硬切兜底记录行(带在途观测)。
 func TestQuietGateWaitsBudgetThenAlertsHardCut(t *testing.T) {
 	forceNonInteractive(t)
 	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
@@ -944,7 +944,7 @@ func TestQuietGateWaitsBudgetThenAlertsHardCut(t *testing.T) {
 	})
 	startStatsStub(t, w.port, statsHandler(http.StatusOK, 2, time.Now().Unix()-3))
 	var alerts []string
-	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	sup.cfg.AlertHardCut = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
 	start := time.Now()
 	if err := sup.quietGate(); err != nil {
 		t.Fatalf("兜底应放行硬切(不中止): %v", err)
@@ -965,14 +965,14 @@ func TestQuietGateWaitsBudgetThenAlertsHardCut(t *testing.T) {
 }
 
 // TestQuietGateAlertPanicDoesNotBlock 告警通道故障(panic)不阻塞兜底放行,
-// 硬切行照记。
+// 硬切行照记(票03:硬切走 AlertHardCut 缝,注桩跟迁)。
 func TestQuietGateAlertPanicDoesNotBlock(t *testing.T) {
 	forceNonInteractive(t)
 	w, sup := newUpdateWorld(t, nil, func(c *Config, _ *updateWorld) {
 		c.WaitQuiet = 200 * time.Millisecond
 	})
 	startStatsStub(t, w.port, statsHandler(http.StatusOK, 1, 0))
-	sup.cfg.Alert = func(string, string) { panic("通道坏") }
+	sup.cfg.AlertHardCut = func(string, string) { panic("通道坏") }
 	if err := sup.quietGate(); err != nil {
 		t.Fatalf("告警失败不得阻塞事务: %v", err)
 	}
@@ -1063,7 +1063,7 @@ func TestQuietGateBranchStatsUnreachable(t *testing.T) {
 		t.Fatal(err)
 	}
 	var alerts []string
-	sup.cfg.Alert = func(title, msg string) { alerts = append(alerts, title+"|"+msg) }
+	sup.cfg.AlertHardCut = func(title, msg string) { alerts = append(alerts, title+"|"+msg) } // 票03:硬切告警走 hard_cut 缝
 	start := time.Now()
 	if err := sup.quietGate(); err != nil {
 		t.Fatalf("分支②应直接进兜底: %v", err)

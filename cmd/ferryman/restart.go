@@ -8,7 +8,8 @@ package main
 // 回滚源=<dataDir>/backups/config/last-healthy.toml（daemon 启动成功点盖章），
 // 在场且可整装 Load → RollbackPort=其 [server].port；缺席/不通过 → RollbackPort=0
 // 并打一行「无有效回滚源」。Alert 装配照 runUpdateExecute 先例
-// （notify.NotifyAlert 旁路尽力而为）。结果人话打印，成功 exit 0 / 失败 exit 1。
+// （notify.NotifyEvent(tray_reply) 旁路尽力而为——票03 收编事件分派，缺省
+// toast）。结果人话打印，成功 exit 0 / 失败 exit 1。
 
 import (
 	"flag"
@@ -103,7 +104,7 @@ func cmdRestart(args []string, w io.Writer) int {
 		ToPort:       toPort,
 		RollbackPort: rollbackPort,
 		Alert: func(title, msg string) {
-			notify.NotifyAlert(title, msg, cfg) // 旁路尽力而为（NotifyAlert 内已护）
+			notify.NotifyEvent(notify.EventTrayReply, title, msg, cfg) // 旁路尽力而为（NotifyEvent 内已护）
 		},
 	})
 	switch {

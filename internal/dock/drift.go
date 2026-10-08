@@ -105,9 +105,10 @@ func (t *DriftTracker) fire(msg string) {
 }
 
 // AlertViaNotify notify 接线闭包（daemon 侧 Options.Alert 用）：漂移推送走
-// 既有 NotifyAlert 双通道。本包只调用不改 notify（文案归票08 并行泳道）。
+// 事件分派 NotifyEvent(EventDrift)（票03 通知分级收编旧 NotifyAlert——本包
+// 只调用不改 notify；文案归票08 并行泳道）。
 func AlertViaNotify(cfg *config.Config) func(title, message string) {
 	return func(title, message string) {
-		notify.NotifyAlert(title, message, cfg)
+		notify.NotifyEvent(notify.EventDrift, title, message, cfg)
 	}
 }
