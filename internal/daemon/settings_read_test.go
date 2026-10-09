@@ -330,6 +330,35 @@ func TestSettingsReadNotifyEventsEffective(t *testing.T) {
 	}
 }
 
+// TestSettingsReadServesDiskNotMemory 2026-10-09 事故回归钉子：盘上与内存分叉
+// 时（节级 PUT 落盘后未重启、或外部手改），读面必须回盘上现值——曾回内存生
+// 效值，UI 保存后 refreshData 重渲染显示旧值（「改的都还原了」），开关即时
+// 保存更把旧值再写回盘（审计 toast:true 回写实证）。对账读面语义（GET
+// /settings/ferry 票04④ 同款）。
+func TestSettingsReadServesDiskNotMemory(t *testing.T) {
+	e, cfgPath := newSettingsEnv(t)
+	rawCfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 前提：夹具 [notify].enabled=false 唯一命中，翻盘上为 true、内存不动。
+	if got := strings.Count(string(rawCfg), "enabled = false"); got != 1 {
+		t.Fatalf("夹件 enabled = false 应唯一命中（现 %d 处），测试前提不成立", got)
+	}
+	if err := os.WriteFile(cfgPath,
+		[]byte(strings.Replace(string(rawCfg), "enabled = false", "enabled = true", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if e.d.Cfg.Notify.Enabled != false {
+		t.Fatal("夹具内存 notify.enabled 应仍为 false（前提：内存未换挡）")
+	}
+	_, resp := srGet(t, e)
+	notify := resp["config"].(map[string]any)["notify"].(map[string]any)
+	if notify["enabled"] != true {
+		t.Fatalf("读面 config.notify.enabled = %v, want true（盘上现值，对账读面）", notify["enabled"])
+	}
+}
+
 func TestSettingsReadEffectsOperationLevel(t *testing.T) {
 	e, _ := newSettingsEnv(t)
 	_, resp := srGet(t, e)

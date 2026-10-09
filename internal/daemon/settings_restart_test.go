@@ -714,6 +714,47 @@ func TestSnapshotPruneKeepsLastHealthy(t *testing.T) {
 
 // TestSettingsRestartGuards 守门面（管理端点族同序）：非 loopback 403；GET
 // 405（带 Allow）；错 token 401；替身（非 *Daemon）404；非对象 body 400。
+// TestSettingsRestartPreflightAnswered 预检不被管理端点守门吞掉（2026-10-09
+// 设置窗「重启守护」Failed to fetch 事故钉子）：OPTIONS /settings/restart 曾
+// 落进 doSettingsRestart 的非 POST 405（无 Access-Control-Allow-Methods），浏
+// 览器判预检失败、真 POST 根本不发。白名单源须答 204+全头；白名单外维持
+// 501 未实现原样。/settings/dock/switch 同病同修（同被方法守门拦截），由
+// 本钉子一并罩住（预检在管理端点拦截之前统一应答）。
+func TestSettingsRestartPreflightAnswered(t *testing.T) {
+	e, _ := newSettingsEnv(t)
+	do := func(origin string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodOptions,
+			fmt.Sprintf("http://127.0.0.1:%d/settings/restart", e.port), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+		req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("OPTIONS 预检 /settings/restart: %v", err)
+		}
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		return resp
+	}
+	resp := do("http://tauri.localhost")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("白名单源预检 = %d, want 204（405=被管理端点守门吞掉，Failed to fetch 根因）", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://tauri.localhost" {
+		t.Fatalf("预检 ACAO = %q, want 回声", got)
+	}
+	if m := resp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(m, http.MethodPost) {
+		t.Fatalf("预检 Allow-Methods = %q, 缺 POST", m)
+	}
+	// 白名单外：不答预检（501 原样），任意网页不得借本端点过关。
+	if resp := do("https://evil.example"); resp.StatusCode == http.StatusNoContent {
+		t.Fatalf("白名单外预检不应 204: %d", resp.StatusCode)
+	}
+}
+
 func TestSettingsRestartGuards(t *testing.T) {
 	e, _ := srstNewEnv(t)
 	srstStubSeams(t, nil)

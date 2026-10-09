@@ -131,7 +131,7 @@ async function api(path, opts) {
     method: opts.method || 'GET',
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(opts.timeoutMs || 8000), // restart 专用长超时（静默门最长 60s）
   });
   let data = null;
   try { data = await r.json(); } catch { /* 非 JSON 回话 */ }
@@ -1013,9 +1013,12 @@ $('#btnRestart').addEventListener('click', () => {
     async () => {
       // 一进回调就进保护态：禁用重启按钮 + 关掉可能开着的确认弹窗，POST 在途期间防手滑
       $('#btnRestart').disabled = true;
+      $('#btnRestart').textContent = '正在安排重启…'; // POST 在途可见状态（静默门最长 60s，不是卡死）
       closeConfirm();
       try {
-        const r = await api('/settings/restart', { method: 'POST', body: {} });
+        // 静默门会先等在途请求跑完（预算 60s 硬切）才回 200——共用 8s 超时必
+        // 假报失败（服务端其实继续重启），这里专用 90s 预算。
+        const r = await api('/settings/restart', { method: 'POST', body: {}, timeoutMs: 90000 });
         const candidates = [];
         if (r && r.new_port) candidates.push('http://127.0.0.1:' + r.new_port); // 改了端口：先试新口
         candidates.push(BASE); // 再回落当前地址
@@ -1023,6 +1026,7 @@ $('#btnRestart').addEventListener('click', () => {
       } catch (e) {
         // 400=重启前检查没过，守护没动过：红字报人话原因，按钮恢复可点
         $('#btnRestart').disabled = false;
+        $('#btnRestart').textContent = '重启守护';
         toast('重启没批下来：' + e.message, null, true);
       }
     }
