@@ -9,8 +9,10 @@ type DshCompactCfg struct {
 	// TriggerRatio 触发线：闲置 ≥ trigger_ratio×TTL（默认 0.8＝缓存还热时压，
 	// D1「拦你之前先救你」）。触发判定本体在 watcher 触发面（票03），本节供值。
 	TriggerRatio float64
-	// MinPeakTokens peak_ctx ≥ 此值才值得压（默认 20000；只管「值得压」——
-	// 压缩红利要盖过冷重付才划算。放行线已解耦，勿再拿本键当闸门放行阈值）。
+	// MinPeakTokens 红利门槛（默认 20000；只管「值得压」——压缩红利要盖过
+	// 冷重付才划算。2026-10-09 d5927238 空转案起分两腿：从未压过＝peak_ctx ≥
+	// 此值；压过＝较上次压缩后前缀（标记 PostPrefix）的新增长 ≥ 此值——纯
+	// 闲置增量为零不再重压。放行线已解耦，勿再拿本键当闸门放行阈值）。
 	MinPeakTokens int
 	// PassFloorTokens 放行地板（v0.9.3 放行线解耦）：压后前缀 <
 	// max(本值, pass_ratio×压前峰值) 时闸门放行（compacted-short-prefix）。

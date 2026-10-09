@@ -3,13 +3,15 @@ package daemon
 // compact_trigger.go — dsh-hot-compaction 票03：daemon 触发判定接线（守望扫
 // 描入槽＋并行交接）。票01 2026-10-07 修订：在飞领取窗结算前置＋重触发节流。
 //
-// 触发面（spec「架构与契约」daemon 节逐字，票01 增补在飞窗一道）：watcher
+// 触发面（spec「架构与契约」daemon 节逐字，票01 增补在飞窗一道；2026-10-09
+// 空转案把条件②的绝对门槛改增量）：watcher
 // 扫描（pollDshSession 尾，maybeDshRegen 之后——重铸线优先，HandedOffAt 章
 // 使两线同轮至多入队一次）按六条件判定：
 //
-//	闲置 ≥ trigger_ratio×TTL ∧ peak_ctx ≥ min_peak_tokens ∧ 无在途请求
-//	（族系运行态 DshFamilyRunning）∧ 无有效 compressed 标记 ∧ 无在飞领取窗
-//	（票01）∧ 无未过期在槽指令
+//	闲置 ≥ trigger_ratio×TTL ∧ 红利门槛（从未压过＝peak_ctx ≥ min_peak_tokens；
+//	压过＝较上次压缩后前缀的新增长 ≥ min_peak_tokens，见条件②节内注）∧
+//	无在途请求（族系运行态 DshFamilyRunning）∧ 无有效 compressed 标记 ∧
+//	无在飞领取窗（票01）∧ 无未过期在槽指令
 //
 // dsh-host-guard 票01（2026-10-08 事故）在六条件前加两道宿主防护闸（先于一切
 // 条件判定、后于在飞窗结算）：no-agent 退避早退（spec D——连续领取后无成功
@@ -87,6 +89,9 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 	w.Ledger.Mu().Lock()
 	sid, cwd, lastWrite, observed, handedOff, peak :=
 		st.SessionID, st.Cwd, st.LastWrite, st.ObservedActive, st.HandedOffAt, st.PeakCtx
+	// 标记指针锁内抄、锁外读（DshCompressed 整体换指针、指向值不可变——
+	// compact.go 头注纪律），供条件②增量门槛比对。
+	mark := st.DshCompressed
 	w.Ledger.Mu().Unlock()
 	// 票01：在飞领取窗结算先于一切判定——过期未结（领取后窗内无 ok 上报）在
 	// 此计一轮未送达并清领取位；即使后续条件早退，结算也已完成（与触发解耦）。
@@ -112,8 +117,24 @@ func (w *Watcher) maybeDshCompactTrigger(st *ledger.SessionState) {
 	if idle < dc.TriggerRatio*ttl {
 		return // 条件①闲置未到触发线（未到线每轮重判——闲置单调增长，不盖版本章）
 	}
-	if peak < dc.MinPeakTokens {
-		return // 条件②peak 不足（压缩红利盖不过冷重付，不值得压）
+	// 条件②红利门槛（2026-10-09 d5927238 空转案修订：绝对值改增量）：从未压过
+	// 看绝对规模 peak ≥ min_peak_tokens；压过（标记在册，含过期——条目不随过期
+	// 清除）看压缩后新增长 peak−PostPrefix ≥ min_peak_tokens。原绝对门槛对「压
+	// 无可压」没有终止态：压缩把前缀压到地板（系统提示+工具+摘要本体，实锚
+	// 25218），地板仍 ≥ 20000，标记 2×TTL 过期后五条件全真 → 每小时空压一轮
+	//（15 小时 27 发，前缀 25218→24939 仅降 279 token，宿主 19 撞「summary is
+	// not smaller than the shadowed content」拒）；增量门槛把「值得压」还原成
+	// config 本意（dsh_compact.go:12「压缩红利盖不过冷重付」）——纯闲置增量为
+	// 零永不再压，用户回流聊出 ≥min_peak 新上下文才再压（那时真有东西可压）。
+	// PeakCtx 压缩时 ←prefix（=PostPrefix）、其后 enrich 只增不减，增量即压缩后
+	// 净增长，天然免疫压缩自身落盘写的时钟噪音。PostPrefix=0（历史标记/缺前缀
+	// 形）增量腿失效，回落绝对门槛——不比无标记更差。
+	if mark != nil && mark.PostPrefix > 0 {
+		if peak-mark.PostPrefix < dc.MinPeakTokens {
+			return // 压无可压：压缩后新增长不足门槛，不值得再压
+		}
+	} else if peak < dc.MinPeakTokens {
+		return // 从未压过：peak 不足（压缩红利盖不过冷重付，不值得压）
 	}
 	if w.Ledger.DshFamilyRunningAfter(sid, clock.Now()-dshCompactRunGraceS) {
 		return // 条件③在途（运行信号 300s 内有刷新——v0.9.4b 绝对新鲜度：宿主重载/未送

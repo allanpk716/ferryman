@@ -644,3 +644,119 @@ func TestDshCompactNoAgentBackoff(t *testing.T) {
 		}
 	})
 }
+
+// ---- 条件②红利门槛改增量（2026-10-09 d5927238 空转案）----
+//
+// 实锚（生产账本+宿主 session.v4.jsonl 双证）：会话压缩一次后前缀落到地板
+// 25218（系统提示+工具+摘要本体），标记 2×TTL 过期后五条件全真 → 每小时空压
+// 一轮，15 小时 27 发仅降 279 token，宿主 19 撞「summary is not smaller than
+// the shadowed content」拒。修复：压过（标记在册，含过期）看增量
+// peak−PostPrefix ≥ min_peak_tokens——纯闲置增量为零永不再压，新增长过线
+// （用户回流聊出新上下文，enrich 只增不减推高 PeakCtx）才再压。PostPrefix=0
+// 历史标记回落绝对门槛（不比无标记更差）。
+
+func TestDshCompactTriggerIncrementalGate(t *testing.T) {
+	cases := []struct {
+		name  string
+		ttls  float64
+		setup func(e *trigEnv)
+		check func(t *testing.T, e *trigEnv)
+	}{
+		{"压过后纯闲置:标记过期不再空压(本案)", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000) // 首次触发条件齐备
+				e.d.DshCompacted(map[string]any{"session_id": trigSID,
+					"ok": true, "prefix_tokens": 25218}) // 压缩成功:PeakCtx←25218+标记(PostPrefix=25218)
+				e.advance(250) // 标记 200s 过期、闲置 330s 过线——空转案时序
+			},
+			func(t *testing.T, e *trigEnv) { wantNoSlot(t, e) }},
+		{"压过后微量增长不足门槛:不入槽", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				e.d.DshCompacted(map[string]any{"session_id": trigSID,
+					"ok": true, "prefix_tokens": 25000})
+				e.advance(250)
+				// 回流+微量新流量:enrich 推高 PeakCtx 到 28000(增 3000 < 20000)
+				e.led.TouchFull("dsh", trigSID, e.trigPath(), *e.now-80, 10,
+					"C:/proj", "", 28000, 0)
+			},
+			func(t *testing.T, e *trigEnv) { wantNoSlot(t, e) }},
+		{"压过后新增长过线:照常入槽", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				e.d.DshCompacted(map[string]any{"session_id": trigSID,
+					"ok": true, "prefix_tokens": 25000})
+				e.advance(250)
+				// 回流+大量新上下文:PeakCtx 46000,增 21000 ≥ 20000——真有东西可压
+				e.led.TouchFull("dsh", trigSID, e.trigPath(), *e.now-80, 10,
+					"C:/proj", "", 46000, 0)
+			},
+			func(t *testing.T, e *trigEnv) {
+				if e.trigSlot(trigSID) == nil {
+					t.Fatal("压缩后新增长过门槛应再压（真有新历史可压）")
+				}
+			}},
+		{"PostPrefix=0历史标记:回落绝对门槛不误伤", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 50000)
+				// 历史标记形（旧版本立位/缺前缀上报）：PostPrefix=0,增量腿失效
+				e.led.Mu().Lock()
+				if st := e.led.GetLocked("dsh", trigSID); st != nil {
+					st.DshCompressed = &ledger.DshCompressMark{
+						TS: e.t0 - 500, Expires: e.t0 - 100, PrePeak: 60000}
+				}
+				e.led.Mu().Unlock()
+			},
+			func(t *testing.T, e *trigEnv) {
+				if e.trigSlot(trigSID) == nil {
+					t.Fatal("PostPrefix=0 回落绝对门槛:peak 50000 应照常入槽")
+				}
+			}},
+		{"PostPrefix=0历史标记+peak不足:绝对门槛照拦", 100,
+			func(e *trigEnv) {
+				e.regTrig(80, 19999)
+				e.led.Mu().Lock()
+				if st := e.led.GetLocked("dsh", trigSID); st != nil {
+					st.DshCompressed = &ledger.DshCompressMark{
+						TS: e.t0 - 500, Expires: e.t0 - 100, PrePeak: 60000}
+				}
+				e.led.Mu().Unlock()
+			},
+			func(t *testing.T, e *trigEnv) { wantNoSlot(t, e) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTrigEnv(t, tc.ttls)
+			tc.setup(e)
+			e.run()
+			tc.check(t, e)
+		})
+	}
+}
+
+// TestDshCompactTriggerNoRetriggerAfterFullCycle 全链回归：触发→领取→压缩成功
+// 收口→标记过期+执行窗全过→闲置期间零再触发（空转案的生产形态闭环）。
+func TestDshCompactTriggerNoRetriggerAfterFullCycle(t *testing.T) {
+	e := newTrigEnv(t, 100) // 触发线 80s、指令期 20s、标记期 200s、执行窗 240s
+	e.regTrig(80, 50000)
+	e.run() // 首次触发入槽
+	if e.trigSlot(trigSID) == nil {
+		t.Fatal("前置：首次触发应入槽")
+	}
+	if got := len(e.d.DshPoll(pollBody(trigSID))["commands"].([]map[string]any)); got != 1 {
+		t.Fatalf("前置：指令应被领取, got %d", got)
+	}
+	e.d.DshCompacted(map[string]any{"session_id": trigSID,
+		"ok": true, "prefix_tokens": 24985}) // 宿主压缩成功+前缀上报
+	// 越过一切节流窗（标记 200s、执行窗 240s、指令期 20s）到稳态闲置
+	e.advance(3600)
+	for i := 0; i < 3; i++ { // 多轮扫描都不再入槽
+		e.run()
+		if e.trigSlot(trigSID) != nil {
+			t.Fatalf("压缩后纯闲置 1h 不得再触发（第 %d 轮扫描）——空转案回归", i+1)
+		}
+	}
+	if got := e.enqTryList(); len(got) != 1 {
+		t.Fatalf("交接不随空转重摆, got %v", got)
+	}
+}

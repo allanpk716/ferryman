@@ -22,7 +22,8 @@ package daemon
 //   - POST /dsh/compacted：请求 {session_id, ok, reason?, prefix_tokens?,
 //     source?}；恒落账本 kind=compacted（字段齐全＝请求带来的字段全量入行）；
 //     ok=true 且 prefix_tokens>0 时更新 gate 会话状态：compressed 标记（带
-//     expires＝now+compressed_flag_ttl_ratio×TTL，置位钉死不再续期）＋prefix
+//     expires＝now+compressed_flag_ttl_ratio×TTL，置位钉死不再续期；PostPrefix
+//     ＝prefix_tokens 入标记——触发面增量门槛基准，2026-10-09 空转案）＋prefix
 //     覆盖（PeakCtx ← prefix_tokens；其后新流量按既有 enrich 逻辑只增不减
 //     刷新）。ok=true 另收口在飞执行窗（票01）；ok=false（含 no-agent/busy/
 //     timeout/error）不收口也不计送达——执行窗照走满，重触发节流不解除。
@@ -237,7 +238,8 @@ func (d *Daemon) DshCompacted(body map[string]any) map[string]any {
 		d.Ledger.Mu().Lock()
 		if st != nil {
 			prePeak := st.PeakCtx // v0.9.3 票1：压前峰值入标记（放行线比例腿基准）
-			st.DshCompressed = &ledger.DshCompressMark{TS: now, Expires: expires, PrePeak: prePeak}
+			st.DshCompressed = &ledger.DshCompressMark{TS: now, Expires: expires,
+				PrePeak: prePeak, PostPrefix: prefix} // PostPrefix=增量门槛基准（2026-10-09 空转案）
 			st.PeakCtx = prefix // prefix 覆盖（enrich 只增不减，新流量照常刷新）
 		}
 		d.Ledger.Mu().Unlock()
