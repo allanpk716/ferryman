@@ -90,7 +90,7 @@ func (s *srstSeams) held() bool {
 // 记调用并立即返回（测试世界 hold 不得挂死）。
 func srstStubSeams(t *testing.T, held func(string, string, func(int) bool, func(int) (string, error)) (int, bool)) *srstSeams {
 	t.Helper()
-	oHeld, oSpawn, oHold := settingsRestartUpdateLockHeld, settingsRestartSpawnHelper, settingsRestartHoldUntilExit
+	oHeld, oSpawn := settingsRestartUpdateLockHeld, settingsRestartSpawnHelper
 	if held == nil {
 		held = func(string, string, func(int) bool, func(int) (string, error)) (int, bool) {
 			return 0, false
@@ -111,7 +111,14 @@ func srstStubSeams(t *testing.T, held func(string, string, func(int) bool, func(
 		s.mu.Unlock()
 	}
 	t.Cleanup(func() {
-		settingsRestartUpdateLockHeld, settingsRestartSpawnHelper, settingsRestartHoldUntilExit = oHeld, oSpawn, oHold
+		settingsRestartUpdateLockHeld, settingsRestartSpawnHelper = oHeld, oSpawn
+		// hold 不还原真缺省（select{} 永不返回）：迟到的泄漏请求若在恢复边界
+		// 之后才走到终局（2026-10-09 全仓跑挂死实锚——某测试的在飞 restart
+		// POST 跨过 t.Cleanup，读到恢复后的真 hold → 持全局 settingsWriteMu
+		// 永不还 → 后续一切 settings 测试等锁到 10m 包超时），真 hold 会把
+		// 锁绞死整包。测试世界 hold 恒为返回形（文件头「测试世界 hold 不得
+		// 挂死」纪律的缺口收口）；真缺省行为由生产二进制承载，测试不钉它。
+		settingsRestartHoldUntilExit = func() {}
 	})
 	return s
 }

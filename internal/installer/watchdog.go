@@ -459,6 +459,12 @@ func realWatchdogPollers(dataDir string) func() []watchdogPoller {
 			return nil
 		}
 		defer resp.Body.Close()
+		// 401 状态码加固（dsh-host-guard 晨报后续票02，2026-10-09）：401 的
+		// {"error":"unauthorized"} 是合法 JSON，靠「应答体无 pollers 键」巧合
+		// 落空——显式判非 200 → nil，不靠巧合。
+		if resp.StatusCode != http.StatusOK {
+			return nil
+		}
 		data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if err != nil {
 			return nil

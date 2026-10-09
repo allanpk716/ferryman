@@ -1435,6 +1435,41 @@ func TestRealStatsProbeUsesConfigPort(t *testing.T) {
 	}
 }
 
+// TestRealStatsProbeRejectsNon200 晨报后续票01（401 假活面，2026-10-09）：
+// 401 的合法 JSON 体（daemon /stats 活体形状）不是活体——修复前被误当活
+// （pass 方向假报）。403/500 同族，一并钉。
+func TestRealStatsProbeRejectsNon200(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "daemon.token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, 500} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(code)
+			fmt.Fprint(w, `{"error":"unauthorized","version":"v9.9.9","pollers":[]}`)
+		}))
+		u, err := url.Parse(srv.URL)
+		if err != nil {
+			srv.Close()
+			t.Fatal(err)
+		}
+		port, err := strconv.Atoi(u.Port())
+		if err != nil {
+			srv.Close()
+			t.Fatal(err)
+		}
+		notProdPort(t, port)
+		if got := realStatsProbe(dataDir, port)(); got != nil {
+			t.Errorf("HTTP %d 应判 nil（假活面关闭）, got %v", code, got)
+		}
+		srv.Close()
+	}
+}
+
 // TestDoctorStructuredTempTargets agent 面真实装配（DoctorStructured）：临时
 // HOME/repo/config——用户目录相关检查面向临时目标（不读真实用户目录）；
 // residency=false 时常驻保障两查显式 not_checked（零子进程/零注册表读）；

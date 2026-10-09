@@ -18,6 +18,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"ferryman/internal/config"
 	"ferryman/internal/installer"
@@ -30,8 +31,29 @@ import (
 // schtasks /Query，无写副作用）。
 func defaultDoctorFunc(cfg *config.Config) func() []installer.CheckResult {
 	return func() []installer.CheckResult {
+		cfg = freshCfgOrFrozen(cfg)
 		return installer.DoctorStructured(installer.HomeDir(), installer.RepoRoot(), cfg, "", true)
 	}
+}
+
+// freshCfgOrFrozen MCP 冻结探针目标解冻（dsh-host-guard 晨报后续票04，
+// 2026-10-09）：MCP 服务进程活整个会话，New 注入的 cfg 是会话启动时的冻结
+// 快照——会话中途守护换端口/换数据目录后，冻结口打旧目标（假死/假活残留：
+// 2026-10-09 实况＝/clear 长链会话的 doctor 恒报「daemon 未运行」）。每次
+// 调用现载配置（config.Load 优先级原样：显式参数 > FERRYMAN_CONFIG > 默认
+// 路径）；装载失败回落冻结快照——行为不差于修前。
+func freshCfgOrFrozen(frozen *config.Config) *config.Config {
+	// stdio 纪律（Run 装配同款，见 server.go）：config.Load 的校验警告经
+	// fmt.Printf 写 os.Stdout，会把非 JSON 行混进 JSON-RPC 流——Load 期间
+	// 把 stdout 临时换向 stderr（Serve 逐行串行，无并发争用）。
+	saved := os.Stdout
+	os.Stdout = os.Stderr
+	fresh, err := config.Load("", false)
+	os.Stdout = saved
+	if err != nil {
+		return frozen
+	}
+	return fresh
 }
 
 // daemon 版本如实标注（票07，A5②/D9）：不可达/HTTP 错误与「响应读不出
