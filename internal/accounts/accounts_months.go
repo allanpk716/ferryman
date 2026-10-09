@@ -12,15 +12,21 @@ import "path/filepath"
 
 // ReadMonths 点名月读取：months 为 YYYYMM 月键（调用方按「当前月、上一月」
 // 依序传），依传入顺序读 <dir>/<month>.jsonl 并做与 Read 同规格的六维过滤；
-// 缺文件/读失败静默跳过。空月键跳过（防御）。不持 mu（Read 同：读侧无锁）。
+// 缺文件/读失败静默跳过。空月键跳过（防御）。不持 mu（Read 同：写侧锁在
+// Record 的 mu，读侧走 cmu 下的常驻缓存——ADR-0027，与 Read 共享同一缓存）。
 func (a *Accounts) ReadMonths(o ReadOpts, months ...string) []map[string]any {
 	out := []map[string]any{}
+	a.cmu.Lock()
+	defer a.cmu.Unlock()
+	a.initCacheLocked()
 	for _, m := range months {
 		if m == "" {
 			continue
 		}
 		name := m + ".jsonl"
-		a.readFile(filepath.Join(a.dir, name), name, o, &out)
+		if fs := a.refresh(filepath.Join(a.dir, name), name); fs != nil {
+			filterEntries(fs.entries, o, &out)
+		}
 	}
 	return out
 }

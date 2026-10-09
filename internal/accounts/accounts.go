@@ -7,7 +7,6 @@
 package accounts
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -132,6 +131,16 @@ type Fields map[string]any
 type Accounts struct {
 	dir string
 	mu  sync.Mutex
+
+	// 常驻解析缓存（统计卡顿票，ADR-0027）：Read/ReadMonths 共享的解析结果
+	// + 每文件增量追加状态，细节见 accounts_cache.go。cmu 与 mu 分立——
+	// Record 写盘不经 cmu、缓存刷新不持 mu（读写两侧互不拖累）。缓存条目
+	// （map）对调用方只读共享：消费方不改性是既定约定（daemon/report 全
+	// 消费面已核，restore.go 的 r["continuation"] 是自建响应 map 非账本行）。
+	cmu   sync.Mutex
+	files map[string]*fileState // base 文件名 → 增量解析状态
+	keys  map[string]string     // 字段名驻留表（域内有限，不封顶）
+	vals  map[string]string     // 高重复值驻留表（封顶 internTableCap）
 }
 
 // New 建 <dataDir>/accounts/ 目录（parents+exist_ok）。
@@ -140,7 +149,11 @@ func New(dataDir string) (*Accounts, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	return &Accounts{dir: dir}, nil
+	return &Accounts{dir: dir,
+		files: map[string]*fileState{},
+		keys:  map[string]string{},
+		vals:  map[string]string{},
+	}, nil
 }
 
 // Record 记一条流水并落盘，返回完整行。
@@ -233,73 +246,26 @@ type ReadOpts struct {
 }
 
 // Read 遍历目录 sorted *.jsonl；坏行跳过 + stderr 告警（stdout 保持机器可解析）。
-// Read 不持 mu（Python read 亦无锁）。
+// 走常驻解析缓存（ADR-0027）：每文件首次全量解析，其后仅增量解析新追加字节，
+// 六维过滤在缓存条目上进行；缓存刷新与过滤持 cmu（Record 写侧不经 cmu）。
 func (a *Accounts) Read(o ReadOpts) []map[string]any {
 	out := []map[string]any{}
 	entries, err := os.ReadDir(a.dir)
 	if err != nil {
 		return out
 	}
+	a.cmu.Lock()
+	defer a.cmu.Unlock()
+	a.initCacheLocked()
 	for _, de := range entries { // ReadDir 已按文件名排序（= Python sorted(glob)）
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".jsonl") {
 			continue
 		}
-		a.readFile(filepath.Join(a.dir, de.Name()), de.Name(), o, &out)
+		if fs := a.refresh(filepath.Join(a.dir, de.Name()), de.Name()); fs != nil {
+			filterEntries(fs.entries, o, &out)
+		}
 	}
 	return out
-}
-
-func (a *Accounts) readFile(path, base string, o ReadOpts, out *[]map[string]any) {
-	fh, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer fh.Close()
-	// jsonl 行读无上限：ReadBytes 循环（spec §I/O，禁 Scanner 行上限）。
-	// splitlines 语义：按 \n 切，行号 1 起含空行；文件尾无换行时末段仍计一行。
-	r := bufio.NewReader(fh)
-	for i := 1; ; i++ {
-		raw, err := r.ReadBytes('\n')
-		if len(raw) > 0 {
-			a.handleLine(base, i, bytes.TrimSuffix(raw, []byte("\n")), o, out)
-		}
-		if err != nil {
-			break
-		}
-	}
-}
-
-func (a *Accounts) handleLine(base string, n int, line []byte, o ReadOpts, out *[]map[string]any) {
-	if len(bytes.TrimSpace(line)) == 0 { // Python: not line.strip()
-		return
-	}
-	var e map[string]any
-	if err := json.Unmarshal(line, &e); err != nil || e == nil {
-		// 终审#1：告警走 stderr——read() 的调用方（report --json）
-		// 把 stdout 当机器可解析载荷，告警混入会撕裂输出。
-		fmt.Fprintf(os.Stderr, "[accounts] 跳过损坏行 %s:%d\n", base, n)
-		return
-	}
-	ts := numOr(e, "ts") // Python: e.get("ts", 0)；非数值落 0（防御）
-	if o.Since != 0 && ts < o.Since {
-		return
-	}
-	if o.Until != 0 && ts > o.Until {
-		return
-	}
-	if o.Project != "" && strOr(e, "project") != o.Project {
-		return
-	}
-	if o.Session != "" && strOr(e, "session_id") != o.Session {
-		return
-	}
-	if o.Lineage != "" && strOr(e, "lineage_id") != o.Lineage {
-		return
-	}
-	if o.Kind != "" && strOr(e, "kind") != o.Kind {
-		return
-	}
-	*out = append(*out, e)
 }
 
 // marshalLine 有序拼接单行 JSON：公共八字段定序 + extraKeys（已字母序）。
