@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -55,6 +56,17 @@ func PriceTag(bookKey string, pv PriceVersion) string {
 	return bookKey + "@" + pv.EffectiveFrom
 }
 
+// pricesFileCache 默认路径（path==""）的解析缓存：stat 三键（大小+mtime）
+// 命中即回表。/stats 轮询每 30s 现读盘上 TOML 属无谓固定成本；显式 path
+// （测试临时文件）不进缓存——规避同文件快速改写的陈旧面。回表共享只读：
+// 改表走 settings 文本手术路径，不经本 API。
+var pricesFileCache = struct {
+	sync.Mutex
+	size  int64
+	mod   time.Time
+	books map[string]PriceBook
+}{}
+
 // LoadPrices 读 [prices.*]；无文件/无节 → 空 map。path 为空 → ~/ferryman/config.toml。
 // （偏离规格：TOML 解析失败按空表处理——签名不带 error，坏配置不炸常驻进程。）
 func LoadPrices(path string) map[string]PriceBook {
@@ -65,6 +77,16 @@ func LoadPrices(path string) map[string]PriceBook {
 			return map[string]PriceBook{}
 		}
 		p = filepath.Join(home, "ferryman", "config.toml")
+		if fi, err := os.Stat(p); err == nil {
+			pricesFileCache.Lock()
+			if pricesFileCache.books != nil &&
+				pricesFileCache.size == fi.Size() && pricesFileCache.mod.Equal(fi.ModTime()) {
+				books := pricesFileCache.books
+				pricesFileCache.Unlock()
+				return books
+			}
+			pricesFileCache.Unlock()
+		}
 	}
 	raw, err := os.ReadFile(p)
 	if err != nil { // 无文件（Python 的 not p.exists()）→ 空 dict
@@ -102,6 +124,14 @@ func LoadPrices(path string) map[string]PriceBook {
 			Unit:     asString(blk["unit"]),    // blk.get("unit", "")
 			Per:      asInt(blk["per"], 10000), // blk.get("per", 10_000)
 			Versions: vers,
+		}
+	}
+	if path == "" {
+		if fi, err := os.Stat(p); err == nil { // 回填键取加载后的新鲜 stat
+			pricesFileCache.Lock()
+			pricesFileCache.size, pricesFileCache.mod, pricesFileCache.books =
+				fi.Size(), fi.ModTime(), books
+			pricesFileCache.Unlock()
 		}
 	}
 	return books

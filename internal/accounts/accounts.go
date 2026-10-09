@@ -132,6 +132,17 @@ type Fields map[string]any
 type Accounts struct {
 	dir string
 	mu  sync.Mutex
+
+	// 聚合索引（widget 聚合票，ADR-0027 改判）：usage 四列（模型×本地日）+
+	// handoff 计数的滚动累计——悬浮窗 30s 轮询的唯一供给源，KB 级。明细不
+	// 驻留（常驻明细缓存实测 287MB，按用户裁定撤销——人工面一律按需解析，
+	// 查询带进度交互）。aggStamps 记折叠已及的盘面戳：daemon 自身 Record
+	// 折叠随写推进；外部改写（测试直写/T39 式重写）由 AggregateSnapshot
+	// 前的盘面戳核对侦测并整建。锁序铁律：mu（写盘）→ aggmu（折叠/换入），
+	// 无反向嵌套。细节见 accounts_aggregate.go。
+	aggmu     sync.Mutex
+	agg       map[string]map[int]*aggDay // "YYYYMM" → 日(1..31) → 聚合格
+	aggStamps map[string]aggStamp        // base 文件名 → 折叠已及的盘面戳
 }
 
 // New 建 <dataDir>/accounts/ 目录（parents+exist_ok）。
@@ -140,7 +151,10 @@ func New(dataDir string) (*Accounts, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	return &Accounts{dir: dir}, nil
+	return &Accounts{dir: dir,
+		agg:       map[string]map[int]*aggDay{},
+		aggStamps: map[string]aggStamp{},
+	}, nil
 }
 
 // Record 记一条流水并落盘，返回完整行。
@@ -223,6 +237,7 @@ func (a *Accounts) Record(kind string, ts float64, f Fields) (map[string]any, er
 	if _, err := fh.Write(line); err != nil {
 		return nil, err
 	}
+	a.foldRecorded(fname, line) // 聚合索引随写折叠（best-effort 读侧派生物）
 	return entry, nil
 }
 
@@ -233,7 +248,8 @@ type ReadOpts struct {
 }
 
 // Read 遍历目录 sorted *.jsonl；坏行跳过 + stderr 告警（stdout 保持机器可解析）。
-// Read 不持 mu（Python read 亦无锁）。
+// 按需解析：每次调用逐文件现读现解析，不驻留（ADR-0027 改判——常驻明细缓存
+// 已撤，调用方自带进度交互；窗口查询走 ReadWindow 月份裁剪）。
 func (a *Accounts) Read(o ReadOpts) []map[string]any {
 	out := []map[string]any{}
 	entries, err := os.ReadDir(a.dir)

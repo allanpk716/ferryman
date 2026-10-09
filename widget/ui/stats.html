@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <!-- 成品出处:界面真源=widget/ui/mock/stats.html(kimi 初稿 2026-10-08 夜链票02 + 用户评审 r1 热力正梯度 GitHub 绿 + r2 月份标签防重叠),布局/配色/交互零改动; -->
-<!-- 票05(2026-10-09)只换数据层:去 stats.data.js 快照,轮询 daemon /stats/summary + /stats/usage(Bearer,30s+首屏立即拉);dayValue 成本/节省档接 days[].savings(毛省/净额);净额以端点值为真值(不移植快照脚本舍入) -->
+<!-- 票05(2026-10-09)只换数据层:去 stats.data.js 快照,查询 daemon /stats/summary + /stats/usage(Bearer);dayValue 成本/节省档接 days[].savings(毛省/净额);净额以端点值为真值(不移植快照脚本舍入) -->
+<!-- ADR-0027 改判(同日):daemon 撤常驻明细缓存→按需解析,本页随之撤 30s 自动轮询——只在开窗/翻页/改筛选/手动刷新时查询,查询中转圈。统计是复盘不是监控。 -->
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -21,7 +22,12 @@
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--txt);font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:16px}
 .wrap{max-width:1080px;margin:0 auto}
+.head-row{display:flex;justify-content:space-between;align-items:center}
 h1{font-size:18px;font-weight:600;margin:0}
+.refresh-btn{background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--txt-dim);
+  padding:4px 12px;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap}
+.refresh-btn:hover:not(:disabled){color:var(--txt);border-color:var(--blue)}
+.refresh-btn:disabled{opacity:.4;cursor:wait}
 .sub{color:var(--txt-dim);font-size:12px;margin-top:4px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:14px}
 .num{font-variant-numeric:tabular-nums}
@@ -93,13 +99,15 @@ footer{color:var(--txt-dim);font-size:11px;margin:16px 0 8px;line-height:1.7}
 </head>
 <body>
 <div class="wrap">
-  <h1>用量统计</h1>
+  <div class="head-row">
+    <h1>用量统计</h1>
+    <button id="refresh" class="refresh-btn">刷新</button>
+  </div>
   <div class="sub" id="subtitle">加载中…</div>
 
   <div class="errbar" id="errbar">连不上守护进程,正在重试…</div>
 
   <div class="kpis" id="kpis"></div>
-
   <div class="card">
     <div class="card-head">
       <div>
@@ -142,7 +150,7 @@ footer{color:var(--txt-dim);font-size:11px;margin:16px 0 8px;line-height:1.7}
     </div>
   </div>
 
-  <footer id="footer">数据:守护进程实时 · 每 30 秒刷新</footer>
+  <footer id="footer">数据:守护进程按需查询 · 开窗/翻页/筛选/刷新时拉取,查询中按钮态提示</footer>
 </div>
 
 <div class="tip" id="tip"></div>
@@ -156,7 +164,6 @@ var $ = function(id){ return document.getElementById(id); };
 /* 取数先例=widget/ui/data.js 与 ferryman-settings.js 的 get_daemon_config:
    壳内 invoke 现读 ~/ferryman/daemon.token;浏览器/测试语境 __WIDGET_DAEMON_URL__
    注入;都没有则裸试默认口(127.0.0.1:15700),401/不可达在错误条如实报。 */
-var POLL_MS = 30000; /* 30 秒轮询;首屏立即拉(loop() 首调用不等) */
 var BASE = "", TOKEN = "";
 var D = null; /* 最近一次成功的 /stats/summary;拉取失败不清空,界面保持旧值 */
 
@@ -181,13 +188,23 @@ async function resolveTarget(){
 async function api(path){
   var headers = {};
   if(TOKEN) headers.Authorization = "Bearer " + TOKEN;
-  var r = await fetch(BASE + path, { headers: headers, signal: AbortSignal.timeout(8000) });
+  var r = await fetch(BASE + path, { headers: headers, signal: AbortSignal.timeout(20000) });
   if(!r.ok) throw new Error("HTTP " + r.status); /* 含 401 → 错误条,不清内容 */
   return r.json();
 }
 
 var errbar = $("errbar");
 function setErr(on){ errbar.style.display = on ? "flex" : "none"; }
+
+/* 查询中态(ADR-0027 改判:daemon 按需解析,单查询秒级)——刷新按钮翻转态+禁用。
+   计数制:summary/usage 可并行在飞,全部落地才解除。 */
+var busyN = 0;
+function setBusy(on){
+  busyN = Math.max(0, busyN + (on ? 1 : -1));
+  var b = $("refresh");
+  b.disabled = busyN > 0;
+  b.textContent = busyN > 0 ? "查询中…" : "刷新";
+}
 
 /* ---------- 格式化(与 mock 同款) ---------- */
 function fmtTok(n){
@@ -443,6 +460,7 @@ function usageQuery(){
 
 async function loadUsage(){
   var gen = ++usageGen;
+  setBusy(true);
   try{
     var j = await api("/stats/usage?"+usageQuery());
     if(gen!==usageGen) return true; /* 过期响应(用户已再操作):弃 */
@@ -458,6 +476,8 @@ async function loadUsage(){
   }catch(e){
     setErr(true); /* 不清已渲染内容 */
     return false;
+  }finally{
+    setBusy(false);
   }
 }
 
@@ -499,8 +519,9 @@ var filterTimer = null;
 $("prev").addEventListener("click", function(){ if(page>0){page--; loadUsage();} });
 $("next").addEventListener("click", function(){ page++; loadUsage(); });
 
-/* ---------- 轮询主循环:首屏立即拉,其后每 POLL_MS 一轮;任一失败只亮错误条 ---------- */
+/* ---------- 按需查询:失败只亮错误条;查询中态由 setBusy 计数翻转 ---------- */
 async function loadSummary(){
+  setBusy(true);
   try{
     var j = await api("/stats/summary");
     if(!j || !j.kpi || !Array.isArray(j.days)) throw new Error("坏响应");
@@ -510,19 +531,33 @@ async function loadSummary(){
   }catch(e){
     setErr(true); /* 不清已渲染内容 */
     return false;
+  }finally{
+    setBusy(false);
   }
 }
-async function pollOnce(){
-  await resolveTarget(); /* 每轮现读 token:daemon 重启换 token 后下轮自动生效 */
+/* 按需节拍(ADR-0027 改判,与 daemon 撤常驻缓存同批):不自动轮询——统计是
+   复盘不是监控,盯着看的瞬间数据也不会变。查询时机=开窗/切回
+   (visibilitychange 为主,壳层 stats-restored 事件为备——托盘再开统计窗)、
+   翻页、改筛选(300ms 防抖)、手动点刷新。页面随常驻隐藏窗在启动时加载,
+   隐藏态零查询(不为「防首开空白」预拉——首开转圈即约定交互)。 */
+async function fetchAll(){
+  await resolveTarget(); /* 每次现读 token:daemon 重启换 token 后下次查询自动生效 */
   var res = await Promise.all([loadSummary(), loadUsage()]);
   setErr(!(res[0] && res[1]));
 }
-function loop(){
-  pollOnce().catch(function(){ setErr(true); }).then(function(){
-    setTimeout(loop, POLL_MS);
-  });
-}
-loop();
+function pokeNow(){ fetchAll().catch(function(){ setErr(true); }); }
+document.addEventListener("visibilitychange", function(){
+  if(!document.hidden) pokeNow(); /* 开窗/切回:刷一轮 */
+});
+(function(){
+  var t = window.__TAURI__;
+  if(t && t.event && t.event.listen){
+    t.event.listen("stats-restored", function(){ pokeNow(); })
+      .catch(function(){ /* 监听失败:退化为纯 visibilitychange 面 */ });
+  }
+})();
+$("refresh").addEventListener("click", pokeNow);
+if(!document.hidden) pokeNow();
 })();
 </script>
 </body>

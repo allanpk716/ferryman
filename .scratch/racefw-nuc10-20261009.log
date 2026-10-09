@@ -1,0 +1,9 @@
+NUC10 race 复验（go1.24.13，匿名克隆分支 fix/stats-resident-cache-20261009，GOPROXY=goproxy.cn）
+2026-10-09 20:0x
+go: downloading github.com/klauspost/compress v1.15.13
+ok  	ferryman/internal/accounts	2.995s
+ok  	ferryman/internal/config	2.502s
+ok  	ferryman/internal/prices	1.291s
+ok  	ferryman/internal/report	1.465s
+ok  	ferryman/internal/daemon	57.783s
+RACE_PASS

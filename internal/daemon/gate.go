@@ -614,7 +614,7 @@ func (d *Daemon) qwatchMissSignals() int {
 		return 0
 	}
 	return qwatch.CorrelateMissSignals(
-		d.Accounts.Read(accounts.ReadOpts{Since: clock.Now() - QWatchMissScanS}))
+		d.Accounts.ReadWindow(accounts.ReadOpts{Since: clock.Now() - QWatchMissScanS}))
 }
 
 // ---- GateStats 计数通道（Python stats.bypass/blocks/warns += 1 的锁内形） ----

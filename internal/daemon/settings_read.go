@@ -181,7 +181,11 @@ func settingsConfigSections(cfg *config.Config) map[string]any {
 		},
 		"ferry": map[string]any{
 			"provider": cfg.FerryProvider,
-			"chain":    cfg.FerryChain,
+			// econ_provider（独立票）：读面必须暴露——否则 UI 节级 PUT 只回传
+			// provider/chain，手配键会被下次摆渡保存冲掉（heartbeat 的
+			// structuredClone 原样带回同款防冲）。
+			"econ_provider": cfg.EconProvider,
+			"chain":         cfg.FerryChain,
 			"same_model": map[string]any{
 				"enabled":       cfg.SameModel.Enabled,
 				"upstreams":     cfg.SameModel.Upstreams,

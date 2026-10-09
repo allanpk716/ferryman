@@ -246,6 +246,11 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// 不服务，版本校验必超时）。
 	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
 
+	// 聚合索引整建（ADR-0027 改判）：启动期后台一次流式全量折叠（~95MB、
+	// 秒级；解析行即弃，明细不驻留）——悬浮窗 30s 轮询自此只读 KB 级聚合。
+	// 期间到达的轮询先拿空聚合（数字渐进补齐），不失败。
+	go acc.RebuildAggregates()
+
 	// 渡口（票01，F11 opt-in 裁定）：配置 [dock] 节才构造并启动——不配＝
 	// 不绑端口、零行为变化。独立 listener/生命周期：构造或绑定失败只告警
 	// 降级，绝不拖垮主服务（渡口挂＝CC 直连上游旧行为，base_url 指回即回退）。

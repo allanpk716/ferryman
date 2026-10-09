@@ -568,8 +568,10 @@ $('#btnSaveHb').addEventListener('click', () => {
 $('#ferryProvider').addEventListener('change', async () => {
   const fb = $('#fbFerry');
   const body = { provider: $('#ferryProvider').value };
-  const chain = cfgSec('ferry').chain;
+  const fc = cfgSec('ferry');
+  const chain = fc.chain;
   if (Array.isArray(chain) && chain.length) body.chain = chain; // same_model 子表不经节级端点
+  if (fc.econ_provider !== undefined) body.econ_provider = fc.econ_provider; // 原样带回防冲（独立票）
   try {
     await saveSection('ferry', body, fb);
     feedback(fb, '已保存，重启守护后生效');

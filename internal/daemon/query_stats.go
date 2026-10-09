@@ -88,7 +88,7 @@ func parseStatsWindow(since, until string) (statsWindow, error) {
 func statsEconBook(d *Daemon, books map[string]prices.PriceBook) *prices.PriceBook {
 	econKey := ""
 	if d.Cfg != nil {
-		econKey = d.Cfg.FerryProvider
+		econKey = d.Cfg.EconKey() // econ_provider 优先（独立票），缺省回落 provider
 	}
 	if econKey != "" {
 		if b, ok := books[econKey]; ok {
@@ -101,13 +101,6 @@ func statsEconBook(d *Daemon, books map[string]prices.PriceBook) *prices.PriceBo
 		}
 	}
 	return nil
-}
-
-// statsDayOf 行归日本地自然日（票面口径：ts → time.Unix(ts).Local()；与
-// gen_snapshot.py day_of 的 ts_iso 首 10 字符法在账本行上等价——Record 盖章
-// ts_iso 即按同一 ts 本地时区格式化）。
-func statsDayOf(e map[string]any) string {
-	return time.Unix(int64(acctNum(e, "ts")), 0).In(time.Local).Format("2006-01-02")
 }
 
 // statsDayBucket 逐日桶：usage 四列＋请求数、五类事件计数、五类行原样留存
@@ -132,7 +125,7 @@ func handleStatsSummary(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	}
 	var entries []map[string]any
 	if d.Accounts != nil {
-		entries = d.Accounts.Read(accounts.ReadOpts{Since: win.since, Until: win.until})
+		entries = d.Accounts.ReadWindow(accounts.ReadOpts{Since: win.since, Until: win.until})
 	}
 	books := queryReportPrices()
 	econBook := statsEconBook(d, books)
@@ -142,12 +135,20 @@ func handleStatsSummary(d *Daemon, w http.ResponseWriter, r *http.Request) {
 		unit = econBook.Unit
 	}
 
-	// 一遍过：KPI 四列累计＋逐日分桶（本地自然日）。
+	// 一遍过：KPI 四列累计＋逐日分桶（本地自然日）。归日 memo：账本行近似
+	// 时序（月文件序+追加序），同日连续行免重复 Format（19.5 万行 → 数十次）。
 	buckets := map[string]*statsDayBucket{}
 	var in, cr, cc, outN, reqs int
 	firstDay := ""
+	var lastT time.Time
+	lastDay, haveLast := "", false
 	for _, e := range entries {
-		day := statsDayOf(e)
+		t := time.Unix(int64(acctNum(e, "ts")), 0).In(time.Local)
+		day := lastDay
+		if !haveLast || t.Year() != lastT.Year() || t.YearDay() != lastT.YearDay() {
+			day = t.Format("2006-01-02")
+			lastT, lastDay, haveLast = t, day, true
+		}
 		if firstDay == "" || day < firstDay {
 			firstDay = day
 		}
@@ -335,15 +336,15 @@ func handleStatsUsage(d *Daemon, w http.ResponseWriter, r *http.Request) {
 
 	var entries []map[string]any
 	if d.Accounts != nil {
-		entries = d.Accounts.Read(accounts.ReadOpts{
-			Since: win.since, Until: win.until, Project: qsOr(q, "project", "")})
+		// kind 过滤下推（少解析后少一遍科目判）：本端点只消费 usage 行；
+		// ReadWindow 月份裁剪——日期窗给定只读窗内月文件（ADR-0027 改判）。
+		entries = d.Accounts.ReadWindow(accounts.ReadOpts{
+			Since: win.since, Until: win.until, Project: qsOr(q, "project", ""),
+			Kind: "usage"})
 	}
 	modelQ := strings.ToLower(qsOr(q, "model", ""))
 	rows := make([]map[string]any, 0, 64)
 	for _, e := range entries {
-		if strVal(e, "kind") != "usage" {
-			continue
-		}
 		if modelQ != "" && !strings.Contains(strings.ToLower(strVal(e, "model")), modelQ) {
 			continue
 		}

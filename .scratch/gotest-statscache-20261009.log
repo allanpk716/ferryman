@@ -1,0 +1,44 @@
+?   	ferryman/experiments/capture	[no test files]
+?   	ferryman/experiments/same-model-arm/l0dump	[no test files]
+?   	ferryman/internal/jsonl	[no test files]
+ok  	ferryman/cmd/ferryman	13.989s
+ok  	ferryman/experiments/append-replay-arm	1.140s
+ok  	ferryman/experiments/router-fidelity	0.911s
+ok  	ferryman/internal/accounts	3.553s
+ok  	ferryman/internal/backtest	0.899s
+ok  	ferryman/internal/beat	4.111s
+ok  	ferryman/internal/cctrans	1.240s
+ok  	ferryman/internal/clock	0.349s
+ok  	ferryman/internal/codextrans	0.536s
+ok  	ferryman/internal/config	4.007s
+ok  	ferryman/internal/cutover	5.207s
+ok  	ferryman/internal/daemon	58.526s
+ok  	ferryman/internal/dock	8.037s
+ok  	ferryman/internal/dock/fixtures	0.484s
+ok  	ferryman/internal/dshledger	1.638s
+ok  	ferryman/internal/dshsandbox	4.324s
+ok  	ferryman/internal/dshtrans	1.764s
+ok  	ferryman/internal/dshverify	8.474s
+ok  	ferryman/internal/extract	2.645s
+ok  	ferryman/internal/ferry	1.725s
+ok  	ferryman/internal/harvest	0.915s
+ok  	ferryman/internal/installer	6.133s
+ok  	ferryman/internal/ledger	0.278s
+ok  	ferryman/internal/mathx	0.306s
+ok  	ferryman/internal/mcp	0.869s
+ok  	ferryman/internal/notify	1.359s
+ok  	ferryman/internal/pathsx	0.275s
+ok  	ferryman/internal/policy	0.325s
+ok  	ferryman/internal/prices	0.396s
+ok  	ferryman/internal/provider	4.008s
+ok  	ferryman/internal/quota	0.977s
+ok  	ferryman/internal/qwatch	0.742s
+ok  	ferryman/internal/report	0.773s
+ok  	ferryman/internal/store	0.745s
+ok  	ferryman/internal/tuning	0.805s
+ok  	ferryman/internal/update	64.067s
+ok  	ferryman/internal/viewer/demo	0.333s
+ok  	ferryman/internal/viewer/ledger	0.327s
+ok  	ferryman/internal/viewer/server	1.143s
+ok  	ferryman/tools/rehearsal	146.532s
+TESTSUITE_PASS 

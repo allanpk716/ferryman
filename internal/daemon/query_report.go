@@ -85,7 +85,7 @@ func handleReport(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	// 经济价格表选取：report.bookFor 同口径——provider 命中取之，否则仅一本
 	// 取唯一本，再否则 nil（不可算，不造数）。
 	books := queryReportPrices()
-	econKey := d.Cfg.FerryProvider
+	econKey := d.Cfg.EconKey() // econ_provider 优先（独立票），缺省回落 provider
 	var econBook *prices.PriceBook
 	if econKey != "" {
 		if b, ok := books[econKey]; ok {

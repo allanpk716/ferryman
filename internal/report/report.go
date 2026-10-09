@@ -401,7 +401,7 @@ func Run(args Args) int {
 	books := loadPrices()
 	econKey := args.Provider // Python provider or cfg.ferry_provider or None
 	if econKey == "" {
-		econKey = cfg.FerryProvider
+		econKey = cfg.EconKey() // econ_provider 优先（独立票），缺省回落 provider
 	}
 	filters := map[string]string{}
 	for _, kv := range [...]struct{ k, v string }{
@@ -422,7 +422,7 @@ func Run(args Args) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	entries := acc.Read(accounts.ReadOpts{Since: since, Until: until,
+	entries := acc.ReadWindow(accounts.ReadOpts{Since: since, Until: until,
 		Project: args.Project, Session: args.Session, Kind: args.Kind})
 	econBook := bookFor(books, econKey)
 	s := SavingsV1(entries, books, econBook)

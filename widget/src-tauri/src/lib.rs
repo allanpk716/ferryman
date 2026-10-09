@@ -620,12 +620,16 @@ fn open_ferryman_settings_window(app: tauri::AppHandle) {
 /// conf 声明、启动创建 visible:false、关闭=隐藏不销毁（通用 CloseRequested
 /// handler 已覆盖：prevent_close + hide 对所有窗生效），这里只负责显示。
 /// 运行时建窗绝对禁止（0.2.4 真机白屏事故教训对每个窗原样适用）。
-/// 入口=托盘「统计」菜单项（页面数据轮询由前端 stats.html 自理）。
+/// 入口=托盘「统计」菜单项（页面数据按需查询由前端 stats.html 自理，ADR-0027 改判）。
 fn open_stats(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("stats") {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        // 显示即刷（ADR-0027 前端票）：单实例 widget-restored 同款 emit，
+        // stats.html 收到即立刻拉一轮——visibilitychange 不触发时的兜底路径
+        // （capabilities 需收录 stats 窗，事件 listen 才被放行）。
+        let _ = app.emit("stats-restored", ());
     }
 }
 
