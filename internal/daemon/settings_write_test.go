@@ -599,7 +599,8 @@ func TestSettingsWriteNotifyEventsRoundTripPreserves(t *testing.T) {
 	if got := swEventsLine(t, cfgPath); got != wantLine {
 		t.Fatalf("夹具 events 行 = %q, want %q", got, wantLine)
 	}
-	// 读面数据源对齐：守护内存 cfg 重载（读面 config 节=内存生效配置）。
+	// 守护内存 cfg 重载对齐（2026-10-09 起读面 config 节=盘上现值对账读面，
+	// 重载只为内存与盘同源的夹具前提，非读面数据源）。
 	cfg, err := config.Load(cfgPath, true)
 	if err != nil {
 		t.Fatal(err)

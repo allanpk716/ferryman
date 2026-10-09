@@ -136,6 +136,19 @@ func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch
 		if origin := r.Header.Get("Origin"); widgetAllowedOrigins[origin] && strings.HasPrefix(r.URL.Path, "/settings") {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		}
+		// OPTIONS 预检一律先于管理端点拦截应答（2026-10-09 设置窗「重启守护」
+		// Failed to fetch 事故）：预检是 CORS 探针不是动词请求，落进管理端点的
+		// 方法守门（/settings/restart、/settings/dock/switch 对非 POST 回 405）
+		// 会被一并吞掉——405 不带 Access-Control-Allow-Methods，浏览器判预检
+		// 失败，真请求根本不发。白名单源答 204+全头，其余维持 501 未实现原样
+		//（非浏览器客户端无 OPTIONS 消费者，405→501 无人受影响）。
+		if r.Method == http.MethodOptions {
+			if !handleWidgetPreflight(w, r) {
+				w.WriteHeader(http.StatusNotImplemented)
+				_, _ = w.Write([]byte("Unsupported method"))
+			}
+			return
+		}
 		if r.RequestURI == "/shutdown" && onShutdown != nil {
 			doShutdown(onShutdown, token, w, r)
 			return
@@ -169,15 +182,9 @@ func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch
 			doPost(d, token, w, r) // 票03：PUT 一并落 doPost 分派（设置写面）；票04：DELETE 同族（设置实体删除唯一 DELETE 端点在彼处早退）
 		case http.MethodGet:
 			doGet(d, token, w, r)
-		case http.MethodOptions:
-			// 票08 补遗（widget CORS）：白名单源（Tauri 壳 webview）的预检
-			// 免鉴权答 204——浏览器预检不带 Bearer，auth 面看不见它；白名单
-			// 外维持 501（BaseHTTPRequestHandler 未定义 do_OPTIONS 同位）。
-			if !handleWidgetPreflight(w, r) {
-				w.WriteHeader(http.StatusNotImplemented)
-				_, _ = w.Write([]byte("Unsupported method"))
-			}
-		default: // BaseHTTPRequestHandler 未定义 do_X → send_error(501) 同位
+		default: // BaseHTTPRequestHandler 未定义 do_X → send_error(501) 同位。
+			// OPTIONS 已在管理端点拦截之前单独应答（见函数头预检块），本分派
+			// 不再见到它；default 含未知动词 501。
 			w.WriteHeader(http.StatusNotImplemented)
 			_, _ = w.Write([]byte("Unsupported method"))
 		}

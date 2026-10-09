@@ -4,10 +4,13 @@ package daemon
 // spec .scratch/settings-view-impl/spec.md「读面」条）。
 //
 // 响应三块 + 顶层 effects：
-//   - config：守护内存生效配置（d.Cfg——Load 装载、已填默认、已过校验，即
-//     「现在跑着的是什么」）全部 11 节，键名对齐 config.toml 蛇形；[dock] 节
-//     缺失如实缺席（F11：nil=渡口不启动）。注意：设置写面落盘后、重启前，
-//     本块与盘上有差——差况由 effects 徽章解释（操作级语义）。
+//   - config：盘上现值（config.Load 现读，GET /settings/ferry 票04④「对账
+//     读面」同款语义）全部 11 节，键名对齐 config.toml 蛇形；[dock] 节
+//     缺失如实缺席（F11：nil=渡口不启动）。曾用守护内存生效配置（「现在
+//     跑着的是什么」）——但写面节级 PUT 只落盘不换内存挡，读内存让 UI 保存
+//     后重渲染/重开窗显示旧值，开关即时保存更会把旧值再写回盘（2026-10-09
+//     事故改判盘读）；「跑着的」与「存了的」的差由 effects 徽章解释（操作级
+//     语义）。盘上读不出（TOML 坏）回落内存生效值。
 //   - 三类实体集合（spec 写面实体路径的读侧镜像）：
 //       dock.upstreams → config.dock.upstreams（[dock.upstreams.<名>]）；
 //       providers      → 顶层 providers（[providers.*]，ferry.LoadProviders，
@@ -104,8 +107,17 @@ func handleSettingsRead(dl DaemonLike, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfgPath := config.ResolveConfigPath("")
+	// config 块=盘上现值（对账读面，GET /settings/ferry 票04④ 同款）：节级
+	// PUT 落盘后不换内存挡（重启才生效），读内存会让「保存后重开窗/重渲染」
+	// 显示旧值，且 UI 的开关即时保存会把旧值再写回盘（2026-10-09 事故，审计
+	// 里有 toast:true 回写实证）。盘上读不出（TOML 坏等）回落内存生效值——
+	// 只读面不因单边坏盘 5xx。providers/prices 本就盘读，三块自此同源。
+	view := d.Cfg
+	if disk, lerr := config.Load(cfgPath, false); lerr == nil {
+		view = disk
+	}
 	resp := map[string]any{
-		"config":    settingsConfigSections(d.Cfg),
+		"config":    settingsConfigSections(view),
 		"providers": settingsProviders(cfgPath),
 		"prices":    settingsPrices(cfgPath),
 		"effects":   settingsEffects(),
