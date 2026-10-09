@@ -1,5 +1,6 @@
 <!-- 界面初稿:kimi 产出(2026-10-08 夜链票02);数据=真实账本快照 stats.data.js -->
 <!-- r1: 热力正梯度 蓝→GitHub绿(浅少深多),用户 2026-10-09 反馈 -->
+<!-- r2: 月份标签防重叠(首月<3天不标+相邻标签最小3列间距),用户 2026-10-09 反馈 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -280,21 +281,32 @@ function renderHeat(){
     heat.appendChild(cell);
   });
 
-  /* 月份标签:每列(周)首日为新月则标 */
+  /* 月份标签:每列(周)首日为新月则标;
+     r2 防重叠:窗口起点所在月不足3天不标;相邻标签起始列至少隔3列,不足则跳过后者 */
   var months = $("months");
   months.innerHTML = "";
   var totalSlots = pad + D.days.length;
   var cols = Math.ceil(totalSlots/7);
+  var firstM = D.days[0].date.slice(0,7);
+  var firstMDays = 0;
+  for(var fi=0; fi<D.days.length && D.days[fi].date.slice(0,7)===firstM; fi++) firstMDays++;
   var prevM = "";
+  var lastLabelCol = -99; /* 上一个已显示标签所在列 */
   for(var c=0;c<cols;c++){
     var slot = c*7; /* 该列第一个 slot 对应 days 下标 slot-pad */
-    var di = slot - pad;
     var label = "";
     for(var r=0;r<7;r++){
       var j = slot + r - pad;
       if(j>=0 && j<D.days.length){
         var m = D.days[j].date.slice(0,7);
-        if(m!==prevM){ label = m.slice(5)+"月"; prevM = m; }
+        if(m!==prevM){
+          prevM = m;
+          var skipFirst = (m===firstM && firstMDays<3);
+          if(!skipFirst && c-lastLabelCol>=3){
+            label = m.slice(5)+"月";
+            lastLabelCol = c;
+          }
+        }
         break;
       }
     }
@@ -302,7 +314,6 @@ function renderHeat(){
     sp.textContent = label;
     sp.style.gridColumn = (c+1);
     months.appendChild(sp);
-    void di;
   }
 
   /* 图例 */
