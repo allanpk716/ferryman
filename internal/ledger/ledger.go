@@ -59,11 +59,15 @@ type QSnap struct {
 // TS）即作废，压缩红利只领一次）；Expires＝死线（now + compressed_flag_ttl_ratio
 // ×TTL，置位时钉死——不再续期；TTL 不可得即 Expires=TS，读侧恒无效，保守面）；
 // PrePeak＝置位时的压前峰值（v0.9.3 放行线解耦：闸门比例腿 pass_ratio×PrePeak
-// 的基准；0＝不可得——未 harvest/历史标记，比例腿失效只剩地板）。
+// 的基准；0＝不可得——未 harvest/历史标记，比例腿失效只剩地板）；PostPrefix＝
+// 置位时的压缩后前缀（＝本次上报 prefix_tokens，触发面增量门槛的基准——再触发
+// 判「较上次压缩后新增长」的起点；0＝不可得（历史标记/缺前缀形），增量腿失效
+// 回落绝对门槛，2026-10-09 d5927238 空转案立）。
 type DshCompressMark struct {
-	TS      float64
-	Expires float64
-	PrePeak int
+	TS         float64
+	Expires    float64
+	PrePeak    int
+	PostPrefix int
 }
 
 // SessionState 一条会话的台账状态（Python SessionState 1:1）。
