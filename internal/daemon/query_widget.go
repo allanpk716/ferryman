@@ -363,10 +363,10 @@ type widgetLedgerAgg struct {
 	handoffsW   int
 }
 
-// widgetLedgerAggregate 台账现算（只读）。
+// widgetLedgerAggregate 台账聚合（只读，聚合索引供给——ADR-0027 改判）。
 //
-// 归属口径（单上游时代，诚实披露）：usage 行只有 model 名（无 provider 字段）
-// ——按各上游 model_map 值域小写匹配归属；无任何映射命中且仅配置了一个上游
+// 归属口径（单上游时代，诚实披露）：聚合按模型（小写）累计——归属到上游
+// 在查询时套 model_map 值域小写匹配；无任何映射命中且仅配置了一个上游
 // 时全归该上游（cc-switch 中转时代的行 model 名是 claude-*，同样流向该上游
 // 账户）。多上游时代需按 dock 科目 model_out 细分，届时重构此处。
 // handoff spend_*：摆渡执行器 provider 无价格表（price_ver=null）→ 不可算
@@ -374,12 +374,7 @@ type widgetLedgerAgg struct {
 func widgetLedgerAggregate(acc *accounts.Accounts, ups map[string]config.DockUpstream, now time.Time) *widgetLedgerAgg {
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 	weekStart := widgetWeekStart(now)
-	since := float64(monthStart.Unix())
-	if float64(weekStart.Unix()) < since {
-		since = float64(weekStart.Unix()) // 周一可能落上月（如 09-01 周三 → 08-31 周一）
-	}
-	until := float64(monthStart.AddDate(0, 1, 0).Unix()) - 0.001
-	entries := acc.Read(accounts.ReadOpts{Since: since, Until: until})
+	monthEnd := monthStart.AddDate(0, 1, 0)
 
 	owner := map[string]string{}
 	var single string
@@ -397,35 +392,42 @@ func widgetLedgerAggregate(acc *accounts.Accounts, ups map[string]config.DockUps
 	}
 
 	agg := &widgetLedgerAgg{monthTokens: map[string]float64{}}
-	for _, e := range entries {
-		k, _ := e["kind"].(string)
-		ts, _ := e["ts"].(float64)
-		switch k {
-		case "usage":
-			if ts < float64(monthStart.Unix()) {
-				continue // 读窗因周界前移而宽出的部分，月桶不收
-			}
-			name := owner[strings.ToLower(strVal(e, "model"))]
+	snap := acc.AggregateSnapshot() // KB 级快照（盘面戳不符则内部整建）
+	for _, c := range snap.Usage {
+		// 月桶边界=本地自然日零点，聚合的日粒度与之严丝合缝（逐行 ts 比较
+		// 的等价形）；月外格（上月/未来月）不收。
+		if t := aggCellTime(c.Month, c.Day); !t.Before(monthStart) && t.Before(monthEnd) {
+			name := owner[c.Model]
 			if name == "" {
 				name = single
 			}
 			if name == "" {
 				continue // 归属不明（多上游且无映射命中）：宁缺勿猜
 			}
-			agg.monthTokens[name] += acctNum(e, "input_tokens") +
-				acctNum(e, "cache_read_tokens") +
-				acctNum(e, "cache_creation_tokens") +
-				acctNum(e, "output_tokens")
-		case "handoff":
-			if ts >= float64(monthStart.Unix()) {
-				agg.handoffsM++
+			agg.monthTokens[name] += c.In + c.CacheRead + c.CacheWrite + c.Out
+		}
+	}
+	for _, c := range snap.Handoff {
+		if t := aggCellTime(c.Month, c.Day); t.Before(monthEnd) {
+			if !t.Before(monthStart) {
+				agg.handoffsM += c.Count
 			}
-			if ts >= float64(weekStart.Unix()) {
-				agg.handoffsW++
+			if !t.Before(weekStart) {
+				agg.handoffsW += c.Count
 			}
 		}
 	}
 	return agg
+}
+
+// aggCellTime 月键+日 → 本地自然日零点（月键由折叠侧 Format("200601") 生成，
+// 解析失败＝不可达防御回零值——零值早于一切界，两侧桶皆不收）。
+func aggCellTime(month string, day int) time.Time {
+	t, err := time.ParseInLocation("200601", month, time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Date(t.Year(), t.Month(), day, 0, 0, 0, 0, time.Local)
 }
 
 // widgetWeekStart 本地自然周起点（周一 00:00）。

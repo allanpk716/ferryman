@@ -246,11 +246,10 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 	// 不服务，版本校验必超时）。
 	go func() { _ = srv.Serve(ln) }() // serve_forever 的 Go 形（一连接一 goroutine）
 
-	// 账本常驻解析缓存预热（ADR-0027）：把首次全量解析（~95MB、秒级）从
-	// 首个用户请求挪到启动期后台消化；期间到达的查询在 cmu 上排队等暖，
-	// 不失败只是慢一次。boot 回放（dsh_boot_replay 读两月）与它共享同一
-	// 缓存——互不重复解析。
-	go acc.Prewarm()
+	// 聚合索引整建（ADR-0027 改判）：启动期后台一次流式全量折叠（~95MB、
+	// 秒级；解析行即弃，明细不驻留）——悬浮窗 30s 轮询自此只读 KB 级聚合。
+	// 期间到达的轮询先拿空聚合（数字渐进补齐），不失败。
+	go acc.RebuildAggregates()
 
 	// 渡口（票01，F11 opt-in 裁定）：配置 [dock] 节才构造并启动——不配＝
 	// 不绑端口、零行为变化。独立 listener/生命周期：构造或绑定失败只告警

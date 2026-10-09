@@ -511,3 +511,108 @@ func TestWidgetWeekStart(t *testing.T) {
 		t.Errorf("widgetWeekStart(周日) = %v, want %v", got, want)
 	}
 }
+
+// ---- 悬浮窗聚合索引供给（ADR-0027 改判）：与逐行解析参照的一致性钉子 ----
+
+// TestWidgetLedgerAggregateParity 聚合供给（AggregateSnapshot）必须与旧「窗口
+// Read＋逐行归属」逐字等价：月桶边界、周桶边界、上月行不收、归属不明宁缺勿猜。
+// 时间全从 now 派生（不硬编码日期），时区无关。
+func TestWidgetLedgerAggregateParity(t *testing.T) {
+	acc, err := accounts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(int64(1.8e9), 0).In(time.Local) // queryEnv 同款冻结锚
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	weekStart := widgetWeekStart(now)
+
+	rec := func(kind string, ts time.Time, f accounts.Fields) {
+		t.Helper()
+		if _, err := acc.Record(kind, float64(ts.Unix())+0.5, f); err != nil {
+			t.Fatalf("Record %s: %v", kind, err)
+		}
+	}
+	usageF := func(model string) accounts.Fields {
+		return accounts.Fields{
+			"agent": "cc", "session_id": "s", "lineage_id": "", "project": "p",
+			"model": model, "title": "t", "input_tokens": 100, "cache_read_tokens": 10,
+			"cache_creation_tokens": 20, "output_tokens": 30, "offset": 0, "subagent": "",
+		}
+	}
+	handoffF := accounts.Fields{
+		"agent": "cc", "session_id": "s", "lineage_id": "", "project": "p",
+		"provider": "glm", "model": "glm-5.3", "price_ver": "v",
+		"prompt_tokens": 1, "completion_tokens": 1, "outcome": "fresh", "wall_s": 1,
+	}
+
+	rec("usage", now.Add(-time.Hour), usageF("glm-5.3"))           // 今日：月桶
+	rec("usage", monthStart.Add(time.Hour), usageF("GLM-5.3"))     // 月初：月桶（大小写归一）
+	rec("usage", monthStart.Add(-24*time.Hour), usageF("kimi-k3")) // 上月末：不收
+	rec("usage", now.Add(-2*time.Hour), usageF("orphan-model"))    // 归属不明：宁缺勿猜
+	rec("handoff", now.Add(-time.Hour), handoffF)                  // 今日：M+W
+	rec("handoff", weekStart.Add(-time.Hour), handoffF)            // 周界前（本月内）：仅 M
+	rec("handoff", monthStart.Add(-24*time.Hour), handoffF)        // 上月末：既非 M 也非 W
+
+	ups := map[string]config.DockUpstream{
+		"glm":  {ModelMap: map[string]string{"g": "glm-5.3"}},
+		"kimi": {ModelMap: map[string]string{"k": "kimi-k3"}},
+	}
+	got := widgetLedgerAggregate(acc, ups, now)
+
+	// 参照：旧逐行实现（Read 窗口＋归属循环）原样内联。
+	since := float64(monthStart.Unix())
+	if float64(weekStart.Unix()) < since {
+		since = float64(weekStart.Unix())
+	}
+	until := float64(monthStart.AddDate(0, 1, 0).Unix()) - 0.001
+	owner := map[string]string{}
+	for n, u := range ups {
+		for _, v := range u.ModelMap {
+			if v != "" {
+				owner[strings.ToLower(v)] = n
+			}
+		}
+	}
+	ref := &widgetLedgerAgg{monthTokens: map[string]float64{}}
+	for _, e := range acc.Read(accounts.ReadOpts{Since: since, Until: until}) {
+		k, _ := e["kind"].(string)
+		ts, _ := e["ts"].(float64)
+		switch k {
+		case "usage":
+			if ts < float64(monthStart.Unix()) {
+				continue
+			}
+			name := owner[strings.ToLower(strVal(e, "model"))]
+			if name == "" {
+				continue
+			}
+			ref.monthTokens[name] += acctNum(e, "input_tokens") +
+				acctNum(e, "cache_read_tokens") + acctNum(e, "cache_creation_tokens") +
+				acctNum(e, "output_tokens")
+		case "handoff":
+			if ts >= float64(monthStart.Unix()) {
+				ref.handoffsM++
+			}
+			if ts >= float64(weekStart.Unix()) {
+				ref.handoffsW++
+			}
+		}
+	}
+
+	if len(got.monthTokens) != len(ref.monthTokens) {
+		t.Fatalf("monthTokens 键数 %d ≠ 参照 %d: %v vs %v",
+			len(got.monthTokens), len(ref.monthTokens), got.monthTokens, ref.monthTokens)
+	}
+	for k, v := range ref.monthTokens {
+		if got.monthTokens[k] != v {
+			t.Fatalf("monthTokens[%q] = %v, want %v（参照）", k, got.monthTokens[k], v)
+		}
+	}
+	if got.handoffsM != ref.handoffsM || got.handoffsW != ref.handoffsW {
+		t.Fatalf("handoffs = %d/%d, want 参照 %d/%d",
+			got.handoffsM, got.handoffsW, ref.handoffsM, ref.handoffsW)
+	}
+	if ref.handoffsM != 2 || ref.handoffsW != 1 { // 参照自检（夹具失效即报）
+		t.Fatalf("参照自检不符: M=%d W=%d, want 2/1", ref.handoffsM, ref.handoffsW)
+	}
+}

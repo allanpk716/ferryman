@@ -125,7 +125,7 @@ func handleStatsSummary(d *Daemon, w http.ResponseWriter, r *http.Request) {
 	}
 	var entries []map[string]any
 	if d.Accounts != nil {
-		entries = d.Accounts.Read(accounts.ReadOpts{Since: win.since, Until: win.until})
+		entries = d.Accounts.ReadWindow(accounts.ReadOpts{Since: win.since, Until: win.until})
 	}
 	books := queryReportPrices()
 	econBook := statsEconBook(d, books)
@@ -336,9 +336,9 @@ func handleStatsUsage(d *Daemon, w http.ResponseWriter, r *http.Request) {
 
 	var entries []map[string]any
 	if d.Accounts != nil {
-		// kind 过滤下推（缓存后六维过滤在内存条目上扫，少一遍科目判）：
-		// 本端点只消费 usage 行。
-		entries = d.Accounts.Read(accounts.ReadOpts{
+		// kind 过滤下推（少解析后少一遍科目判）：本端点只消费 usage 行；
+		// ReadWindow 月份裁剪——日期窗给定只读窗内月文件（ADR-0027 改判）。
+		entries = d.Accounts.ReadWindow(accounts.ReadOpts{
 			Since: win.since, Until: win.until, Project: qsOr(q, "project", ""),
 			Kind: "usage"})
 	}

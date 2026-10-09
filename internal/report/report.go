@@ -422,7 +422,7 @@ func Run(args Args) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	entries := acc.Read(accounts.ReadOpts{Since: since, Until: until,
+	entries := acc.ReadWindow(accounts.ReadOpts{Since: since, Until: until,
 		Project: args.Project, Session: args.Session, Kind: args.Kind})
 	econBook := bookFor(books, econKey)
 	s := SavingsV1(entries, books, econBook)
