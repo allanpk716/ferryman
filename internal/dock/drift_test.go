@@ -6,8 +6,6 @@ package dock
 import (
 	"strings"
 	"testing"
-
-	"ferryman/internal/config"
 )
 
 type alertRecorder struct{ msgs []string }
@@ -54,10 +52,5 @@ func TestDriftNilTrackerAndBadBodySafe(t *testing.T) {
 	var dt *DriftTracker
 	dt.Observe("beta-z", []byte(`{"a":1}`)) // nil 安全
 	ok := NewDriftTracker(nil)
-	ok.Observe("beta-new", []byte(`totally not json`)) // 坏体/无告警函数均不 panic
-}
-
-func TestAlertViaNotifyDisabledIsNoop(t *testing.T) {
-	fn := AlertViaNotify(new(config.Config)) // Enabled=false：不出网不弹窗
-	fn("t", "m")                             // 仅要求不 panic（通道内部吞掉）
+	ok.Observe("beta-new", []byte("totally not json")) // 坏体/无告警函数均不 panic
 }

@@ -270,7 +270,11 @@ func serveConfig(cfg *config.Config, ctx context.Context, version string) int {
 					// 持既有上游跑完）；dockState 恒非 nil（本分支 cfg.Dock 非 nil）。
 					Resolver: dockState,
 					Accounts: acc,
-					Alert:    dock.AlertViaNotify(cfg),
+					// 形态漂移推送已解绑（2026-10-09，ADR-0026-notify 修订）：
+					// Alert 留 nil＝漂移只落 serve 日志。渡口对未知 beta/参数原样
+					// 放行（headers.go 只动 auth/beta 两处），推送无可执行动作；
+					// drift 事件键由 verify-dsh 红灯专用（cmdVerifyDsh）。
+					Alert: nil,
 				})
 			}
 			ds, derr := startDockWithRetry(newDock,

@@ -66,8 +66,8 @@ type Options struct {
 	Resolver UpstreamResolver
 	// Accounts dock 科目账本；nil＝不记账（旧测试零改动）。
 	Accounts *accounts.Accounts
-	// Alert 形态漂移推送函数（daemon 侧给 AlertViaNotify(cfg) 的闭包）；
-	// nil＝只记日志不推送。
+	// Alert 形态漂移告警缝；nil＝只记日志不推送（daemon 生产装配即 nil——
+	// 2026-10-09 推送解绑，ADR-0026-notify 修订；缝保留给测试）。
 	Alert func(title, message string)
 }
 
