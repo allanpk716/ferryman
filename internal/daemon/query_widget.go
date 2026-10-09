@@ -100,7 +100,9 @@ var widgetAllowedOrigins = map[string]bool{
 // 故在 auth 面之前免鉴权答 204+头；实际 GET 仍走既有 Bearer 面。白名单外
 // 返回 false，调用方维持未实现 501 原样（非浏览器 OPTIONS 不受影响）。
 // 按 Origin 白名单而非路径卡：其余端点的预检即便过了，实际请求仍 401，
-// 不构成放权。
+// 不构成放权。方法/头面=守护动词全集：widget/stats 只读 GET，设置族
+// （ferryman-settings，2026-10-09 连不上事故）另需 PUT/POST/DELETE 与
+// Content-Type（JSON 写体）——预检声明按全集一次放行，不逐路径缩面。
 func handleWidgetPreflight(w http.ResponseWriter, r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if !widgetAllowedOrigins[origin] {
@@ -108,8 +110,8 @@ func handleWidgetPreflight(w http.ResponseWriter, r *http.Request) bool {
 	}
 	h := w.Header()
 	h.Set("Access-Control-Allow-Origin", origin)
-	h.Set("Access-Control-Allow-Methods", http.MethodGet)
-	h.Set("Access-Control-Allow-Headers", "Authorization")
+	h.Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE")
+	h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 	h.Set("Access-Control-Max-Age", "86400") // 预检缓存一天：30s 轮询不必每次多一跳
 	w.WriteHeader(http.StatusNoContent)
 	return true
