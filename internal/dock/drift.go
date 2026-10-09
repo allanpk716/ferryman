@@ -8,15 +8,16 @@
 // 观察点在改写前（与快照同点，喂 CC 原始请求）；两种模式都观察——透传模式
 // 漂移同样是 CC 升级信号（对账/面板要用）。纯透传 New() 不构造追踪器＝零行为
 // （F11 同款精神）。
+//
+// 2026-10-09 推送解绑（ADR-0026-notify 修订）：daemon 装配 Alert=nil，漂移
+// 只落 serve 日志——渡口对未知形态原样放行，推送文案对用户零可执行动作；
+// 日志行仍是 CC 升级第一现场的取证记录。alert 缝保留给测试与潜在复用。
 package dock
 
 import (
 	"encoding/json"
 	"strings"
 	"sync"
-
-	"ferryman/internal/config"
-	"ferryman/internal/notify"
 )
 
 // DriftTracker 形态漂移追踪器。零值不可用，一律 NewDriftTracker；nil 指针
@@ -101,14 +102,5 @@ func (t *DriftTracker) fire(msg string) {
 	logger.Printf("形态漂移: %s", msg)
 	if t.alert != nil {
 		t.alert("Ferryman 渡口形态漂移", msg)
-	}
-}
-
-// AlertViaNotify notify 接线闭包（daemon 侧 Options.Alert 用）：漂移推送走
-// 事件分派 NotifyEvent(EventDrift)（票03 通知分级收编旧 NotifyAlert——本包
-// 只调用不改 notify；文案归票08 并行泳道）。
-func AlertViaNotify(cfg *config.Config) func(title, message string) {
-	return func(title, message string) {
-		notify.NotifyEvent(notify.EventDrift, title, message, cfg)
 	}
 }

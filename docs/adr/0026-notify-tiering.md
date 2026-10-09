@@ -37,3 +37,15 @@ block 双通道（Pushover＋Toast，priority=1 等细节被测试钉死）是 P
 - 缺省表随代码演进：用户显式配值恰等于旧缺省的键被等值省略，缺省更新后这些键行为随之变化。
 - 部署后观测两件：重启后首滑落重推的频率、交替模式的独立故障周期数（日均 ≥3 回用户决策）。
 - CONTEXT.md「摆渡路由」降级告警句改为状态变化制、新增「通知分级」词条（随本篇）；`config.example.toml` 注释同步归实施票。
+
+## 修订（2026-10-09）：渡口形态漂移退出推送
+
+drift 事件键原有两个发送方并轨共用：渡口形态漂移（`dock/drift.go`，票03 接线）与 `ferryman verify-dsh` 红灯（verify-dsh 战役收编）。本次把前者解绑——daemon 装配 `Options.Alert = nil`（`AlertViaNotify` 随之删除），形态漂移只落 serve 日志；drift 键转由 verify-dsh 红灯专用，缺省 `both` 不变。九事件封闭集合与配置形状不动。
+
+依据：
+
+- 渡口对未知形态原样放行（`headers.go` 白名单外只动 auth/beta 两处、请求体只改已知五件），形态漂移推送对用户零可执行动作；其取证价值在日志行（`drift.go` fire 落日志无条件），推送无信息增量。
+- 登记表重启清零重建基线，重启密集期同一批无害参数（temperature / tool_choice / structured-outputs 等）反复"首见"重报——10-05~09 生产 serve 日志实测信噪比不可接受；未来用户为有用通知（block/升级等）开启 `[notify]` 即开始吃此类推送，解绑从根上断掉。
+- verify-dsh 红灯保留推送：真故障（插件偏离已知良好）、可执行（查插件/回退已知良好版本），与形态漂移不同质。
+
+CONTEXT.md「通知分级」「形态漂移告警」词条、`config.example.toml` 注释、widget 设置面 drift 行标签（0.2.8）随本修订同步。

@@ -108,8 +108,9 @@ window = 1048576
 # 通知分级（九事件三值）：每类事件一个开关，off=不发 / toast=仅桌面 /
 # both=双通道。内置缺省：chain_degrade（链滑落，顺位级状态变化制）、
 # chain_skeleton（骨架交接）、breaker（熔断）、upgrade（升级结果）、
-# hard_cut（静默门硬切）、drift（漂移）= both；block（闸门拦截）与
-# tray_reply（托盘回复）= toast；tuning（调参通报）= off。
+# hard_cut（静默门硬切）、drift（DSH 验证红灯）= both；block（闸门拦截）
+# 与 tray_reply（托盘回复）= toast；tuning（调参通报）= off。
+# 渡口形态漂移不推送（新 beta 标记/新参数只落 serve 日志，2026-10-09 起）。
 # 不写 events 或只写部分键时，其余事件回落内置缺省表（缺省可随升级演进）；
 # 写了的键按显式值生效。
 #

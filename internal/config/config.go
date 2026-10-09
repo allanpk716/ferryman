@@ -83,9 +83,10 @@ var NotifyEventNames = [...]string{
 }
 
 // DefaultNotifyEvents 九事件内置缺省表（D2）的防御拷贝：关键故障双通道
-// （链滑落/骨架/熔断/升级/静默门硬切/漂移），block 与托盘回复仅桌面
-// （人被拦时必在电脑前），调参通报不发。读面展示与设置视图写入器的等值
-// 省略规范化共用本单源（票04）。
+// （链滑落/骨架/熔断/升级/静默门硬切/DSH 验证红灯），block 与托盘回复仅桌面
+// （人被拦时必在电脑前），调参通报不发。drift 键＝DSH 验证红灯专用——渡口
+// 形态漂移 2026-10-09 起解绑推送、只落 serve 日志（ADR-0026-notify 修订）。
+// 读面展示与设置视图写入器的等值省略规范化共用本单源（票04）。
 func DefaultNotifyEvents() map[string]NotifyEventTier {
 	return map[string]NotifyEventTier{
 		"block":          NotifyEventToast,
