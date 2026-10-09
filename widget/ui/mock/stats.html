@@ -1,4 +1,5 @@
 <!-- 界面初稿:kimi 产出(2026-10-08 夜链票02);数据=真实账本快照 stats.data.js -->
+<!-- r1: 热力正梯度 蓝→GitHub绿(浅少深多),用户 2026-10-09 反馈 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -12,8 +13,8 @@
   --blue:#5B9BD5; --blue-t:#9CC4E8;
   --amber:#E8A33D; --purple:#9B7EDE; --green:#6BBF8A; --cyan:#4FC3C8;
   --alert-y:#E8C33D; --alert-r:#E85D5D;
-  /* 热力正梯度(蓝,暗→亮 4 级) */
-  --heat0:#1a2030; --heat1:#16324f; --heat2:#2b5a8a; --heat3:#5B9BD5; --heat4:#9CC4E8;
+  /* 热力正梯度(GitHub 绿,浅→深 4 级:L1 最少 … L4 最多) */
+  --heat0:#1a2030; --heat1:#9be9a8; --heat2:#40c463; --heat3:#30a14e; --heat4:#216e39;
   /* 负值日梯度(青绿冷色,暗→亮 4 级) */
   --neg1:#123f42; --neg2:#1e6b70; --neg3:#2f9aa0; --neg4:#4FC3C8;
 }
@@ -49,6 +50,8 @@ h1{font-size:18px;font-weight:600;margin:0}
 .heat{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,11px);grid-auto-columns:11px;gap:2px;width:max-content}
 .cell{width:11px;height:11px;border-radius:2px;background:var(--heat0)}
 .cell.l1{background:var(--heat1)}.cell.l2{background:var(--heat2)}.cell.l3{background:var(--heat3)}.cell.l4{background:var(--heat4)}
+/* r1:深绿格(#216e39)在深色卡片上的分离度 */
+.cell.l1,.cell.l2,.cell.l3,.cell.l4{border:1px solid rgba(255,255,255,.12)}
 .cell.n1{background:var(--neg1)}.cell.n2{background:var(--neg2)}.cell.n3{background:var(--neg3)}.cell.n4{background:var(--neg4)}
 .cell:hover{outline:1px solid var(--blue-t)}
 .months{display:grid;grid-auto-flow:column;gap:2px;width:max-content;margin-left:32px;font-size:10px;color:var(--txt-dim)}
