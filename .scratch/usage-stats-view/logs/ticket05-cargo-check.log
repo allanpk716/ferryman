@@ -1,0 +1,5 @@
+# 票05 cargo check --offline (widget/src-tauri,含 tauri.conf.json 变更经 tauri-build 校验) — 2026-10-09 09:31
+# 冷构建首轮(全依赖): Finished dev profile in 1m 30s, exit=0
+# 增量复跑:
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.81s
+exit=0

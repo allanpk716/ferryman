@@ -17,7 +17,8 @@ package daemon
 // 票间路径互斥：每端点一个独立 handler 文件。票01 落地 /sessions+/session
 // （query_sessions.go），票02 落地 /gate_check（query_gate_check.go），票03
 // 落地 /report+/beats（query_report.go / query_beats.go）——五端点全部为真实现，
-// 票01 的 stubNotImplemented 已随最后一个 stub 的替换退役删除。
+// 票01 的 stubNotImplemented 已随最后一个 stub 的替换退役删除。用量统计视图
+// 票04 落地 /stats/summary+/stats/usage（query_stats.go，mock 冻结 schema 消费面）。
 
 import (
 	"net/http"
@@ -36,6 +37,8 @@ var queryEndpoints = map[string]queryEndpoint{
 	"/config_tuning":  handleConfigTuning,  // 票08 实现（query_config_tuning.go）
 	"/widget/summary": handleWidgetSummary, // 用量悬浮窗票08 实现（query_widget.go）
 	"/dsh/health":     handleDshHealth,     // verify-dsh 票01：L1 挂载/宿主旁证只读面（dsh_liveness.go）
+	"/stats/summary":  handleStatsSummary,  // 用量统计票04：KPI+逐日序列聚合（query_stats.go）
+	"/stats/usage":    handleStatsUsage,    // 用量统计票04：逐请求明细分页（query_stats.go）
 }
 
 // dispatchQuery 查询面分派入口（httpapi.doGet default 分支的单块接线点）：

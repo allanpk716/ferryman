@@ -45,6 +45,18 @@
         "center": true,
         "resizable": true,
         "visible": false
+      },
+      {
+        "label": "stats",
+        "url": "stats.html",
+        "title": "Ferryman 统计 · 成本成效账",
+        "width": 1000,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 560,
+        "center": true,
+        "resizable": true,
+        "visible": false
       }
     ],
     "security": {

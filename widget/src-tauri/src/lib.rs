@@ -616,6 +616,19 @@ fn open_ferryman_settings_window(app: tauri::AppHandle) {
     open_ferryman_settings(&app);
 }
 
+/// 统计窗（成本成效账，票05）：与 settings/ferryman-settings 同款常驻模式——
+/// conf 声明、启动创建 visible:false、关闭=隐藏不销毁（通用 CloseRequested
+/// handler 已覆盖：prevent_close + hide 对所有窗生效），这里只负责显示。
+/// 运行时建窗绝对禁止（0.2.4 真机白屏事故教训对每个窗原样适用）。
+/// 入口=托盘「统计」菜单项（页面数据轮询由前端 stats.html 自理）。
+fn open_stats(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("stats") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例必须最前：二次启动不出现第二个窗口，拉起既有窗口后由 main 退出
@@ -744,9 +757,10 @@ pub fn run() {
             let toggle = MenuItem::with_id(app, "toggle_appearance", toggle_label, true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
             let fsettings = MenuItem::with_id(app, "ferryman_settings", "Ferryman 设置", true, None::<&str>)?;
+            let stats = MenuItem::with_id(app, "stats", "统计", true, None::<&str>)?;
             let update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &hide, &toggle, &settings, &fsettings, &update, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &hide, &toggle, &settings, &fsettings, &stats, &update, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().expect("无内置图标").clone())
                 .tooltip("Ferryman 用量悬浮窗")
@@ -768,6 +782,7 @@ pub fn run() {
                     }
                     "settings" => open_settings(app), // 显示常驻设置窗（0.2.4：conf 创建+隐藏，打开=显示）
                     "ferryman_settings" => open_ferryman_settings(app), // Ferryman 设置（守护侧配置）：同款常驻模式
+                    "stats" => open_stats(app), // 统计窗（成本成效账，票05）：同款常驻模式，托盘唯一入口
                     // 外观快捷切换（0.2.3）：前端走完整流向（toggle→persistProfile→
                     // applyProfile→invoke set_appearance），这里只转发意图。
                     "toggle_appearance" => {

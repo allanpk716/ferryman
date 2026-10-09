@@ -1,0 +1,1956 @@
+=== RUN   TestADR0013PhantomWriteNoReferry
+--- PASS: TestADR0013PhantomWriteNoReferry (0.03s)
+=== RUN   TestADR0013GateValidByContentClock
+[gate] BLOCK cc/s1 idle=60m handoff=20261009_090043_39d2ae
+--- PASS: TestADR0013GateValidByContentClock (0.01s)
+=== RUN   TestADR0013WorkerMarksHandledContent
+--- PASS: TestADR0013WorkerMarksHandledContent (0.00s)
+=== RUN   TestADR0013LineageInheritsHandledContent
+--- PASS: TestADR0013LineageInheritsHandledContent (0.00s)
+=== RUN   TestADR0013PruneOlderThan
+--- PASS: TestADR0013PruneOlderThan (0.02s)
+=== RUN   TestDshCompactPollClearsSlotOnce
+--- PASS: TestDshCompactPollClearsSlotOnce (0.00s)
+=== RUN   TestDshCompactSlotFreshNotOverwritten
+--- PASS: TestDshCompactSlotFreshNotOverwritten (0.00s)
+=== RUN   TestDshCompactPollDropsExpired
+[compact] dsh 指令过期无人领取(第 1 轮):session-44444444
+--- PASS: TestDshCompactPollDropsExpired (0.00s)
+=== RUN   TestDshCompactPollOnlyListedSessions
+--- PASS: TestDshCompactPollOnlyListedSessions (0.00s)
+=== RUN   TestDshCompactDisabledNoEnqueueNoDispatch
+--- PASS: TestDshCompactDisabledNoEnqueueNoDispatch (0.00s)
+=== RUN   TestDshCompactEnqueueNeedsTTL
+--- PASS: TestDshCompactEnqueueNeedsTTL (0.00s)
+=== RUN   TestDshCompactPassLineTable
+=== RUN   TestDshCompactPassLineTable/缺省:压前不可得→地板
+=== RUN   TestDshCompactPassLineTable/缺省:肥会话50K→比例腿25K
+=== RUN   TestDshCompactPassLineTable/缺省:首单实锚60562→30281
+=== RUN   TestDshCompactPassLineTable/缺省:瘦会话10K→比例腿5K不敌地板
+=== RUN   TestDshCompactPassLineTable/可配:地板抬高独走
+=== RUN   TestDshCompactPassLineTable/可配:比例1.0=压多少放多少
+--- PASS: TestDshCompactPassLineTable (0.00s)
+    --- PASS: TestDshCompactPassLineTable/缺省:压前不可得→地板 (0.00s)
+    --- PASS: TestDshCompactPassLineTable/缺省:肥会话50K→比例腿25K (0.00s)
+    --- PASS: TestDshCompactPassLineTable/缺省:首单实锚60562→30281 (0.00s)
+    --- PASS: TestDshCompactPassLineTable/缺省:瘦会话10K→比例腿5K不敌地板 (0.00s)
+    --- PASS: TestDshCompactPassLineTable/可配:地板抬高独走 (0.00s)
+    --- PASS: TestDshCompactPassLineTable/可配:比例1.0=压多少放多少 (0.00s)
+=== RUN   TestDshCompactedOkSetsFlagAndPrefix
+--- PASS: TestDshCompactedOkSetsFlagAndPrefix (0.01s)
+=== RUN   TestDshCompactedTableDriven
+=== RUN   TestDshCompactedTableDriven/ok=false只落行不设标记
+=== RUN   TestDshCompactedTableDriven/ok=true无prefix只落行不设标记
+=== RUN   TestDshCompactedTableDriven/prefix=0不设标记
+--- PASS: TestDshCompactedTableDriven (0.03s)
+    --- PASS: TestDshCompactedTableDriven/ok=false只落行不设标记 (0.01s)
+    --- PASS: TestDshCompactedTableDriven/ok=true无prefix只落行不设标记 (0.01s)
+    --- PASS: TestDshCompactedTableDriven/prefix=0不设标记 (0.01s)
+=== RUN   TestDshCompactedBadShapesSkipped
+=== RUN   TestDshCompactedBadShapesSkipped/空sid
+=== RUN   TestDshCompactedBadShapesSkipped/缺ok
+=== RUN   TestDshCompactedBadShapesSkipped/ok非布尔
+--- PASS: TestDshCompactedBadShapesSkipped (0.01s)
+    --- PASS: TestDshCompactedBadShapesSkipped/空sid (0.00s)
+    --- PASS: TestDshCompactedBadShapesSkipped/缺ok (0.00s)
+    --- PASS: TestDshCompactedBadShapesSkipped/ok非布尔 (0.00s)
+=== RUN   TestDshCompressedFlagExpiry
+--- PASS: TestDshCompressedFlagExpiry (0.00s)
+=== RUN   TestDshCompressedFlagVoidedByTraffic
+--- PASS: TestDshCompressedFlagVoidedByTraffic (0.00s)
+=== RUN   TestDshCompressedActiveNoState
+--- PASS: TestDshCompressedActiveNoState (0.00s)
+=== RUN   TestDshCompressedFlagZeroTTLInvalid
+--- PASS: TestDshCompressedFlagZeroTTLInvalid (0.00s)
+=== RUN   TestDshCompactEndpointGuards
+--- PASS: TestDshCompactEndpointGuards (0.01s)
+=== RUN   TestCompactUndeliveredRounds
+=== RUN   TestCompactUndeliveredRounds/第1轮只日志不告警
+=== RUN   TestCompactUndeliveredRounds/第2轮只日志不告警
+=== RUN   TestCompactUndeliveredRounds/第3轮告警恰一行
+=== RUN   TestCompactUndeliveredRounds/第4轮不叠加
+=== RUN   TestCompactUndeliveredRounds/第5轮不叠加
+--- PASS: TestCompactUndeliveredRounds (0.02s)
+    --- PASS: TestCompactUndeliveredRounds/第1轮只日志不告警 (0.00s)
+    --- PASS: TestCompactUndeliveredRounds/第2轮只日志不告警 (0.00s)
+    --- PASS: TestCompactUndeliveredRounds/第3轮告警恰一行 (0.01s)
+    --- PASS: TestCompactUndeliveredRounds/第4轮不叠加 (0.00s)
+    --- PASS: TestCompactUndeliveredRounds/第5轮不叠加 (0.00s)
+=== RUN   TestCompactUndeliveredResetHooks
+=== RUN   TestCompactUndeliveredResetHooks/ok=true上报清零:再3轮再告警轮号重数
+=== RUN   TestCompactUndeliveredResetHooks/入槽不清零:真实循环过期-重灌3轮即告警
+=== RUN   TestCompactUndeliveredResetHooks/领取不清零(票01修订):累计满3轮照告警
+=== RUN   TestCompactUndeliveredResetHooks/领取不清零(票01修订):对照形轮号累大
+=== RUN   TestCompactUndeliveredResetHooks/ok=false不清零:第3轮照告警
+--- PASS: TestCompactUndeliveredResetHooks (0.03s)
+    --- PASS: TestCompactUndeliveredResetHooks/ok=true上报清零:再3轮再告警轮号重数 (0.01s)
+    --- PASS: TestCompactUndeliveredResetHooks/入槽不清零:真实循环过期-重灌3轮即告警 (0.00s)
+    --- PASS: TestCompactUndeliveredResetHooks/领取不清零(票01修订):累计满3轮照告警 (0.00s)
+    --- PASS: TestCompactUndeliveredResetHooks/领取不清零(票01修订):对照形轮号累大 (0.00s)
+    --- PASS: TestCompactUndeliveredResetHooks/ok=false不清零:第3轮照告警 (0.00s)
+=== RUN   TestCompactUndeliveredClaimSilent
+--- PASS: TestCompactUndeliveredClaimSilent (0.00s)
+=== RUN   TestCompactUndeliveredPerSession
+--- PASS: TestCompactUndeliveredPerSession (0.01s)
+=== RUN   TestDshCompactClaimWindowThrottlesEnqueue
+--- PASS: TestDshCompactClaimWindowThrottlesEnqueue (0.00s)
+=== RUN   TestDshCompactClaimOkClosesWindow
+--- PASS: TestDshCompactClaimOkClosesWindow (0.00s)
+=== RUN   TestDshCompactClaimOkFalseKeepsWindow
+--- PASS: TestDshCompactClaimOkFalseKeepsWindow (0.00s)
+=== RUN   TestCompactClaimTimeoutRounds
+=== RUN   TestCompactClaimTimeoutRounds/第1轮只日志不告警
+=== RUN   TestCompactClaimTimeoutRounds/第2轮只日志不告警
+=== RUN   TestCompactClaimTimeoutRounds/第3轮告警恰一行
+=== RUN   TestCompactClaimTimeoutRounds/第4轮不叠加
+--- PASS: TestCompactClaimTimeoutRounds (0.01s)
+    --- PASS: TestCompactClaimTimeoutRounds/第1轮只日志不告警 (0.00s)
+    --- PASS: TestCompactClaimTimeoutRounds/第2轮只日志不告警 (0.00s)
+    --- PASS: TestCompactClaimTimeoutRounds/第3轮告警恰一行 (0.00s)
+    --- PASS: TestCompactClaimTimeoutRounds/第4轮不叠加 (0.00s)
+=== RUN   TestCompactMissCounterSharedAcrossPaths
+--- PASS: TestCompactMissCounterSharedAcrossPaths (0.00s)
+=== RUN   TestDshCompactPollLiveRouting
+=== RUN   TestDshCompactPollLiveRouting/live=false不派留槽,live=true可领
+=== RUN   TestDshCompactPollLiveRouting/缺键旧体可领取(false宿主之后旧体宿主照领)
+=== RUN   TestDshCompactPollLiveRouting/非布尔live坏形按缺键宽容领取
+--- PASS: TestDshCompactPollLiveRouting (0.01s)
+    --- PASS: TestDshCompactPollLiveRouting/live=false不派留槽,live=true可领 (0.00s)
+    --- PASS: TestDshCompactPollLiveRouting/缺键旧体可领取(false宿主之后旧体宿主照领) (0.00s)
+    --- PASS: TestDshCompactPollLiveRouting/非布尔live坏形按缺键宽容领取 (0.00s)
+=== RUN   TestDshCompactTriggerFiveConditions
+=== RUN   TestDshCompactTriggerFiveConditions/条件①闲置未到线不入槽
+=== RUN   TestDshCompactTriggerFiveConditions/条件②peak不足不入槽
+=== RUN   TestDshCompactTriggerFiveConditions/条件③族系在途不入槽
+=== RUN   TestDshCompactTriggerFiveConditions/条件③陈旧运行态不挡（v0.9.4_b_变体_bb5d5e37_实锚）
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 1000s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactTriggerFiveConditions/条件④有效压缩标记不入槽
+=== RUN   TestDshCompactTriggerFiveConditions/条件⑤未过期在槽指令不重复入槽
+=== RUN   TestDshCompactTriggerFiveConditions/票01在飞领取窗:领取后30s重触发被拒
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactTriggerFiveConditions/五条件全真入槽带expires_at
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+--- PASS: TestDshCompactTriggerFiveConditions (0.03s)
+    --- PASS: TestDshCompactTriggerFiveConditions/条件①闲置未到线不入槽 (0.00s)
+    --- PASS: TestDshCompactTriggerFiveConditions/条件②peak不足不入槽 (0.00s)
+    --- PASS: TestDshCompactTriggerFiveConditions/条件③族系在途不入槽 (0.00s)
+    --- PASS: TestDshCompactTriggerFiveConditions/条件③陈旧运行态不挡（v0.9.4_b_变体_bb5d5e37_实锚） (0.00s)
+    --- PASS: TestDshCompactTriggerFiveConditions/条件④有效压缩标记不入槽 (0.00s)
+    --- PASS: TestDshCompactTriggerFiveConditions/条件⑤未过期在槽指令不重复入槽 (0.00s)
+    --- PASS: TestDshCompactTriggerFiveConditions/票01在飞领取窗:领取后30s重触发被拒 (0.00s)
+    --- PASS: TestDshCompactTriggerFiveConditions/五条件全真入槽带expires_at (0.00s)
+=== RUN   TestDshCompactTriggerOverwritesExpiredSlot
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 800s ≥ 线 800s（指令 200s 内有效）
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 1001s ≥ 线 800s（指令 200s 内有效）
+--- PASS: TestDshCompactTriggerOverwritesExpiredSlot (0.00s)
+=== RUN   TestDshCompactTriggerHandoffBranch
+=== RUN   TestDshCompactTriggerHandoffBranch/成功入队并盖章
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactTriggerHandoffBranch/入队失败不回滚指令
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 交接入队失败（队满？）——压缩指令不受影响（session-33333333）
+=== RUN   TestDshCompactTriggerHandoffBranch/已有覆盖交接不重摆
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+--- PASS: TestDshCompactTriggerHandoffBranch (0.01s)
+    --- PASS: TestDshCompactTriggerHandoffBranch/成功入队并盖章 (0.00s)
+    --- PASS: TestDshCompactTriggerHandoffBranch/入队失败不回滚指令 (0.00s)
+    --- PASS: TestDshCompactTriggerHandoffBranch/已有覆盖交接不重摆 (0.00s)
+=== RUN   TestDshCompactTriggerDisabledAndNoTTL
+--- PASS: TestDshCompactTriggerDisabledAndNoTTL (0.01s)
+=== RUN   TestDshCompactTriggerNeedsObserved
+--- PASS: TestDshCompactTriggerNeedsObserved (0.00s)
+=== RUN   TestDshCompactTriggerClaimWindowLifecycle
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 325s ≥ 线 80s（指令 20s 内有效）
+--- PASS: TestDshCompactTriggerClaimWindowLifecycle (0.00s)
+=== RUN   TestDshCompactTriggerWiredIntoPollDsh
+[compact] dsh 触发热缓存压缩：session-55555555 闲置 100s ≥ 线 80s（指令 20s 内有效）
+--- PASS: TestDshCompactTriggerWiredIntoPollDsh (0.02s)
+=== RUN   TestDshCompactTriggerLiveAggregation
+=== RUN   TestDshCompactTriggerLiveAggregation/近窗任一live=true→照常触发
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactTriggerLiveAggregation/近窗全部显式false→压制
+=== RUN   TestDshCompactTriggerLiveAggregation/无显式上报(无轮询)→照旧触发
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactTriggerLiveAggregation/缺键旧体→照旧触发(前向兼容硬约束)
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactTriggerLiveAggregation/显式false过90s近窗→未知→照旧触发
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 171s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactTriggerLiveAggregation/true出窗后窗内只剩false→压制
+--- PASS: TestDshCompactTriggerLiveAggregation (0.02s)
+    --- PASS: TestDshCompactTriggerLiveAggregation/近窗任一live=true→照常触发 (0.00s)
+    --- PASS: TestDshCompactTriggerLiveAggregation/近窗全部显式false→压制 (0.00s)
+    --- PASS: TestDshCompactTriggerLiveAggregation/无显式上报(无轮询)→照旧触发 (0.00s)
+    --- PASS: TestDshCompactTriggerLiveAggregation/缺键旧体→照旧触发(前向兼容硬约束) (0.00s)
+    --- PASS: TestDshCompactTriggerLiveAggregation/显式false过90s近窗→未知→照旧触发 (0.00s)
+    --- PASS: TestDshCompactTriggerLiveAggregation/true出窗后窗内只剩false→压制 (0.00s)
+=== RUN   TestDshCompactTriggerDualHostMixed
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+--- PASS: TestDshCompactTriggerDualHostMixed (0.00s)
+=== RUN   TestDshCompactNoAgentBackoff
+=== RUN   TestDshCompactNoAgentBackoff/连续no-agent轮后30分钟早退,期满放行
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 325s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 570s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 2616s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactNoAgentBackoff/再报live=true即解除
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 指令领取后执行窗内无成功上报(第 1 轮):session-33333333
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 325s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 指令领取后执行窗内无成功上报(第 2 轮):session-33333333
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 570s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 连续 3 轮领取后无成功上报,进入 30 分钟退避:session-33333333
+[compact] dsh 指令领取后执行窗内无成功上报(第 3 轮):session-33333333
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 815s ≥ 线 80s（指令 20s 内有效）
+=== RUN   TestDshCompactNoAgentBackoff/台账last_write前进即解除
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 指令领取后执行窗内无成功上报(第 1 轮):session-33333333
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 325s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 指令领取后执行窗内无成功上报(第 2 轮):session-33333333
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 570s ≥ 线 80s（指令 20s 内有效）
+[compact] dsh 连续 3 轮领取后无成功上报,进入 30 分钟退避:session-33333333
+[compact] dsh 指令领取后执行窗内无成功上报(第 3 轮):session-33333333
+[compact] dsh 触发热缓存压缩：session-33333333 闲置 80s ≥ 线 80s（指令 20s 内有效）
+--- PASS: TestDshCompactNoAgentBackoff (0.01s)
+    --- PASS: TestDshCompactNoAgentBackoff/连续no-agent轮后30分钟早退,期满放行 (0.00s)
+    --- PASS: TestDshCompactNoAgentBackoff/再报live=true即解除 (0.00s)
+    --- PASS: TestDshCompactNoAgentBackoff/台账last_write前进即解除 (0.00s)
+=== RUN   TestHealthDockStatsFieldsAndZeroWhenDisabled
+--- PASS: TestHealthDockStatsFieldsAndZeroWhenDisabled (0.00s)
+=== RUN   TestHealthDockStatsViaWiredDock
+--- PASS: TestHealthDockStatsViaWiredDock (0.02s)
+=== RUN   TestServeDockAssemblesFromActiveUpstream
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] 渡口: http://127.0.0.1:56400 → http://127.0.0.1:56399（active=direct；模式由守卫裁决；快照内存态，重启即失）
+[ferryman] serve: 127.0.0.1:56401 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestServeDockAssemblesFromActiveUpstream2744584331\001\data
+2026/10/09 09:00:43 [dock] 活跃上游: direct → http://127.0.0.1:56399（改写）
+
+[ferryman] 停止中…
+[ferryman] ⚠ 渡口排水到期强收: context deadline exceeded
+--- PASS: TestServeDockAssemblesFromActiveUpstream (0.03s)
+=== RUN   TestServeContextMigratesLegacyDockOnFirstBoot
+2026/10/09 09:00:43 [dock] [dock] 上游 http://127.0.0.1:15721 指向本地中转端口（15721/15722/15723）——守卫强制透传（防双重改写）
+
+[ferryman] 停止中…
+[ferryman] ⚠ 渡口排水到期强收: context deadline exceeded
+--- PASS: TestServeContextMigratesLegacyDockOnFirstBoot (0.08s)
+=== RUN   TestStartDockWithRetryImmediateSuccess
+--- PASS: TestStartDockWithRetryImmediateSuccess (0.00s)
+=== RUN   TestStartDockWithRetrySucceedsAfterOccupationClears
+--- PASS: TestStartDockWithRetrySucceedsAfterOccupationClears (0.08s)
+=== RUN   TestStartDockWithRetryExhaustsAndErrors
+--- PASS: TestStartDockWithRetryExhaustsAndErrors (0.08s)
+=== RUN   TestStartDockWithRetryZeroIsSingleShot
+--- PASS: TestStartDockWithRetryZeroIsSingleShot (0.00s)
+=== RUN   TestServeWithoutDockDoesNotListenOnDockPort
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] serve: 127.0.0.1:56414 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestServeWithoutDockDoesNotListenOnDockPort803831706\001\data
+
+[ferryman] 停止中…
+--- PASS: TestServeWithoutDockDoesNotListenOnDockPort (0.40s)
+=== RUN   TestServeWithDockSectionForwardsEndToEnd
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+2026/10/09 09:00:44 [dock] [dock] 改写模式要求 model_map 含非空 default 键（当前缺失/为空）——空配置未知名原样透传，退回纯透传
+[ferryman] 渡口: http://127.0.0.1:56417 → http://127.0.0.1:56416（active=旧单值；模式由守卫裁决；快照内存态，重启即失）
+[ferryman] serve: 127.0.0.1:56418 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestServeWithDockSectionForwardsEndToEnd2114184818\001\data
+2026/10/09 09:00:44 [dock] 活跃上游: 旧单值 → http://127.0.0.1:56416（透传：改写模式要求 model_map 含非空 default 键（当前缺失/为空）——空配置未知名原样透传，退回纯透传）
+
+[ferryman] 停止中…
+[ferryman] ⚠ 渡口排水到期强收: context deadline exceeded
+--- PASS: TestServeWithDockSectionForwardsEndToEnd (3.07s)
+=== RUN   TestServeWithDockPortTakenWarnsNotCrash
+2026/10/09 09:00:47 [dock] [dock] 改写模式要求 model_map 含非空 default 键（当前缺失/为空）——空配置未知名原样透传，退回纯透传
+--- PASS: TestServeWithDockPortTakenWarnsNotCrash (0.03s)
+=== RUN   TestDaemonDockSnapshotAccessor
+--- PASS: TestDaemonDockSnapshotAccessor (0.00s)
+=== RUN   TestDshBlockedTurnWriteDoesNotRefreshIdleAnchor
+--- PASS: TestDshBlockedTurnWriteDoesNotRefreshIdleAnchor (0.02s)
+=== RUN   TestDshMachineReplyAdvancesIdleAnchor
+--- PASS: TestDshMachineReplyAdvancesIdleAnchor (0.02s)
+=== RUN   TestDshCompactionCountsAsMachineProduction
+--- PASS: TestDshCompactionCountsAsMachineProduction (0.02s)
+=== RUN   TestDshFedSessionFileFaceMatchesEventFace
+--- PASS: TestDshFedSessionFileFaceMatchesEventFace (0.04s)
+=== RUN   TestCCFileFaceStillAnchorsToMtime
+--- PASS: TestCCFileFaceStillAnchorsToMtime (0.01s)
+=== RUN   TestDshGateIdleRealAfterBlockedTurnWrites
+[gate] BLOCK dsh/session- idle=528m handoff=20261009_090047_d0d08e
+--- PASS: TestDshGateIdleRealAfterBlockedTurnWrites (0.03s)
+=== RUN   TestDshDedupDualSourceSingleRow
+--- PASS: TestDshDedupDualSourceSingleRow (0.01s)
+=== RUN   TestDshDedupSparesUnfederatedSessions
+--- PASS: TestDshDedupSparesUnfederatedSessions (0.02s)
+=== RUN   TestDshDedupSurvivesRestart
+--- PASS: TestDshDedupSurvivesRestart (0.01s)
+=== RUN   TestDshDedupChildSession
+--- PASS: TestDshDedupChildSession (0.01s)
+=== RUN   TestGateDshObserveBranchEnqueues
+--- PASS: TestGateDshObserveBranchEnqueues (0.00s)
+=== RUN   TestGateDshBranch7Enqueues
+--- PASS: TestGateDshBranch7Enqueues (0.00s)
+=== RUN   TestGateDshHotLaneUnlockedZeroDiffWhenCold
+--- PASS: TestGateDshHotLaneUnlockedZeroDiffWhenCold (0.00s)
+=== RUN   TestPollDshEnqueuesIdleDshSession
+--- PASS: TestPollDshEnqueuesIdleDshSession (0.01s)
+=== RUN   TestDshEnrichSkipPreservesPeak
+--- PASS: TestDshEnrichSkipPreservesPeak (0.00s)
+=== RUN   TestDshContentClockFailOpen
+--- PASS: TestDshContentClockFailOpen (0.00s)
+=== RUN   TestDshEnqueueEndToEndFreshHandoff
+[ferry] dsh/session- L1 0.0s -> handoff
+--- PASS: TestDshEnqueueEndToEndFreshHandoff (0.03s)
+=== RUN   TestDshRegenFiresAtNextDockAfterReply
+--- PASS: TestDshRegenFiresAtNextDockAfterReply (0.04s)
+=== RUN   TestDshRegenMaterialContainsReplyHalf
+[ferry] dsh/session- L1 0.0s -> handoff
+--- PASS: TestDshRegenMaterialContainsReplyHalf (0.05s)
+=== RUN   TestDshRegenPredicateRestartStable
+--- PASS: TestDshRegenPredicateRestartStable (0.04s)
+=== RUN   TestDshRegenFiresEvenWithoutAnyHandoff
+--- PASS: TestDshRegenFiresEvenWithoutAnyHandoff (0.02s)
+=== RUN   TestDshRegenEmptySetPendingButPeakGateStillApplies
+--- PASS: TestDshRegenEmptySetPendingButPeakGateStillApplies (0.02s)
+=== RUN   TestDshRegenPredicateQuenchedByCoveringHandoff
+--- PASS: TestDshRegenPredicateQuenchedByCoveringHandoff (0.02s)
+=== RUN   TestDshRegenQuenchesAfterRecast
+--- PASS: TestDshRegenQuenchesAfterRecast (0.02s)
+=== RUN   TestDshRegenPredicateScopedToDsh
+--- PASS: TestDshRegenPredicateScopedToDsh (0.01s)
+=== RUN   TestDshLivenessPollSeriesAgesAndLastSeen
+--- PASS: TestDshLivenessPollSeriesAgesAndLastSeen (0.00s)
+=== RUN   TestDshLivenessOverdueThreshold
+=== RUN   TestDshLivenessOverdueThreshold/有hint按3×hint未超龄
+=== RUN   TestDshLivenessOverdueThreshold/有hint超龄
+=== RUN   TestDshLivenessOverdueThreshold/无hint单轮无节律兜90s超龄
+=== RUN   TestDshLivenessOverdueThreshold/无hint有节律按3×节律
+=== RUN   TestDshLivenessOverdueThreshold/无hint无poll兜90s标注假设
+=== RUN   TestDshLivenessOverdueThreshold/未poll过不判超龄(无证据不判定)
+--- PASS: TestDshLivenessOverdueThreshold (0.02s)
+    --- PASS: TestDshLivenessOverdueThreshold/有hint按3×hint未超龄 (0.00s)
+    --- PASS: TestDshLivenessOverdueThreshold/有hint超龄 (0.00s)
+    --- PASS: TestDshLivenessOverdueThreshold/无hint单轮无节律兜90s超龄 (0.00s)
+    --- PASS: TestDshLivenessOverdueThreshold/无hint有节律按3×节律 (0.00s)
+    --- PASS: TestDshLivenessOverdueThreshold/无hint无poll兜90s标注假设 (0.00s)
+    --- PASS: TestDshLivenessOverdueThreshold/未poll过不判超龄(无证据不判定) (0.00s)
+=== RUN   TestDshLivenessHostPresence
+--- PASS: TestDshLivenessHostPresence (0.00s)
+=== RUN   TestDshLivenessHostProbeCombines
+=== RUN   TestDshLivenessHostProbeCombines/harness在即旁证(端口quiet)
+=== RUN   TestDshLivenessHostProbeCombines/仅端口在也旁证(harness零)
+=== RUN   TestDshLivenessHostProbeCombines/两腿皆无=不在
+=== RUN   TestDshLivenessHostProbeCombines/枚举不可知端口在=在
+--- PASS: TestDshLivenessHostProbeCombines (0.00s)
+    --- PASS: TestDshLivenessHostProbeCombines/harness在即旁证(端口quiet) (0.00s)
+    --- PASS: TestDshLivenessHostProbeCombines/仅端口在也旁证(harness零) (0.00s)
+    --- PASS: TestDshLivenessHostProbeCombines/两腿皆无=不在 (0.00s)
+    --- PASS: TestDshLivenessHostProbeCombines/枚举不可知端口在=在 (0.00s)
+=== RUN   TestDshLivenessTasklistParse
+--- PASS: TestDshLivenessTasklistParse (0.00s)
+=== RUN   TestDshLivenessProbeCmdHideWindow
+--- PASS: TestDshLivenessProbeCmdHideWindow (0.01s)
+=== RUN   TestDshObservabilityMirrorAndLaneStats
+--- PASS: TestDshObservabilityMirrorAndLaneStats (0.03s)
+=== RUN   TestQuerySessionAndBeatsDshObservability
+--- PASS: TestQuerySessionAndBeatsDshObservability (0.01s)
+=== RUN   TestDshDetectRunsForFedWithIndependentOffset
+--- PASS: TestDshDetectRunsForFedWithIndependentOffset (0.02s)
+=== RUN   TestDshQwatchWindowOpensFieldsAndBooks
+--- PASS: TestDshQwatchWindowOpensFieldsAndBooks (0.02s)
+=== RUN   TestDshQwatchOpenConditionsNegatives
+--- PASS: TestDshQwatchOpenConditionsNegatives (0.07s)
+=== RUN   TestDshQwatchModeOffNeverOpens
+--- PASS: TestDshQwatchModeOffNeverOpens (0.01s)
+=== RUN   TestDshWindowClosedByUserSideWrite
+--- PASS: TestDshWindowClosedByUserSideWrite (0.04s)
+=== RUN   TestDshWindowMachineSideWriteKeepsWindowAndBeat
+--- PASS: TestDshWindowMachineSideWriteKeepsWindowAndBeat (0.03s)
+=== RUN   TestDshWindowDeadlineAutoClose
+--- PASS: TestDshWindowDeadlineAutoClose (1.22s)
+=== RUN   TestDshBeatCancelledWhenWindowClosed
+--- PASS: TestDshBeatCancelledWhenWindowClosed (0.02s)
+=== RUN   TestDshBeatCancelledWhenSpeakerFlipped
+--- PASS: TestDshBeatCancelledWhenSpeakerFlipped (0.02s)
+=== RUN   TestDshBeatsFireThroughSchedulingEntry
+--- PASS: TestDshBeatsFireThroughSchedulingEntry (0.02s)
+=== RUN   TestQwatchModeForAgentsSingleSource
+--- PASS: TestQwatchModeForAgentsSingleSource (0.00s)
+=== RUN   TestDshBreakerIsolation
+[qwatch] ⚠ dsh 问询守望熔断降级: 连续 2 跳 MISS，dsh_mode 已自动 enforce→observe（人工复核 observe 数据后拨回）
+[qwatch] ⚠ dsh 问询守望错误熔断: 连续 3 跳 ERROR，已暂停当前窗口剩余 dsh 心跳
+--- PASS: TestDshBreakerIsolation (0.03s)
+=== RUN   TestDshEnforceWithoutDockDowngradedToObserve
+--- PASS: TestDshEnforceWithoutDockDowngradedToObserve (0.01s)
+=== RUN   TestDshReconcilePinsLifecycle
+--- PASS: TestDshReconcilePinsLifecycle (0.02s)
+=== RUN   TestDshRunRefreshFromFileFace
+--- PASS: TestDshRunRefreshFromFileFace (0.01s)
+=== RUN   TestDshGateReusesExistingJudgement
+=== RUN   TestDshGateReusesExistingJudgement/台账miss放行
+=== RUN   TestDshGateReusesExistingJudgement/mode-off放行（非cc档开关）
+=== RUN   TestDshGateReusesExistingJudgement/enforce闲置拦截
+[gate] BLOCK dsh/session- idle=2m handoff=20261009_090049_600ee8
+=== RUN   TestDshGateReusesExistingJudgement/enforce新鲜放行
+=== RUN   TestDshGateReusesExistingJudgement/observe闲置只警告
+[gate] BLOCK dsh/session- idle=2m handoff=20261009_090049_8f23d5
+--- PASS: TestDshGateReusesExistingJudgement (0.02s)
+    --- PASS: TestDshGateReusesExistingJudgement/台账miss放行 (0.00s)
+    --- PASS: TestDshGateReusesExistingJudgement/mode-off放行（非cc档开关） (0.00s)
+    --- PASS: TestDshGateReusesExistingJudgement/enforce闲置拦截 (0.01s)
+    --- PASS: TestDshGateReusesExistingJudgement/enforce新鲜放行 (0.00s)
+    --- PASS: TestDshGateReusesExistingJudgement/observe闲置只警告 (0.00s)
+=== RUN   TestDshGateEmptyTranscriptPathHitsLedger
+[gate] BLOCK dsh/session- idle=2m handoff=20261009_090049_961ce5
+--- PASS: TestDshGateEmptyTranscriptPathHitsLedger (0.01s)
+=== RUN   TestDshEventTouchesAndRecordsUsage
+--- PASS: TestDshEventTouchesAndRecordsUsage (0.00s)
+=== RUN   TestDshEventUsageRowKeysMatchPollDsh
+--- PASS: TestDshEventUsageRowKeysMatchPollDsh (0.02s)
+=== RUN   TestDshEventSubagentUnderParent
+--- PASS: TestDshEventSubagentUnderParent (0.00s)
+=== RUN   TestDshEventDefensive
+=== RUN   TestDshEventDefensive/空键静默跳过
+=== RUN   TestDshEventDefensive/未知事件类型
+=== RUN   TestDshEventDefensive/assistant/message无usage只登记
+=== RUN   TestDshEventDefensive/usage非对象收窄
+=== RUN   TestDshEventDefensive/空body全缺
+--- PASS: TestDshEventDefensive (0.02s)
+    --- PASS: TestDshEventDefensive/空键静默跳过 (0.00s)
+    --- PASS: TestDshEventDefensive/未知事件类型 (0.00s)
+    --- PASS: TestDshEventDefensive/assistant/message无usage只登记 (0.00s)
+    --- PASS: TestDshEventDefensive/usage非对象收窄 (0.00s)
+    --- PASS: TestDshEventDefensive/空body全缺 (0.00s)
+=== RUN   TestDshPollerHeartbeatHook
+--- PASS: TestDshPollerHeartbeatHook (0.00s)
+=== RUN   TestDshHandoffRoutesThroughRestore
+=== RUN   TestDshHandoffRoutesThroughRestore/无候选无锚
+=== RUN   TestDshHandoffRoutesThroughRestore/单候选无锚零注入(翻案:不再注入最新)
+=== RUN   TestDshHandoffRoutesThroughRestore/多候选无锚零注入(清单也不再注入)
+--- PASS: TestDshHandoffRoutesThroughRestore (0.02s)
+    --- PASS: TestDshHandoffRoutesThroughRestore/无候选无锚 (0.00s)
+    --- PASS: TestDshHandoffRoutesThroughRestore/单候选无锚零注入(翻案:不再注入最新) (0.01s)
+    --- PASS: TestDshHandoffRoutesThroughRestore/多候选无锚零注入(清单也不再注入) (0.01s)
+=== RUN   TestDshReceiveEndpointGuards
+--- PASS: TestDshReceiveEndpointGuards (0.00s)
+=== RUN   TestDshEventStatusRunIdle
+--- PASS: TestDshEventStatusRunIdle (0.00s)
+=== RUN   TestDshEventStatusInvalidNarrows
+=== RUN   TestDshEventStatusInvalidNarrows/闭集外值
+=== RUN   TestDshEventStatusInvalidNarrows/缺status
+=== RUN   TestDshEventStatusInvalidNarrows/非字符串
+--- PASS: TestDshEventStatusInvalidNarrows (0.01s)
+    --- PASS: TestDshEventStatusInvalidNarrows/闭集外值 (0.00s)
+    --- PASS: TestDshEventStatusInvalidNarrows/缺status (0.00s)
+    --- PASS: TestDshEventStatusInvalidNarrows/非字符串 (0.00s)
+=== RUN   TestDshEventDisposedLifecycle
+--- PASS: TestDshEventDisposedLifecycle (0.00s)
+=== RUN   TestDshEventChildRunState
+--- PASS: TestDshEventChildRunState (0.00s)
+=== RUN   TestDshEventRunRefreshAdvances
+--- PASS: TestDshEventRunRefreshAdvances (0.01s)
+=== RUN   TestDshGateRunStateExempts
+[gate] BLOCK dsh/session- idle=1m handoff=20261009_090049_5eea1b
+--- PASS: TestDshGateRunStateExempts (0.01s)
+=== RUN   TestDshGateFreshRunNotExempt
+[gate] BLOCK dsh/session- idle=1m handoff=20261009_090049_de0843
+--- PASS: TestDshGateFreshRunNotExempt (0.01s)
+=== RUN   TestDshGateRunStateStaleExpires
+[gate] BLOCK dsh/session- idle=61m handoff=20261009_090049_14f73c
+--- PASS: TestDshGateRunStateStaleExpires (0.01s)
+=== RUN   TestDshGateChildRunExemptsFamily
+--- PASS: TestDshGateChildRunExemptsFamily (0.00s)
+=== RUN   TestDshChildrenSeededFromAccounts
+--- PASS: TestDshChildrenSeededFromAccounts (0.00s)
+=== RUN   TestDshGateDshSkipsDanglingLane
+[gate] BLOCK dsh/dsh-dg idle=1m handoff=20261009_090049_3149ef
+--- PASS: TestDshGateDshSkipsDanglingLane (0.01s)
+=== RUN   TestDshGateUserReturnStillGated
+[gate] BLOCK dsh/session- idle=1m handoff=20261009_090049_6c86e7
+--- PASS: TestDshGateUserReturnStillGated (0.01s)
+=== RUN   TestDshTurnStartDoesNotBumpIdle
+--- PASS: TestDshTurnStartDoesNotBumpIdle (0.00s)
+=== RUN   TestDshMachineWaitingCopyDshBranch
+--- PASS: TestDshMachineWaitingCopyDshBranch (0.00s)
+=== RUN   TestDshGateStaleRunResidueNotExempt
+[gate] BLOCK dsh/session- idle=1m handoff=20261009_090049_5c517e
+--- PASS: TestDshGateStaleRunResidueNotExempt (0.01s)
+=== RUN   TestProbeGateDshIndependentMode
+--- PASS: TestProbeGateDshIndependentMode (0.00s)
+=== RUN   TestDshHandoffContinuationDefaultZeroInjection
+--- PASS: TestDshHandoffContinuationDefaultZeroInjection (0.01s)
+=== RUN   TestDshHandoffContinuationCrossFacePeakZero
+--- PASS: TestDshHandoffContinuationCrossFacePeakZero (0.01s)
+=== RUN   TestDshHandoffContinueSwitchOnAttachesOwnLineOnly
+--- PASS: TestDshHandoffContinueSwitchOnAttachesOwnLineOnly (0.02s)
+=== RUN   TestDshHandoffContinueSwitchOnStaleOrConsumedNil
+=== RUN   TestDshHandoffContinueSwitchOnStaleOrConsumedNil/己线过期不附
+=== RUN   TestDshHandoffContinueSwitchOnStaleOrConsumedNil/己线已消耗不附
+--- PASS: TestDshHandoffContinueSwitchOnStaleOrConsumedNil (0.02s)
+    --- PASS: TestDshHandoffContinueSwitchOnStaleOrConsumedNil/己线过期不附 (0.01s)
+    --- PASS: TestDshHandoffContinueSwitchOnStaleOrConsumedNil/己线已消耗不附 (0.01s)
+=== RUN   TestDshHandoffContinueSwitchOnNoOwnLineNil
+--- PASS: TestDshHandoffContinueSwitchOnNoOwnLineNil (0.01s)
+=== RUN   TestDshHandoffNewSessionNoAnchorZeroInject
+=== RUN   TestDshHandoffNewSessionNoAnchorZeroInject/头行only
+=== RUN   TestDshHandoffNewSessionNoAnchorZeroInject/头行+纯用户侧首步
+--- PASS: TestDshHandoffNewSessionNoAnchorZeroInject (0.02s)
+    --- PASS: TestDshHandoffNewSessionNoAnchorZeroInject/头行only (0.01s)
+    --- PASS: TestDshHandoffNewSessionNoAnchorZeroInject/头行+纯用户侧首步 (0.01s)
+=== RUN   TestDshHandoffNewSessionAnchoredReturnVerbatim
+--- PASS: TestDshHandoffNewSessionAnchoredReturnVerbatim (0.01s)
+=== RUN   TestDshHandoffContinuationTranscriptMissingFailOpen
+--- PASS: TestDshHandoffContinuationTranscriptMissingFailOpen (0.01s)
+=== RUN   TestDshHandoffContinuationFlag
+--- PASS: TestDshHandoffContinuationFlag (0.04s)
+=== RUN   TestPollDshRegistersAndHarvests
+--- PASS: TestPollDshRegistersAndHarvests (0.04s)
+=== RUN   TestPollDshRestartResume
+--- PASS: TestPollDshRestartResume (0.01s)
+=== RUN   TestPollDshRootAbsent
+--- PASS: TestPollDshRootAbsent (0.00s)
+=== RUN   TestPollDshHarvestOff
+--- PASS: TestPollDshHarvestOff (0.01s)
+=== RUN   TestPollDshRealSessions
+    dsh_wiring_test.go:257: FERRYMAN_DSH_REAL_SESSIONS 未置位——跳过真机 daemon 面实测
+--- SKIP: TestPollDshRealSessions (0.00s)
+=== RUN   TestAppendGateWarnWritesCountableLine
+--- PASS: TestAppendGateWarnWritesCountableLine (0.01s)
+=== RUN   TestAppendGateWarnEmptyDirSilent
+--- PASS: TestAppendGateWarnEmptyDirSilent (0.00s)
+=== RUN   TestShortSid
+--- PASS: TestShortSid (0.00s)
+=== RUN   TestGateEnvWarnLandsInSandboxedDataDir
+--- PASS: TestGateEnvWarnLandsInSandboxedDataDir (0.01s)
+=== RUN   TestBypassPrefix
+--- PASS: TestBypassPrefix (0.00s)
+=== RUN   TestBypassPrefixQiangxu
+--- PASS: TestBypassPrefixQiangxu (0.00s)
+=== RUN   TestNoLedger
+--- PASS: TestNoLedger (0.00s)
+=== RUN   TestModeOff
+--- PASS: TestModeOff (0.00s)
+=== RUN   TestNotInWindowAllowsPlainly
+--- PASS: TestNotInWindowAllowsPlainly (0.00s)
+=== RUN   TestObserveModeWarnsNotBlocks
+--- PASS: TestObserveModeWarnsNotBlocks (0.00s)
+=== RUN   TestBranch5BlockWithValidHandoff
+[gate] BLOCK cc/s1 idle=1m handoff=20261009_090049_fd4f31
+--- PASS: TestBranch5BlockWithValidHandoff (0.01s)
+=== RUN   TestGateHotCacheAllowsInBlockWindow
+--- PASS: TestGateHotCacheAllowsInBlockWindow (0.00s)
+=== RUN   TestGateHotCacheBeatsBranch5Handoff
+--- PASS: TestGateHotCacheBeatsBranch5Handoff (0.00s)
+=== RUN   TestGateHotCacheConservativeWithoutObservation
+[gate] BLOCK cc/nc1 idle=1m handoff=20261009_090049_8d5e12
+--- PASS: TestGateHotCacheConservativeWithoutObservation (0.00s)
+=== RUN   TestBranch5CopyGuidesPostClear
+[gate] BLOCK cc/s1 idle=1m handoff=20261009_090049_926510
+--- PASS: TestBranch5CopyGuidesPostClear (0.00s)
+=== RUN   TestBranch7WarnThenBranch6BlocksThenDegrade
+--- PASS: TestBranch7WarnThenBranch6BlocksThenDegrade (0.01s)
+=== RUN   TestBypassClearsPendingEscapesTreadmill
+--- PASS: TestBypassClearsPendingEscapesTreadmill (0.00s)
+=== RUN   TestBranch7NoEnqueueBelowMinCtx
+--- PASS: TestBranch7NoEnqueueBelowMinCtx (0.00s)
+=== RUN   TestPendingClearedOnNewIdleCycle
+--- PASS: TestPendingClearedOnNewIdleCycle (0.00s)
+=== RUN   TestPendingTTL24h
+--- PASS: TestPendingTTL24h (0.00s)
+=== RUN   TestCacheInfoAt15min
+--- PASS: TestCacheInfoAt15min (0.00s)
+=== RUN   TestNoInfoBelow12min
+--- PASS: TestNoInfoBelow12min (0.00s)
+=== RUN   TestNoInfoAtBlockWindow
+--- PASS: TestNoInfoAtBlockWindow (0.00s)
+=== RUN   TestCacheInfoDisabled
+--- PASS: TestCacheInfoDisabled (0.00s)
+=== RUN   TestWindowPrefixPrefersPeakCtx
+--- PASS: TestWindowPrefixPrefersPeakCtx (0.01s)
+=== RUN   TestWindowPrefixFallsBackToUsage
+--- PASS: TestWindowPrefixFallsBackToUsage (0.01s)
+=== RUN   TestWindowPrefixIgnoresRowsAfterOpen
+--- PASS: TestWindowPrefixIgnoresRowsAfterOpen (0.01s)
+=== RUN   TestWindowPrefixClockSkewTakesLatestAny
+--- PASS: TestWindowPrefixClockSkewTakesLatestAny (0.01s)
+=== RUN   TestWindowPrefixZeroWhenNoUsage
+--- PASS: TestWindowPrefixZeroWhenNoUsage (0.00s)
+=== RUN   TestWindowNoneAccountsNoCrash
+--- PASS: TestWindowNoneAccountsNoCrash (0.00s)
+=== RUN   TestA1SubagentActiveExempts
+--- PASS: TestA1SubagentActiveExempts (0.00s)
+=== RUN   TestA2DanglingOnlyExempts
+--- PASS: TestA2DanglingOnlyExempts (0.00s)
+=== RUN   TestA4ExemptionBeatsObserveWarnAndEnqueue
+--- PASS: TestA4ExemptionBeatsObserveWarnAndEnqueue (0.00s)
+=== RUN   TestA7CountLeakRecoversGate
+--- PASS: TestA7CountLeakRecoversGate (0.00s)
+=== RUN   TestA8PendingPreservedAcrossExemption
+--- PASS: TestA8PendingPreservedAcrossExemption (0.00s)
+=== RUN   TestA9DanglingPersistentIsDesign
+--- PASS: TestA9DanglingPersistentIsDesign (0.00s)
+=== RUN   TestA10DanglingSelfheals
+--- PASS: TestA10DanglingSelfheals (0.01s)
+=== RUN   TestA5Branch6CopyDeterministicEscape
+--- PASS: TestA5Branch6CopyDeterministicEscape (0.01s)
+=== RUN   TestAsyncStopParksUntilMainResumes
+--- PASS: TestAsyncStopParksUntilMainResumes (0.01s)
+=== RUN   TestAckTurnWithinGraceDoesNotClose
+--- PASS: TestAckTurnWithinGraceDoesNotClose (0.01s)
+=== RUN   TestSyncStopClosesImmediately
+--- PASS: TestSyncStopClosesImmediately (0.01s)
+=== RUN   TestInterleaveSyncAfterAsyncKeepsPark
+--- PASS: TestInterleaveSyncAfterAsyncKeepsPark (0.01s)
+=== RUN   TestOverlapSeqParksEvenWhenSyncStopSeenLast
+--- PASS: TestOverlapSeqParksEvenWhenSyncStopSeenLast (0.00s)
+=== RUN   TestParkedWindowExemptsGateAndPromptKeepsPark
+--- PASS: TestParkedWindowExemptsGateAndPromptKeepsPark (0.00s)
+=== RUN   TestParkedWindowExpires
+--- PASS: TestParkedWindowExpires (0.01s)
+=== RUN   TestWindowWaitNeverRaises
+[account] window 记账失败（忽略，闸门不受影响）: open C:\Users\allan716\AppData\Local\Temp\TestWindowWaitNeverRaises3518340226\001\acc\accounts\202701.jsonl: The system cannot find the path specified.
+--- PASS: TestWindowWaitNeverRaises (0.00s)
+=== RUN   TestNoteUsageRecordFailureKeepsWindow
+[account] window 记账失败（忽略，闸门不受影响）: open C:\Users\allan716\AppData\Local\Temp\TestNoteUsageRecordFailureKeepsWindow3617155376\001\acc\accounts\202701.jsonl: The system cannot find the path specified.
+--- PASS: TestNoteUsageRecordFailureKeepsWindow (0.00s)
+=== RUN   TestReanchorExpiredParkRecordsExpiredNoFutureTS
+--- PASS: TestReanchorExpiredParkRecordsExpiredNoFutureTS (0.01s)
+=== RUN   TestPromptStillClosesOpenWindow
+--- PASS: TestPromptStillClosesOpenWindow (0.01s)
+=== RUN   TestParkedWindowDefersFerryAndResumesAfterClose
+--- PASS: TestParkedWindowDefersFerryAndResumesAfterClose (0.01s)
+=== RUN   TestHarvestUsageFeedsNoteUsageMaxTS
+--- PASS: TestHarvestUsageFeedsNoteUsageMaxTS (0.02s)
+=== RUN   TestQWatchStopHealthConcurrentModeAccess
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+--- PASS: TestQWatchStopHealthConcurrentModeAccess (0.00s)
+=== RUN   TestGateIdleAnchoredToContentClock
+--- PASS: TestGateIdleAnchoredToContentClock (0.01s)
+=== RUN   TestGateDshCopyBranchesByAgent
+[gate] BLOCK cc/b5 idle=60m handoff=20261009_090049_98527e
+[gate] BLOCK dsh/b5 idle=60m handoff=20261009_090049_491e0e
+--- PASS: TestGateDshCopyBranchesByAgent (0.02s)
+=== RUN   TestGateDshModeIndependentKey
+[gate] BLOCK dsh/sd1 idle=60m handoff=20261009_090049_a5ad3c
+--- PASS: TestGateDshModeIndependentKey (0.01s)
+=== RUN   TestGateDshBypassConsumesHandoff
+--- PASS: TestGateDshBypassConsumesHandoff (0.01s)
+=== RUN   TestGateCCCodexBypassKeepsHandoff
+=== RUN   TestGateCCCodexBypassKeepsHandoff/cc
+=== RUN   TestGateCCCodexBypassKeepsHandoff/codex
+--- PASS: TestGateCCCodexBypassKeepsHandoff (0.02s)
+    --- PASS: TestGateCCCodexBypassKeepsHandoff/cc (0.01s)
+    --- PASS: TestGateCCCodexBypassKeepsHandoff/codex (0.01s)
+=== RUN   TestGateBlockAcctIdleAnchoredToDecisionAnchor
+[gate] BLOCK cc/ac1 idle=10m handoff=20261009_090050_0a9975
+--- PASS: TestGateBlockAcctIdleAnchoredToDecisionAnchor (0.01s)
+=== RUN   TestGateDshAutoContinue
+=== RUN   TestGateDshAutoContinue/开=无卡直续
+=== RUN   TestGateDshAutoContinue/关=照旧拦（缺省）
+[gate] BLOCK dsh/session- idle=60m handoff=20261009_090050_36a828
+=== RUN   TestGateDshAutoContinue/cc_零变化（开着也拦）
+[gate] BLOCK cc/cc-sid-a idle=60m handoff=20261009_090050_1677e7
+--- PASS: TestGateDshAutoContinue (0.03s)
+    --- PASS: TestGateDshAutoContinue/开=无卡直续 (0.02s)
+    --- PASS: TestGateDshAutoContinue/关=照旧拦（缺省） (0.01s)
+    --- PASS: TestGateDshAutoContinue/cc_零变化（开着也拦） (0.01s)
+=== RUN   TestGateDshAutoContinuePeakBackfill
+=== RUN   TestGateDshAutoContinuePeakBackfill/重启贫血+账本无行+zstd转录非空→粗估补值非零
+=== RUN   TestGateDshAutoContinuePeakBackfill/账本回放优先于粗估
+=== RUN   TestGateDshAutoContinuePeakBackfill/无回放无粗估→降级重付额度未知
+=== RUN   TestGateDshAutoContinuePeakBackfill/转录缺失同降级
+--- PASS: TestGateDshAutoContinuePeakBackfill (0.04s)
+    --- PASS: TestGateDshAutoContinuePeakBackfill/重启贫血+账本无行+zstd转录非空→粗估补值非零 (0.01s)
+    --- PASS: TestGateDshAutoContinuePeakBackfill/账本回放优先于粗估 (0.01s)
+    --- PASS: TestGateDshAutoContinuePeakBackfill/无回放无粗估→降级重付额度未知 (0.01s)
+    --- PASS: TestGateDshAutoContinuePeakBackfill/转录缺失同降级 (0.00s)
+=== RUN   TestGateCompactedShortPrefix
+=== RUN   TestGateCompactedShortPrefix/有效标记+短前缀→放行
+=== RUN   TestGateCompactedShortPrefix/标记过期→照拦
+[gate] BLOCK dsh/session- idle=64m handoff=20261009_090050_8b5269
+=== RUN   TestGateCompactedShortPrefix/标记被流量作废→照拦
+[gate] BLOCK dsh/session- idle=10m handoff=20261009_090050_efbdbe
+=== RUN   TestGateCompactedShortPrefix/无标记→照拦
+[gate] BLOCK dsh/session- idle=60m handoff=20261009_090050_f56729
+=== RUN   TestGateCompactedShortPrefix/标记有效但前缀压线(=0.5×PrePeak)→照拦
+[gate] BLOCK dsh/session- idle=60m handoff=20261009_090050_62bb50
+=== RUN   TestGateCompactedShortPrefix/首单事故实锚:60562压到20562→放行
+=== RUN   TestGateCompactedShortPrefix/min_peak已解耦:同配1000→照放
+=== RUN   TestGateCompactedShortPrefix/PrePeak不可得:过地板→照拦
+[gate] BLOCK dsh/session- idle=60m handoff=20261009_090050_2aaf78
+=== RUN   TestGateCompactedShortPrefix/PrePeak不可得:地板内→放行
+--- PASS: TestGateCompactedShortPrefix (0.06s)
+    --- PASS: TestGateCompactedShortPrefix/有效标记+短前缀→放行 (0.01s)
+    --- PASS: TestGateCompactedShortPrefix/标记过期→照拦 (0.01s)
+    --- PASS: TestGateCompactedShortPrefix/标记被流量作废→照拦 (0.01s)
+    --- PASS: TestGateCompactedShortPrefix/无标记→照拦 (0.01s)
+    --- PASS: TestGateCompactedShortPrefix/标记有效但前缀压线(=0.5×PrePeak)→照拦 (0.01s)
+    --- PASS: TestGateCompactedShortPrefix/首单事故实锚:60562压到20562→放行 (0.01s)
+    --- PASS: TestGateCompactedShortPrefix/min_peak已解耦:同配1000→照放 (0.01s)
+    --- PASS: TestGateCompactedShortPrefix/PrePeak不可得:过地板→照拦 (0.01s)
+    --- PASS: TestGateCompactedShortPrefix/PrePeak不可得:地板内→放行 (0.01s)
+=== RUN   TestHealthFieldNamesVerbatim
+--- PASS: TestHealthFieldNamesVerbatim (0.01s)
+=== RUN   TestHealthVersionField
+--- PASS: TestHealthVersionField (0.00s)
+=== RUN   TestHealthZeroPlaceholdersWithoutWiring
+--- PASS: TestHealthZeroPlaceholdersWithoutWiring (0.00s)
+=== RUN   TestHealthQWatchLiveCountersAndMode
+[qwatch] 一键停：mode→off，已取消 0 个会话的窗口/计划
+--- PASS: TestHealthQWatchLiveCountersAndMode (0.00s)
+=== RUN   TestHealthGateCounters
+--- PASS: TestHealthGateCounters (0.00s)
+=== RUN   TestHealthAlertAfterGrace
+--- PASS: TestHealthAlertAfterGrace (0.00s)
+=== RUN   TestHealthGracePeriodAfterDaemonRestart
+--- PASS: TestHealthGracePeriodAfterDaemonRestart (0.00s)
+=== RUN   TestStatsPollersSegment
+--- PASS: TestStatsPollersSegment (0.00s)
+=== RUN   TestHealthMissSignalsCorrelation
+--- PASS: TestHealthMissSignalsCorrelation (0.01s)
+=== RUN   TestT10FullLoop
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] cc/integ-00 L1 1.2s -> handoff
+[gate] BLOCK cc/integ-00 idle=0m handoff=20261009_090051_ff18a4
+[gate] BLOCK cc/integ-00 idle=0m handoff=20261009_090051_ff18a4
+--- PASS: TestT10FullLoop (2.05s)
+=== RUN   TestT11SkeletonOnFerryFailure
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] 降级骨架-only（integ-00）: provider down
+[gate] BLOCK cc/integ-00 idle=0m handoff=20261009_090053_67d9fb
+--- PASS: TestT11SkeletonOnFerryFailure (2.02s)
+=== RUN   TestT14EnrichOncePerVersion
+--- PASS: TestT14EnrichOncePerVersion (0.01s)
+=== RUN   TestT14BEnrichOnceEvenWhenQueueFull
+--- PASS: TestT14BEnrichOnceEvenWhenQueueFull (0.01s)
+=== RUN   TestT31DanglingDefersEnqueue
+--- PASS: TestT31DanglingDefersEnqueue (0.02s)
+=== RUN   TestT42UsageHarvestedToAccounts
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+--- PASS: TestT42UsageHarvestedToAccounts (1.38s)
+=== RUN   TestT42UsageHarvestDisabled
+--- PASS: TestT42UsageHarvestDisabled (1.00s)
+=== RUN   TestMergeQwatchOpenBlocksFirstOpenAndReanchor
+--- PASS: TestMergeQwatchOpenBlocksFirstOpenAndReanchor (0.01s)
+=== RUN   TestMergeParkedWindowBlocksQwatchOpen
+--- PASS: TestMergeParkedWindowBlocksQwatchOpen (0.00s)
+=== RUN   TestMergeParkingProbeDelegatesToParkingState
+--- PASS: TestMergeParkingProbeDelegatesToParkingState (0.01s)
+=== RUN   TestMergeDeadlineSkipsDanglingButNotWindowWait
+--- PASS: TestMergeDeadlineSkipsDanglingButNotWindowWait (0.01s)
+=== RUN   TestQwatchAlertWiresBuildTitleAndSidTail
+[qwatch] ⚠ 等待窗心跳熔断: 1 跳 MISS：停本窗剩余跳
+--- PASS: TestQwatchAlertWiresBuildTitleAndSidTail (0.00s)
+=== RUN   TestQwatchAlertDisabledStaysSilent
+[qwatch] ⚠ 等待窗心跳熔断: 不应外发
+--- PASS: TestQwatchAlertDisabledStaysSilent (0.00s)
+=== RUN   TestQwatchAlertBreakerEventOffStaysSilent
+[qwatch] ⚠ 等待窗心跳熔断: breaker=off 档不得外发
+--- PASS: TestQwatchAlertBreakerEventOffStaysSilent (0.50s)
+=== RUN   TestDshPollerLifecycleMatrix
+[poller] desktop 静默>90s(最近心跳 2027-01-15 16:00:00)
+--- PASS: TestDshPollerLifecycleMatrix (0.00s)
+=== RUN   TestDshPollerFirstBuildBlindSpot
+--- PASS: TestDshPollerFirstBuildBlindSpot (0.00s)
+=== RUN   TestDshPollerBaselineRoundtrip
+--- PASS: TestDshPollerBaselineRoundtrip (0.01s)
+=== RUN   TestDshPollerCorruptBaselineRebuilt
+[poller] 基线损坏已弃置,按后续心跳重建:C:\Users\allan716\AppData\Local\Temp\TestDshPollerCorruptBaselineRebuilt3539162928\001\data\dsh-pollers.json
+--- PASS: TestDshPollerCorruptBaselineRebuilt (0.01s)
+=== RUN   TestDshPollerTransitionLogOnce
+--- PASS: TestDshPollerTransitionLogOnce (0.01s)
+=== RUN   TestDockUpstreamStateSwitchToPersistsAndRebinds
+[ferryman] 供应商热切换: b → https://b.example/api（渡口不重启，新请求即刻生效）
+--- PASS: TestDockUpstreamStateSwitchToPersistsAndRebinds (0.01s)
+=== RUN   TestDockUpstreamStateSwitchToGuardCases
+--- PASS: TestDockUpstreamStateSwitchToGuardCases (0.00s)
+=== RUN   TestDockUpstreamStateConcurrentSwitchConsistency
+[ferryman] 供应商热切换: a → https://a.example/api（渡口不重启，新请求即刻生效）
+[ferryman] 供应商热切换: a → https://a.example/api（渡口不重启，新请求即刻生效）
+[ferryman] 供应商热切换: b → https://b.example/api（渡口不重启，新请求即刻生效）
+[ferryman] 供应商热切换: a → https://a.example/api（渡口不重启，新请求即刻生效）
+[ferryman] 供应商热切换: b → https://b.example/api（渡口不重启，新请求即刻生效）
+[ferryman] 供应商热切换: a → https://a.example/api（渡口不重启，新请求即刻生效）
+[ferryman] 供应商热切换: b → https://b.example/api（渡口不重启，新请求即刻生效）
+[ferryman] 供应商热切换: b → https://b.example/api（渡口不重启，新请求即刻生效）
+--- PASS: TestDockUpstreamStateConcurrentSwitchConsistency (0.01s)
+=== RUN   TestProviderSwitchEndpointGuards
+--- PASS: TestProviderSwitchEndpointGuards (0.00s)
+=== RUN   TestProviderSwitchEndToEndHotSwitchNoRestart
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] 渡口: http://127.0.0.1:56532 → http://127.0.0.1:56529（active=a；模式由守卫裁决；快照内存态，重启即失）
+[ferryman] serve: 127.0.0.1:56531 · gate cc=observe codex=off · 总结1500.0s/拦截2100.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestProviderSwitchEndToEndHotSwitchNoRestart1643891469\data-e2e
+2026/10/09 09:00:57 [dock] 活跃上游: a → http://127.0.0.1:56529（改写）
+[ferryman] 供应商热切换: b → http://127.0.0.1:56530（渡口不重启，新请求即刻生效）
+2026/10/09 09:00:57 [dock] 活跃上游: b → http://127.0.0.1:56530（改写）
+
+[ferryman] 停止中…
+--- PASS: TestProviderSwitchEndToEndHotSwitchNoRestart (0.08s)
+=== RUN   TestQueryBeatsInFlightWindowsAndTelemetry
+--- PASS: TestQueryBeatsInFlightWindowsAndTelemetry (0.01s)
+=== RUN   TestQueryBeatsEmptyReturnsEmptyArray
+--- PASS: TestQueryBeatsEmptyReturnsEmptyArray (0.00s)
+=== RUN   TestConfigTuningMasksAllKeys
+--- PASS: TestConfigTuningMasksAllKeys (0.01s)
+=== RUN   TestConfigTuningThreeColumnsPerUpstream
+--- PASS: TestConfigTuningThreeColumnsPerUpstream (0.02s)
+=== RUN   TestConfigTuningNoObservationUpstreamShowsNone
+--- PASS: TestConfigTuningNoObservationUpstreamShowsNone (0.01s)
+=== RUN   TestConfigTuningConfigMissingStillServesTuning
+--- PASS: TestConfigTuningConfigMissingStillServesTuning (0.01s)
+=== RUN   TestGateCheckSingleThreeStates
+--- PASS: TestGateCheckSingleThreeStates (0.01s)
+=== RUN   TestGateCheckRemainingMinutesMatchesThreshold
+--- PASS: TestGateCheckRemainingMinutesMatchesThreshold (0.00s)
+=== RUN   TestGateCheckPendingMirror
+--- PASS: TestGateCheckPendingMirror (0.00s)
+=== RUN   TestGateCheckModeOffAndObserve
+--- PASS: TestGateCheckModeOffAndObserve (0.00s)
+=== RUN   TestGateCheckMachineWaitingParkedWindow
+--- PASS: TestGateCheckMachineWaitingParkedWindow (0.00s)
+=== RUN   TestGateCheckSummarySortThreeRules
+--- PASS: TestGateCheckSummarySortThreeRules (0.01s)
+=== RUN   TestGateCheckSummaryLimitAndEmpty
+--- PASS: TestGateCheckSummaryLimitAndEmpty (0.01s)
+=== RUN   TestGateCheckRequireBearer
+--- PASS: TestGateCheckRequireBearer (0.00s)
+=== RUN   TestGateCheckPendingDegradeMirror
+--- PASS: TestGateCheckPendingDegradeMirror (0.00s)
+=== RUN   TestGateCheckZeroStateWrite
+--- PASS: TestGateCheckZeroStateWrite (0.01s)
+=== RUN   TestGateCheckRedlinesNoContentNoCredentials
+--- PASS: TestGateCheckRedlinesNoContentNoCredentials (0.01s)
+=== RUN   TestQueryReportProjectScopeAggregates
+--- PASS: TestQueryReportProjectScopeAggregates (0.01s)
+=== RUN   TestQueryReportSessionScope
+--- PASS: TestQueryReportSessionScope (0.01s)
+=== RUN   TestQueryReportMonthScope
+--- PASS: TestQueryReportMonthScope (0.01s)
+=== RUN   TestQueryReportSavingsNotComputableWithoutPCache
+--- PASS: TestQueryReportSavingsNotComputableWithoutPCache (0.01s)
+=== RUN   TestQueryReportWarmSection
+--- PASS: TestQueryReportWarmSection (0.01s)
+=== RUN   TestQueryReportInvalidScopeAndKey
+--- PASS: TestQueryReportInvalidScopeAndKey (0.00s)
+=== RUN   TestQuerySessionsSevenFieldsOrderAndStale
+--- PASS: TestQuerySessionsSevenFieldsOrderAndStale (0.00s)
+=== RUN   TestQuerySessionsEmptyLedgerReturnsEmptyArray
+--- PASS: TestQuerySessionsEmptyLedgerReturnsEmptyArray (0.00s)
+=== RUN   TestQuerySessionsFiltersAndLimit
+--- PASS: TestQuerySessionsFiltersAndLimit (0.00s)
+=== RUN   TestQuerySessionsDefaultLimit50
+--- PASS: TestQuerySessionsDefaultLimit50 (0.00s)
+=== RUN   TestQueryEndpointsRequireBearer
+--- PASS: TestQueryEndpointsRequireBearer (0.00s)
+=== RUN   TestQuerySessionDetailAggregation
+--- PASS: TestQuerySessionDetailAggregation (0.01s)
+=== RUN   TestQuerySessionNotFoundAndMissingID
+--- PASS: TestQuerySessionNotFoundAndMissingID (0.00s)
+=== RUN   TestQueryStubsReturnNotImplemented
+--- PASS: TestQueryStubsReturnNotImplemented (0.00s)
+=== RUN   TestQueryRedlinesNoContentNoCredentials
+--- PASS: TestQueryRedlinesNoContentNoCredentials (0.01s)
+=== RUN   TestQueryStatsHTTPContractUnchanged
+--- PASS: TestQueryStatsHTTPContractUnchanged (0.00s)
+=== RUN   TestStatsSummaryKPIDaysFrozenSchema
+--- PASS: TestStatsSummaryKPIDaysFrozenSchema (0.01s)
+=== RUN   TestStatsSummarySinceUntilWindow
+--- PASS: TestStatsSummarySinceUntilWindow (0.01s)
+=== RUN   TestStatsSummaryNotComputableNulls
+--- PASS: TestStatsSummaryNotComputableNulls (0.01s)
+=== RUN   TestStatsSummaryEmptyLedgerTodayOnly
+--- PASS: TestStatsSummaryEmptyLedgerTodayOnly (0.00s)
+=== RUN   TestStatsUsageFilterSortAndPagination
+--- PASS: TestStatsUsageFilterSortAndPagination (0.01s)
+=== RUN   TestStatsUsageClampAndBadParams
+--- PASS: TestStatsUsageClampAndBadParams (0.01s)
+=== RUN   TestStatsCORSPreflightAndEcho
+--- PASS: TestStatsCORSPreflightAndEcho (0.00s)
+=== RUN   TestWidgetSummaryGolden
+--- PASS: TestWidgetSummaryGolden (0.01s)
+=== RUN   TestWidgetSummaryAuth
+--- PASS: TestWidgetSummaryAuth (0.00s)
+=== RUN   TestWidgetSummaryPartialFailure
+--- PASS: TestWidgetSummaryPartialFailure (0.00s)
+=== RUN   TestWidgetSummaryGLMV1Note
+--- PASS: TestWidgetSummaryGLMV1Note (0.00s)
+=== RUN   TestWidgetSummaryCacheHit
+--- PASS: TestWidgetSummaryCacheHit (0.00s)
+=== RUN   TestWidgetSummaryEmptyAndUnconfigured
+--- PASS: TestWidgetSummaryEmptyAndUnconfigured (0.00s)
+=== RUN   TestWidgetCORSPreflight
+--- PASS: TestWidgetCORSPreflight (0.00s)
+=== RUN   TestWidgetCORSONGET
+--- PASS: TestWidgetCORSONGET (0.00s)
+=== RUN   TestWidgetTokText
+--- PASS: TestWidgetTokText (0.00s)
+=== RUN   TestWidgetWeekStart
+--- PASS: TestWidgetWeekStart (0.00s)
+=== RUN   TestReqclockReseedPassesHeatGate
+[samemodel] ⚠ 判热通过但追加重放发送器未装配(渡口关/注入形态)——本进程内同模型档静默交还既有调度
+--- PASS: TestReqclockReseedPassesHeatGate (0.00s)
+=== RUN   TestReqclockReseedMissingSnapshotStaysCold
+--- PASS: TestReqclockReseedMissingSnapshotStaysCold (0.00s)
+=== RUN   TestRestoreNoCandidatesReturnsNone
+--- PASS: TestRestoreNoCandidatesReturnsNone (0.00s)
+=== RUN   TestRestoreMultiCandidateListsTopFiveOnly
+--- PASS: TestRestoreMultiCandidateListsTopFiveOnly (0.01s)
+=== RUN   TestRestoreTwoCandidatesListsBothNoPanic
+--- PASS: TestRestoreTwoCandidatesListsBothNoPanic (0.00s)
+=== RUN   TestRestoreSingleCandidateInjectLayerAndPending
+--- PASS: TestRestoreSingleCandidateInjectLayerAndPending (0.01s)
+=== RUN   TestRestoreTitleFallsBackToSessionIDPrefix8
+--- PASS: TestRestoreTitleFallsBackToSessionIDPrefix8 (0.00s)
+=== RUN   TestRestoreMissingInjectMarkFallsBackTo1800
+--- PASS: TestRestoreMissingInjectMarkFallsBackTo1800 (0.01s)
+=== RUN   TestRestoreCtxCappedAt6000
+--- PASS: TestRestoreCtxCappedAt6000 (0.01s)
+=== RUN   TestRestoreBooksInjectLineageAndMarkedInjected
+--- PASS: TestRestoreBooksInjectLineageAndMarkedInjected (0.02s)
+=== RUN   TestRestoreConsumesPendingOnce
+--- PASS: TestRestoreConsumesPendingOnce (0.01s)
+=== RUN   TestRestoreAnchoredPinsBlockedSessionOverNewerSibling
+--- PASS: TestRestoreAnchoredPinsBlockedSessionOverNewerSibling (0.01s)
+=== RUN   TestRestoreAnchoredNoHandoffDeliversPromptAndListsOthers
+--- PASS: TestRestoreAnchoredNoHandoffDeliversPromptAndListsOthers (0.00s)
+=== RUN   TestRestoreDshAnchoredExpiredHandoffFallsToNoHandoff
+--- PASS: TestRestoreDshAnchoredExpiredHandoffFallsToNoHandoff (0.01s)
+=== RUN   TestRestoreDshAnchoredFreshHandoffStillSupplied
+--- PASS: TestRestoreDshAnchoredFreshHandoffStillSupplied (0.01s)
+=== RUN   TestRestoreDshUnanchoredCoversToleranceBoundary
+=== RUN   TestRestoreDshUnanchoredCoversToleranceBoundary/covers恰等last_write
+=== RUN   TestRestoreDshUnanchoredCoversToleranceBoundary/落后55s在容差内
+=== RUN   TestRestoreDshUnanchoredCoversToleranceBoundary/落后61s超容差
+--- PASS: TestRestoreDshUnanchoredCoversToleranceBoundary (0.01s)
+    --- PASS: TestRestoreDshUnanchoredCoversToleranceBoundary/covers恰等last_write (0.00s)
+    --- PASS: TestRestoreDshUnanchoredCoversToleranceBoundary/落后55s在容差内 (0.00s)
+    --- PASS: TestRestoreDshUnanchoredCoversToleranceBoundary/落后61s超容差 (0.00s)
+=== RUN   TestRestoreDshUnanchoredAllExpiredFallsToNoHandoff
+--- PASS: TestRestoreDshUnanchoredAllExpiredFallsToNoHandoff (0.00s)
+=== RUN   TestRestoreDshUnanchoredFiltersExpiredKeepsFreshPerCandidate
+--- PASS: TestRestoreDshUnanchoredFiltersExpiredKeepsFreshPerCandidate (0.01s)
+=== RUN   TestRestoreCcSameStaleDataUnchanged
+--- PASS: TestRestoreCcSameStaleDataUnchanged (0.01s)
+=== RUN   TestRestoreCandidatesTotalOrderAndDeterministic
+--- PASS: TestRestoreCandidatesTotalOrderAndDeterministic (3.31s)
+=== RUN   TestNewBeatSenderDockOff
+--- PASS: TestNewBeatSenderDockOff (0.00s)
+=== RUN   TestNewBeatSenderDockCfgButNoSnapshots
+--- PASS: TestNewBeatSenderDockCfgButNoSnapshots (0.00s)
+=== RUN   TestNewBeatSenderDockOn
+--- PASS: TestNewBeatSenderDockOn (0.00s)
+=== RUN   TestShutdownDockGracefullyWaitsForInFlight
+2026/10/09 09:01:01 [dock] 截断流: session=drain-wiring mode=passthrough status=200（EOF 前未见 message_stop）
+--- PASS: TestShutdownDockGracefullyWaitsForInFlight (0.67s)
+=== RUN   TestShutdownDockGracefullyDeadlineBoundedAndHardCloses
+2026/10/09 09:01:02 [dock] 截断流: session=drain-wiring mode=passthrough status=200（EOF 前未见 message_stop）
+[ferryman] ⚠ 渡口排水到期强收: context deadline exceeded
+--- PASS: TestShutdownDockGracefullyDeadlineBoundedAndHardCloses (0.42s)
+=== RUN   TestShutdownDockGracefullyNilServerNoPanic
+--- PASS: TestShutdownDockGracefullyNilServerNoPanic (0.00s)
+=== RUN   TestShutdownSourceLogEndpointE2E
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] serve: 127.0.0.1:56666 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestShutdownSourceLogEndpointE2E3386186883\001\data
+--- PASS: TestShutdownSourceLogEndpointE2E (0.02s)
+=== RUN   TestShutdownSourceLogTrayNoteE2E
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] serve: 127.0.0.1:56668 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestShutdownSourceLogTrayNoteE2E453129099\001\data
+--- PASS: TestShutdownSourceLogTrayNoteE2E (0.02s)
+=== RUN   TestShutdownSourceLogNoSourceNoMislog
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] serve: 127.0.0.1:56670 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestShutdownSourceLogNoSourceNoMislog771543851\001\data
+--- PASS: TestShutdownSourceLogNoSourceNoMislog (0.17s)
+=== RUN   TestWatchInterruptOnceSignalSource
+--- PASS: TestWatchInterruptOnceSignalSource (0.12s)
+=== RUN   TestSourceMarkerFirstWins
+--- PASS: TestSourceMarkerFirstWins (0.00s)
+=== RUN   TestServeYieldsWhenUpdateLockHeld
+--- PASS: TestServeYieldsWhenUpdateLockHeld (0.00s)
+=== RUN   TestServeYieldViaRealUpdateProbe
+--- PASS: TestServeYieldViaRealUpdateProbe (0.01s)
+=== RUN   TestServeStartsWhenLockNotHeld
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] serve: 127.0.0.1:56674 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestServeStartsWhenLockNotHeld412527788\001\data
+
+[ferryman] 停止中…
+--- PASS: TestServeStartsWhenLockNotHeld (0.03s)
+=== RUN   TestServeSupervisorLaunchExemptYield
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] serve: 127.0.0.1:56675 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestServeSupervisorLaunchExemptYield3764423606\001\data
+
+[ferryman] 停止中…
+--- PASS: TestServeSupervisorLaunchExemptYield (0.03s)
+=== RUN   TestServeUniqueifySkipsWhenHealthyInstanceRunning
+--- PASS: TestServeUniqueifySkipsWhenHealthyInstanceRunning (0.01s)
+=== RUN   TestServePortTakenByForeignProcessReturns1
+--- PASS: TestServePortTakenByForeignProcessReturns1 (2.01s)
+=== RUN   TestServePidBannerAndGracefulStop
+--- PASS: TestServePidBannerAndGracefulStop (0.03s)
+=== RUN   TestServeConfigStatsCarriesVersion
+[ferry] ⚠ provider 'glm' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] serve: 127.0.0.1:56684 · gate cc=observe codex=off · 总结1.0s/拦截2.0s · provider=glm · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestServeConfigStatsCarriesVersion1659645299\001\data
+
+[ferryman] 停止中…
+--- PASS: TestServeConfigStatsCarriesVersion (0.02s)
+=== RUN   TestSettingsEntitiesUpstreamPutSecretMerge
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesUpstreamPutSecretMerge (0.05s)
+=== RUN   TestSettingsEntitiesUpstreamCreateAndReplaceActive
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesUpstreamCreateAndReplaceActive (0.04s)
+=== RUN   TestSettingsEntitiesUpstreamDeleteGuards
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesUpstreamDeleteGuards (0.03s)
+=== RUN   TestSettingsEntitiesProviderDeleteGuards
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesProviderDeleteGuards (0.03s)
+=== RUN   TestSettingsEntitiesProviderPut
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesProviderPut (0.05s)
+=== RUN   TestSettingsEntitiesPricePutDelete
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesPricePutDelete (0.05s)
+=== RUN   TestSettingsEntitiesFerryOwnKeys
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "kimi" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "kimi" 被忽略）
+--- PASS: TestSettingsEntitiesFerryOwnKeys (0.03s)
+=== RUN   TestSettingsEntitiesGuards
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesGuards (0.02s)
+=== RUN   TestSettingsEntitiesAuditAndLock
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesAuditAndLock (0.03s)
+=== RUN   TestSettingsEntitiesBadBodyTypes
+[config] ⚠ [ferry] chain 与 provider 并存，以 chain 为准（provider = "glm" 被忽略）
+--- PASS: TestSettingsEntitiesBadBodyTypes (0.02s)
+=== RUN   TestSettingsReadRequiresBearer
+--- PASS: TestSettingsReadRequiresBearer (0.01s)
+=== RUN   TestSettingsReadMasksAllSecrets
+--- PASS: TestSettingsReadMasksAllSecrets (0.01s)
+=== RUN   TestSettingsReadAllSectionsAndEntities
+--- PASS: TestSettingsReadAllSectionsAndEntities (0.01s)
+=== RUN   TestSettingsReadNotifyEventsEffective
+--- PASS: TestSettingsReadNotifyEventsEffective (0.02s)
+=== RUN   TestSettingsReadEffectsOperationLevel
+--- PASS: TestSettingsReadEffectsOperationLevel (0.01s)
+=== RUN   TestSettingsReadConfigMissingStillServes
+--- PASS: TestSettingsReadConfigMissingStillServes (0.01s)
+=== RUN   TestSettingsRestartSpawnHelperRefusesTestBinary
+--- PASS: TestSettingsRestartSpawnHelperRefusesTestBinary (0.00s)
+=== RUN   TestSettingsRestartHappyPath
+--- PASS: TestSettingsRestartHappyPath (0.03s)
+=== RUN   TestSettingsRestartPortChangeResponse
+--- PASS: TestSettingsRestartPortChangeResponse (0.03s)
+=== RUN   TestSettingsRestartPrecheckRejectsBadConfig
+--- PASS: TestSettingsRestartPrecheckRejectsBadConfig (0.02s)
+=== RUN   TestSettingsRestartPrecheckRejectsOccupiedPort
+--- PASS: TestSettingsRestartPrecheckRejectsOccupiedPort (0.03s)
+=== RUN   TestSettingsRestartPrecheckRejectsUpdateLock
+--- PASS: TestSettingsRestartPrecheckRejectsUpdateLock (0.03s)
+=== RUN   TestSettingsRestartLastHealthyStableAcrossWrites
+--- PASS: TestSettingsRestartLastHealthyStableAcrossWrites (0.03s)
+=== RUN   TestSettingsRestartPrecheckRejectsDataDirChange
+--- PASS: TestSettingsRestartPrecheckRejectsDataDirChange (0.03s)
+=== RUN   TestSettingsRestartSerializesWithWritesAndHoldsLock
+--- PASS: TestSettingsRestartSerializesWithWritesAndHoldsLock (0.22s)
+=== RUN   TestSettingsRestartWaitsForInFlightWrite
+--- PASS: TestSettingsRestartWaitsForInFlightWrite (0.32s)
+=== RUN   TestProviderSwitchTakesSettingsWriteMu
+--- PASS: TestProviderSwitchTakesSettingsWriteMu (0.31s)
+=== RUN   TestStampLastHealthyConfig
+--- PASS: TestStampLastHealthyConfig (0.01s)
+=== RUN   TestSnapshotPruneKeepsLastHealthy
+--- PASS: TestSnapshotPruneKeepsLastHealthy (0.02s)
+=== RUN   TestSettingsRestartGuards
+--- PASS: TestSettingsRestartGuards (0.01s)
+=== RUN   TestSnapshotAutoOnSettingsPut
+--- PASS: TestSnapshotAutoOnSettingsPut (0.03s)
+=== RUN   TestSnapshotListMetadataOnly
+--- PASS: TestSnapshotListMetadataOnly (0.02s)
+=== RUN   TestSnapshotRestoreByteForByte
+--- PASS: TestSnapshotRestoreByteForByte (0.04s)
+=== RUN   TestSnapshotRetention25to20
+--- PASS: TestSnapshotRetention25to20 (0.04s)
+=== RUN   TestSnapshotPruneClassPriority
+--- PASS: TestSnapshotPruneClassPriority (0.13s)
+=== RUN   TestSnapshotGuards
+--- PASS: TestSnapshotGuards (0.01s)
+=== RUN   TestSettingsSwitchLoadedEntryPersistsAndRebinds
+[ferryman] 供应商热切换: b → https://b.example/api（渡口不重启，新请求即刻生效）
+--- PASS: TestSettingsSwitchLoadedEntryPersistsAndRebinds (0.02s)
+=== RUN   TestSettingsSwitchAddedAfterStartupConflict409
+--- PASS: TestSettingsSwitchAddedAfterStartupConflict409 (0.02s)
+=== RUN   TestSettingsSwitchCodexUnavailableRejected
+--- PASS: TestSettingsSwitchCodexUnavailableRejected (0.02s)
+=== RUN   TestSettingsSwitchUnknownEntry
+--- PASS: TestSettingsSwitchUnknownEntry (0.02s)
+=== RUN   TestSettingsSwitchSnapshotReasonSwitch
+[ferryman] 供应商热切换: b → https://b.example/api（渡口不重启，新请求即刻生效）
+--- PASS: TestSettingsSwitchSnapshotReasonSwitch (0.01s)
+=== RUN   TestSettingsSwitchGuards
+--- PASS: TestSettingsSwitchGuards (0.01s)
+=== RUN   TestSettingsSwitchQueuedBehindSettingsWriteMu
+[ferryman] 供应商热切换: b → https://b.example/api（渡口不重启，新请求即刻生效）
+--- PASS: TestSettingsSwitchQueuedBehindSettingsWriteMu (0.32s)
+=== RUN   TestSettingsWritePutsSectionAndAudits
+--- PASS: TestSettingsWritePutsSectionAndAudits (0.02s)
+=== RUN   TestSettingsWriteConcurrentSectionsSerialized
+--- PASS: TestSettingsWriteConcurrentSectionsSerialized (0.07s)
+=== RUN   TestSettingsWriteGetNotBlockedWhilePutInFlight
+--- PASS: TestSettingsWriteGetNotBlockedWhilePutInFlight (0.32s)
+=== RUN   TestSettingsWriteRejectedKeepsConfigAndAuditsAttempt
+--- PASS: TestSettingsWriteRejectedKeepsConfigAndAuditsAttempt (0.01s)
+=== RUN   TestSettingsWriteServerPortChangeReturnsNewPort
+--- PASS: TestSettingsWriteServerPortChangeReturnsNewPort (0.02s)
+=== RUN   TestSettingsWriteAuditMasksSecretValues
+--- PASS: TestSettingsWriteAuditMasksSecretValues (0.02s)
+=== RUN   TestSettingsWriteSecretMergeKeepsDiskValue
+--- PASS: TestSettingsWriteSecretMergeKeepsDiskValue (0.05s)
+=== RUN   TestSettingsWriteNotifyEventsRoundTripPreserves
+--- PASS: TestSettingsWriteNotifyEventsRoundTripPreserves (0.03s)
+=== RUN   TestSettingsWriteNotifyEventsSingleChangeLands
+--- PASS: TestSettingsWriteNotifyEventsSingleChangeLands (0.03s)
+=== RUN   TestSettingsWriteNotifyEventsDefaultEqualsOmitted
+--- PASS: TestSettingsWriteNotifyEventsDefaultEqualsOmitted (0.03s)
+=== RUN   TestSettingsWriteNotifyEventsInvalidRejectedByLoad
+--- PASS: TestSettingsWriteNotifyEventsInvalidRejectedByLoad (0.02s)
+=== RUN   TestSettingsWriteTuningNeedsRestartTrue
+--- PASS: TestSettingsWriteTuningNeedsRestartTrue (0.02s)
+=== RUN   TestSettingsWriteGuards
+--- PASS: TestSettingsWriteGuards (0.01s)
+=== RUN   TestSettingsWriteTOMLBodyRender
+--- PASS: TestSettingsWriteTOMLBodyRender (0.00s)
+=== RUN   TestShutdownEndToEndServeConfig
+[ferry] ⚠ provider 'fake' 未在 [providers.*] 定义——摆渡将全部降级为骨架交接
+[ferryman] serve: 127.0.0.1:56811 · gate cc=observe codex=off · 总结1500.0s/拦截2100.0s · provider=fake · 数据目录 C:\Users\allan716\AppData\Local\Temp\TestShutdownEndToEndServeConfig427369425\001\data
+[ferryman] 关停来源: shutdown端点（2026-10-09 09:01:07）
+
+[ferryman] 停止中…
+--- PASS: TestShutdownEndToEndServeConfig (0.02s)
+=== RUN   TestShutdownGuardsWrongTokenNoTokenAndGET
+--- PASS: TestShutdownGuardsWrongTokenNoTokenAndGET (0.00s)
+=== RUN   TestShutdownRejectsNonLoopback
+--- PASS: TestShutdownRejectsNonLoopback (0.00s)
+=== RUN   TestWindowsDoubleBindIsRejected
+--- PASS: TestWindowsDoubleBindIsRejected (0.00s)
+=== RUN   TestAlreadyRunningTrueForHealthyInstance
+--- PASS: TestAlreadyRunningTrueForHealthyInstance (0.00s)
+=== RUN   TestAlreadyRunningFalseForWrongTokenOrDeadPort
+--- PASS: TestAlreadyRunningFalseForWrongTokenOrDeadPort (0.00s)
+=== RUN   TestEnsureTokenCreatesHex64File
+--- PASS: TestEnsureTokenCreatesHex64File (0.01s)
+=== RUN   TestHTTPHandlerAllPaths
+--- PASS: TestHTTPHandlerAllPaths (0.00s)
+=== RUN   TestPostDrainsBodyBeforeAuthFailReply
+--- PASS: TestPostDrainsBodyBeforeAuthFailReply (0.00s)
+=== RUN   TestPollCCSubagentFeedsUsageOnly
+--- PASS: TestPollCCSubagentFeedsUsageOnly (0.02s)
+=== RUN   TestSubagentLineageLedgerPriority
+[harvest] 子代理父转录与路径剥离推导不一致（以台账为准）: 父=P1 台账=c:/users/allan716/appdata/local/temp/testsubagentlineageledgerpriority1546306594/001/elsewhere/p1.jsonl 推导=c:/users/allan716/appdata/local/temp/testsubagentlineageledgerpriority1546306594/001/projects/c--proj/p1.jsonl
+--- PASS: TestSubagentLineageLedgerPriority (0.01s)
+=== RUN   TestSubagentLineageDerivedMatchesLaterTouch
+--- PASS: TestSubagentLineageDerivedMatchesLaterTouch (0.02s)
+=== RUN   TestWatcherSkipsSubagentTranscriptPaths
+--- PASS: TestWatcherSkipsSubagentTranscriptPaths (0.00s)
+=== RUN   TestMaybeEnqueueDefersWhileSubagentActive
+--- PASS: TestMaybeEnqueueDefersWhileSubagentActive (0.00s)
+=== RUN   TestCodexWatchDirsAutoDetectsOrcaRuntime
+--- PASS: TestCodexWatchDirsAutoDetectsOrcaRuntime (0.00s)
+=== RUN   TestWatcherPollsAllCodexDirs
+--- PASS: TestWatcherPollsAllCodexDirs (0.01s)
+=== RUN   TestWatcherDedupesSameSidAcrossCodexDirs
+--- PASS: TestWatcherDedupesSameSidAcrossCodexDirs (0.01s)
+=== RUN   TestSubagentEndpointRoundtrip
+--- PASS: TestSubagentEndpointRoundtrip (0.00s)
+=== RUN   TestSubagentEndpointAuthAndValidation
+--- PASS: TestSubagentEndpointAuthAndValidation (0.00s)
+=== RUN   TestSubagentInvalidEventRejected
+--- PASS: TestSubagentInvalidEventRejected (0.00s)
+=== RUN   TestSubagentReturnAndCounters
+--- PASS: TestSubagentReturnAndCounters (0.00s)
+=== RUN   TestWindowParkResumeLifecycle
+--- PASS: TestWindowParkResumeLifecycle (0.03s)
+=== RUN   TestSubagentConcurrentWindowMachineNoRace
+--- PASS: TestSubagentConcurrentWindowMachineNoRace (1.77s)
+=== RUN   TestT16GateBlockJSONContract
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] cc/hook-000 L1 1.2s -> handoff
+[gate] BLOCK cc/hook-000 idle=0m handoff=20261009_090110_18db20
+--- PASS: TestT16GateBlockJSONContract (3.32s)
+=== RUN   TestT16GateFailopenOn401
+--- PASS: TestT16GateFailopenOn401 (0.44s)
+=== RUN   TestT16GateFailopenDaemonDown
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+--- PASS: TestT16GateFailopenDaemonDown (0.68s)
+=== RUN   TestT16GateEnvDisableShortCircuits
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT16GateFailopenOn4012798030494\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+--- PASS: TestT16GateEnvDisableShortCircuits (0.18s)
+=== RUN   TestT17RestoreSkipsResume
+--- PASS: TestT17RestoreSkipsResume (0.38s)
+=== RUN   TestT17RestoreInjectsOnClear
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT17RestoreSkipsResume2600050837\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] cc/hook-000 L1 1.2s -> handoff
+--- PASS: TestT17RestoreInjectsOnClear (1.87s)
+=== RUN   TestT17RestoreFailopenDaemonDown
+--- PASS: TestT17RestoreFailopenDaemonDown (0.65s)
+=== RUN   TestT32SubagentHookRoundtrip
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+--- PASS: TestT32SubagentHookRoundtrip (0.88s)
+=== RUN   TestT32SubagentHookFailopenDaemonDown
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT32SubagentHookRoundtrip4162680999\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+--- PASS: TestT32SubagentHookFailopenDaemonDown (0.65s)
+=== RUN   TestT32SubagentHookEnvDisableShortCircuits
+--- PASS: TestT32SubagentHookEnvDisableShortCircuits (0.17s)
+=== RUN   TestT23CodexGateHookBlocksIdle
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] codex/codexgat L1 1.2s -> handoff
+[gate] BLOCK codex/codexgat idle=32461m handoff=20261009_090120_88b74f
+--- PASS: TestT23CodexGateHookBlocksIdle (1.88s)
+=== RUN   TestT23CodexGateHookFailopenDaemonDown
+--- PASS: TestT23CodexGateHookFailopenDaemonDown (0.65s)
+=== RUN   TestT23CodexRestoreHookFiltersSource
+--- PASS: TestT23CodexRestoreHookFiltersSource (0.41s)
+=== RUN   TestT23CodexRestoreHookFailopenDaemonDown
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+--- PASS: TestT23CodexRestoreHookFailopenDaemonDown (0.66s)
+=== RUN   TestT37CodexSubagentHookRoundtrip
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT23CodexRestoreHookFiltersSource1605090629\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+[ferry] dsh session- 主快照缺失——降级骨架-only（未走渡口/守护重启）
+--- PASS: TestT37CodexSubagentHookRoundtrip (0.98s)
+=== RUN   TestT37CodexSubagentHookIgnoresOtherEvents
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookRoundtrip1433652028\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+--- PASS: TestT37CodexSubagentHookIgnoresOtherEvents (0.42s)
+=== RUN   TestQWatchE2EFullChain
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202609.jsonl: The system cannot find the path specified.
+[harvest] dsh 用量采集失败（忽略继续）: session.v4.jsonl.zstd: open C:\Users\allan716\AppData\Local\Temp\TestT37CodexSubagentHookIgnoresOtherEvents2190044075\001\data\accounts\202610.jsonl: The system cannot find the path specified.
+--- PASS: TestQWatchE2EFullChain (3.38s)
+=== RUN   TestControlSessionZeroQwatchEvents
+--- PASS: TestControlSessionZeroQwatchEvents (2.40s)
+=== RUN   TestHarnessWiresFerryDaemonForMutex
+--- PASS: TestHarnessWiresFerryDaemonForMutex (0.01s)
+=== RUN   TestHealthReportsMissSignalsFromAccounts
+--- PASS: TestHealthReportsMissSignalsFromAccounts (0.01s)
+=== RUN   TestBeatRequestShapeLock
+    test_qwatch_e2e_test.go:473: Q14 段二产物（~/ferryman/captures/ 真实请求捕获模板＋BeatBuilder）接入后启用：届时加载捕获模板，断言 beat 请求被缓存前缀字段（system/tools/messages/cache_control）与 CC 真实请求逐字段 diff 全等（spec 决策 4 保形硬要求；采样参数不在等价范围——max_tokens=1 封顶不参与比对）
+--- SKIP: TestBeatRequestShapeLock (0.00s)
+=== RUN   TestQWatchStopIntegrationOverHTTP
+[qwatch] 一键停：mode→off，已取消 1 个会话的窗口/计划
+--- PASS: TestQWatchStopIntegrationOverHTTP (1.79s)
+=== RUN   TestHitEventBookedOncePerVersionWithEvidence
+--- PASS: TestHitEventBookedOncePerVersionWithEvidence (0.01s)
+=== RUN   TestHitEventDedupAcrossTransientRechecks
+--- PASS: TestHitEventDedupAcrossTransientRechecks (0.02s)
+=== RUN   TestHitEventPrivacyNoMessageBody
+--- PASS: TestHitEventPrivacyNoMessageBody (0.01s)
+=== RUN   TestOpenAndCloseEventsBookedViaPollLoop
+--- PASS: TestOpenAndCloseEventsBookedViaPollLoop (0.02s)
+=== RUN   TestCloseEventBeatsFiredReflectsActualFires
+--- PASS: TestCloseEventBeatsFiredReflectsActualFires (0.02s)
+=== RUN   TestBeatStatsCountersByOutcome
+--- PASS: TestBeatStatsCountersByOutcome (0.01s)
+=== RUN   TestHealthReportsQwatchSection
+--- PASS: TestHealthReportsQwatchSection (0.00s)
+=== RUN   TestQWatchStopClearsWindowsAndDisablesReopen
+[qwatch] 一键停：mode→off，已取消 2 个会话的窗口/计划
+--- PASS: TestQWatchStopClearsWindowsAndDisablesReopen (0.01s)
+=== RUN   TestPlanScheduledOnOpenNoImmediateFire
+--- PASS: TestPlanScheduledOnOpenNoImmediateFire (0.00s)
+=== RUN   TestNothingDueNoFire
+--- PASS: TestNothingDueNoFire (0.00s)
+=== RUN   TestTwoCheckFileStatChangedNoSendVoidsPlan
+[qwatch] 跳取消：转录新鲜度不符（tc-1），剩余计划作废
+--- PASS: TestTwoCheckFileStatChangedNoSendVoidsPlan (0.00s)
+=== RUN   TestTwoCheckLedgerVersionMovedNoSend
+[qwatch] 跳取消：台账有新写入（tc-2），剩余计划作废
+--- PASS: TestTwoCheckLedgerVersionMovedNoSend (0.00s)
+=== RUN   TestNewWriteCancelsPendingBeats
+--- PASS: TestNewWriteCancelsPendingBeats (0.00s)
+=== RUN   TestGlobalSerialOneBeatInFlight
+--- PASS: TestGlobalSerialOneBeatInFlight (0.00s)
+=== RUN   TestObserveModeNeverCallsInjectedSender
+--- PASS: TestObserveModeNeverCallsInjectedSender (0.01s)
+=== RUN   TestEnforceWithoutRealSenderDrillsWithWarning
+--- PASS: TestEnforceWithoutRealSenderDrillsWithWarning (0.01s)
+=== RUN   TestThreeStatesBookedFromFakeSender
+--- PASS: TestThreeStatesBookedFromFakeSender (0.01s)
+=== RUN   TestBreakerTwoMissDemotesEnforceToObserve
+--- PASS: TestBreakerTwoMissDemotesEnforceToObserve (0.00s)
+=== RUN   TestBreakerErrorNotCountedIntoMissStreak
+[qwatch] ⚠ 问询守望熔断降级: 连续 2 跳 MISS，mode 已自动 enforce→observe（人工复核 observe 数据后拨回）
+--- PASS: TestBreakerErrorNotCountedIntoMissStreak (0.00s)
+=== RUN   TestBreakerHitResetsMissStreak
+--- PASS: TestBreakerHitResetsMissStreak (0.00s)
+=== RUN   TestBreakerThreeErrorsPauseWindowOnly
+--- PASS: TestBreakerThreeErrorsPauseWindowOnly (0.01s)
+=== RUN   TestLedgerLockSharedShape
+--- PASS: TestLedgerLockSharedShape (0.00s)
+=== RUN   TestRlockParkingFirstNoDoubleWindow
+--- PASS: TestRlockParkingFirstNoDoubleWindow (0.21s)
+=== RUN   TestRlockSubagentOpenWaitsOnLedgerLock
+--- PASS: TestRlockSubagentOpenWaitsOnLedgerLock (0.15s)
+=== RUN   TestBeatRowPrivacyNoMessageContent
+--- PASS: TestBeatRowPrivacyNoMessageContent (0.01s)
+=== RUN   TestSchedulerExceptionSwallowed
+--- PASS: TestSchedulerExceptionSwallowed (0.00s)
+=== RUN   TestT51WindowFieldsOnOpen
+--- PASS: TestT51WindowFieldsOnOpen (0.00s)
+=== RUN   TestT51PredicateAllFourTrueOpens
+--- PASS: TestT51PredicateAllFourTrueOpens (0.00s)
+=== RUN   TestT51PredicateNotSurgeNoOpen
+--- PASS: TestT51PredicateNotSurgeNoOpen (0.00s)
+=== RUN   TestT51PredicateDanglingOtherToolNoOpen
+--- PASS: TestT51PredicateDanglingOtherToolNoOpen (0.01s)
+=== RUN   TestT51PredicateSubagentActiveNoOpenThenOpensAfterStop
+--- PASS: TestT51PredicateSubagentActiveNoOpenThenOpensAfterStop (0.00s)
+=== RUN   TestT51PredicateCtxBelowMinNoOpen
+--- PASS: TestT51PredicateCtxBelowMinNoOpen (0.00s)
+=== RUN   TestT51ModeOffNeverOpens
+--- PASS: TestT51ModeOffNeverOpens (0.00s)
+=== RUN   TestT51DetectionCachedPerWriteVersion
+--- PASS: TestT51DetectionCachedPerWriteVersion (0.00s)
+=== RUN   TestT51ParkingWindowOpenBlocksQwatchOpen
+--- PASS: TestT51ParkingWindowOpenBlocksQwatchOpen (0.00s)
+=== RUN   TestT51ParkingProbeLeakGuardAndNeverRaises
+--- PASS: TestT51ParkingProbeLeakGuardAndNeverRaises (0.00s)
+=== RUN   TestT51QWatchWindowBlocksParkingOpen
+--- PASS: TestT51QWatchWindowBlocksParkingOpen (0.00s)
+=== RUN   TestT51ParkingOpensNormallyWithoutQwatchWindow
+--- PASS: TestT51ParkingOpensNormallyWithoutQwatchWindow (0.00s)
+=== RUN   TestT51WindowDefersRegularEnqueue
+--- PASS: TestT51WindowDefersRegularEnqueue (0.01s)
+=== RUN   TestT51DeadlineForcesEnqueuePastDangling
+--- PASS: TestT51DeadlineForcesEnqueuePastDangling (0.00s)
+=== RUN   TestT51DeadlineBoundaryExactIdleIsDue
+--- PASS: TestT51DeadlineBoundaryExactIdleIsDue (0.00s)
+=== RUN   TestT51NoWindowDanglingDefersUnchanged
+--- PASS: TestT51NoWindowDanglingDefersUnchanged (0.00s)
+=== RUN   TestT51QWatchDeadlineHelperTruthTable
+--- PASS: TestT51QWatchDeadlineHelperTruthTable (0.00s)
+=== RUN   TestT51DetectExceptionSwallowed
+[qwatch] 开窗判定异常（忽略继续）: boom
+--- PASS: TestT51DetectExceptionSwallowed (0.00s)
+=== RUN   TestT51ParkingProbeExceptionSwallowed
+[qwatch] 开窗判定异常（忽略继续）: boom
+--- PASS: TestT51ParkingProbeExceptionSwallowed (0.00s)
+=== RUN   TestT51ReopenAfterWriteResetsTimer
+--- PASS: TestT51ReopenAfterWriteResetsTimer (0.00s)
+=== RUN   TestT51CloseResumesRegularFerryScheduling
+--- PASS: TestT51CloseResumesRegularFerryScheduling (0.01s)
+=== RUN   TestT51CloseThenCalmNoReopen
+--- PASS: TestT51CloseThenCalmNoReopen (0.01s)
+=== RUN   TestWatcherWindowReaderVsTouchWriterNoRace
+--- PASS: TestWatcherWindowReaderVsTouchWriterNoRace (0.01s)
+=== RUN   TestWaitLaneActiveWindowFiresWhenDue
+--- PASS: TestWaitLaneActiveWindowFiresWhenDue (0.00s)
+=== RUN   TestWaitLaneParkedUnexpiredFiresWhenDue
+--- PASS: TestWaitLaneParkedUnexpiredFiresWhenDue (0.00s)
+=== RUN   TestWaitLaneParkedExpiredNoBeat
+--- PASS: TestWaitLaneParkedExpiredNoBeat (0.00s)
+=== RUN   TestWaitLaneMainResumedNoBeat
+--- PASS: TestWaitLaneMainResumedNoBeat (0.00s)
+=== RUN   TestWaitLaneNoWindowNoBeat
+--- PASS: TestWaitLaneNoWindowNoBeat (0.00s)
+=== RUN   TestWaitLaneIdleBelowTauNoBeat
+--- PASS: TestWaitLaneIdleBelowTauNoBeat (0.00s)
+=== RUN   TestWaitLanePrefixBelowMinNoBeat
+--- PASS: TestWaitLanePrefixBelowMinNoBeat (0.00s)
+=== RUN   TestWaitLanePolicyWiringIntervalAndCap
+--- PASS: TestWaitLanePolicyWiringIntervalAndCap (0.00s)
+=== RUN   TestWaitLaneManualCapOnlyTightens
+--- PASS: TestWaitLaneManualCapOnlyTightens (0.00s)
+=== RUN   TestWaitLaneOneMissStopsWindow
+--- PASS: TestWaitLaneOneMissStopsWindow (0.00s)
+=== RUN   TestWaitLaneThreeConsecutiveErrorsStopWindow
+--- PASS: TestWaitLaneThreeConsecutiveErrorsStopWindow (0.00s)
+=== RUN   TestWaitLaneMissStopIsPerWindow
+[qwatch] ⚠ 等待窗心跳熔断: 1 跳 MISS：停本窗剩余跳——建议复测 TTL（experiments/cache-ttl 套件），配置不自改
+--- PASS: TestWaitLaneMissStopIsPerWindow (0.00s)
+=== RUN   TestWaitLaneEnforceNoDockDrillsObserve
+--- PASS: TestWaitLaneEnforceNoDockDrillsObserve (0.01s)
+=== RUN   TestWaitLaneSerialWithQWatchSingleInFlight
+--- PASS: TestWaitLaneSerialWithQWatchSingleInFlight (0.00s)
+=== RUN   TestWaitLaneBeatRowsCarryLaneAndUselessWarm
+--- PASS: TestWaitLaneBeatRowsCarryLaneAndUselessWarm (0.02s)
+=== RUN   TestWaitLanePinWiring
+--- PASS: TestWaitLanePinWiring (0.00s)
+=== RUN   TestWaitLanePinQWatchWindowAlsoPins
+--- PASS: TestWaitLanePinQWatchWindowAlsoPins (0.00s)
+=== RUN   TestWaitLaneNilSnapshotHandleNoPanic
+[wait] ⚠ mode=enforce 但未注入真实 BeatSender（渡口未起）——等待窗心跳按 observe 演练记账
+--- PASS: TestWaitLaneNilSnapshotHandleNoPanic (0.00s)
+=== RUN   TestWaitLaneModeOffZeroBehavior
+--- PASS: TestWaitLaneModeOffZeroBehavior (0.00s)
+=== RUN   TestWatcherObserveRecentWindowFerriesIdleSessionAfterRestart
+--- PASS: TestWatcherObserveRecentWindowFerriesIdleSessionAfterRestart (0.01s)
+=== RUN   TestWatcherObserveRecentWindowSkipsAncientFiles
+--- PASS: TestWatcherObserveRecentWindowSkipsAncientFiles (0.00s)
+=== RUN   TestMaybeEnqueueDedupesWhenValidHandoffCovers
+--- PASS: TestMaybeEnqueueDedupesWhenValidHandoffCovers (0.01s)
+=== RUN   TestWatcherObserveRecentCodexWindow
+--- PASS: TestWatcherObserveRecentCodexWindow (0.01s)
+=== RUN   TestDshBootReplayRebuildsPeakFromLedger
+--- PASS: TestDshBootReplayRebuildsPeakFromLedger (0.02s)
+=== RUN   TestDshBootReplayCrossMonthBoundary
+--- PASS: TestDshBootReplayCrossMonthBoundary (0.03s)
+=== RUN   TestDshBootReplaySkipsWhenPeakAlreadyPresent
+--- PASS: TestDshBootReplaySkipsWhenPeakAlreadyPresent (0.01s)
+=== RUN   TestDshBootReplayTitleFromHandoffDocHead
+--- PASS: TestDshBootReplayTitleFromHandoffDocHead (0.01s)
+=== RUN   TestDshBootReplayTitleAbsentStaysEmpty
+--- PASS: TestDshBootReplayTitleAbsentStaysEmpty (0.01s)
+=== RUN   TestMaybeEnqueueDshDedupesRestartWithUnconsumedCoveringHandoff
+--- PASS: TestMaybeEnqueueDshDedupesRestartWithUnconsumedCoveringHandoff (0.02s)
+=== RUN   TestMaybeEnqueueDshAfterRestartConsumedHandoffDoesNotBlock
+--- PASS: TestMaybeEnqueueDshAfterRestartConsumedHandoffDoesNotBlock (0.01s)
+=== RUN   TestRealDshSessionsVsDockLedger
+    watcher_dsh_real_test.go:39: FERRYMAN_DSH_REAL_SESSIONS / FERRYMAN_DSH_REAL_LEDGER 未置位——跳过真机对账（本机验收时分别指到 ~/.dsh/sessions 与 ~/ferryman）
+--- SKIP: TestRealDshSessionsVsDockLedger (0.00s)
+=== RUN   TestSameModelTriggerReadsEffectiveThreshold
+--- PASS: TestSameModelTriggerReadsEffectiveThreshold (0.00s)
+=== RUN   TestSameModelEffectiveFullCalibrationComputes
+--- PASS: TestSameModelEffectiveFullCalibrationComputes (0.00s)
+=== RUN   TestSameModelEffectiveFallsBackToSeedOnCalcError
+[samemodel] ⚠ 生效值现算失败(观测不完整：有 TTL 观测但无闲置间隔观测——无法评估提前触发会浪费多少次摆渡，拒绝现算（观测齐全前用冷启动种子）)——触发阈值回落冷启动种子 20.0 分钟(D9 第一层;检查 [prices.*] 价格表与调参校准)
+--- PASS: TestSameModelEffectiveFallsBackToSeedOnCalcError (0.00s)
+=== RUN   TestSameModelEffectiveNilStore
+--- PASS: TestSameModelEffectiveNilStore (0.00s)
+=== RUN   TestSameModelTriggerManualModeUsesConfigValue
+--- PASS: TestSameModelTriggerManualModeUsesConfigValue (0.00s)
+=== RUN   TestSameModelSkipWhitelistMissPath
+--- PASS: TestSameModelSkipWhitelistMissPath (0.00s)
+=== RUN   TestSameModelSkipNotEnabledPath
+--- PASS: TestSameModelSkipNotEnabledPath (0.00s)
+=== RUN   TestSameModelSkipColdPath
+--- PASS: TestSameModelSkipColdPath (0.00s)
+=== RUN   TestSameModelHotNoSenderDegradesSilently
+[samemodel] ⚠ 判热通过但追加重放发送器未装配(渡口关/注入形态)——本进程内同模型档静默交还既有调度
+--- PASS: TestSameModelHotNoSenderDegradesSilently (0.00s)
+=== RUN   TestSameModelOffZeroBehavior
+--- PASS: TestSameModelOffZeroBehavior (0.00s)
+=== RUN   TestSameModelQwatchWindowDefersWithoutStamp
+--- PASS: TestSameModelQwatchWindowDefersWithoutStamp (0.00s)
+=== RUN   TestHeatClockFeedsFromSettledBeats
+--- PASS: TestHeatClockFeedsFromSettledBeats (0.00s)
+=== RUN   TestHeatClockFeedsFromWaitLaneReplay
+--- PASS: TestHeatClockFeedsFromWaitLaneReplay (0.00s)
+=== RUN   TestHeatClockFeedsFromMainTranscriptUsage
+--- PASS: TestHeatClockFeedsFromMainTranscriptUsage (0.01s)
+=== RUN   TestSameModelHotExecutesAndSavesHandoff
+[samemodel] cc/sm-exec1 same_model 0.0s -> handoff
+--- PASS: TestSameModelHotExecutesAndSavesHandoff (0.02s)
+=== RUN   TestSameModelEnrichesCwdBeforeDispatch
+[samemodel] cc/sm-cwd1 same_model 0.0s -> handoff
+--- PASS: TestSameModelEnrichesCwdBeforeDispatch (0.02s)
+=== RUN   TestSameModelToolUseZeroRetryFallsToExistingChainThenSkeleton
+[samemodel] cc/sm-tu1 失败（stop_tool_use，交还既有调度）
+[ferry] 降级骨架-only（sm-tu1）: provider down
+--- PASS: TestSameModelToolUseZeroRetryFallsToExistingChainThenSkeleton (0.02s)
+=== RUN   TestSameModelBadFormatFallsBack
+[samemodel] cc/sm-bf1 失败（md_structure，交还既有调度）
+--- PASS: TestSameModelBadFormatFallsBack (0.02s)
+=== RUN   TestSameModelTransportFailBooksErr
+--- PASS: TestSameModelTransportFailBooksErr (0.01s)
+=== RUN   TestSameModelInFlightGuardSkipsDispatch
+--- PASS: TestSameModelInFlightGuardSkipsDispatch (0.00s)
+=== RUN   TestSameModelSkipBooksTelemetryRow
+--- PASS: TestSameModelSkipBooksTelemetryRow (0.01s)
+=== RUN   TestWindowPrefixFallbackSkipsSubagentRows
+--- PASS: TestWindowPrefixFallbackSkipsSubagentRows (0.00s)
+=== RUN   TestWindowPrefixFallbackAllSubagentRowsGivesZero
+--- PASS: TestWindowPrefixFallbackAllSubagentRowsGivesZero (0.01s)
+=== RUN   TestT39UnconfiguredProviderWarns
+--- PASS: TestT39UnconfiguredProviderWarns (0.00s)
+=== RUN   TestT13QueueBackpressureDelaysNotDies
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+[ferry] cc/bp-1 L1 1.2s -> handoff
+--- PASS: TestT13QueueBackpressureDelaysNotDies (0.03s)
+=== RUN   TestWorkerFreshHandoffAssembly
+[ferry] cc/wf-1 L1 1.2s -> handoff
+--- PASS: TestWorkerFreshHandoffAssembly (0.03s)
+=== RUN   TestT12WallClockKill
+[ferry] 降级骨架-only（integ-00）: 摆渡墙钟超时 0.5s
+--- PASS: TestT12WallClockKill (0.52s)
+=== RUN   TestWorkerRecoversFromFerryPanic
+[ferry] 降级骨架-only（panic-1）: ferry 炸点
+[ferry] cc/panic-2 L1 1.2s -> handoff
+--- PASS: TestWorkerRecoversFromFerryPanic (0.05s)
+=== RUN   TestWorkerRecoversFromStorePanic
+[ferry] cc/store-pa L1 1.2s -> handoff
+--- PASS: TestWorkerRecoversFromStorePanic (0.03s)
+=== RUN   TestSkeletonSavePanicStillBooksFailed
+--- PASS: TestSkeletonSavePanicStillBooksFailed (0.05s)
+=== RUN   TestSkeletonFallbackUsesCodexExtraction
+[ferry] 降级骨架-only（01a0ad46）: provider down
+--- PASS: TestSkeletonFallbackUsesCodexExtraction (0.03s)
+=== RUN   TestWorkerChainSlidesBooksPerAttemptAndSavesFresh
+[ferry] ⚠ 摆渡链滑落至最后一站 ok（顺位 2/2）——再失败即骨架：Post "http://127.0.0.1:56922/chat/completions": dial tcp 127.0.0.1:56922: connectex: No connection could be made because…
+[ferry] cc/chain-fr L1 0.0s -> handoff
+--- PASS: TestWorkerChainSlidesBooksPerAttemptAndSavesFresh (0.03s)
+=== RUN   TestWorkerChainDegradeStateChangeAlertsSkeletonOnce
+[ferry] 降级骨架-only（chain-de）: 链 2 级皆败：0 lvl1: Post "http://127.0.0.1:56925/chat/completions": dial tcp 127.0.0.1:56925: connectex: No connection could be made because the target machine actively refused it.；1 lvl2: Post "http://127.0.0.1:56926/chat/completions": dial tcp 127.0.0.1:56926: connectex: No connection could be made because the target machine actively refused it.
+[ferry] ⚠ 摆渡链滑落至最后一站 lvl2（顺位 2/2），本次已降级骨架：Post "http://127.0.0.1:56926/chat/completions": dial tcp 127.0.0.1:56926: connectex: No connection could be made because…
+[ferry] ⚠ [chain-de] 摆渡链全部顺位失败，已降级为骨架交接（本进程仅告警一次）：链 2 级皆败：0 lvl1: Post "http://127.0.0.1:56925/chat/completions": dial tcp 127.0.0.1:56925: connectex: No connection could be made because the target machine actively refused it.；1 lvl2: Post "http://12…
+[ferry] 降级骨架-only（chain-de）: 链 2 级皆败：0 lvl1: Post "http://127.0.0.1:56932/chat/completions": dial tcp 127.0.0.1:56932: connectex: No connection could be made because the target machine actively refused it.；1 lvl2: Post "http://127.0.0.1:56933/chat/completions": dial tcp 127.0.0.1:56933: connectex: No connection could be made because the target machine actively refused it.
+[ferry] cc/chain-he L1 0.0s -> handoff
+[ferry] ⚠ 摆渡链滑落至最后一站 lvl2（顺位 2/2）——再失败即骨架：Post "http://127.0.0.1:56941/chat/completions": dial tcp 127.0.0.1:56941: connectex: No connection could be made because…
+[ferry] cc/chain-sl L1 0.0s -> handoff
+[ferry] cc/chain-sl L1 0.0s -> handoff
+[ferry] 降级骨架-only（chain-de）: 链 3 级皆败：0 lvl1: Post "http://127.0.0.1:56948/chat/completions": dial tcp 127.0.0.1:56948: connectex: No connection could be made because the target machine actively refused it.；1 lvl2: Post "http://127.0.0.1:56949/chat/completions": dial tcp 127.0.0.1:56949: connectex: No connection could be made because the target machine actively refused it.；2 lvl3: Post "http://127.0.0.1:56950/chat/completions": dial tcp 127.0.0.1:56950: connectex: No connection could be made because the target machine actively refused it.
+[ferry] ⚠ 摆渡链滑落至最后一站 lvl3（顺位 3/3），本次已降级骨架：Post "http://127.0.0.1:56950/chat/completions": dial tcp 127.0.0.1:56950: connectex: No connection could be made because…
+[ferry] cc/chain-he L1 0.0s -> handoff
+[ferry] ⚠ 摆渡链滑落（顺位 1→2）：现由 lvl2 接手，上级失败：Post "http://127.0.0.1:56960/chat/completions": dial tcp 127.0.0.1:56960: connectex: No connection could be made because…
+[ferry] cc/chain-sl L1 0.0s -> handoff
+--- PASS: TestWorkerChainDegradeStateChangeAlertsSkeletonOnce (3.45s)
+=== RUN   TestNextChainAlertStateTransitions
+--- PASS: TestNextChainAlertStateTransitions (0.00s)
+=== RUN   TestChainSlideText
+--- PASS: TestChainSlideText (0.00s)
+=== RUN   TestWorkerChainWallClockKillsToSkeleton
+[ferry] 降级骨架-only（chain-ti）: 摆渡墙钟超时 0.5s
+[ferry] ⚠ [chain-ti] 摆渡链全部顺位失败，已降级为骨架交接（本进程仅告警一次）：摆渡墙钟超时 0.5s
+--- PASS: TestWorkerChainWallClockKillsToSkeleton (0.52s)
+=== RUN   TestWireFerryChain
+--- PASS: TestWireFerryChain (0.00s)
+=== RUN   TestNewWorkerChainOnlyConfigNoProviderWarning
+--- PASS: TestNewWorkerChainOnlyConfigNoProviderWarning (0.00s)
+=== RUN   TestWorkerDshFerryFromSnapshotFreshAndCoversHit
+[ferry] dsh/session- L1 0.0s -> handoff
+--- PASS: TestWorkerDshFerryFromSnapshotFreshAndCoversHit (0.02s)
+=== RUN   TestWorkerDshSnapshotMissingSkeletonDegrade
+--- PASS: TestWorkerDshSnapshotMissingSkeletonDegrade (0.05s)
+=== RUN   TestWorkerDshFerryFailureSkeletonFromBody
+[ferry] 降级骨架-only（session-）: Post "http://127.0.0.1:56969/chat/completions": dial tcp 127.0.0.1:56969: connectex: No connection could be made because the target machine actively refused it.
+--- PASS: TestWorkerDshFerryFailureSkeletonFromBody (0.03s)
+PASS
+ok  	ferryman/internal/daemon	54.052s
+=== RUN   TestSavingsV1Math
+--- PASS: TestSavingsV1Math (0.01s)
+=== RUN   TestUnpricedProviderListed
+--- PASS: TestUnpricedProviderListed (0.01s)
+=== RUN   TestStrategyTable
+--- PASS: TestStrategyTable (0.01s)
+=== RUN   TestStrategyTableSkipsWithoutTTLorCache
+--- PASS: TestStrategyTableSkipsWithoutTTLorCache (0.01s)
+=== RUN   TestRunJSONOutput
+--- PASS: TestRunJSONOutput (0.01s)
+=== RUN   TestHandoffCostNilCases
+--- PASS: TestHandoffCostNilCases (0.00s)
+=== RUN   TestSavingsV1SkipsBlockWithoutPCache
+--- PASS: TestSavingsV1SkipsBlockWithoutPCache (0.00s)
+=== RUN   TestStrategyTableSkipsBookWithoutPCache
+--- PASS: TestStrategyTableSkipsBookWithoutPCache (0.00s)
+=== RUN   TestUntilDayInclusiveRead
+--- PASS: TestUntilDayInclusiveRead (0.01s)
+=== RUN   TestRunJSONUntilIncludesLastDay
+--- PASS: TestRunJSONUntilIncludesLastDay (0.01s)
+=== RUN   TestStrategyTableStampsFormulaAndRatio
+--- PASS: TestStrategyTableStampsFormulaAndRatio (0.01s)
+=== RUN   TestStrategyCaveatsInJSONAndText
+--- PASS: TestStrategyCaveatsInJSONAndText (0.01s)
+=== RUN   TestSavingsV2WarmSectionMonths
+--- PASS: TestSavingsV2WarmSectionMonths (0.00s)
+=== RUN   TestSavingsV2V1Gold
+--- PASS: TestSavingsV2V1Gold (0.00s)
+=== RUN   TestSavingsV2Empty
+--- PASS: TestSavingsV2Empty (0.00s)
+=== RUN   TestWarmSectionUselessWarmNotMixed
+--- PASS: TestWarmSectionUselessWarmNotMixed (0.00s)
+=== RUN   TestWarmCosts
+=== RUN   TestWarmCosts/paired·真实样例四列实付
+=== RUN   TestWarmCosts/paired·缓存写入按输入全价
+=== RUN   TestWarmCosts/paired·签名绝对容差恰在512
+=== RUN   TestWarmCosts/paired·签名相对容差2%生效
+=== RUN   TestWarmCosts/unpaired·绝对容差外一行未命中回落价书
+=== RUN   TestWarmCosts/unpaired·相对容差外回落
+=== RUN   TestWarmCosts/unpaired·output超上限8193
+=== RUN   TestWarmCosts/paired·output恰在上限8192
+=== RUN   TestWarmCosts/paired·候选窗右界恰在wall加90
+=== RUN   TestWarmCosts/paired·候选窗左界恰在负2
+=== RUN   TestWarmCosts/unpaired·候选晚于窗右界
+=== RUN   TestWarmCosts/unpaired·候选早于窗左界
+=== RUN   TestWarmCosts/unpaired·session不相等不成候选
+=== RUN   TestWarmCosts/ambiguous·双候选皆命中
+=== RUN   TestWarmCosts/paired·并发窗真实流量行output超上限不混淆
+=== RUN   TestWarmCosts/paired·并发窗真实流量行签名不匹配不混淆
+=== RUN   TestWarmCosts/unpaired·双候选皆未命中回落价书
+=== RUN   TestWarmCosts/zero_cost·预派发失败零候选
+=== RUN   TestWarmCosts/zero_cost·预派发失败窗内杂行不照配
+=== RUN   TestWarmCosts/paired·派发后失败行照配实付
+=== RUN   TestWarmCosts/unpaired·派发后失败零候选回落
+=== RUN   TestWarmCosts/zero_cost·零候选且wall为零
+=== RUN   TestWarmCosts/skip·provider为local不入账
+=== RUN   TestWarmCosts/skip·非same_model智谱handoff不入账
+=== RUN   TestWarmCosts/beat·自带实付直取
+=== RUN   TestWarmCosts/paired·价书按dock行时刻版本化
+=== RUN   TestWarmCosts/unpaired·回落按动作行时刻版本化
+=== RUN   TestWarmCosts/可配参数·候选窗收窄生效
+=== RUN   TestWarmCosts/可配参数·output上限与容差收紧生效
+=== RUN   TestWarmCosts/多动作混合·输入序即输出序
+=== RUN   TestWarmCosts/空输入
+--- PASS: TestWarmCosts (0.00s)
+    --- PASS: TestWarmCosts/paired·真实样例四列实付 (0.00s)
+    --- PASS: TestWarmCosts/paired·缓存写入按输入全价 (0.00s)
+    --- PASS: TestWarmCosts/paired·签名绝对容差恰在512 (0.00s)
+    --- PASS: TestWarmCosts/paired·签名相对容差2%生效 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·绝对容差外一行未命中回落价书 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·相对容差外回落 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·output超上限8193 (0.00s)
+    --- PASS: TestWarmCosts/paired·output恰在上限8192 (0.00s)
+    --- PASS: TestWarmCosts/paired·候选窗右界恰在wall加90 (0.00s)
+    --- PASS: TestWarmCosts/paired·候选窗左界恰在负2 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·候选晚于窗右界 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·候选早于窗左界 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·session不相等不成候选 (0.00s)
+    --- PASS: TestWarmCosts/ambiguous·双候选皆命中 (0.00s)
+    --- PASS: TestWarmCosts/paired·并发窗真实流量行output超上限不混淆 (0.00s)
+    --- PASS: TestWarmCosts/paired·并发窗真实流量行签名不匹配不混淆 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·双候选皆未命中回落价书 (0.00s)
+    --- PASS: TestWarmCosts/zero_cost·预派发失败零候选 (0.00s)
+    --- PASS: TestWarmCosts/zero_cost·预派发失败窗内杂行不照配 (0.00s)
+    --- PASS: TestWarmCosts/paired·派发后失败行照配实付 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·派发后失败零候选回落 (0.00s)
+    --- PASS: TestWarmCosts/zero_cost·零候选且wall为零 (0.00s)
+    --- PASS: TestWarmCosts/skip·provider为local不入账 (0.00s)
+    --- PASS: TestWarmCosts/skip·非same_model智谱handoff不入账 (0.00s)
+    --- PASS: TestWarmCosts/beat·自带实付直取 (0.00s)
+    --- PASS: TestWarmCosts/paired·价书按dock行时刻版本化 (0.00s)
+    --- PASS: TestWarmCosts/unpaired·回落按动作行时刻版本化 (0.00s)
+    --- PASS: TestWarmCosts/可配参数·候选窗收窄生效 (0.00s)
+    --- PASS: TestWarmCosts/可配参数·output上限与容差收紧生效 (0.00s)
+    --- PASS: TestWarmCosts/多动作混合·输入序即输出序 (0.00s)
+    --- PASS: TestWarmCosts/空输入 (0.00s)
+=== RUN   TestWarmCostNoEconBook
+--- PASS: TestWarmCostNoEconBook (0.00s)
+=== RUN   TestWarmCostConfigDefaults
+--- PASS: TestWarmCostConfigDefaults (0.00s)
+=== RUN   TestWarmEpisodes
+=== RUN   TestWarmEpisodes/回归兑现·多跳一次结
+=== RUN   TestWarmEpisodes/白保温无害·need假hit真
+=== RUN   TestWarmEpisodes/亏损·hit假
+=== RUN   TestWarmEpisodes/拦截终型·bypass不改变回合
+=== RUN   TestWarmEpisodes/过期终型·数据末尾放任
+=== RUN   TestWarmEpisodes/TTL下侧·need假
+=== RUN   TestWarmEpisodes/TTL上侧·need真
+=== RUN   TestWarmEpisodes/命中阈值上侧·hit真
+=== RUN   TestWarmEpisodes/命中阈值下侧·hit假
+=== RUN   TestWarmEpisodes/前缀fallback·首动作是失败handoff
+=== RUN   TestWarmEpisodes/前缀取首个动作·多保温动作只结一次
+=== RUN   TestWarmEpisodes/动作间隔超TTL·过期后再保温开新回合
+=== RUN   TestWarmEpisodes/非保温handoff不切回合
+=== RUN   TestWarmEpisodes/双lineage不串
+=== RUN   TestWarmEpisodes/无锚保温动作丢弃
+=== RUN   TestWarmEpisodes/乱序输入·按ts稳定切分
+=== RUN   TestWarmEpisodes/跨月归属·价书按回归行时刻取版本
+=== RUN   TestWarmEpisodes/可配参数·TTL与命中率生效
+=== RUN   TestWarmEpisodes/空输入
+--- PASS: TestWarmEpisodes (0.00s)
+    --- PASS: TestWarmEpisodes/回归兑现·多跳一次结 (0.00s)
+    --- PASS: TestWarmEpisodes/白保温无害·need假hit真 (0.00s)
+    --- PASS: TestWarmEpisodes/亏损·hit假 (0.00s)
+    --- PASS: TestWarmEpisodes/拦截终型·bypass不改变回合 (0.00s)
+    --- PASS: TestWarmEpisodes/过期终型·数据末尾放任 (0.00s)
+    --- PASS: TestWarmEpisodes/TTL下侧·need假 (0.00s)
+    --- PASS: TestWarmEpisodes/TTL上侧·need真 (0.00s)
+    --- PASS: TestWarmEpisodes/命中阈值上侧·hit真 (0.00s)
+    --- PASS: TestWarmEpisodes/命中阈值下侧·hit假 (0.00s)
+    --- PASS: TestWarmEpisodes/前缀fallback·首动作是失败handoff (0.00s)
+    --- PASS: TestWarmEpisodes/前缀取首个动作·多保温动作只结一次 (0.00s)
+    --- PASS: TestWarmEpisodes/动作间隔超TTL·过期后再保温开新回合 (0.00s)
+    --- PASS: TestWarmEpisodes/非保温handoff不切回合 (0.00s)
+    --- PASS: TestWarmEpisodes/双lineage不串 (0.00s)
+    --- PASS: TestWarmEpisodes/无锚保温动作丢弃 (0.00s)
+    --- PASS: TestWarmEpisodes/乱序输入·按ts稳定切分 (0.00s)
+    --- PASS: TestWarmEpisodes/跨月归属·价书按回归行时刻取版本 (0.00s)
+    --- PASS: TestWarmEpisodes/可配参数·TTL与命中率生效 (0.00s)
+    --- PASS: TestWarmEpisodes/空输入 (0.00s)
+=== RUN   TestWarmEpisodeNoEconBook
+--- PASS: TestWarmEpisodeNoEconBook (0.00s)
+=== RUN   TestWarmEpisodeConfigDefaults
+--- PASS: TestWarmEpisodeConfigDefaults (0.00s)
+PASS
+ok  	ferryman/internal/report	0.317s
