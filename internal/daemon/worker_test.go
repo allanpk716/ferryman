@@ -171,12 +171,16 @@ func explodingFerry(string, ferry.Provider, float64, string) (string, map[string
 	return "", nil, fmt.Errorf("provider down")
 }
 
-// runWorkerCtx 起 Run 并注册回收。
+// runWorkerCtx 起 Run 并注册回收。回收必须等 Run goroutine 真正退场（<-done）：
+// 清理序 LIFO 下本回收先跑、stdout 捕获的恢复后跑——不等退场则 do() 末尾的
+// Printf（读 os.Stdout）会与恢复（写 os.Stdout）构成数据竞态（2026-10-09
+// NUC10 -race 实炸 TestWorkerDshSnapshotMissingSkeletonDegrade，时序型偶发）。
 func runWorkerCtx(t *testing.T, w *Worker) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	go w.Run(ctx)
-	t.Cleanup(func() { cancel(); w.Stop() })
+	done := make(chan struct{})
+	go func() { defer close(done); w.Run(ctx) }()
+	t.Cleanup(func() { cancel(); w.Stop(); <-done })
 	return ctx
 }
 
