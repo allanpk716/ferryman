@@ -35,6 +35,11 @@ const state = { summary: null, reachable: true, detailId: null, profile: profile
 /** Tauri 壳内（v2 恒注入 __TAURI_INTERNALS__）：拖动/收出走原生（票 02），JS 演示路径不接管。 */
 const inShell = () => !!window.__TAURI_INTERNALS__;
 
+// ── 右键菜单（0.2.11）：壳内 WebView2 的默认右键是 web 菜单（后退/刷新/检查…），
+// 与本窗零装饰、交互走托盘的定位不符——壳内一律吞掉（preventDefault，右键=无操作，
+// 不弹任何菜单）；浏览器/测试语境不拦（保留原生右键与 Inspect 便于开发）。──
+document.addEventListener('contextmenu', (e) => { if (inShell()) e.preventDefault(); });
+
 // ── 配色（环基色/告警色与 mock 同源） ──
 function getVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 const COLORS = { window_5h: getVar('--c5h'), week: getVar('--cweek'),

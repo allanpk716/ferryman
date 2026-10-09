@@ -17,6 +17,7 @@ npm run tauri dev          # 或：cargo run --manifest-path widget/src-tauri/Ca
 - [ ] 悬停圆控件 → tooltip 出各环剩余与重置倒计时
 - [ ] ⚙ → 设置浮层：切“横排”布局变化、关“显示重置倒计时行”倒计时行消失、图例帮助区完整
 - [ ] 灰化态演示（可选）：用 Edge 直接打开 `widget/ui/index.html?dev=1&gray=1` → 整体灰化+“⚠ daemon 不可达”
+- [ ] 右键悬浮窗任意处（手柄/圆控件/空白）→ 不弹任何菜单（0.2.11：壳内吞掉 WebView 的 web 右键菜单）；浏览器语境右键不受影响
 
 ## 2. 拖动
 

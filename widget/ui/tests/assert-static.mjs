@@ -738,6 +738,9 @@ async function main() {
     check('offline.全部 dump 无外链资源',
       [MAIN, REL, GRAY, SETTINGS, PROF, HID, SUP, COMP].every((d) => !/(src|href)\s*=\s*["']https?:\/\//i.test(d)), '');
     check('drag.壳内手柄带 data-tauri-drag-region', html.includes('data-tauri-drag-region'), '');
+    // 0.2.11 · 右键菜单：壳内吞 web 右键（逐字形态断言，F9 教训同源——不裸匹配函数名）
+    check('menu.壳内吞 web 右键菜单（contextmenu 监听在场且仅壳内 preventDefault；浏览器/测试语境保留原生右键）',
+      appjs.includes("addEventListener('contextmenu', (e) => { if (inShell()) e.preventDefault(); });"), '');
   } finally {
     // 无常驻资源（file:// 直读，不起服务）
   }
