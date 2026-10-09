@@ -1,0 +1,27 @@
+[PASS] file.stats.html 存在且 >3KB
+[PASS] file.kimi 产出头注在文件头
+[PASS] file.数据 src 指向 stats/stats.data.js
+[PASS] mount.关键挂载点 16 个齐
+[PASS] token.12 个深色令牌逐色在场
+[PASS] token.body 13px system-ui + 数字 tabular-nums
+[PASS] token.KPI 数值 22px/600
+[PASS] heat.正梯度 4 级类 .cell.l1..l4 在场
+[PASS] heat.负值日青系冷梯度 .cell.n1..n4 在场
+[PASS] resp.390px/桌面：KPI 两列→900px 五列 + 热力图/表格横向滚动
+[PASS] data.stats.data.js 存在且 window.STATS_DATA 可解析
+[PASS] data.kpi 五组键齐(requests/tokens/cache_hit/cost/savings)
+[PASS] data.days 连续逐日且窗口起点=2026-07-30
+[PASS] data.details 含 ts_iso/project/session/model/token 四列/cost
+[PASS] data.generated_at/source 在(页脚展示)
+[PASS] offline.http 外链为零(全文档无 http:// 与 https:// 字面)
+[PASS] offline.无外链资源(<link / @import / src|href 指 http)
+[PASS] logic.不可算徽标分支(「不可算」字样 + cost/savings computable 双分支)
+[PASS] logic.命中率卡 tooltip 公式(命中=缓存读/(缓存读+新输入))
+[PASS] logic.四档切换 tokens/requests/cost/savings + 不可算档禁用
+[PASS] logic.负值日图例与色阶(负值日字样 + 四分位 quartiles + 非零日过滤)
+[PASS] logic.分页每页 20 + 上/下页计数
+[PASS] logic.成本 null 显示「—」(fmtCredits/fmtInt null 归「—」)
+[PASS] logic.页脚含 mock 声明与生成时间
+[PASS] syntax.内联 JS 可编译(new Function 语法闸)
+
+assert-stats-mock: 25/25 通过

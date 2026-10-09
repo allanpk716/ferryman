@@ -1,0 +1,32 @@
+[PASS] file.stats.html 存在且 >3KB
+[PASS] file.成品出处头注(kimi 初稿迭代 + 票05 接线)
+[PASS] live.无 stats.data.js 脚本引用(注释提及出处不算)
+[PASS] live.无 STATS_DATA 依赖
+[PASS] mount.mock 同款挂载点 16 个齐
+[PASS] mount.错误条 #errbar 在
+[PASS] token.12 个深色令牌逐色在场(与 mock 同值)
+[PASS] heat.正/负梯度 8 级类在场
+[PASS] resp.KPI 两列→900px 五列
+[PASS] api.引用 /stats/summary
+[PASS] api.引用 /stats/usage
+[PASS] api.Authorization Bearer 头构造
+[PASS] api.get_daemon_config 先例(壳内取 token)
+[PASS] api.30s 轮询常量(30_000/30000)
+[PASS] api.轮询回路(setTimeout 挂 POLL_MS)
+[PASS] api.取数超时保护(AbortSignal.timeout)
+[PASS] err.错误条文案「连不上守护进程,正在重试…」
+[PASS] err.setErr 开关 + 失败不清内容(loadSummary/loadUsage 失败路径只 setErr)
+[PASS] day.成本档接 days[].savings.gross
+[PASS] day.节省额档接 days[].savings.net(真值带符号)
+[PASS] day.不可算仍禁用(!computable 双档位条件保持)
+[PASS] day.dayValue 内 computable 门(不可算恒 null)
+[PASS] day.净额以端点为真值(不移植 Python 舍入:无 round/toFixed 重算净额)
+[PASS] kpi.请求数卡「含子代理行」口径小字
+[PASS] foot.页脚「数据:守护进程实时 · 每 30 秒刷新」
+[PASS] tbl.会话列 ≤12 字符截断(session_id)
+[PASS] offline.零 https 字面
+[PASS] offline.http 字面仅限 127.0.0.1(daemon 本机口)
+[PASS] offline.无外链资源(<link / @import / src|href 指 http)
+[PASS] syntax.内联 JS 可编译(new Function 语法闸)
+
+assert-stats-live: 30/30 通过
