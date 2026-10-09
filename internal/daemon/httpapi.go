@@ -127,6 +127,15 @@ func ListenAndServeWithShutdown(d DaemonLike, port int, token string, onShutdown
 // 分派＝未知路径 404）。
 func makeHandler(d DaemonLike, token string, onShutdown func(), onProviderSwitch ProviderSwitchFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 设置族 CORS 回声（设置窗 ferryman-settings.html 同款跨源语境）：
+		// widget/stats 端点各自回声（query_widget.go/query_stats.go），设置族
+		// 端点散布五处（本函数拦截 dock/switch、restart＋doGet 读面＋doPost
+		// 写面全量 PUT/DELETE＋snapshots）——在唯一漏斗按 /settings 前缀一次
+		// 回声。错误响应（401/404/400）同样带头：壳内 fetch 才分得清 401 与
+		// 不可达（浏览器拦响应是一刀切 TypeError）。白名单外源不设头，原样。
+		if origin := r.Header.Get("Origin"); widgetAllowedOrigins[origin] && strings.HasPrefix(r.URL.Path, "/settings") {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
 		if r.RequestURI == "/shutdown" && onShutdown != nil {
 			doShutdown(onShutdown, token, w, r)
 			return
