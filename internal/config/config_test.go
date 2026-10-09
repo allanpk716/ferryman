@@ -793,3 +793,31 @@ tuning = "toast"
 		t.Fatalf("events = %+v, want 与内联表同结果", ev)
 	}
 }
+
+func TestEconProviderParseAndFallback(t *testing.T) {
+	// 独立票（统计卡顿）：[ferry] econ_provider 显式优先；缺省回落 provider。
+	f := filepath.Join(t.TempDir(), "econ.toml")
+	if err := os.WriteFile(f, []byte("[ferry]\nprovider = \"local\"\necon_provider = \"glm\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FerryProvider != "local" || cfg.EconProvider != "glm" || cfg.EconKey() != "glm" {
+		t.Fatalf("provider=%q econ=%q key=%q", cfg.FerryProvider, cfg.EconProvider, cfg.EconKey())
+	}
+
+	// 缺省：EconKey 回落 FerryProvider（原行为不变）。
+	f2 := filepath.Join(t.TempDir(), "econ2.toml")
+	if err := os.WriteFile(f2, []byte("[ferry]\nprovider = \"glm\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Load(f2, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.EconProvider != "" || cfg2.EconKey() != "glm" {
+		t.Fatalf("econ=%q key=%q（缺省应回落 provider）", cfg2.EconProvider, cfg2.EconKey())
+	}
+}

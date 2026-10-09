@@ -88,7 +88,7 @@ func parseStatsWindow(since, until string) (statsWindow, error) {
 func statsEconBook(d *Daemon, books map[string]prices.PriceBook) *prices.PriceBook {
 	econKey := ""
 	if d.Cfg != nil {
-		econKey = d.Cfg.FerryProvider
+		econKey = d.Cfg.EconKey() // econ_provider 优先（独立票），缺省回落 provider
 	}
 	if econKey != "" {
 		if b, ok := books[econKey]; ok {

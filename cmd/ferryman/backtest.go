@@ -93,7 +93,7 @@ func runBacktest(o backtestOpts, stdout, stderr io.Writer) int {
 		return 1
 	}
 	books := prices.LoadPrices(cfgPath)
-	econKey := cfg.FerryProvider // report.Run 同款：缺省 = ferry provider 键
+	econKey := cfg.EconKey() // report.Run 同款：econ_provider 优先，缺省 provider 键
 
 	ds, err := backtest.Load(backtest.LoadOptions{
 		DataDir: cfg.DataDir(), Projects: o.Projects, Exclude: o.Exclude,

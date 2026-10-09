@@ -401,7 +401,7 @@ func Run(args Args) int {
 	books := loadPrices()
 	econKey := args.Provider // Python provider or cfg.ferry_provider or None
 	if econKey == "" {
-		econKey = cfg.FerryProvider
+		econKey = cfg.EconKey() // econ_provider 优先（独立票），缺省回落 provider
 	}
 	filters := map[string]string{}
 	for _, kv := range [...]struct{ k, v string }{

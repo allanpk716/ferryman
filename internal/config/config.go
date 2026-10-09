@@ -214,6 +214,10 @@ type Config struct {
 	QuestionWatch QuestionWatchCfg
 	WaitWindow    WaitWindowCfg // 票04：等待窗心跳三态（默认 off，缺节即 off）
 	FerryProvider string        // 空=未配置：摆渡降级骨架（worker 警告，doctor 提示）
+	// EconProvider 成效账计量价格表键（[ferry] econ_provider）：provider 指向
+	// 无价格表的本机/中转上游（如 "local"）时显式指定计量本；空=回落
+	// FerryProvider（原行为）。EconKey() 是唯一取用口。
+	EconProvider string
 	// FerryChain 票02：[ferry] chain 顺位链名字表（Go 侧先行键，Python 版无）。
 	// 空=未配置（provider 单键兜底等价单元素链，取用经 FerryChainNames）；
 	// 链非空时解析层逐名校验供应商表，缺名 → 配置错误上抛（坏 TOML 同款）。
@@ -311,6 +315,16 @@ func (c *Config) FerryChainNames() []string {
 		return []string{c.FerryProvider}
 	}
 	return nil
+}
+
+// EconKey 成效账计量价格表键的唯一取用口（统计卡顿票·独立票）：显式
+// [ferry] econ_provider 优先；缺省回落 FerryProvider（原行为不变）。
+// 消费面：/stats、/report 的 econBook 选取与 report/backtest CLI。
+func (c *Config) EconKey() string {
+	if c.EconProvider != "" {
+		return c.EconProvider
+	}
+	return c.FerryProvider
 }
 
 // Load 读配置并校验。路径优先级：显式参数 > 环境变量 FERRYMAN_CONFIG >
@@ -555,6 +569,11 @@ func applyTOML(cfg *Config, data map[string]any) error {
 			return err
 		}
 		cfg.FerryProvider = pyStr(get(f, "provider", cfg.FerryProvider))
+		// econ_provider（统计卡顿票·独立票）：成效账计量价格表键。生产
+		// provider="local"（免费本机千问）查无 [prices.local] → /stats、
+		// /report 成本/节省恒「不可算」——本键显式指定计量本（如 glm），
+		// 缺省回落 FerryProvider（原行为不变）。只影响计量面，不碰摆渡链。
+		cfg.EconProvider = pyStr(get(f, "econ_provider", cfg.EconProvider))
 		// 票02：chain 顺位链（Go 侧先行键）。元素 pyStr（watch.codex_extra_dirs
 		// 同款容忍）；空链 ≡ 未配置（FerryChainNames 回落 provider 单元素链）。
 		// 链非空时逐名校验供应商表（[providers.*] 与 [ferry] 同文件，data 直取）：
