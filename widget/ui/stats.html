@@ -6,7 +6,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ferryman 统计 · 成本成效账</title>
+<title>Ferryman 统计</title>
 <style>
 :root{
   --bg:#0b0d12; --wbg:#101218; --panel:#171b26; --panel2:#1c2230;
@@ -105,7 +105,7 @@ footer{color:var(--txt-dim);font-size:11px;margin:16px 0 8px;line-height:1.7}
   </div>
   <div class="sub" id="subtitle">加载中…</div>
 
-  <div class="errbar" id="errbar">连不上守护进程,正在重试…</div>
+  <div class="errbar" id="errbar">连不上 Ferryman，正在重试…</div>
 
   <div class="kpis" id="kpis"></div>
   <div class="card">
@@ -138,7 +138,7 @@ footer{color:var(--txt-dim);font-size:11px;margin:16px 0 8px;line-height:1.7}
       <table>
         <thead><tr>
           <th>时间</th><th>项目</th><th>会话</th><th>模型</th>
-          <th class="num">输入</th><th class="num">输出</th><th class="num">缓存读</th><th class="num">缓存写</th><th class="num">成本</th>
+          <th class="num">输入</th><th class="num">输出</th><th class="num">缓存读</th><th class="num">缓存写</th><th class="num">花费</th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -150,7 +150,7 @@ footer{color:var(--txt-dim);font-size:11px;margin:16px 0 8px;line-height:1.7}
     </div>
   </div>
 
-  <footer id="footer">数据:守护进程按需查询 · 开窗/翻页/筛选/刷新时拉取,查询中按钮态提示</footer>
+  <footer id="footer">数据由 Ferryman 按需查询；开窗/翻页/筛选/刷新时拉取，查询中按钮转圈</footer>
 </div>
 
 <div class="tip" id="tip"></div>
@@ -240,33 +240,33 @@ function renderKpis(){
   var tokTotal = k.tokens.input + k.tokens.cache_read + k.tokens.cache_creation + k.tokens.output;
   var kpisHtml = "";
 
-  /* 总成本(不可算态) */
+  /* 总花费(不可算态) */
   if(k.cost.computable){
-    kpisHtml += kpiCard("总成本", fmtCredits(k.cost.value)+" "+esc(k.cost.unit), "");
+    kpisHtml += kpiCard("总花费", fmtCredits(k.cost.value)+" "+esc(k.cost.unit), "");
   }else{
-    kpisHtml += kpiCard("总成本", '<span class="badge">不可算</span>',
+    kpisHtml += kpiCard("总花费", '<span class="badge">不可算</span>',
       '<div class="note">'+esc(k.cost.note)+"</div>");
   }
-  /* 总请求数(口径小字:逐请求行=账本 usage 行,含子代理行) */
-  kpisHtml += kpiCard("总请求数", '<span class="num">'+fmtInt(k.requests)+"</span>",
-    '<div class="note">口径:逐请求行,含子代理行</div>');
-  /* 真实消耗 Tokens */
-  kpisHtml += kpiCard("真实消耗 Tokens", '<span class="num">'+fmtTok(tokTotal)+"</span>",
+  /* 请求数(口径小字:逐请求行=账本 usage 行,含子代理行) */
+  kpisHtml += kpiCard("请求数", '<span class="num">'+fmtInt(k.requests)+"</span>",
+    '<div class="note">口径：逐请求，含子代理</div>');
+  /* 实耗 token */
+  kpisHtml += kpiCard("实耗 token", '<span class="num">'+fmtTok(tokTotal)+"</span>",
     '<div class="note">输入/输出/缓存读/缓存写 四列合计</div>');
-  /* 缓存命中率(带公式 tooltip) */
+  /* 缓存命中(带公式 tooltip) */
   kpisHtml += kpiCard(
-    '缓存命中率 <span class="info" title="命中=缓存读/(缓存读+新输入)">i</span>',
+    '缓存命中 <span class="info" title="命中=缓存读/(缓存读+新输入)">i</span>',
     '<span class="num">'+fmtPct(k.cache_hit.rate)+"</span>",
     '<div class="note">'+fmtTok(k.cache_hit.hit)+" / "+fmtTok(k.cache_hit.base)+"</div>");
-  /* 节省额(不可算态,仍展示交接成本);净额以端点值为真值(SavingsV1 原值,不移植快照脚本舍入) */
+  /* 省下了(不可算态,仍展示交接花费);净额以端点值为真值(SavingsV1 原值,不移植快照脚本舍入) */
   if(k.savings.computable){
-    kpisHtml += kpiCard("节省额", '<span class="num">'+fmtCredits(k.savings.net)+"</span> "+esc(k.savings.unit),
-      '<div class="note">毛省 '+fmtCredits(k.savings.gross)+" − 注入 "+fmtCredits(k.savings.inject_cost)+"</div>");
+    kpisHtml += kpiCard("省下了", '<span class="num">'+fmtCredits(k.savings.net)+"</span> "+esc(k.savings.unit),
+      '<div class="note">毛省 '+fmtCredits(k.savings.gross)+" − 注入成本 "+fmtCredits(k.savings.inject_cost)+"</div>");
   }else{
     var c = k.savings.counts;
-    kpisHtml += kpiCard("节省额", '<span class="badge">不可算</span>',
+    kpisHtml += kpiCard("省下了", '<span class="badge">不可算</span>',
       '<div class="note">'+esc(k.savings.note)+"</div>"+
-      '<div class="note" style="margin-top:8px">仅交接成本可计(积分):<span class="num" style="color:var(--amber);font-weight:600">'+
+      '<div class="note" style="margin-top:8px">仅交接花费可计（积分）：<span class="num" style="color:var(--amber);font-weight:600">'+
       fmtCredits(k.savings.handoff_cost)+"</span> "+esc(k.savings.unit)+"</div>"+
       '<div class="note">交接 '+c.handoff+" · 注入 "+c.inject+" · 窗口 "+c.window+" · 拦截 "+c.block+" · 放行 "+c.bypass+"</div>");
   }
@@ -279,10 +279,10 @@ var curMode = "tokens";
 function buildSeg(){
   var k = D.kpi;
   var MODES = [
-    {key:"tokens",   label:"Tokens"},
+    {key:"tokens",   label:"token"},
     {key:"requests", label:"请求"},
-    {key:"cost",     label:"成本",    disabled:!k.cost.computable,    hint:k.cost.note},
-    {key:"savings",  label:"节省额",  disabled:!k.savings.computable, hint:k.savings.note}
+    {key:"cost",     label:"花费",    disabled:!k.cost.computable,    hint:k.cost.note},
+    {key:"savings",  label:"省下",  disabled:!k.savings.computable, hint:k.savings.note}
   ];
   /* 轮询刷新后当前档被禁用(可算性翻转)→ 回落 tokens */
   var cur = MODES.filter(function(m){ return m.key===curMode; })[0];
@@ -416,7 +416,7 @@ $("heat").addEventListener("mouseover", function(e){
   if(!t.classList || !t.classList.contains("cell") || t.dataset.idx===undefined) return;
   var d = D.days[Number(t.dataset.idx)];
   var money = (curMode==="cost" || curMode==="savings");
-  var modeLabel = {tokens:"Tokens",requests:"请求",cost:"毛省",savings:"净省"}[curMode] || curMode;
+  var modeLabel = {tokens:"token",requests:"请求",cost:"毛省",savings:"净省"}[curMode] || curMode;
   var shown = money
     ? fmtCredits(curMode==="cost" ? d.savings.gross : d.savings.net)
     : fmtTok(dayValue(d,curMode));

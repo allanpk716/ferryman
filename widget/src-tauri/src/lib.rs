@@ -759,7 +759,7 @@ pub fn run() {
                 "切换紧凑外观"
             };
             let toggle = MenuItem::with_id(app, "toggle_appearance", toggle_label, true, None::<&str>)?;
-            let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "悬浮窗设置…", true, None::<&str>)?;
             let fsettings = MenuItem::with_id(app, "ferryman_settings", "Ferryman 设置", true, None::<&str>)?;
             let stats = MenuItem::with_id(app, "stats", "统计", true, None::<&str>)?;
             let update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;

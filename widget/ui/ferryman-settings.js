@@ -1,7 +1,8 @@
 /**
  * Ferryman 设置窗逻辑（ferryman-settings.html）。
  *
- * 布局/文案以定稿 mock（widget/ui/mock/settings.html）为准；数据层接 daemon
+ * 布局/交互以定稿 mock（widget/ui/mock/settings.html）为准，文案以
+ * .scratch/ui-copy-rewrite/对照表.md（2026-10-09 定稿）为准；数据层接 daemon
  * 设置端点族（127.0.0.1:15700，Bearer 鉴权）：
  *   GET  /settings                         全量读面（config 各节 + providers + prices + effects）
  *   PUT  /settings/{section}               节级整写（body=该节完整对象）
@@ -58,7 +59,7 @@ function toast(msg, badge /* 'live' | 'restart' | null */, isErr) {
   const span = el('span', isErr ? 't-err' : '', msg);
   t.appendChild(span);
   if (badge === 'live') t.appendChild(el('span', 'badge green', '已生效'));
-  if (badge === 'restart') t.appendChild(el('span', 'badge yellow', '已保存，重启守护后生效'));
+  if (badge === 'restart') t.appendChild(el('span', 'badge yellow', '已保存，重启 Ferryman 后生效'));
   t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 3600);
@@ -235,7 +236,7 @@ function renderUpstreams() {
   const ups = dock && dock.upstreams ? dock.upstreams : {};
   const names = Object.keys(ups);
   if (!names.length) {
-    list.appendChild(el('div', 'note', '还没有渡口上游条目（配置里缺 [dock] 节时渡口不启用）。用下面的表单新增第一家。'));
+    list.appendChild(el('div', 'note', '还没有对话线路（缺 [dock] 节时不启用）；用下面表单添第一家。'));
     return;
   }
   names.forEach((name) => {
@@ -258,7 +259,7 @@ function renderUpstreams() {
     card.appendChild(head);
     card.appendChild(el('div', 'u-url', up.base_url || ''));
     const meta = el('div', 'u-meta');
-    meta.appendChild(el('span', '', '方言（和上游对话用的协议格式）：' + (up.dialect || 'anthropic')));
+    meta.appendChild(el('span', '', '协议格式：' + (up.dialect || 'anthropic')));
     const keySpan = el('span', '');
     keySpan.appendChild(document.createTextNode('密钥 '));
     keySpan.appendChild(el('span', 'u-key', keyLabel(up.api_key)));
@@ -272,7 +273,7 @@ function renderUpstreams() {
 function askSwitch(name) {
   confirmRisk(
     '切换到 ' + name + '？',
-    '切换活跃供应商后，Claude Code 之后的请求都会改走 ' + name + '，切换立即生效；正在进行的对话不会被打断。确定切换？',
+    '切换后，Claude Code 之后的请求都会改走 ' + name + '，切换立即生效；正在进行的对话不会被打断。确定切换？',
     '切换到这家',
     async () => {
       try {
@@ -289,8 +290,8 @@ function askSwitch(name) {
 }
 function askDelUpstream(name, active) {
   const body = active
-    ? name + ' 是当前使用中的供应商，删掉后 Claude Code 将无上游可用，直到你换一家或重新添加。确定删除？'
-    : '删除 ' + name + ' 后，Claude Code 将无法使用这家供应商，直到你重新添加。确定？';
+    ? name + ' 是当前使用中的服务商，删掉后 Claude Code 将无线路可用，直到你换一家或重新添加。确定删除？'
+    : '删除 ' + name + ' 后，Claude Code 将无法使用这家服务商，直到你重新添加。确定？';
   confirmRisk('删除「' + name + '」？', body, '确定删除', async () => {
     try {
       await api('/settings/dock/upstreams/' + encodeURIComponent(name), { method: 'DELETE' });
@@ -309,7 +310,7 @@ function renderProviders() {
   const names = Object.keys(ps);
   if (!names.length) {
     const tr = el('tr');
-    const td = el('td', '', '还没有摆渡供应商。');
+    const td = el('td', '', '还没有交接模型。');
     td.colSpan = 6;
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -333,8 +334,8 @@ function renderProviders() {
 }
 function askDelProvider(name) {
   confirmRisk(
-    '删除摆渡供应商「' + name + '」？',
-    '删除后如果「摆渡」组正选着它，摆渡会降级为只写一份骨架交接（没有模型叙事）。确定删除？',
+    '删除交接模型「' + name + '」？',
+    '删除后如果「写交接」页正选着它，会降级为只写纯记录版交接（无 AI 叙事）。确定删除？',
     '确定删除',
     async () => {
       try {
@@ -353,7 +354,7 @@ function renderFerryProvider() {
   sel.innerHTML = '';
   const names = Object.keys((S && S.providers) || {});
   if (!names.length) {
-    const o = el('option', '', '（还没有摆渡供应商）');
+    const o = el('option', '', '（还没登记交接模型）');
     o.disabled = true;
     sel.appendChild(o);
     return;
@@ -368,7 +369,7 @@ function renderSameModel() {
   box.appendChild(el('div', '', '开关：' + (sm.enabled ? '开' : '关')));
   box.appendChild(el('div', '', '触发阈值：' + (sm.threshold_min != null ? sm.threshold_min + ' 分钟' : '—')));
   const ups = Array.isArray(sm.upstreams) && sm.upstreams.length ? sm.upstreams.join('、') : '（空）';
-  box.appendChild(el('div', '', '上游白名单：' + ups));
+  box.appendChild(el('div', '', '限用线路：' + ups));
 }
 
 $('#btnAddUpstream').addEventListener('click', async () => {
@@ -381,14 +382,14 @@ $('#btnAddUpstream').addEventListener('click', async () => {
   $$('.au-mm').forEach((i) => { const v = i.value.trim(); if (v) mm[i.dataset.k] = v; });
   if (!name) { feedback(fb, '名字必填', true); return; }
   if (!baseUrl) { feedback(fb, '服务地址必填', true); return; }
-  if (!mm.default) { feedback(fb, '模型映射的 default 必填', true); return; }
+  if (!mm.default) { feedback(fb, '模型对照的 default 必填', true); return; }
   const body = { base_url: baseUrl, dialect, model_map: mm };
   if (key) body.api_key = key; // 留空=不带该字段
   try {
     await api('/settings/dock/upstreams/' + encodeURIComponent(name), { method: 'PUT', body });
     markRestart();
     feedback(fb, '');
-    toast('新增成功，重启守护后才能切换到这家', 'restart');
+    toast('新增成功，重启 Ferryman 后才能切换', 'restart');
     ['#auName', '#auUrl', '#auKey'].forEach((s) => { $(s).value = ''; });
     $$('.au-mm').forEach((i) => { i.value = ''; });
     await refreshData();
@@ -413,7 +414,7 @@ $('#btnAddProvider').addEventListener('click', async () => {
     await api('/settings/providers/' + encodeURIComponent(name), { method: 'PUT', body });
     markRestart();
     feedback(fb, '');
-    toast('已新增摆渡供应商 ' + name, 'restart');
+    toast('已新增交接模型 ' + name, 'restart');
     ['#apName', '#apUrl', '#apModel', '#apWindow', '#apKey'].forEach((s) => { $(s).value = ''; });
     await refreshData();
   } catch (e) {
@@ -454,7 +455,7 @@ async function commitGateModes(fbEl) {
 segWire($('#gateCC'), '这条轨道', () => commitGateModes($('#fbGate')));
 segWire($('#gateCodex'), '这条轨道', () => commitGateModes($('#fbGate')));
 segWire($('#gateDsh'), '这条轨道', () => commitGateModes($('#fbGate')));
-segWire($('#gateMain'), '闸门总开关', (v) => {
+segWire($('#gateMain'), '拦截开关', (v) => {
   segSet($('#gateCC'), v); segSet($('#gateCodex'), v); segSet($('#gateDsh'), v);
   commitGateModes($('#fbGate'));
 });
@@ -534,7 +535,7 @@ async function commitQwMode() {
     toast('已保存', 'restart');
   } catch { /* feedback 已报 */ }
 }
-segWire($('#qwMode'), '问询守望', () => commitQwMode());
+segWire($('#qwMode'), '等答复保鲜', () => commitQwMode());
 $('#btnSaveHb').addEventListener('click', () => {
   const scope = $('#sec-heartbeat');
   const diffs = collectDiffs(scope);
@@ -574,7 +575,7 @@ $('#ferryProvider').addEventListener('change', async () => {
   if (fc.econ_provider !== undefined) body.econ_provider = fc.econ_provider; // 原样带回防冲（独立票）
   try {
     await saveSection('ferry', body, fb);
-    feedback(fb, '已保存，重启守护后生效');
+    feedback(fb, '已保存，重启 Ferryman 后生效');
     toast('已保存', 'restart');
   } catch { /* feedback 已报 */ }
 });
@@ -865,11 +866,11 @@ $('#btnSaveService').addEventListener('click', () => {
     $('#pvServiceCancel').onclick = () => $('#pvService').classList.remove('show');
   };
   // 高风险字段（改端口）先走二次确认，再出预览（顺序照 mock）
-  const portDiff = diffs.find((d) => d.lb === '守护端口');
+  const portDiff = diffs.find((d) => d.lb === '服务端口');
   if (portDiff) {
     confirmRisk(
-      '改守护端口？',
-      '守护端口从 ' + portDiff.oldV + ' 改成 ' + portDiff.newV + ' 后，所有指向旧端口的编辑器配置会立刻连不上渡口；重启守护后还要重新指一次。重启失败会自动回滚到改端口前的那份健康配置，不会把守护弄丢。确定要改？',
+      '改服务端口？',
+      '服务端口从 ' + portDiff.oldV + ' 改成 ' + portDiff.newV + ' 后，所有指向旧端口的编辑器配置会立刻连不上；重启 Ferryman 后还要重新指一次。重启失败会自动回滚到改端口前的那份健康配置。确定要改？',
       '确定要改',
       doPreview
     );
@@ -894,7 +895,7 @@ async function loadSnapshots() {
     const r = await api('/settings/snapshots');
     const snaps = (r && r.snapshots) || [];
     if (!snaps.length) {
-      list.appendChild(el('div', 'note', '还没有快照。点「立即备份」留第一份。'));
+      list.appendChild(el('div', 'note', '还没有备份。点「立即备份」留第一份。'));
       return;
     }
     snaps.forEach((s) => {
@@ -912,13 +913,13 @@ async function loadSnapshots() {
       list.appendChild(row);
     });
   } catch (e) {
-    list.appendChild(el('div', 'note warn', '快照列表取不到：' + e.message));
+    list.appendChild(el('div', 'note warn', '备份列表取不到：' + e.message));
   }
 }
 function askRestore(id, timeText) {
   confirmRisk(
-    '还原到 ' + timeText + ' 的快照？',
-    '还原后当前配置会被这份快照整体替换。放心：还原前会先自动备份当前配置，随时可以再换回来。',
+    '还原到 ' + timeText + ' 的备份？',
+    '还原后当前配置会被这份备份整体替换。放心：还原前会先自动备份当前配置，随时可以再换回来。',
     '还原这份备份',
     async () => {
       try {
@@ -938,7 +939,7 @@ $('#btnBackupNow').addEventListener('click', async () => {
   try {
     await api('/settings/snapshots', { method: 'POST' });
     feedback(fb, '');
-    toast('已备份到快照库', 'live');
+    toast('已存入备份库', 'live');
     await loadSnapshots();
   } catch (e) {
     feedback(fb, '备份失败：' + e.message, true);
@@ -971,14 +972,14 @@ async function readSettings(base) {
 /** 200 之后：禁用全部控件 + 重启专属横幅，轮询候选地址直到读到配置或超时。 */
 function enterRestarting(candidates) {
   const banner = $('#errBanner');
-  banner.textContent = '守护正在重启…有在途请求时会先等它跑完，最长几分钟。页面上的保存与操作先不可用，守护回来后自动恢复。';
+  banner.textContent = 'Ferryman 正在重启…有在途请求时会先等它跑完，最长几分钟。页面上的保存与操作先不可用，回来后自动恢复。';
   banner.classList.add('show');
   $('#btnRestart').textContent = '正在重启…';
   setAllDisabled(true);
   const deadline = Date.now() + RESTART_BUDGET_MS;
   const timeoutGiveUp = () => {
     // 超时：保持禁用，留人话指引（回滚与重试由守护侧负责，这里只指认通知渠道）
-    banner.textContent = '守护 6 分钟没回来。失败时守护会自动回滚到上次健康配置并重试；若仍失败会停在安全状态，请看系统通知或 Pushover 的「Ferryman 安全重启失败」提示，按提示手动恢复后重开本窗。';
+    banner.textContent = 'Ferryman 6 分钟没回来。失败时会自动回滚到上次健康配置并重试；若仍失败会停在安全状态，请看系统通知或 Pushover 的「Ferryman 安全重启失败」提示，按提示手动恢复后重开本窗。';
   };
   // 每轮按候选顺序（新口在前）逐个试 GET /settings：读到才算真回来——不因
   // 某个口「有 HTTP 应答」就锁死它，防旧口被别家服务占用时错过新守护。
@@ -1001,16 +1002,16 @@ function enterRestarting(candidates) {
 function recoverFromRestart() {
   setAllDisabled(false); // 先解禁：fillAll 重建的动态控件会各自重设 disabled
   fillAll();
-  $('#btnRestart').textContent = '重启守护';
+  $('#btnRestart').textContent = '重启 Ferryman';
   $('#errBanner').classList.remove('show');
   $('#restartFlag').classList.remove('show'); // 撤掉「待重启」标记
   loadSnapshots();
-  toast('守护已重启，待生效的改动现在生效了', 'live');
+  toast('Ferryman 已重启，待生效改动已生效', 'live');
 }
 $('#btnRestart').addEventListener('click', () => {
   confirmRisk(
-    '重启守护？',
-    '守护会先应答本请求，随后优雅停机（有在途请求会先等它跑完）再自动拉起；万一新配置起不来，会自动换回上一次正常运行的配置再拉起一次。这期间本窗口与守护的连接会断开，回来后自动接上。确定重启？',
+    '重启 Ferryman？',
+    'Ferryman 会先应答本请求，随后优雅停机（有在途请求会先等它跑完）再自动拉起；万一新配置起不来，会自动换回上一次正常运行的配置再拉起一次。这期间本窗口与 Ferryman 的连接会断开，回来后自动接上。确定重启？',
     '确定重启',
     async () => {
       // 一进回调就进保护态：禁用重启按钮 + 关掉可能开着的确认弹窗，POST 在途期间防手滑
@@ -1028,7 +1029,7 @@ $('#btnRestart').addEventListener('click', () => {
       } catch (e) {
         // 400=重启前检查没过，守护没动过：红字报人话原因，按钮恢复可点
         $('#btnRestart').disabled = false;
-        $('#btnRestart').textContent = '重启守护';
+        $('#btnRestart').textContent = '重启 Ferryman';
         toast('重启没批下来：' + e.message, null, true);
       }
     }
@@ -1055,20 +1056,20 @@ async function refreshData() {
 /** 取数失败：结构照出、控件禁用、横幅说明——不许白屏。 */
 function fatal(msg) {
   const b = $('#errBanner');
-  b.textContent = msg + '。页面结构照常显示，但数据为空、所有保存与操作不可用；守护恢复后重开本窗即可。';
+  b.textContent = msg + '。页面结构照常显示，但数据为空、所有保存与操作不可用；Ferryman 恢复后重开本窗即可。';
   b.classList.add('show');
   setAllDisabled(true); // 含侧栏导航与重启按钮：横幅声称所有操作不可用，按钮也该不可点
 }
 (async function boot() {
   const ok = await resolveTarget();
   if (!ok) {
-    fatal('读不到本机守护的访问凭据（~/ferryman/daemon.token）。请确认 Ferryman 守护在运行');
+    fatal('读不到本机访问凭据（~/ferryman/daemon.token）。请确认 Ferryman 在运行');
     return;
   }
   try {
     await refreshData();
   } catch (e) {
-    fatal('连不上守护（' + BASE + '）：' + e.message);
+    fatal('连不上 Ferryman（' + BASE + '）：' + e.message);
   }
   loadSnapshots(); // 快照面独立装载（主数据失败也照试，失败在列表区如实标注）
 })();

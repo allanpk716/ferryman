@@ -523,11 +523,11 @@ async function main() {
       'handoff:spend_month_cny', 'handoff:spend_week_cny'];
     check('prov.kind+key 映射九条齐', provKeys.every((k) => appjs.includes(`'${k}'`)),
       provKeys.filter((k) => !appjs.includes(`'${k}'`)).join(','));
-    check('prov.文案照设计稿原样', ['quota/limit → data.limits[unit:3] → 剩余 = 100 − percentage(38)',
+    check('prov.出处文案齐（2026-10-09 词层改版：台账→本地记账）', ['quota/limit → data.limits[unit:3] → 剩余 = 100 − percentage(38)',
       'coding/v1/usages → usage → remaining/limit',
       'user/balance → balance_infos[0].total_balance = granted + topped_up',
-      '台账 · 价格表计价（DeepSeek 官方无 usage API）',
-      '账本 handoff 科目 · 本周（估算）'].every((s) => appjs.includes(s)), '');
+      '本地记账 · 价格表计价（DeepSeek 官方无 usage API）',
+      '交接花费 · 本周（估算）'].every((s) => appjs.includes(s)), '');
     check('css.dev 角标规则存在', css.includes('body.dev .dev-badge'), '');
     check('css.灰化规则存在', css.includes('body.conn-down'), '');
     const shtml = src('settings.html'), sjs = src('settings.js'), pjs = src('profile.js');
@@ -598,14 +598,14 @@ async function main() {
       !css.includes('padding:8px 4px 4px'), '');
     check('pad.style.css 全档通用 .widget padding 10/6/6 未动（本票只改 compact 块）',
       css.includes('padding:10px 6px 6px;'), '');
-    // 完整档逐字节基线（sha256 全串；票 02 改 CSS 前定格，compact 不在列——它本票就是要变）
+    // 完整档逐字节基线（sha256 全串；2026-10-09 词层改版重钉：⚠ 未连接/详情卡/出处文案，compact 不在列——本就随档变）
     const FULL_BASELINE = {
-      MAIN: 'a32811fe1ff085f50dfea0b34e3b09bad91b8bb766812821a32e9d42be96a2f2',
-      REL: '0fd413877fd73327929ef74f491e6ae66caf8cdf0cc050e94ade7657327f473f',
-      GRAY: 'f0aa38cd07ec208f6174943808b1ff926d441cb1df2cf374a1fd97689f3bcd5d',
-      PROF: 'e13636ac03425bd2d97c6304b20c57fb609c84a6e0807d74650f42d38d3f88b7',
-      HID: '2a61d41fec16099298f752931a3f45fec89361ee9200276f7d1965555b3f3b69',
-      SUP: '25e0bc7ceeebd505e562843f3b4c048c469fc3416a7e5d183de9197656b74c53',
+      MAIN: '2ea586b275069105dde659ee7ce7f10cf1992cb9a26e54ccfa7ae8b65c4a4754',
+      REL: '32268994f7d3ad7986229551f8b7c3ef73add68f48a55724787bc1d0c0202545',
+      GRAY: 'c9264ee87e2c37ab5784ad3bb0b61a92d41684aa8b7589aea39eee95281da988',
+      PROF: '6bb252740f4999e307df00406d7fe7c7c5771a3cc2b71007543c57ecaf7a2e76',
+      HID: 'c51532d04e5f8f39e093b1932392b21f35cdb313d1b511ae39c14b17290fa995',
+      SUP: '08113a2caac3a1c5d32159da8bc409c3c8ee44cc73d2b5999600206a0d72c730',
     };
     const sha = (s) => createHash('sha256').update(s).digest('hex');
     const actualSha = { MAIN: sha(MAIN), REL: sha(REL), GRAY: sha(GRAY), PROF: sha(PROF), HID: sha(HID), SUP: sha(SUP) };
