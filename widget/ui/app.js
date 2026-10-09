@@ -61,33 +61,33 @@ function ringColor(p, key, pct) {
 const PROVENANCE_BASE = {
   'coding_plan:window_5h': 'quota/limit → data.limits[unit:3] → 剩余 = 100 − percentage(38)',
   'coding_plan:week': 'quota/limit → data.limits[unit:6] → 剩余 = 100 − percentage(92)',
-  'coding_plan:month_tokens': '台账四列 · 本自然月聚合（智谱端点无绝对值，月度只能本地估算）',
+  'coding_plan:month_tokens': '本地记账 · 本月合计（智谱无绝对值，只能估算）',
   'coding_plan:tools_quota': 'quota/limit → limits[type=TIME_LIMIT,unit:5] → remaining/usage（MCP 工具增值服务，按调用次数；所有套餐版本/档位都有）',
   'paygo:balance_cny': 'user/balance → balance_infos[0].total_balance = granted + topped_up',
-  'paygo:spend_today_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）',
-  'paygo:spend_week_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）',
-  'paygo:spend_month_cny': '台账 · 价格表计价（DeepSeek 官方无 usage API）', // 票 04 起 demo 已补实例（DS 预算环已用值）
-  'handoff:spend_month_cny': '账本 handoff 科目 · 本自然月（估算）',
-  'handoff:spend_week_cny': '账本 handoff 科目 · 本周（估算）',
+  'paygo:spend_today_cny': '本地记账 · 价格表计价（DeepSeek 官方无 usage API）',
+  'paygo:spend_week_cny': '本地记账 · 价格表计价（DeepSeek 官方无 usage API）',
+  'paygo:spend_month_cny': '本地记账 · 价格表计价（DeepSeek 官方无 usage API）', // 票 04 起 demo 已补实例（DS 预算环已用值）
+  'handoff:spend_month_cny': '交接花费 · 本月（估算）',
+  'handoff:spend_week_cny': '交接花费 · 本周（估算）',
   // 票 09 起追加（daemon 侧同 commit）：摆渡执行器 provider 无价格表时 spend_*
   // 不可算不造数——计数是唯一诚实可显示
-  'handoff:handoffs_month': '账本 handoff 科目 · 本自然月计数（摆渡 provider 无价格表，花费不可算）',
-  'handoff:handoffs_week': '账本 handoff 科目 · 本周计数（同上，花费不可算）',
+  'handoff:handoffs_month': '交接计数 · 本月（交接服务商无价格表，花费不可算）',
+  'handoff:handoffs_week': '交接计数 · 本周（同上，花费不可算）',
 };
 /** 演示上游 id 级覆写（同 kind 不同供应商文案有别，保设计稿逐字一致）。 */
 const PROVENANCE_BY_ID = {
   kimi: {
     window_5h: 'coding/v1/usages → limits[].detail → remaining/limit',
     week: 'coding/v1/usages → usage → remaining/limit',
-    month_tokens: '台账四列 · 本自然月聚合（估算）',
+    month_tokens: '本地记账 · 本月合计（估算）',
   },
 };
 /** @param {data.Upstream} u @param {data.Metric} m @returns {string} */
 const provenanceOf = (u, m) => PROVENANCE_BY_ID[u.id]?.[m.key] ?? PROVENANCE_BASE[`${u.kind}:${m.key}`] ?? '';
 
 /** 详情卡长名（展示别名；缺省回落契约 label）。 */
-const DETAIL_NAME_OF = { glm: '智谱 GLM', kimi: 'Kimi Coding', deepseek: 'DeepSeek 按量', handoff: '摆渡行 · 交接计数与花费' };
-const PLAN_LINE = { coding_plan: (p) => `订阅套餐 · ${p.plan || 'Coding Plan'}`, paygo: () => '充值按量计费', handoff: () => 'OpenAI 协议 · 摆渡执行器专用' };
+const DETAIL_NAME_OF = { glm: '智谱 GLM', kimi: 'Kimi Coding', deepseek: 'DeepSeek 按量', handoff: '交接 · 次数与花费' };
+const PLAN_LINE = { coding_plan: (p) => `订阅套餐 · ${p.plan || 'Coding Plan'}`, paygo: () => '充值按量计费', handoff: () => 'OpenAI 协议 · 只用于写交接' };
 
 // ── 倒计时/时刻（演示态基准=契约生成时刻，接真数据后=真实时钟；见 data.now） ──
 function countdownText(resetsAt) {
@@ -312,8 +312,8 @@ widget.addEventListener('mouseover', (e) => {
   ).join('');
   // 交接盘首行一句人话（0.2.3），之后照旧列环指标或「无环指标 · 单击看详情」
   const intro = p.kind === 'handoff'
-    ? '<div style="color:var(--txt-dim)">闲置会话自动交接：读档→提炼→写交接文档；此处计次数与花费</div>' : '';
-  tip.innerHTML = intro + (rows || "<div style='color:var(--txt-dim)'>无环指标 · 单击看详情</div>");
+    ? '<div style="color:var(--txt-dim)">闲置会话自动写交接（读档→提炼→成文）；这里计次数与花费</div>' : '';
+  tip.innerHTML = intro + (rows || "<div style='color:var(--txt-dim)'>无环 · 点一下看详情</div>");
   tip.classList.remove('hidden');
 });
 widget.addEventListener('mousemove', (e) => {
@@ -377,7 +377,7 @@ document.getElementById('btnSettings').addEventListener('click', () => {
   if (t && t.core && t.core.invoke) {
     t.core.invoke('open_settings_window').catch((e) => console.error('open_settings_window 失败', e));
   } else {
-    console.info('演示语境（无 Tauri 壳）：设置窗在壳内经托盘菜单「设置…」或齿轮打开');
+    console.info('演示语境（无 Tauri 壳）：设置窗在壳内经托盘菜单「悬浮窗设置…」或齿轮打开');
   }
 });
 

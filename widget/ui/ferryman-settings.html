@@ -4,8 +4,9 @@
 <meta charset="UTF-8">
 <title>Ferryman 设置</title>
 <!--
-  Ferryman 设置窗（真实现）：布局/分组/交互/文案以定稿 mock
-  （widget/ui/mock/settings.html）为准，数据层接 daemon /settings 端点族
+  Ferryman 设置窗（真实现）：布局/分组/交互以定稿 mock（widget/ui/mock/settings.html）
+  为准，文案以 .scratch/ui-copy-rewrite/对照表.md（2026-10-09 定稿）为准；数据层接
+  daemon /settings 端点族
   （127.0.0.1:15700，Bearer 鉴权——壳内经 get_daemon_config 取 token，
   与 widget 主窗 data.js 同机制）。
   零构建 vanilla：无框架/无外部资源/无 CDN/无网络字体，图标内联 SVG；
@@ -18,7 +19,7 @@
 
 <div class="window">
   <div class="titlebar">
-    <span class="t-title"><b>Ferryman 工作台</b> · 设置</span>
+    <span class="t-title">Ferryman 设置</span>
     <span class="restart-flag" id="restartFlag">● 有改动待重启后生效</span>
     <span class="t-gap"></span>
   </div>
@@ -29,23 +30,23 @@
       <nav id="nav">
         <button class="nav-it on" data-sec="providers">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5.5h12M2 10.5h12"/><circle cx="5" cy="5.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="11" cy="10.5" r="1.6" fill="currentColor" stroke="none"/></svg>
-          供应商
+          服务商
         </button>
         <button class="nav-it" data-sec="gate">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 1.5l5.5 2v4c0 3.4-2.3 5.6-5.5 7-3.2-1.4-5.5-3.6-5.5-7v-4z"/></svg>
-          闸门与阈值
+          拦截规则
         </button>
         <button class="nav-it" data-sec="watch">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 8s2.6-4.2 6.5-4.2S14.5 8 14.5 8 11.9 12.2 8 12.2 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8"/></svg>
-          守望目录
+          会话目录
         </button>
         <button class="nav-it" data-sec="heartbeat">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 8h3l1.5-4 3 8 1.5-4h4"/></svg>
-          心跳与保温
+          缓存保鲜
         </button>
         <button class="nav-it" data-sec="ferry">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5.5h9M8.5 3l2.5 2.5L8.5 8M14 10.5H5M7.5 8l-2.5 2.5L7.5 13"/></svg>
-          摆渡
+          写交接
         </button>
         <button class="nav-it" data-sec="prices">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6"/><path d="M8 4.5v7M5.5 6.2c0-.9 1.1-1.5 2.5-1.5s2.5.6 2.5 1.5-1 1.4-2.5 1.6-2.5.7-2.5 1.6 1.1 1.5 2.5 1.5 2.5-.6 2.5-1.5"/></svg>
@@ -57,18 +58,18 @@
         </button>
         <button class="nav-it" data-sec="service">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2.5" width="12" height="4.5" rx="1"/><rect x="2" y="9" width="12" height="4.5" rx="1"/><circle cx="4.6" cy="4.75" r=".9" fill="currentColor" stroke="none"/><circle cx="4.6" cy="11.25" r=".9" fill="currentColor" stroke="none"/></svg>
-          服务
+          通用
         </button>
         <button class="nav-it" data-sec="backup">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 5.5v-2h11v2M2.5 5.5h11v7a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5zM6.5 8.5h3"/></svg>
-          备份与还原
+          备份还原
         </button>
       </nav>
       <div class="side-foot">
         <!-- 安全重启：POST /settings/restart（票 07 端点）。响应先于守护停止到达；
              起不来守护侧自动回滚到上次健康配置再拉起一次。 -->
-        <button class="btn-restart" id="btnRestart" title="安全重启守护：有在途请求会先等它跑完；起不来会自动换回上一份能正常跑的配置再试一次">重启守护</button>
-        <div class="cap">保存过的改动要重启守护才会用上。点这里安全重启：有在途请求会先等它跑完；万一新配置起不来，会自动换回上一份能正常跑的配置，再拉起一次。</div>
+        <button class="btn-restart" id="btnRestart" title="安全重启：有在途请求会先等它跑完；起不来会自动换回上一份能用的配置再试一次">重启 Ferryman</button>
+        <div class="cap">保存过的改动要重启 Ferryman 才会用上。点这里安全重启：有在途请求会先等它跑完；万一新配置起不来，会自动换回上一份能正常跑的配置，再拉起一次。</div>
       </div>
     </aside>
 
@@ -76,18 +77,18 @@
     <main class="main">
       <div class="errbanner" id="errBanner"></div>
 
-      <!-- ════════ 1. 供应商 ════════ -->
+      <!-- ════════ 1. 服务商 ════════ -->
       <section class="sec on" id="sec-providers">
-        <h2>供应商</h2>
-        <p class="lead">渡口上游（Claude Code 发出的请求先经过本机渡口，再转给这里选中的那一家）和摆渡供应商（生成交接文档用的另一家便宜模型）是两张互不相干的表。</p>
+        <h2>服务商</h2>
+        <p class="lead">服务商两处登记：一处跑对话，一处写交接。</p>
 
         <div class="card">
-          <h3>渡口上游 <span class="sub">同一时刻只有一家在干活 <span class="key">[dock.upstreams]</span></span></h3>
+          <h3>对话线路 <span class="sub">同一时刻只有一家在干活 <span class="key">[dock.upstreams]</span></span></h3>
           <div id="upstreamList"></div>
         </div>
 
         <div class="card">
-          <h3>新增渡口上游</h3>
+          <h3>新增对话线路</h3>
           <div class="frow">
             <span class="lb">名字</span>
             <input type="text" class="w-mid" id="auName" placeholder="例：zhipu-backup">
@@ -100,14 +101,14 @@
           <div class="frow">
             <span class="lb">方言 <span class="key">dialect</span></span>
             <select id="auDialect"><option>anthropic</option><option>openai_responses</option></select>
-            <span class="hint">这家上游说哪种协议。anthropic 的可以给 Claude Code 直接用；openai_responses 的 codex 原生可用。</span>
+            <span class="hint">这家说哪种协议：anthropic 给 Claude Code 用；openai_responses 给 Codex 用。</span>
           </div>
           <div class="frow">
             <span class="lb">API 密钥 <span class="key">api_key</span></span>
             <input type="password" class="w-big" id="auKey" placeholder="粘贴后只存不显示，之后只能看到尾四位">
           </div>
           <div class="frow" style="align-items:flex-start">
-            <span class="lb">模型映射 <span class="key">model_map</span></span>
+            <span class="lb">模型对照 <span class="key">model_map</span></span>
             <div style="flex:1">
               <div class="mmap">
                 <div class="mm"><label>default</label><input type="text" class="au-mm" data-k="default" placeholder="默认模型（必填）"></div>
@@ -117,7 +118,7 @@
                 <div class="mm"><label>codex</label><input type="text" class="au-mm" data-k="codex" placeholder="可留空"></div>
                 <div class="mm"><label>pi</label><input type="text" class="au-mm" data-k="pi" placeholder="可留空"></div>
               </div>
-              <div class="hint" style="padding-left:0; margin-top:4px">编辑器里写的模型名（如 sonnet）到这家上游真实模型名的对照。default 必填，其余留空就回落到 default。</div>
+              <div class="hint" style="padding-left:0; margin-top:4px">编辑器里的模型名对照到这家的真名；default 必填，其余留空走 default。</div>
             </div>
           </div>
           <div class="savebar">
@@ -127,7 +128,7 @@
         </div>
 
         <div class="card">
-          <h3>摆渡供应商 <span class="sub">另一张表，给「摆渡」组选用 <span class="key">[providers]</span></span></h3>
+          <h3>交接模型 <span class="sub">写交接文档时请谁代写 <span class="key">[providers]</span></span></h3>
           <table class="tbl" id="providerTbl">
             <thead>
               <tr><th>名字</th><th>服务地址</th><th>模型</th><th>上下文窗口</th><th>密钥</th><th></th></tr>
@@ -145,7 +146,7 @@
           </div>
           <div class="frow">
             <span class="lb">模型 <span class="key">model</span></span>
-            <input type="text" class="w-mid" id="apModel" placeholder="这家上游上的模型名">
+            <input type="text" class="w-mid" id="apModel" placeholder="这家服务商上的模型名">
           </div>
           <div class="frow">
             <span class="lb">上下文窗口 <span class="key">window</span></span>
@@ -157,19 +158,19 @@
             <input type="password" class="w-big" id="apKey" placeholder="粘贴后只存不显示，之后只能看到尾四位">
           </div>
           <div class="savebar">
-            <button class="btn" id="btnAddProvider">新增摆渡供应商</button>
+            <button class="btn" id="btnAddProvider">添加</button>
             <span class="feedback" id="fbProvider"></span>
           </div>
         </div>
       </section>
 
-      <!-- ════════ 2. 闸门与阈值 ════════ -->
+      <!-- ════════ 2. 拦截规则 ════════ -->
       <section class="sec" id="sec-gate">
-        <h2>闸门与阈值</h2>
-        <p class="lead">闸门（守在编辑器会话门口的一层拦截：会话凉透了还继续往里发消息，就会被拦下、引导你开新会话接着干，避免为已经死掉的缓存全价重付）。</p>
+        <h2>拦截规则</h2>
+        <p class="lead">会话凉透还发消息会被拦下、引到新会话，不为死缓存全价重付。（DSH＝DeepSeek Harness）</p>
 
         <div class="card">
-          <h3>闸门总开关 <span class="key">gate.mode</span></h3>
+          <h3>拦截开关 <span class="key">gate.mode</span></h3>
           <div class="frow">
             <span class="lb">总开关</span>
             <span class="seg" id="gateMain">
@@ -207,30 +208,30 @@
         </div>
 
         <div class="card">
-          <h3>阈值 <span class="sub">改了先给你看对照，确认后才存</span></h3>
+          <h3>时间阈值 <span class="sub">改了先看对照，确认后才存</span></h3>
           <div class="frow">
-            <span class="lb">总结阈值 <span class="key">summarize_s</span></span>
-            <input type="number" id="thSum" data-f data-label="总结阈值" data-unit="分钟">
+            <span class="lb">交接阈值 <span class="key">summarize_s</span></span>
+            <input type="number" id="thSum" data-f data-label="交接阈值" data-unit="分钟">
             <span class="unit">分钟</span>
-            <span class="hint">会话闲置到这个时长，就自动生成一份交接文档（记下干到哪了、下一步干啥），给新会话接着用。</span>
+            <span class="hint">闲置到这时长就自动写交接，给新会话接着用。</span>
           </div>
           <div class="frow">
             <span class="lb">拦截阈值 <span class="key">block_s</span></span>
             <input type="number" id="thBlock" data-f data-label="拦截阈值" data-unit="分钟">
             <span class="unit">分钟</span>
-            <span class="hint">会话闲置超过这个时长，新消息就会被拦下引导开新会话。要比总结阈值大。</span>
+            <span class="hint">闲置超过它新消息就被拦；要比交接阈值大。</span>
           </div>
           <div class="frow">
-            <span class="lb">最小上下文门槛 <span class="key">min_context</span></span>
-            <input type="number" id="thMinCtx" data-f data-label="最小上下文门槛" data-unit="万 token">
+            <span class="lb">最小规模 <span class="key">min_context</span></span>
+            <input type="number" id="thMinCtx" data-f data-label="最小规模" data-unit="万 token">
             <span class="unit">万 token</span>
-            <span class="hint">会话太短就不值得摆渡——低于这个量的会话直接放行，不生成交接。</span>
+            <span class="hint">太小的会话不写交接也不拦，直接放行。</span>
           </div>
           <div class="frow">
-            <span class="lb">缓存已死提醒 <span class="key">cache_warn_s</span></span>
-            <input type="number" id="thCacheWarn" data-f data-label="缓存已死提醒" data-unit="分钟">
+            <span class="lb">缓存提醒 <span class="key">cache_warn_s</span></span>
+            <input type="number" id="thCacheWarn" data-f data-label="缓存提醒" data-unit="分钟">
             <span class="unit">分钟</span>
-            <span class="hint">闲置到这个时长弹一句纯提醒：缓存已死、本条消息要按全价付。填 0 关闭。</span>
+            <span class="hint">闲置到这时长弹提醒：缓存死了、这条要全价付。填 0 关闭。</span>
           </div>
 
           <div class="savebar">
@@ -248,10 +249,10 @@
         </div>
       </section>
 
-      <!-- ════════ 3. 守望目录 ════════ -->
+      <!-- ════════ 3. 会话目录 ════════ -->
       <section class="sec" id="sec-watch">
-        <h2>守望目录</h2>
-        <p class="lead">守望（Ferryman 盯着这些文件夹里的会话记录文件，靠文件的最后改动时间判断会话是热是凉）。</p>
+        <h2>会话目录</h2>
+        <p class="lead">Ferryman 盯这些文件夹，按最后改动判断会话冷热。</p>
         <div class="card">
           <h3>会话目录 <span class="key">[watch]</span></h3>
           <div class="frow">
@@ -274,9 +275,9 @@
             <span class="hint">每隔几秒看一次目录。调大更省 CPU，但闲置判定会粗一点。</span>
           </div>
           <div class="frow">
-            <span class="lb">用量采集 <span class="key">harvest_usage</span></span>
+            <span class="lb">用量记账 <span class="key">harvest_usage</span></span>
             <label class="sw"><input type="checkbox" id="wHarvest"><span class="tr"></span></label>
-            <span class="hint">把每次会话的 token 用量记进账本，会话文件 30 天清理后账还查得到。</span>
+            <span class="hint">把 token 用量记进本地账；文件清了账还在。</span>
           </div>
           <div class="savebar">
             <button class="btn pri" id="btnSaveWatch">保存</button>
@@ -285,42 +286,42 @@
         </div>
       </section>
 
-      <!-- ════════ 4. 心跳与保温 ════════ -->
+      <!-- ════════ 4. 缓存保鲜 ════════ -->
       <section class="sec" id="sec-heartbeat">
-        <h2>心跳与保温</h2>
-        <p class="lead">心跳保温（缓存快过期时自动发一条不花钱的轻量请求，把缓存「拍醒」续命）。这组参数动了会先给你看改动对照。</p>
+        <h2>缓存保鲜</h2>
+        <p class="lead">心跳：缓存快过期时自动发条轻请求续命。改这组参数会先看对照。</p>
 
         <div class="card">
           <h3>心跳 <span class="key">[heartbeat]</span></h3>
           <div class="frow">
             <span class="lb">心跳开关</span>
             <label class="sw"><input type="checkbox" id="hbEnabled" data-f-check data-label="心跳开关"><span class="tr"></span></label>
-            <span class="hint">默认关。开之前建议先跑缓存 TTL 实测，把下面的保鲜期填成实测值。</span>
+            <span class="hint">默认关。建议先实测缓存寿命，再填下面的保鲜期。</span>
           </div>
           <div class="frow">
             <span class="lb">缓存保鲜期 <span class="key">ttl_s</span></span>
             <input type="number" id="hbTtl" data-f data-label="缓存保鲜期" data-unit="分钟">
             <span class="unit">分钟</span>
-            <span class="hint">缓存的保鲜期（TTL）：超过这个时长不动，缓存就被服务商回收。同模型摆渡判热也用这个值。</span>
+            <span class="hint">超这么久不动，缓存就被服务商回收。</span>
           </div>
         </div>
 
         <div class="card">
-          <h3>问询守望 <span class="key">[question_watch]</span></h3>
-          <div class="note">问询守望（你一口气抛了一串问题等答复时，帮你守住这段时间的缓存不失效）。</div>
+          <h3>等答复保鲜 <span class="key">[question_watch]</span></h3>
+          <div class="note">AI 连环提问、你正在组织长答案时，替你保住缓存。</div>
           <div class="frow">
             <span class="lb">模式 <span class="key">mode</span></span>
             <span class="seg" id="qwMode">
               <button data-v="off">关</button>
               <button data-v="observe">只提醒</button>
-              <button data-v="enforce">保温</button>
+              <button data-v="enforce">保鲜</button>
             </span>
           </div>
           <div class="frow">
-            <span class="lb">提问潮门槛 <span class="key">min_questions</span></span>
-            <input type="number" id="qwMinQ" data-f data-label="提问潮门槛" data-unit="条">
+            <span class="lb">提问门槛 <span class="key">min_questions</span></span>
+            <input type="number" id="qwMinQ" data-f data-label="提问门槛" data-unit="条">
             <span class="unit">条</span>
-            <span class="hint">最后一条回复里带的问题数达到这个值，才认为你在等答复。</span>
+            <span class="hint">最后一条回复里的问题达到这个数，才算你在等答复。</span>
           </div>
           <div class="frow">
             <span class="lb">心跳间隔 <span class="key">beat_interval_s</span></span>
@@ -328,16 +329,16 @@
             <span class="unit">分钟</span>
           </div>
           <div class="frow">
-            <span class="lb">每窗最多跳数 <span class="key">max_beats</span></span>
-            <input type="number" id="qwMaxBeats" data-f data-label="每窗最多跳数" data-unit="跳">
+            <span class="lb">最多跳数 <span class="key">max_beats</span></span>
+            <input type="number" id="qwMaxBeats" data-f data-label="最多跳数" data-unit="跳">
             <span class="unit">跳</span>
-            <span class="hint">等待窗（一次等答复的时间窗口）里最多拍醒几次，防止无限保温。</span>
+            <span class="hint">一次等答复期间最多保鲜几次，防无限续命。</span>
           </div>
           <div class="frow">
-            <span class="lb">摆渡死线提前量 <span class="key">ferry_deadline_lead_s</span></span>
-            <input type="number" id="qwLead" data-f data-label="摆渡死线提前量" data-unit="分钟">
+            <span class="lb">交接提前量 <span class="key">ferry_deadline_lead_s</span></span>
+            <input type="number" id="qwLead" data-f data-label="交接提前量" data-unit="分钟">
             <span class="unit">分钟</span>
-            <span class="hint">赶在拦截阈值之前这么久完成摆渡，留足余量。</span>
+            <span class="hint">赶在拦截线前这么久写完交接，留足余量。</span>
           </div>
 
           <div class="savebar">
@@ -355,17 +356,17 @@
         </div>
       </section>
 
-      <!-- ════════ 5. 摆渡 ════════ -->
+      <!-- ════════ 5. 写交接 ════════ -->
       <section class="sec" id="sec-ferry">
-        <h2>摆渡</h2>
-        <p class="lead">摆渡（会话闲置到总结阈值时，自动生成交接文档的那个动作）。这里决定用哪家供应商来写交接。</p>
+        <h2>写交接</h2>
+        <p class="lead">闲置到阈值就自动写交接；这里选谁来写。</p>
 
         <div class="card">
-          <h3>摆渡执行 <span class="key">[ferry]</span></h3>
+          <h3>谁来写 <span class="key">[ferry]</span></h3>
           <div class="frow">
-            <span class="lb">摆渡供应商 <span class="key">provider</span></span>
+            <span class="lb">交接模型 <span class="key">provider</span></span>
             <select id="ferryProvider"></select>
-            <span class="hint">候选来自「供应商」组的摆渡供应商表。改动立即落盘，重启守护后生效。</span>
+            <span class="hint">候选来自「服务商」页的交接模型表；改动即存，重启 Ferryman 生效。</span>
           </div>
           <div class="savebar">
             <span class="feedback" id="fbFerry"></span>
@@ -373,17 +374,17 @@
         </div>
 
         <div class="card">
-          <h3>同模型摆渡 <span class="key">[ferry.same_model]</span></h3>
-          <div class="note">同模型摆渡（会话快凉时，用当前这家上游自己顺手生成交接——前缀还能命中缓存，比跨家便宜）。</div>
+          <h3>本家代写 <span class="key">[ferry.same_model]</span></h3>
+          <div class="note">快凉时让当前这家顺手写，前缀命中缓存更便宜。（判热用「缓存保鲜」页的保鲜期数值。）</div>
           <div id="smInfo" style="font-size:12.5px; line-height:1.8"></div>
-          <div class="note warn" style="margin-top:8px">同模型摆渡暂不支持在界面修改（服务端子表写面未开）；如需调整请手改配置文件里的 [ferry.same_model] 节后重启守护。</div>
+          <div class="note warn" style="margin-top:8px">暂不支持界面修改；请手改配置 [ferry.same_model] 节后重启 Ferryman。</div>
         </div>
       </section>
 
       <!-- ════════ 6. 价格表 ════════ -->
       <section class="sec" id="sec-prices">
         <h2>价格表</h2>
-        <p class="lead">账本按这里的单价算账。单位都是「每 1 万 token 的价格」，缓存价留空表示这家没有缓存价（省钱账会标成不可算）。改动保存前会先看对照。</p>
+        <p class="lead">本地账按这里的单价算；单位＝每 1 万 token；缓存价留空＝无缓存价，省钱账标「不可算」。改动保存前会先看对照。</p>
 
         <div class="card">
           <h3>单价 <span class="key">[prices]</span></h3>
@@ -412,7 +413,7 @@
       <!-- ════════ 7. 通知 ════════ -->
       <section class="sec" id="sec-notify">
         <h2>通知</h2>
-        <p class="lead">会话被闸门拦下时怎么喊你。凭据只存本机，界面上永远只看得到尾四位。九类事件可分别设定：不发、只弹桌面、还是手机桌面都发。</p>
+        <p class="lead">被拦、出故障时怎么喊你：不喊、桌面弹、或手机桌面都弹。凭据只存本机，只见尾四位。</p>
 
         <div class="card">
           <h3>通知方式 <span class="key">[notify]</span></h3>
@@ -443,39 +444,44 @@
           <div class="divider"></div>
           <h3>通知分级 <span class="sub">按事件选推送渠道 <span class="key">[notify.events]</span></span></h3>
           <div class="frow">
-            <span class="lb">闸门拦截提醒 <span class="key">block</span></span>
+            <span class="lb">拦截提醒 <span class="key">block</span></span>
             <select class="nt-ev" data-ev="block"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
           </div>
           <div class="frow">
-            <span class="lb">摆渡链滑落告警 <span class="key">chain_degrade</span></span>
+            <span class="lb">交接降级 <span class="key">chain_degrade</span></span>
             <select class="nt-ev" data-ev="chain_degrade"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+            <span class="hint">写交接顺位下滑时提醒</span>
           </div>
           <div class="frow">
-            <span class="lb">摆渡链滑入骨架 <span class="key">chain_skeleton</span></span>
+            <span class="lb">交接保底 <span class="key">chain_skeleton</span></span>
             <select class="nt-ev" data-ev="chain_skeleton"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+            <span class="hint">没有可用模型，只写纯记录版</span>
           </div>
           <div class="frow">
-            <span class="lb">熔断告警 <span class="key">breaker</span></span>
+            <span class="lb">停跳告警 <span class="key">breaker</span></span>
             <select class="nt-ev" data-ev="breaker"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+            <span class="hint">心跳连续失手，自动停并告诉你</span>
           </div>
           <div class="frow">
-            <span class="lb">升级结果通报 <span class="key">upgrade</span></span>
+            <span class="lb">升级结果 <span class="key">upgrade</span></span>
             <select class="nt-ev" data-ev="upgrade"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
           </div>
           <div class="frow">
-            <span class="lb">静默门硬切 <span class="key">hard_cut</span></span>
+            <span class="lb">强停告警 <span class="key">hard_cut</span></span>
             <select class="nt-ev" data-ev="hard_cut"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+            <span class="hint">重启时有请求没跑完，被迫掐断</span>
           </div>
           <div class="frow">
-            <span class="lb">DSH 验证红灯 <span class="key">drift</span></span>
+            <span class="lb">DSH 体检红灯 <span class="key">drift</span></span>
             <select class="nt-ev" data-ev="drift"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
+            <span class="hint">DSH 插件验证不通过，需回退或检修</span>
           </div>
           <div class="frow">
-            <span class="lb">调参通报 <span class="key">tuning</span></span>
+            <span class="lb">自动调参 <span class="key">tuning</span></span>
             <select class="nt-ev" data-ev="tuning"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
           </div>
           <div class="frow">
-            <span class="lb">托盘操作回执 <span class="key">tray_reply</span></span>
+            <span class="lb">托盘回执 <span class="key">tray_reply</span></span>
             <select class="nt-ev" data-ev="tray_reply"><option value="off">不发</option><option value="toast">仅桌面</option><option value="both">手机＋桌面</option></select>
           </div>
           <div class="note" style="margin-top:6px">九类事件相互独立。分级改动要点下面「保存」才落盘（拨上方开关即时保存时不带分级改动）；与程序内置缺省相同的值不写进配置文件——未配置的事件跟随缺省，缺省随程序升级演进。</div>
@@ -487,23 +493,23 @@
         </div>
       </section>
 
-      <!-- ════════ 8. 服务 ════════ -->
+      <!-- ════════ 8. 通用 ════════ -->
       <section class="sec" id="sec-service">
-        <h2>服务</h2>
-        <p class="lead">守护进程本身的运行参数。</p>
-        <div class="note warn">这一组的改动保存后不会马上生效，要重启守护才会用上。保存后右上角会出现「待重启」标记。</div>
+        <h2>通用</h2>
+        <p class="lead">Ferryman 本身的运行参数。</p>
+        <div class="note warn">这组改动存完不立即生效，重启 Ferryman 才用上；届时右上角出现「待重启」。</div>
 
         <div class="card">
-          <h3>守护进程 <span class="key">[service]</span></h3>
+          <h3>运行参数 <span class="key">[service]</span></h3>
           <div class="frow">
-            <span class="lb">守护端口 <span class="key">port</span></span>
-            <input type="number" id="svPort" data-f data-label="守护端口" data-unit="" style="width:100px">
-            <span class="hint">渡口和状态接口都走这个端口。改它属于高风险操作，会弹确认。</span>
+            <span class="lb">服务端口 <span class="key">port</span></span>
+            <input type="number" id="svPort" data-f data-label="服务端口" data-unit="" style="width:100px">
+            <span class="hint">请求转发和状态查询都走这个端口；改它会弹确认。</span>
           </div>
           <div class="frow">
             <span class="lb">数据目录 <span class="key">data_dir</span></span>
             <input type="text" class="w-big" id="svDataDir" data-f data-label="数据目录">
-            <span class="hint">配置、账本、交接文档、备份快照都放在这里。</span>
+            <span class="hint">配置、账、交接、备份都在这个文件夹。</span>
           </div>
           <div class="savebar">
             <button class="btn pri" id="btnSaveService">保存</button>
@@ -520,13 +526,13 @@
         </div>
       </section>
 
-      <!-- ════════ 9. 备份与还原 ════════ -->
+      <!-- ════════ 9. 备份还原 ════════ -->
       <section class="sec" id="sec-backup">
-        <h2>配置备份</h2>
-        <p class="lead">每次大动作（换供应商、改端口、升级）之前会自动留一份快照，也可以随时手动备份。</p>
+        <h2>备份还原</h2>
+        <p class="lead">大动作（换服务商、改端口、升级）前自动留备份；也可随时手动。</p>
 
         <div class="card">
-          <h3>快照列表</h3>
+          <h3>备份列表</h3>
           <div id="snapList"></div>
           <div class="savebar" style="margin-top:10px">
             <button class="btn pri" id="btnBackupNow">立即备份</button>

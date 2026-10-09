@@ -94,7 +94,7 @@ function cardHTML(c, e, raw) {
   }
   return `<div class="obj-card" data-id="${c.id}">
     <div class="obj-head">
-      <input type="checkbox" class="f-visible"${e.visible ? ' checked' : ''} title="显示该服务商">
+      <input type="checkbox" class="f-visible"${e.visible ? ' checked' : ''} title="显示这个盘">
       <span class="obj-name">${c.label}${c.plan ? `（${c.plan}）` : ''}</span>
       <span class="obj-order"><button class="f-up" title="上移">↑</button><button class="f-down" title="下移">↓</button></span>
     </div>

@@ -11,11 +11,11 @@
  *   ③ 关键挂载点齐（mock 同款 16 个 + 错误条）
  *   ④ 深色令牌与热力/负值梯度与 mock 逐色同值（界面零改动锁）
  *   ⑤ 数据层接线：/stats/summary 与 /stats/usage、Authorization Bearer 构造、
- *      get_daemon_config 先例、30_000/30000 轮询常量 + 轮询回路
+ *      get_daemon_config 先例、按需查询触发面（ADR-0027：开窗/切回+手动刷新，无轮询回路）
  *   ⑥ 错误重试分支：错误条文案在 + setErr 开关（失败不清空已渲染内容）
  *   ⑦ dayValue 成本/节省额档已接线（days[].savings gross/net 端点字段 +
  *      !computable 档位禁用保持）
- *   ⑧ 请求数卡「含子代理行」口径小字；页脚「守护进程实时 · 每 30 秒刷新」
+ *   ⑧ 请求数卡口径小字；页脚「Ferryman 按需查询」（2026-10-09 词层改版）
  *   ⑨ 会话列 ≤12 字符截断（F9 口径）；离线面：零 https、http 仅限 127.0.0.1
  *   ⑩ 内联 JS 可编译（new Function 语法闸）
  */
@@ -75,13 +75,13 @@ check('api.引用 /stats/usage', html.includes('/stats/usage'), '');
 check('api.Authorization Bearer 头构造',
   html.includes('Authorization') && html.includes('"Bearer " + TOKEN'), '');
 check('api.get_daemon_config 先例(壳内取 token)', html.includes("invoke(\"get_daemon_config\")"), '');
-check('api.30s 轮询常量(30_000/30000)', /30_000|30000/.test(html), '');
-check('api.轮询回路(setTimeout 挂 POLL_MS)', /setTimeout\(loop,\s*POLL_MS\)/.test(html), '');
+check('api.按需查询触发面(ADR-0027:visibilitychange 开窗/切回 + 手动刷新 pokeNow)',
+  /document\.addEventListener\("visibilitychange"/.test(html) && /pokeNow/.test(html), '');
 check('api.取数超时保护(AbortSignal.timeout)', html.includes('AbortSignal.timeout'), '');
 
 // ── ⑥ 错误重试分支 ──
-check('err.错误条文案「连不上守护进程,正在重试…」',
-  html.includes('连不上守护进程,正在重试…'), '');
+check('err.错误条文案「连不上 Ferryman，正在重试…」',
+  html.includes('连不上 Ferryman，正在重试…'), '');
 check('err.setErr 开关 + 失败不清内容(loadSummary/loadUsage 失败路径只 setErr)',
   /function setErr\(/.test(html) && /catch\(e\)\{\s*\n\s*setErr\(true\)/.test(html), '');
 
@@ -95,9 +95,9 @@ check('day.净额以端点为真值(不移植 Python 舍入:无 round/toFixed �
   !/net\s*=\s*round/.test(html) && !/Math\.round\([^)]*net/.test(html), '');
 
 // ── ⑧ 口径小字与页脚 ──
-check('kpi.请求数卡「含子代理行」口径小字', html.includes('含子代理行'), '');
-check('foot.页脚「数据:守护进程实时 · 每 30 秒刷新」',
-  html.includes('数据:守护进程实时 · 每 30 秒刷新'), '');
+check('kpi.请求数卡「口径：逐请求，含子代理」小字', html.includes('口径：逐请求，含子代理'), '');
+check('foot.页脚「数据由 Ferryman 按需查询」',
+  html.includes('数据由 Ferryman 按需查询'), '');
 
 // ── ⑨ 会话列口径 + 离线面 ──
 check('tbl.会话列 ≤12 字符截断(session_id)', html.includes('.slice(0,12)'), '');

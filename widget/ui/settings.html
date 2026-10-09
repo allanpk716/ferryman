@@ -18,7 +18,7 @@
 
   <!-- Ferryman 设置（守护侧配置：供应商/闸门/心跳/价格/备份等）入口：
        壳内 invoke 打开常驻 ferryman-settings 窗；壳外（浏览器/自测）新开标签页。 -->
-  <div class="radioline">守护侧配置（供应商、闸门、心跳、价格表、备份）：
+  <div class="radioline">Ferryman 设置（服务商、拦截、保鲜、价格、备份）：
     <button type="button" id="btnFerrymanSettings" style="border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.05); color:inherit; border-radius:7px; padding:5px 12px; font-size:12.5px; cursor:pointer">打开 Ferryman 设置…</button>
   </div>
 
@@ -34,7 +34,7 @@
   </div>
   <div class="radioline"><label><input type="checkbox" id="optCdline" checked> 显示重置倒计时行</label> <span class="hint">（圆控件下方第一行；紧凑档不显示文字行）</span></div>
 
-  <h4 class="sec">服务商</h4>
+  <h4 class="sec">盘面显示</h4>
   <div id="objCards"></div>
 
   <details class="sec-help">
@@ -46,12 +46,12 @@
       <span><span class="sw" style="background:var(--cds)"></span>DeepSeek 预算（可选，默认关）</span>
       <span><span class="sw" style="background:var(--alert-y)"></span>剩余低于黄色阈值变黄</span>
       <span><span class="sw" style="background:var(--alert-r)"></span>剩余低于红色阈值变红</span>
-      <span>环 = <b>剩余制</b>（满弧=满额，随消耗缩短）｜紫色角标<i>估</i> = 台账估算值，与查询值分标</span>
+      <span>环 = <b>剩余制</b>（满弧=满额，随消耗缩短）｜紫色角标<i>估</i> = 本地记账估算值，与查询值分标</span>
       <span>●倒计时 = 窗口距重置剩余时间，颜色随所属环（告警时黄/红）</span>
       <span>紧凑档：每盘下方显示名字+品牌色小点；圆心大数字=套餐盘最紧环剩余% / DS 余额 / 交接本月次数；谁是谁 → 看名字行 / 悬停看tooltip / 单击看详情</span>
       <span>月预算不设=文字计数（现状）；设了=紫环（剩余制：1−已用/预算，caption 保留）。DeepSeek 预算环勾「开」=绿环（已用=本月花费）</span>
-      <span>同一家可有多条上游（渡口上游表按名键控），每条各一套显示配置；查询永远面向全部上游，这里只管“怎么显示”</span>
-      <span>数据：30s 轮询 /widget/summary；daemon 不可达=整体灰化，不假造数据</span>
+      <span>同一家服务商可有多条线路，各一套显示配置；查询面向全部，这里只管怎么显示</span>
+      <span>数据每 30 秒取一次；Ferryman 连不上就整体灰化，不造假数</span>
     </div>
   </details>
 
