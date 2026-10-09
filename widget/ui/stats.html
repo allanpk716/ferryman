@@ -512,17 +512,33 @@ async function loadSummary(){
     return false;
   }
 }
-async function pollOnce(){
-  await resolveTarget(); /* 每轮现读 token:daemon 重启换 token 后下轮自动生效 */
-  var res = await Promise.all([loadSummary(), loadUsage()]);
-  setErr(!(res[0] && res[1]));
+/* 可见性节拍(与账本常驻缓存同批上线,ADR-0027):隐藏即暂停(下轮 tick 跳过取数,
+   守护零请求)、显示即恢复并立刻刷一轮、可见时 30s 节拍不变。首屏这一轮
+   无条件拉(页面随常驻隐藏窗在启动时加载,先备一版数据防首开空白);
+   visibilitychange 为主,壳层 stats-restored 事件为备(托盘再开统计窗补刷);
+   两者都缺席时退化为旧恒轮询——后端已毫秒级,可承受。 */
+var pollTimer = null;
+async function pollTick(fetchNow){
+  if(fetchNow || !document.hidden){
+    await resolveTarget(); /* 每轮现读 token:daemon 重启换 token 后下轮自动生效 */
+    var res = await Promise.all([loadSummary(), loadUsage()]);
+    setErr(!(res[0] && res[1]));
+  }
+  if(pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(function(){ pollTick(false); }, POLL_MS);
 }
-function loop(){
-  pollOnce().catch(function(){ setErr(true); }).then(function(){
-    setTimeout(loop, POLL_MS);
-  });
-}
-loop();
+function pokeNow(){ pollTick(true).catch(function(){ setErr(true); }); }
+document.addEventListener("visibilitychange", function(){
+  if(!document.hidden) pokeNow(); /* 显示:立即刷一轮并重置节拍 */
+});
+(function(){
+  var t = window.__TAURI__;
+  if(t && t.event && t.event.listen){
+    t.event.listen("stats-restored", function(){ pokeNow(); })
+      .catch(function(){ /* 监听失败:退化为纯 visibilitychange 面 */ });
+  }
+})();
+pollTick(true).catch(function(){ setErr(true); });
 })();
 </script>
 </body>

@@ -626,6 +626,10 @@ fn open_stats(app: &tauri::AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        // 显示即刷（ADR-0027 前端票）：单实例 widget-restored 同款 emit，
+        // stats.html 收到即立刻拉一轮——visibilitychange 不触发时的兜底路径
+        // （capabilities 需收录 stats 窗，事件 listen 才被放行）。
+        let _ = app.emit("stats-restored", ());
     }
 }
 
