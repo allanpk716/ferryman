@@ -379,9 +379,10 @@ func splitGateMissing(hooks map[string]any) (others []string, gate bool) {
 //   - 见证未装配（dial nil 或目标口未解析）＝探针单源旧判（配置坏由
 //     ferry_provider 项如实报，此处不二次归因）。
 //
-// 已知既有误报面（读码发现，本票不修另立票）：realStatsProbe 不看 HTTP 状态码
-// ——401 的 {"error":"unauthorized"} 是合法 JSON，probe 返回非 nil，误 pass
-// 方向（假活）；与本案误 fail 反向，不因本票扩大。
+// 已知既有误报面（读码发现）：realStatsProbe 曾不看 HTTP 状态码——401 的
+// {"error":"unauthorized"} 是合法 JSON，probe 返回非 nil，误 pass 方向（假
+// 活）；2026-10-09 晨报后续票01 已修（非 200 → nil），与本案误 fail 反向的
+// 假活面就此关闭。
 func CheckDaemon(probe func() map[string]any, pidFile string,
 	dial func(addr string, timeout time.Duration) error, dialAddr string) Check {
 	st := probe()
@@ -1424,6 +1425,13 @@ func realStatsProbe(dataDir string, port int) func() map[string]any {
 			return nil
 		}
 		defer resp.Body.Close()
+		// 401 假活面修复（dsh-host-guard 晨报后续票01，2026-10-09）：401 的
+		// {"error":"unauthorized"} 是合法 JSON，不看状态码会被当活体（误 pass
+		// 方向）——非 200 一律 nil（token 不对＝存取级异常，活性另由拨号见证
+		// 分支裁决，见 CheckDaemon「监听事实优先」）。
+		if resp.StatusCode != http.StatusOK {
+			return nil
+		}
 		data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if err != nil {
 			return nil

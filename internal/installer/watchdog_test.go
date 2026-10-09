@@ -498,9 +498,12 @@ func TestWatchdogPollersFetchReal(t *testing.T) {
 		t.Fatalf("pollers 段解析不符: %+v", got)
 	}
 
-	// 401：鉴权不过 → pollers 无从读 → nil，不炸不误报。
+	// 401：鉴权不过 → nil，不炸不误报。响应体带合法 JSON+pollers 键——
+	// 修复前靠「应答体无 pollers 键」巧合落空（晨报后续票02 钉的就是这形
+	// 态：若 401 体恰带 pollers 键会被当活），现非 200 显式拒。
 	srv401 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"pollers":[{"name":"ghost","last_seen":1800000000,"age_s":0,"state":"online"}]}`)
 	}))
 	defer srv401.Close()
 	port401 := srv401.Listener.Addr().(*net.TCPAddr).Port

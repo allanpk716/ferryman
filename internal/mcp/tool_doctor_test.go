@@ -415,3 +415,37 @@ func TestDoctorToolRealDepsDaemonOffline(t *testing.T) {
 		t.Fatalf("端口 %d 出现监听——doctor 不得自举 daemon", e.port)
 	}
 }
+
+// TestFreshCfgOrFrozen 晨报后续票04（MCP 冻结探针目标解冻，2026-10-09）：
+// doctor 闭包每次调用现载配置——FERRYMAN_CONFIG 改写后端口目标跟着走
+// （冻结快照会打旧口＝假死/假活残留）；坏配置回落冻结快照（不差于修前）。
+func TestFreshCfgOrFrozen(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[server]\nport = 15701\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FERRYMAN_CONFIG", cfgPath)
+	frozen := &config.Config{} // 会话启动时的冻结快照（端口零值＝旧目标假死形态）
+
+	got := freshCfgOrFrozen(frozen)
+	if got.Server.Port != 15701 {
+		t.Fatalf("现载应取新配置口 15701, got %d", got.Server.Port)
+	}
+
+	// 会话中途改配置：下一次调用跟新值（冻结快照在旧口上会打空）。
+	if err := os.WriteFile(cfgPath, []byte("[server]\nport = 15702\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := freshCfgOrFrozen(frozen); got.Server.Port != 15702 {
+		t.Fatalf("改写后现载应跟 15702, got %d", got.Server.Port)
+	}
+
+	// 坏配置：回落冻结快照（不引入新失败面）。
+	if err := os.WriteFile(cfgPath, []byte("not [ valid toml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := freshCfgOrFrozen(frozen); got != frozen {
+		t.Fatal("坏配置应回落冻结快照")
+	}
+}
