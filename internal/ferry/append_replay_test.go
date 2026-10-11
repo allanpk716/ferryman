@@ -69,7 +69,7 @@ func TestParseSameModelOutputStrict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("合法输出应通过: %v", err)
 	}
-	if inject != "注入层内容" {
+	if inject != "注入层内容\n\n**目标**（程序补自全文「目标」节）：做某事" { // 缺目标程序补齐（2026-10-11）
 		t.Fatalf("inject = %q", inject)
 	}
 	if !strings.HasPrefix(full, "# 目标") || !strings.Contains(full, "下一句") {
@@ -113,7 +113,7 @@ func TestSameModelMarkdownComposes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inject != "注入层:目标过半" {
+	if inject != "注入层:目标过半\n\n**目标**（程序补自全文「目标」节）：做完 A" { // 缺目标程序补齐（2026-10-11）
 		t.Fatalf("inject = %q", inject)
 	}
 	// 产物结构与第三方档同构:头部 + INJECT 层 + 分隔 + 全文(尾部拼程序骨架)。

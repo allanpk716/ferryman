@@ -74,7 +74,7 @@ func ParseSameModelOutput(reply string) (inject, full string, err error) {
 	if inject == "" || full == "" {
 		return "", "", ErrSameModelBadFormat
 	}
-	return TrimInjectLayer(inject), full, nil
+	return TrimInjectLayer(EnsureInjectGoal(inject, full)), full, nil
 }
 
 // SameModelMarkdown 同模型产物合成：严格解析叙事 + 程序骨架 → 两层交接 MD。
