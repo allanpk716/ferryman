@@ -549,3 +549,57 @@ func TestConsumeHandoffsScopeCountAndCarrier(t *testing.T) {
 		}
 	}
 }
+
+// 2026-10-11 上一代交接案（c2ffdd87→23040098→db572a88）：同会话重摆渡若内容
+// 没推进（covers 未越过旧条目+容差），继承旧条目的注入记录——否则"已被摆渡
+// 接走"的事实随重生丢失，上一代交接冒充别的工作线；内容真推进（强续后续
+// 干）则不继承，两条线都活着。
+func TestSaveHandoffCarriesInjectedWhenCoversNotAdvanced(t *testing.T) {
+	st := mk(t)
+	base := clock.Now() - 3600
+	e1 := save(t, st, "s1", "cc", "C:/p", fptr(base), "fresh")
+	st.MarkInjected(e1.HandoffID, "succ")
+	e2 := save(t, st, "s1", "cc", "C:/p", fptr(base+30), "fresh") // 容差内＝同内容重生
+	if len(e2.Injected) != 1 || e2.Injected[0] != "succ" {
+		t.Fatalf("同内容重生应继承注入记录: %+v", e2.Injected)
+	}
+	if got := st.RestoreCandidates("cc", "C:/p"); len(got) != 1 || len(got[0].Injected) != 1 {
+		t.Fatalf("索引内条目应带继承的注入记录: %+v", got)
+	}
+	e3 := save(t, st, "s1", "cc", "C:/p", fptr(base+600), "fresh") // 内容真推进
+	if len(e3.Injected) != 0 {
+		t.Fatalf("内容推进后不继承: %+v", e3.Injected)
+	}
+}
+
+// DropSuperseded：交接 H 注入过的某会话 T 已有自己的交接（T 接着干出了
+// 内容）＝H 是本线上一代，供出清单剔除；只注入未产出（T 无交接）不算接替。
+func TestDropSupersededAncestor(t *testing.T) {
+	st := mk(t)
+	base := clock.Now() - 3600
+	anc := save(t, st, "anc", "cc", "C:/p", fptr(base), "fresh")
+	st.MarkInjected(anc.HandoffID, "idle-clear") // 注入后没干活：无交接
+	other := save(t, st, "other", "cc", "C:/p", fptr(base+10), "fresh")
+	got := st.DropSuperseded(st.RestoreCandidates("cc", "C:/p"))
+	if len(got) != 2 {
+		t.Fatalf("注入会话无交接不算接替, 应保留 2 条: %+v", got)
+	}
+	st.MarkInjected(anc.HandoffID, "succ")
+	succ := save(t, st, "succ", "cc", "C:/p", fptr(base+100), "fresh")
+	got = st.DropSuperseded(st.RestoreCandidates("cc", "C:/p"))
+	ids := []string{}
+	for _, e := range got {
+		ids = append(ids, e.HandoffID)
+	}
+	if len(got) != 2 || got[0].HandoffID != succ.HandoffID || got[1].HandoffID != other.HandoffID {
+		t.Fatalf("上一代应被剔除、其余保序: %v", ids)
+	}
+	// 接替者是别的 agent 的同名会话不算（agent 隔离）。
+	st2 := mk(t)
+	a2 := save(t, st2, "anc", "cc", "C:/p", fptr(base), "fresh")
+	st2.MarkInjected(a2.HandoffID, "succ")
+	save(t, st2, "succ", "codex", "C:/p", fptr(base+100), "fresh")
+	if got := st2.DropSuperseded(st2.RestoreCandidates("cc", "C:/p")); len(got) != 1 {
+		t.Fatalf("跨 agent 不算接替: %+v", got)
+	}
+}

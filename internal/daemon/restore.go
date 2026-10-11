@@ -94,7 +94,7 @@ func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPr
 	fmt.Fprintf(&b, "%s，原话如下，接着它继续即可：\n「%s」\n", head, pending)
 	b.WriteString("\n说明：这个会话的进度交接没有生成（失败或未完成），所以没有自动交接可带；")
 	rest := make([]store.Entry, 0, len(cands))
-	for _, c := range cands {
+	for _, c := range d.Store.DropSuperseded(cands) { // 上一代不列（2026-10-11）
 		if c.SessionID != p.SessionID {
 			rest = append(rest, c)
 		}
@@ -139,6 +139,10 @@ func (d *Daemon) restoreNewest(agent, cwd, sessionID string) map[string]any {
 		}
 		cands = fresh
 	}
+	// 本线上一代（已被摆渡接走、接替会话已有交接）不算候选（2026-10-11
+	// 上一代交接案）：否则单线目录也出多候选清单、逼用户在同一条线的新旧
+	// 两代之间挑。
+	cands = d.Store.DropSuperseded(cands)
 	if len(cands) == 0 {
 		return map[string]any{"context": nil}
 	}
@@ -215,7 +219,7 @@ func (d *Daemon) injectHandoff(agent, cwd, sessionID string, h store.Entry, pend
 	// 条。注对线时是静默保险丝；注错线时模型据此自检换轨（与用户对一句或读对
 	// 得上的那份交接），不再闷头错到底。
 	rest := make([]store.Entry, 0, 3)
-	for _, c := range d.Store.RestoreCandidates(agent, cwd) {
+	for _, c := range d.Store.DropSuperseded(d.Store.RestoreCandidates(agent, cwd)) { // 上一代不列（2026-10-11）
 		if c.HandoffID != h.HandoffID && len(rest) < 3 {
 			rest = append(rest, c)
 		}
