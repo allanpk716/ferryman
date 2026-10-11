@@ -240,3 +240,47 @@ func TestADR0013PruneOlderThan(t *testing.T) {
 		t.Fatalf("超龄 index 行未清: %s", data)
 	}
 }
+
+// TestADR0013BlockNoticeNoReferry 2026-10-11 拦截回写案（38a431/3df3d3 实锚：
+// 重生交接的 covers 恰等于拦截时刻）：CC 拦截提示行带 timestamp，但不是会话
+// 内容——追加后 mtime 前进、闲置达标，守望者仍不得重摆渡。
+func TestADR0013BlockNoticeNoReferry(t *testing.T) {
+	tmp := t.TempDir()
+	projects := filepath.Join(tmp, "projects")
+	cfg := config.Default()
+	cfg.Thresholds = config.ThresholdCfg{SummarizeS: 0.1, BlockS: 1.0, MinCtxTokens: 10}
+	cfg.Watch.CCProjectsDir = projects
+	cfg.Watch.CodexSessionsDir = filepath.Join(tmp, "no-codex")
+	led := ledger.New()
+	proj := filepath.Join(tmp, "proj")
+	f := writeIntegSession(t, projects, "notice-1", proj, 2000)
+
+	var enqueued int
+	w := NewWatcher(cfg, led, nil, func(*ledger.SessionState) bool {
+		enqueued++
+		return true
+	}, 0, nil, nil, nil, nil)
+
+	base := clock.Now()
+	st := led.TouchFull("cc", "notice-1", f, base-100, 10, proj, "", 0, 0)
+	w.maybeEnqueue(st)
+	if enqueued != 1 {
+		t.Fatalf("首次入队 = %d, want 1", enqueued)
+	}
+	contentTS, ok := cctrans.LastTimestamp(f)
+	if !ok {
+		t.Fatal("LastTimestamp 未取到")
+	}
+	led.Mu().Lock()
+	st.HandledContentTS = contentTS
+	st.HandedOffAt = base - 99
+	led.Mu().Unlock()
+
+	later := time.Now().Add(90 * time.Second).UTC().Format("2006-01-02T15:04:05.000Z")
+	appendFileLines(t, f, fmt.Sprintf(`{"type":"system","subtype":"informational","content":"UserPromptSubmit operation blocked by hook:\n闲置","level":"warning","preventContinuation":true,"timestamp":%q}`, later))
+	led.TouchFull("cc", "notice-1", f, base-50, 20, proj, "", 0, 0)
+	w.maybeEnqueue(st)
+	if enqueued != 1 {
+		t.Fatalf("拦截提示后入队 = %d, want 1（拦截回写不是内容推进）", enqueued)
+	}
+}

@@ -2158,3 +2158,40 @@ func TestGateCompactedShortPrefix(t *testing.T) {
 		})
 	}
 }
+
+// TestGateBlockNoticeDoesNotResetIdle 2026-10-11 拦截回写案：分支5 拦截后
+// CC 往转录追加一条带 timestamp 的拦截提示（system/informational/
+// preventContinuation=true）并顶新 mtime。它不是会话内容——用户紧接着
+// 直接回车重发，闲置钟不得被它归零放行（旧行为：内容时钟=拦截时刻 →
+// idle≈0、pending 已被分支5 清 → 冷缓存静默放行），交接也不得被判过期。
+func TestGateBlockNoticeDoesNotResetIdle(t *testing.T) {
+	e := newGateEnv(t)
+	proj := filepath.Join(e.tmp, "proj")
+	path := filepath.Join(e.tmp, "cc.jsonl")
+	tsFmt := "2006-01-02T15:04:05.000Z"
+	old := time.Unix(int64(e.t0-(testBlockS+600)), 0).UTC().Format(tsFmt)
+	os.WriteFile(path, []byte(fmt.Sprintf(
+		`{"type":"assistant","timestamp":%q,"message":{"content":"好"}}`+"\n", old)), 0o644)
+	e.led.TouchFull("cc", "bn1", path, e.t0-(testBlockS+600), 10, proj, "", 99999, 0)
+	e.store.SaveHandoff("bn1", "cc", proj, "t", old, "fresh", "md")
+
+	r1 := e.d.Gate(gateBody4("bn1", path, proj, "第一次"))
+	if r1["decision"] != "block" {
+		t.Fatalf("首发应分支5 拦, decision = %v", r1["decision"])
+	}
+	// CC 回写拦截提示（实测形状）+ mtime 前进。
+	notice := time.Unix(int64(e.t0), 0).UTC().Format(tsFmt)
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	fmt.Fprintf(f, `{"type":"system","subtype":"informational","content":"UserPromptSubmit operation blocked by hook:\n闲置","level":"warning","preventContinuation":true,"timestamp":%q}`+"\n", notice)
+	f.Close()
+	e.led.TouchFull("cc", "bn1", path, e.t0, 20, proj, "", 99999, 0)
+	e.advance(5)
+
+	r2 := e.d.Gate(gateBody4("bn1", path, proj, "直接回车重发"))
+	if r2["decision"] != "block" {
+		t.Fatalf("拦截提示不得归零闲置钟, 重发 decision = %v (%v)", r2["decision"], r2["additional_context"])
+	}
+	if _, ok := r2["handoff_path"]; !ok {
+		t.Fatalf("交接仍覆盖会话内容, 重发应走分支5 带交接: %v", r2)
+	}
+}
