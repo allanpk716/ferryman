@@ -436,6 +436,9 @@ func TestChainSessionFiveFailureClassesSlide(t *testing.T) {
 			if tc.wantSub != "" && !strings.Contains(got[0].Err, tc.wantSub) {
 				t.Fatalf("%s: 失败原因缺 %q: %q", tc.name, tc.wantSub, got[0].Err)
 			}
+			if strings.HasPrefix(got[0].Err, "same_model:") { // 第三方档不挂同模型档前缀
+				t.Fatalf("%s: 第三方档失败原因不应带 same_model 前缀: %q", tc.name, got[0].Err)
+			}
 		})
 	}
 }
