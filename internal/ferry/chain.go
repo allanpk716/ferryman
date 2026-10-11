@@ -91,7 +91,9 @@ func ChainSession(path string, chain []Provider, timeoutS float64, agent string,
 		}
 		inject, full, perr := ParseSameModelOutput(reply) // 与同模型档同款结构纪律
 		if perr != nil {
-			fail(perr.Error())
+			// 第三方档不带 same_model: 前缀（2026-10-11：账本 lane=third_party 却记
+			// "same_model: …" 易误读为同模型档失败；lane 字段已区分档位）。
+			fail(strings.TrimPrefix(perr.Error(), "same_model: "))
 			continue
 		}
 		meta := map[string]any{

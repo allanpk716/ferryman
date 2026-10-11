@@ -354,3 +354,16 @@ func TestCommandsRecentTail(t *testing.T) {
 		t.Fatal("缺尾窗首条")
 	}
 }
+
+// TestExtractLastTSSkipsHookBlockNotice 2026-10-11 拦截回写案：交接覆盖截止
+// （LastTS）与内容时钟同口径——CC 拦截提示行不算会话内容，不推进 LastTS。
+func TestExtractLastTSSkipsHookBlockNotice(t *testing.T) {
+	lines := append(fixtureLines(), map[string]any{"type": "system",
+		"subtype": "informational", "level": "warning", "preventContinuation": true,
+		"content": "UserPromptSubmit operation blocked by hook:\n此会话已闲置",
+		"timestamp": "2026-09-16T18:00:00.000Z"})
+	facts, _, _ := Extract(writeJSONL(t, lines))
+	if facts.LastTS != "2026-09-16T10:00:40.000Z" {
+		t.Fatalf("LastTS = %q, want 拦截提示前最后内容行 2026-09-16T10:00:40.000Z", facts.LastTS)
+	}
+}

@@ -495,3 +495,45 @@ func TestRestoreCandidatesTotalOrderAndDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// 2026-10-11 上一代交接案回放（c2ffdd87→23040098→db572a88）：A 的交接注入
+// B 后 B 接着干出了自己的交接；B 被拦 /clear 到 C——注入 B 那份，尾注不得
+// 把 A（本线上一代）当"别的工作线"列出；之后自愿 /clear 也不再出两候选清单。
+func TestRestoreDropsSupersededAncestorFromTailAndListing(t *testing.T) {
+	e := newGateEnv(t)
+	anc := saveCand(t, e, "anc-src", "MVP 方案评审与反馈文件", 900, "md-anc")
+	e.store.MarkInjected(anc["id"].(string), "mid-src")
+	saveCand(t, e, "mid-src", "反馈提交情况", 300, "md-mid")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "mid-src", "又做了更多的开发")
+	r := e.d.Restore("cc", "C:/proj", "new-src")
+	ctx, _ := r["context"].(string)
+	if !strings.Contains(ctx, "会话 反馈提交情况") || !strings.Contains(ctx, "又做了更多的开发") {
+		t.Fatalf("应钉死注入被拦会话交接+原话: %q", ctx)
+	}
+	if strings.Contains(ctx, "MVP 方案评审与反馈文件") || strings.Contains(ctx, "自检：") {
+		t.Fatalf("上一代不得列为别的工作线: %q", ctx)
+	}
+	r2 := e.d.Restore("cc", "C:/proj", "new2-src") // 无锚：只剩本线最新一份 → 单候选注入
+	ctx2, _ := r2["context"].(string)
+	if !strings.Contains(ctx2, "会话 反馈提交情况") || strings.Contains(ctx2, "份可用交接") {
+		t.Fatalf("上一代剔除后应单候选注入: %q", ctx2)
+	}
+}
+
+// 锚定钉死不受上一代剔除影响：用户回到旧窗口（上一代会话）被拦再 /clear，
+// 仍拿到那个会话自己的交接。
+func TestRestoreAnchoredOnSupersededSessionStillPins(t *testing.T) {
+	e := newGateEnv(t)
+	anc := saveCand(t, e, "anc-src", "上一代", 900, "md-anc")
+	e.store.MarkInjected(anc["id"].(string), "mid-src")
+	saveCand(t, e, "mid-src", "接替者", 300, "md-mid")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "anc-src", "旧窗口原话")
+	r := e.d.Restore("cc", "C:/proj", "new-src")
+	ctx, _ := r["context"].(string)
+	if !strings.Contains(ctx, "会话 上一代") || !strings.Contains(ctx, "旧窗口原话") {
+		t.Fatalf("锚定应钉死上一代自己的交接: %q", ctx)
+	}
+	if !strings.Contains(ctx, "- 接替者 → ") {
+		t.Fatalf("接替者应列在尾注: %q", ctx)
+	}
+}

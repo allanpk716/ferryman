@@ -152,6 +152,18 @@ func AssistantTurns(path string) []Turn {
 // mtime 兜底语义——宁可多摆渡一次，不误判内容未推进。
 const MaxLastTSWindowBytes = 2 * 1024 * 1024
 
+// IsHookBlockNotice CC 钩子拦截回写判定（2026-10-11 拦截回写案）：
+// UserPromptSubmit 钩子 block 时，CC 往转录追加一条带 timestamp 的 system
+// 提示（实测 subtype=informational、level=warning、preventContinuation=true）。
+// 它不是会话内容——内容时钟与交接覆盖截止（extract LastTS）都须跳过：
+// 否则交接被判过期白重摆渡，且闸门闲置钟被归零（被拦后直接回车重发即
+// 冷缓存静默放行）。判定只认 type=system ∧ preventContinuation=true。
+func IsHookBlockNotice(d map[string]any) bool {
+	typ, _ := d["type"].(string)
+	pc, _ := d["preventContinuation"].(bool)
+	return typ == "system" && pc
+}
+
 // LastTimestamp 转录内最后一条带顶层 timestamp 记录的 epoch 秒（内容时钟的
 // 取值器，ADR-0013）。
 //
@@ -173,6 +185,9 @@ func LastTimestamp(path string) (float64, bool) {
 			}
 			d, ok := jsonl.DecodeDict(line)
 			if !ok {
+				continue
+			}
+			if IsHookBlockNotice(d) { // 拦截回写不是会话内容（2026-10-11）
 				continue
 			}
 			if ts, ok := TSToEpoch(d["timestamp"]); ok {

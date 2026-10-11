@@ -228,7 +228,7 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 		}
 		typ, _ := d["type"].(string)
 
-		if ts, ok := d["timestamp"].(string); ok {
+		if ts, ok := d["timestamp"].(string); ok && !cctrans.IsHookBlockNotice(d) {
 			if !haveFirst {
 				firstISO = ts
 				haveFirst = true

@@ -251,6 +251,13 @@ func (s *Store) SaveHandoff(sessionID, agent, cwd, title, coversUntilISO, status
 	for _, e := range s.index.Handoffs {
 		if !(e.SessionID == sessionID && e.Agent == agent) {
 			kept = append(kept, e)
+			continue
+		}
+		// 同内容重生继承注入记录（2026-10-11 上一代交接案）：covers 未越过旧
+		// 条目+容差＝内容没推进，"已被摆渡接走"的事实不随重生丢失
+		//（DropSuperseded 据此认上一代）；内容真推进（强续后续干）不继承。
+		if len(e.Injected) > 0 && entry.CoversUntilS <= e.CoversUntilS+CoversToleranceS {
+			entry.Injected = slices.Clone(e.Injected)
 		}
 	}
 	kept = append(kept, entry)
@@ -521,6 +528,35 @@ func (s *Store) RestoreCandidates(agent, cwd string) []Entry {
 		return cands[i].Path < cands[j].Path
 	})
 	return cands
+}
+
+// DropSuperseded 剔除本线上一代交接（2026-10-11 上一代交接案：c2ffdd87 的
+// 交接注入 23040098 后，23040098 接着干出了自己的交接，c2ffdd87 那份仍被当
+// "别的工作线"列进清单/尾注）。判据：H 注入过的某会话 T 在索引里有同 agent
+// 的交接（T 接着干出了内容）＝H 已被接替；只注入未产出（T 无交接）不算。
+// 入参顺序保持。只供展示路径（清单/尾注/单候选择取）用——锚定钉死查找
+// 不过滤（用户回旧窗口被拦再 /clear，仍须拿到那个会话自己的交接）。
+func (s *Store) DropSuperseded(cands []Entry) []Entry {
+	s.mu.Lock()
+	has := map[[2]string]bool{}
+	for _, e := range s.index.Handoffs {
+		has[[2]string{e.Agent, e.SessionID}] = true
+	}
+	s.mu.Unlock()
+	out := make([]Entry, 0, len(cands))
+	for _, c := range cands {
+		superseded := false
+		for _, sid := range c.Injected {
+			if sid != c.SessionID && has[[2]string{c.Agent, sid}] {
+				superseded = true
+				break
+			}
+		}
+		if !superseded {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // MarkInjected 注入去重追加；未命中也照常 flush（Python 同）。

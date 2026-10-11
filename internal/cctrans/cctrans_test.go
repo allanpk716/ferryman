@@ -524,3 +524,36 @@ func TestLastTimestamp(t *testing.T) {
 		t.Fatal("全无时间戳应 false")
 	}
 }
+
+// TestLastTimestampSkipsHookBlockNotice 2026-10-11 拦截回写案：CC 被
+// UserPromptSubmit 钩子拦截时往转录追加一条带 timestamp 的 system 提示
+// （subtype=informational、preventContinuation=true，实测形状）。它不是会话
+// 内容——内容时钟不得被它推进（否则交接被判过期白重摆渡、闸门闲置钟归零）。
+func TestLastTimestampSkipsHookBlockNotice(t *testing.T) {
+	tsB := "2026-10-11T00:53:13.027Z"
+	f := writeLines(t, []string{
+		lineOf(map[string]any{"type": "assistant", "timestamp": "2026-10-11T00:53:12.875Z",
+			"message": map[string]any{"role": "assistant", "content": "好"}}),
+		lineOf(map[string]any{"type": "system", "subtype": "turn_duration", "timestamp": tsB}),
+		lineOf(map[string]any{"type": "system", "subtype": "informational",
+			"content": "UserPromptSubmit operation blocked by hook:\n此会话已闲置",
+			"level": "warning", "preventContinuation": true,
+			"timestamp": "2026-10-11T08:08:31.913Z"}),
+		lineOf(map[string]any{"type": "cost-state", "sessionId": "s"}),
+	})
+	ts, ok := LastTimestamp(f)
+	want, _ := TSToEpoch(tsB)
+	if !ok || ts != want {
+		t.Fatalf("LastTimestamp = (%v,%v), want (%v,true)（拦截提示不推进内容时钟）", ts, ok, want)
+	}
+	// 判定单点：只认 system + preventContinuation=true。
+	if !IsHookBlockNotice(map[string]any{"type": "system", "preventContinuation": true}) {
+		t.Fatal("system+preventContinuation 应判拦截提示")
+	}
+	if IsHookBlockNotice(map[string]any{"type": "system", "subtype": "turn_duration"}) {
+		t.Fatal("普通 system 行不应判拦截提示")
+	}
+	if IsHookBlockNotice(map[string]any{"type": "user", "preventContinuation": true}) {
+		t.Fatal("非 system 行不应判拦截提示")
+	}
+}

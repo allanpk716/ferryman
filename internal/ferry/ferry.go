@@ -289,6 +289,7 @@ func ParseOutput(reply string) (inject, full string) {
 	if strings.Contains(reply, InjectOpen) && strings.Contains(reply, InjectClose) {
 		inject = strings.TrimSpace(strBefore(strAfter(reply, InjectOpen), InjectClose))
 		full = strings.TrimSpace(strAfter(reply, InjectClose))
+		inject = EnsureInjectGoal(inject, full) // 两层齐才有全文目标节可补
 	} else {
 		inject, full = strings.TrimSpace(reply), strings.TrimSpace(reply)
 	}

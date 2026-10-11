@@ -13,3 +13,7 @@ Claude Code 会对仍开着的会话文件周期性追加无时间戳的状态�
 - 取不到内容时钟（尾部 >2MB 无时间戳行/读败）一律 fail-open 回旧 mtime 行为：宁可多摆渡一轮，不误判内容未推进。
 - 台账新增 ContentTS/ContentStamp/HandledContentTS 三字段，仅内存：daemon 重启归零＝重启后每闲置会话多摆渡一轮（既有 handed_off_at 同语义，未变）。
 - 30 天交接库清理（DESIGN §6.15 遗留 TODO）随本 ADR 落地：超龄 MD（含无索引孤儿）按文件名时间前缀删除，非交接命名文件保留。
+
+## 修订 2026-10-11：拦截回写不算内容
+
+CC 在 UserPromptSubmit 钩子 block 时会往转录追加一条**带 timestamp** 的 system 提示（`subtype=informational`、`level=warning`、`preventContinuation=true`），它绕过了"状态块无时间戳"这条天然过滤。后果两件：①交接被判过期、约一个闲置周期后白重摆渡一份内容相同的交接（实锚：`38a431`/`3df3d3` 的 covers 恰等于拦截时刻）；②闸门闲置钟被归零——分支5 拦截已清 pending，用户紧接着直接回车重发即**冷缓存静默放行**（`TestGateBlockNoticeDoesNotResetIdle` 复现）。决定：`cctrans.IsHookBlockNotice`（type=system ∧ preventContinuation=true）单点判定，内容时钟（`LastTimestamp`）与交接覆盖截止（extract `LastTS`）一并跳过。仅 CC 转录语义，codex 不涉。
