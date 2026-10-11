@@ -31,8 +31,8 @@ try {
         -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 2
     if ($resp.decision -eq 'block') {
         # 原样转发 daemon 的 block 决策给 dsh 桥（decision/reason/suppressOriginalPrompt；桥折 deny 拒本轮提交）
-        $out = @{ decision = 'block'; reason = $resp.reason; suppressOriginalPrompt = $true } |
-            ConvertTo-Json -Compress
+        $out = @{ decision = 'block'; reason = $resp.reason; suppressOriginalPrompt = $true; hookSpecificOutput = @{ hookEventName = 'UserPromptSubmit'; suppressOriginalPrompt = $true } } |
+            ConvertTo-Json -Compress -Depth 5
         [Console]::Out.Write($out)
         exit 0
     }

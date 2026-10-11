@@ -30,9 +30,9 @@ try {
         -ContentType 'application/json' `
         -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 2
     if ($resp.decision -eq 'block') {
-        # 原样转发 daemon 的 block 决策给 CC（decision/reason/suppressOriginalPrompt）
-        $out = @{ decision = 'block'; reason = $resp.reason; suppressOriginalPrompt = $true } |
-            ConvertTo-Json -Compress
+        # 转发 daemon 的 block 决策给 CC：suppressOriginalPrompt 按官方文档置于 hookSpecificOutput 内（顶层保留兼容旧契约）
+        $out = @{ decision = 'block'; reason = $resp.reason; suppressOriginalPrompt = $true; hookSpecificOutput = @{ hookEventName = 'UserPromptSubmit'; suppressOriginalPrompt = $true } } |
+            ConvertTo-Json -Compress -Depth 5
         [Console]::Out.Write($out)
         exit 0
     }

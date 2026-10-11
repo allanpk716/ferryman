@@ -274,9 +274,14 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		d.Store.MarkBlocked(h.HandoffID)
 		d.notifyBlock(st, h, idle)
 		// 【推荐】段按 agent 分支（票01/D3）：dsh 无 /clear 命令，换「新建会话」
-		// 引导；cc 逐字零变化。强续段落与交接文档行两 agent 同文。
+		// 引导。强续段落与交接文档行两 agent 同文。cc 第1步加 Ctrl+U：部分 CC
+		// 版本被拦后原话留在输入框（2026-10-11 用户反馈），须先清空才能打 /clear。
+		step1 := "  1. 输入 /clear\n"
+		if agent == "cc" {
+			step1 = "  1. 按 Ctrl+U 清空输入框（原话已保存，清掉无妨），再输入 /clear\n"
+		}
 		rec := "\n【推荐】/clear 换新会话（约 10 秒，进度和原话自动带过去）：\n" +
-			"  1. 输入 /clear\n" +
+			step1 +
 			"  2. 随便发一个字（如「继续」）\n" +
 			"  新会话开场自动收到：本会话的进度交接 + 你这条原话，接着原话继续干。\n"
 		if agent == "dsh" {
@@ -306,8 +311,12 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			"prefix_tokens": snap.peak, "idle_s": mathx.Round(idle, 1)})
 		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
 		// 【或换会话】段同上按 agent 分支（票01/D3）：分支6语义——交接若已生成
-		// 会一并带给新会话，没好则只带回原话；cc 逐字零变化。
-		alt := "\n【或 /clear 换新会话】开场发一个字即可；本会话的交接若已生成会" +
+		// 会一并带给新会话，没好则只带回原话。cc 同分支5 补 Ctrl+U 指引。
+		clearHow := "开场发一个字即可"
+		if agent == "cc" {
+			clearHow = "先按 Ctrl+U 清空输入框（原话已保存），输入 /clear 后开场发一个字即可"
+		}
+		alt := "\n【或 /clear 换新会话】" + clearHow + "；本会话的交接若已生成会" +
 			"一并带给新会话，此刻还没好则新会话只会带回你这条原话（之前的进度" +
 			"需要自己简述两句）。"
 		if agent == "dsh" {
@@ -427,7 +436,8 @@ func (d *Daemon) machineWaiting(agent, sessionID, path string) bool {
 // 返回（true, 距缓存死线剩余秒）。无钟/无 TTL/无观测 → (false,0) 保守判冷
 // ——绝不伪造热（同模型泳道 sameModelHot 同纪律）。
 func (d *Daemon) cacheHot(sid string) (bool, float64) {
-	if d.HeatClock == nil || d.Cfg.Heartbeat.TTLS <= 0 {
+	ttl := d.gateCacheTTL()
+	if d.HeatClock == nil || ttl <= 0 {
 		return false, 0
 	}
 	last, ok := d.HeatClock.Last(sid)
@@ -435,10 +445,19 @@ func (d *Daemon) cacheHot(sid string) (bool, float64) {
 		return false, 0
 	}
 	clockS := clock.Now() - last
-	if !ferry.PredictHot(clockS, ferry.TTLObs{TTLS: d.Cfg.Heartbeat.TTLS}) {
+	if !ferry.PredictHot(clockS, ferry.TTLObs{TTLS: ttl}) {
 		return false, 0
 	}
-	return true, math.Max(0, d.Cfg.Heartbeat.TTLS-clockS)
+	return true, math.Max(0, ttl-clockS)
+}
+
+// gateCacheTTL 闸门判热用 TTL：[heartbeat].ttl_s 实测值优先，未配回落
+// [gate].cache_ttl_s（原生 CC 不配心跳时的闸门专用值）；皆 0 → 判热恒冷＝旧行为。
+func (d *Daemon) gateCacheTTL() float64 {
+	if d.Cfg.Heartbeat.TTLS > 0 {
+		return d.Cfg.Heartbeat.TTLS
+	}
+	return d.Cfg.GateCacheTTLS
 }
 
 // hotCtx 热缓存放行提示（拦窗内但判热必活带）：本条按折扣价、死线何时到。

@@ -488,6 +488,66 @@ func TestGateHotCacheConservativeWithoutObservation(t *testing.T) {
 	}
 }
 
+// TestGateCacheTTLFallbackUnlatchesPending 2026-10-11 原生 CC 误拦案复现：
+// [heartbeat].ttl_s=0（原生 CC 不配心跳）时判热恒冷——分支7 警告置 pending、
+// 会话随即续用焐热缓存，7 分钟后下一条仍被分支6 拦。[gate].cache_ttl_s
+// 回落接上判热：热→放行并清 pending；未配（0）→ 旧行为照拦（零变化）。
+func TestGateCacheTTLFallbackUnlatchesPending(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		gateTTL  float64
+		decision string
+	}{
+		{"fallback-hot", 3600, "allow"},
+		{"unset-old-behavior", 0, "block"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newGateEnv(t)
+			e.d.Cfg.Heartbeat.TTLS = 0
+			e.d.Cfg.GateCacheTTLS = tc.gateTTL
+			e.d.HeatClock = beat.NewLastRequestClock()
+			proj := filepath.Join(e.tmp, "proj")
+			e.reg("nat1", "C:/nat1.jsonl", proj, 65000, 99999) // 闲置 18h，无观测
+			r := e.d.Gate(gateBody("nat1", "C:/nat1.jsonl", proj))
+			if r["decision"] != "allow" {
+				t.Fatalf("首条走分支7 警告放行: %v", r)
+			}
+			if _, pok := e.d.Pending.Get([2]string{"cc", "nat1"}); !pok {
+				t.Fatal("分支7 应置 pending")
+			}
+			e.d.HeatClock.Note("nat1", e.t0) // 警告放行后会话续用：主流量真发喂钟
+			e.advance(432)
+			r = e.d.Gate(gateBody("nat1", "C:/nat1.jsonl", proj))
+			if r["decision"] != tc.decision {
+				t.Fatalf("7 分钟后下一条 decision = %v, want %s: %v", r["decision"], tc.decision, r)
+			}
+			if tc.decision == "allow" {
+				if !strings.Contains(r["additional_context"].(string), "仍热") {
+					t.Fatalf("应走热放行提示: %v", r)
+				}
+				if _, pok := e.d.Pending.Get([2]string{"cc", "nat1"}); pok {
+					t.Fatal("热放行应清 pending")
+				}
+			}
+		})
+	}
+}
+
+// TestGateCacheTTLHeartbeatWins [heartbeat].ttl_s 实测值优先于闸门回落值。
+func TestGateCacheTTLHeartbeatWins(t *testing.T) {
+	e := newGateEnv(t)
+	e.d.Cfg.Heartbeat.TTLS = 300   // 必活带 240s
+	e.d.Cfg.GateCacheTTLS = 3600   // 若误用回落值，600s 会判热
+	e.d.HeatClock = beat.NewLastRequestClock()
+	proj := filepath.Join(e.tmp, "proj")
+	e.reg("hbw", "C:/hbw.jsonl", proj, testBlockS+5, 99999)
+	e.store.SaveHandoff("hbw", "cc", proj, "t", isoUTC(e.t0), "fresh", "md")
+	e.d.HeatClock.Note("hbw", e.t0-600)
+	if r := e.d.Gate(gateBody("hbw", "C:/hbw.jsonl", proj)); r["decision"] != "block" {
+		t.Fatalf("实测 TTL 判冷应照拦: %v", r)
+	}
+}
+
 func TestBranch5CopyGuidesPostClear(t *testing.T) {
 	// block 文案须自带三步指引（/clear 会抹掉文案，空屏后用户无任何提示）。
 	e := newGateEnv(t)
@@ -1566,7 +1626,7 @@ func TestGateDshCopyBranchesByAgent(t *testing.T) {
 			wantB5 := "此会话已闲置 60 分钟（缓存已失效）。" +
 				"你刚输入的内容没有发出去，原话已保存：被拦原话B5\n" +
 				"\n【推荐】/clear 换新会话（约 10 秒，进度和原话自动带过去）：\n" +
-				"  1. 输入 /clear\n" +
+				"  1. 按 Ctrl+U 清空输入框（原话已保存，清掉无妨），再输入 /clear\n" +
 				"  2. 随便发一个字（如「继续」）\n" +
 				"  新会话开场自动收到：本会话的进度交接 + 你这条原话，接着原话继续干。\n" +
 				"\n【不想换会话】以「强续」开头重发你的内容（例：「强续 被拦原话B5」），" +
@@ -1579,7 +1639,8 @@ func TestGateDshCopyBranchesByAgent(t *testing.T) {
 				"你刚输入的内容没有发出去，原话已保存：继续\n" +
 				"\n【现在就能继续】以「强续」开头重发你的内容（例：「强续 继续」），" +
 				"解除本轮拦截、留在本会话。\n" +
-				"\n【或 /clear 换新会话】开场发一个字即可；本会话的交接若已生成会" +
+				"\n【或 /clear 换新会话】先按 Ctrl+U 清空输入框（原话已保存），" +
+				"输入 /clear 后开场发一个字即可；本会话的交接若已生成会" +
 				"一并带给新会话，此刻还没好则新会话只会带回你这条原话（之前的进度" +
 				"需要自己简述两句）。"
 			if out.b6 != wantB6 {
