@@ -206,6 +206,12 @@ type Config struct {
 	// 用户未拍板**（D3：晨报置顶待确认，翻转=config 一行）。cc/codex 永不
 	// 受本键影响。
 	GateDshHandoffOnContinue bool
+	// GateCacheTTLS 闸门判热专用 TTL（秒；2026-10-11 原生 CC 误拦案）。
+	// 「热缓存不拦」原只读 [heartbeat].ttl_s——原生 CC 不配心跳（配了会点亮
+	// 等待窗心跳真发，越过"不碰官方 CC"红线），判热恒冷：分支7 警告后会话
+	// 已续用、缓存已焐热，下一条仍被分支6 拦。本键只供闸门判热，不喂心跳/
+	// 压缩/同模型任何真发路径。[heartbeat].ttl_s>0 时实测值优先；0=未配。
+	GateCacheTTLS float64
 	Thresholds    ThresholdCfg
 	Watch         WatchCfg
 	Server        ServerCfg
@@ -371,6 +377,13 @@ func applyTOML(cfg *Config, data map[string]any) error {
 		}
 		if v, ok := g["dsh_handoff_on_continue"]; ok { // 票02（dsh-first-live-followups）
 			cfg.GateDshHandoffOnContinue = pyBool(v)
+		}
+		if v, ok := g["cache_ttl_s"]; ok { // 闸门判热专用 TTL（原生 CC 误拦案）
+			f, err := pyFloat(v)
+			if err != nil {
+				return err
+			}
+			cfg.GateCacheTTLS = f
 		}
 	}
 	if raw, ok := data["thresholds"]; ok {
@@ -822,6 +835,9 @@ func Validate(c *Config, relaxMinGap bool) error {
 	if !slices.Contains(GateModes[:], c.GateCC) {
 		problems = append(problems, fmt.Sprintf("gate.cc_mode 非法: %s（可选 %s）",
 			c.GateCC, pyTuple(GateModes[:])))
+	}
+	if c.GateCacheTTLS < 0 {
+		problems = append(problems, fmt.Sprintf("gate.cache_ttl_s 不得为负: %v", c.GateCacheTTLS))
 	}
 	if !slices.Contains(GateModes[:], c.GateCodex) {
 		problems = append(problems, fmt.Sprintf("gate.codex_mode 非法: %s", c.GateCodex))

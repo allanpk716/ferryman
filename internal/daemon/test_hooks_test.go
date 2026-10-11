@@ -10,8 +10,8 @@ package daemon
 //
 // 语义以 tests/test_hooks.py 实测为准：fail-open（守护关/401/超时→exit 0
 // 且零输出）；block 分支 exit 0 + stdout 纯 JSON（decision/reason/
-// suppressOriginalPrompt=true，不带 hookSpecificOutput——block 走 JSON 决策
-// 通道而非 exit 2 码）。
+// suppressOriginalPrompt=true 顶层＋hookSpecificOutput 内各一份——block 走 JSON 决策通道
+// 而非 exit 2 码；codex 钩子维持顶层旧形）。
 //
 // 16 例对照（Python → Go）：
 //   test_t16_gate_block_json_contract                 → TestT16GateBlockJSONContract
@@ -247,14 +247,20 @@ func TestT16GateBlockJSONContract(t *testing.T) {
 	if payload["decision"] != "block" {
 		t.Fatalf("decision = %v, want block", payload["decision"])
 	}
-	if payload["suppressOriginalPrompt"] != true {
+	if payload["suppressOriginalPrompt"] != true { // 顶层保留（旧契约兼容）
 		t.Fatalf("suppressOriginalPrompt = %v, want true", payload["suppressOriginalPrompt"])
+	}
+	// 官方文档：suppressOriginalPrompt 认 hookSpecificOutput 内；block 不带注入
+	// 通道（additionalContext）。
+	hso, _ := payload["hookSpecificOutput"].(map[string]any)
+	if hso["hookEventName"] != "UserPromptSubmit" || hso["suppressOriginalPrompt"] != true {
+		t.Fatalf("hookSpecificOutput = %v, want UserPromptSubmit + suppressOriginalPrompt=true", payload["hookSpecificOutput"])
+	}
+	if _, has := hso["additionalContext"]; has {
+		t.Fatalf("block 响应不应带 additionalContext: %v", payload)
 	}
 	if rsn, _ := payload["reason"].(string); !strings.Contains(rsn, "交接") {
 		t.Fatalf("reason 缺「交接」: %q", rsn)
-	}
-	if _, has := payload["hookSpecificOutput"]; has { // block 不走注入通道
-		t.Fatalf("block 响应不应有 hookSpecificOutput: %v", payload)
 	}
 }
 

@@ -821,3 +821,27 @@ func TestEconProviderParseAndFallback(t *testing.T) {
 		t.Fatalf("econ=%q key=%q（缺省应回落 provider）", cfg2.EconProvider, cfg2.EconKey())
 	}
 }
+
+// TestGateCacheTTLParsedAndValidated [gate] cache_ttl_s（闸门判热专用 TTL，
+// 2026-10-11 原生 CC 误拦案）：缺省 0、可读入、负值拒启。
+func TestGateCacheTTLParsedAndValidated(t *testing.T) {
+	if Default().GateCacheTTLS != 0 {
+		t.Fatal("缺省应为 0（未配＝判热沿用 [heartbeat].ttl_s）")
+	}
+	dir := t.TempDir()
+	f := filepath.Join(dir, "c.toml")
+	if err := os.WriteFile(f, []byte("[gate]\ncache_ttl_s = 3600\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil || cfg.GateCacheTTLS != 3600 {
+		t.Fatalf("cfg.GateCacheTTLS = %v, err = %v", cfg.GateCacheTTLS, err)
+	}
+	neg := filepath.Join(dir, "neg.toml")
+	if err := os.WriteFile(neg, []byte("[gate]\ncache_ttl_s = -1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(neg, false); err == nil || !strings.Contains(err.Error(), "cache_ttl_s") {
+		t.Fatalf("负值应拒启: %v", err)
+	}
+}
