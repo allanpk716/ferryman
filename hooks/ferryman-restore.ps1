@@ -19,7 +19,9 @@ try {
     $token = (Get-Content $tokenFile -Raw -ErrorAction Stop).Trim()
     $cwd = [uri]::EscapeDataString([string]$j.cwd)
     $sid = [uri]::EscapeDataString([string]$j.session_id)
-    $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/restore?agent=cc&cwd=$cwd&session_id=$sid" `
+    # transcript_path: daemon 据此把 cd 漂移的 cwd 校正回启动目录（旧 daemon 忽略此参）
+    $tp = [uri]::EscapeDataString([string]$j.transcript_path)
+    $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/restore?agent=cc&cwd=$cwd&session_id=$sid&transcript_path=$tp" `
         -Method Get -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 2
     if ($resp.context) { [Console]::Out.Write([string]$resp.context) }
     exit 0
