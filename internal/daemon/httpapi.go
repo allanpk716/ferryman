@@ -30,6 +30,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"ferryman/internal/pathsx"
 )
 
 // EnsureToken ensure_token（server.py:676-685 逐字）：daemon.token 缺则生成
@@ -251,10 +253,11 @@ func doGet(d DaemonLike, token string, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, d.Health())
 	case "/restore":
 		q := r.URL.Query()
-		writeJSON(w, http.StatusOK, d.Restore(
-			qsOr(q, "agent", "cc"),
-			qsOr(q, "cwd", ""),
-			qsOr(q, "session_id", "")))
+		agent, cwd := qsOr(q, "agent", "cc"), qsOr(q, "cwd", "")
+		if agent == "cc" { // /clear 后 cwd 可能停在 cd 进的子目录，校正回启动目录（同闸门）
+			cwd = pathsx.CCLaunchCwd(cwd, qsOr(q, "transcript_path", ""))
+		}
+		writeJSON(w, http.StatusOK, d.Restore(agent, cwd, qsOr(q, "session_id", "")))
 	case "/settings": // 设置视图读面（settings-view 票02）：settings_read.go，只读+脱敏
 		handleSettingsRead(d, w, r)
 	case "/settings/snapshots": // 设置快照清单（票05）：仅元数据，读面不取写锁

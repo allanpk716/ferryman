@@ -25,6 +25,7 @@ import (
 	"ferryman/internal/ledger"
 	"ferryman/internal/mathx"
 	"ferryman/internal/notify"
+	"ferryman/internal/pathsx"
 	"ferryman/internal/qwatch"
 	"ferryman/internal/store"
 )
@@ -88,6 +89,9 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	transcriptPath := pyStr(body["transcript_path"])
 	cwd := pyStr(body["cwd"])
 	prompt := pyStr(body["prompt"])
+	if agent == "cc" { // 钩子 cwd 随 Bash cd 漂移，校正回启动目录（交接/锚定同源键）
+		cwd = pathsx.CCLaunchCwd(cwd, transcriptPath)
+	}
 	d.Stats.Hit(agent)
 
 	// 0. 主会话来讯 = 等待提前结束（词汇表"等待窗口"）——强续/bypass prompt 亦算

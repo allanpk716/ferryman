@@ -19,6 +19,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,7 @@ import (
 	"ferryman/internal/clock"
 	"ferryman/internal/config"
 	"ferryman/internal/ledger"
+	"ferryman/internal/pathsx"
 	"ferryman/internal/store"
 )
 
@@ -2193,5 +2195,33 @@ func TestGateBlockNoticeDoesNotResetIdle(t *testing.T) {
 	}
 	if _, ok := r2["handoff_path"]; !ok {
 		t.Fatalf("交接仍覆盖会话内容, 重发应走分支5 带交接: %v", r2)
+	}
+}
+
+// TestBranch5CwdDriftedIntoSubdir 2026-10-12 漏拦案（5bbc161a）：助手 Bash cd
+// 进子目录后钩子 cwd 跟着漂移，交接/台账记的是启动目录——闸门须按转录项目
+// 目录名把 cwd 校正回启动目录，照常命中分支5拦截；代存原话的锚也落启动
+// 目录，/clear 后新会话（cwd 仍在子目录）归还能拿回交接+原话。
+func TestBranch5CwdDriftedIntoSubdir(t *testing.T) {
+	e := newGateEnv(t)
+	proj := filepath.Join(e.tmp, "work-daily-system")
+	sub := filepath.Join(proj, "apps", "web", "src")
+	projDir := filepath.Join(e.tmp, "projects",
+		regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(proj, "-"))
+	tp := filepath.Join(projDir, "s1.jsonl")
+	e.reg("s1", tp, proj, testBlockS+5, 99999)
+	en := e.store.SaveHandoff("s1", "cc", proj, "t", isoUTC(e.t0), "fresh", "md")
+
+	r := e.d.Gate(gateBody4("s1", tp, sub, "被拦的原话"))
+	if r["decision"] != "block" {
+		t.Fatalf("decision = %v, want block（cwd 漂到子目录不得漏拦）", r["decision"])
+	}
+	assertStr(t, r, "handoff_path", en.Path)
+
+	newTp := filepath.Join(projDir, "s2.jsonl")
+	res := e.d.Restore("cc", pathsx.CCLaunchCwd(sub, newTp), "s2")
+	ctx, _ := res["context"].(string)
+	if !strings.Contains(ctx, "被拦的原话") {
+		t.Fatalf("子目录 /clear 后归还应带回原话, context = %q", ctx)
 	}
 }
