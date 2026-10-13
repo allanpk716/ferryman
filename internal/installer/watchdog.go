@@ -266,8 +266,12 @@ func runWatchdog(d WatchdogDeps) int {
 // 的 Start-Process -WindowStyle Hidden 形态 1:1，生产已验证）。仅 LaunchDaemon
 // （分支② Go exec + HideWindow 双保险，控制台从不可见）在用——Run 键/看门任务
 // 已改走 wscript+VBS 零闪窗形态（2026-09-21 闪窗事故，见 watchdogVBSBody 注）。
+// 路径两侧是裸 `"`：Go exec 转义成 `\"`，powershell 解析命令行时还原为 `"`。
+// 曾写成 `\"`（照抄手敲命令行的形态），被 exec 再转义一层后 PS 拿到字面量
+// `\"<path>\"`，cmd /c 找不到文件、PS 照样退出 0——看门拉起从未生效
+// （2026-10-13 train3060：48 次拉起 0 次复位确认）。
 func daemonStartScript(launcher string) string {
-	return fmt.Sprintf(`Start-Process -FilePath $env:ComSpec -ArgumentList '/c','\"%s\"' -WindowStyle Hidden`, launcher)
+	return fmt.Sprintf(`Start-Process -FilePath $env:ComSpec -ArgumentList '/c','"%s"' -WindowStyle Hidden`, launcher)
 }
 
 // daemonStartPSArgs exec argv 形（LaunchDaemon 专用；Run 键已不再共用——
