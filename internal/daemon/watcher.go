@@ -543,9 +543,12 @@ func (w *Watcher) maybeEnqueue(st *ledger.SessionState) {
 	if w.Ledger.SubagentActive(st.Agent, sid) {
 		return // T32：子代理运行中（钩子计数，内存判定）→ 推迟，不置 handed_off
 	}
-	// 悬空 tool_use：推迟（不置 handed_off，下轮重查）。死线强制入队时不再因
-	// 悬空让步——含 AskUserQuestion：等答复窗拖到死线意味着用户久未作答，
-	// 闸门临近，被拦 ⇒ 交接必已存在（失败/超时由骨架降级兜底）。
+	// 悬空 tool_use：推迟（不置 handed_off，下轮重查）。悬空集扣除等人工具
+	// （#35，cctrans.HumanInputTools 单一定义点）——仅等人工具（AskUserQuestion/
+	// ExitPlanMode）悬空＝机器等人，与人不在同论：闲置照走、到总结阈值即摆渡；
+	// 真工具悬空或混合悬空才算在跑、照旧推迟。死线强制入队时不再因悬空让步
+	// ——含真工具：等答复窗拖到死线意味着用户久未作答，闸门临近，
+	// 被拦 ⇒ 交接必已存在（失败/超时由骨架降级兜底）。
 	if !due && st.Agent == "cc" && cctrans.HasDanglingToolUse(st.TranscriptPath) {
 		return
 	}
