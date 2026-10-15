@@ -313,12 +313,21 @@ func TestT17RestoreSkipsResume(t *testing.T) {
 }
 
 func TestT17RestoreInjectsOnClear(t *testing.T) {
+	// 票38（spec#34，ADR-0025）：无锚 /clear 不再自动注入——本用例改为有锚
+	// 场景钉真跑注入链：会话被拦（待续锚落 (agent,cwd)）后 /clear，新会话
+	// 开场自动收到锚会话交接＋被拦原话。
 	h := newIntegHarness(t, succFerry)
 	proj := filepath.Join(h.tmp, "proj")
 	sid := "hook-0004"
-	writeIntegSession(t, h.projects, sid, proj, 2000)
+	f := writeIntegSession(t, h.projects, sid, proj, 2000)
 	waitForCond(t, 15*time.Second, func() bool {
 		return h.handoffInStore("cc", proj, func(e *store.Entry) bool { return e.SessionID == sid })
+	})
+	// 先拦一枪：待续原话落锚，/clear 后的新会话据此收到注入
+	body := map[string]any{"agent": "cc", "session_id": sid, "transcript_path": f,
+		"cwd": proj, "prompt": "钩子被拦的原话"}
+	waitForCond(t, 10*time.Second, func() bool {
+		return h.gate(body)["decision"] == "block"
 	})
 	code, out := runPS(t, "ferryman-restore.ps1",
 		map[string]any{"session_id": "fresh-session", "cwd": proj, "source": "clear"},
@@ -328,6 +337,9 @@ func TestT17RestoreInjectsOnClear(t *testing.T) {
 	}
 	if !strings.Contains(out, "Ferryman 交接") || !strings.Contains(out, "不可信") {
 		t.Fatalf("stdout 缺注入层/不可信声明: %.200q", out)
+	}
+	if !strings.Contains(out, "钩子被拦的原话") {
+		t.Fatalf("stdout 缺被拦原话（待续 prompt）: %.200q", out)
 	}
 }
 
