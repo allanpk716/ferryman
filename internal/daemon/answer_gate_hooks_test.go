@@ -5,7 +5,8 @@ package daemon
 // 喂 2026-10-15 实测形态的钩子输入（hook_event_name=PostToolUse、tool_name=
 // AskUserQuestion、tool_response.answers＝问题→所选标签映射——notes/
 // events.log）。契约：被拦 → stdout 纯 JSON {"continue":false,"stopReason":…}
-// 退出 0；放行/守护不可达/401/任何故障 → 零输出；FERRYMAN_DISABLE 短路；
+// 退出 0；带警告的放行（observe 档/待交接标记，US16/US17）→ additionalContext
+// 通道回写；纯放行/守护不可达/401/任何故障 → 零输出；FERRYMAN_DISABLE 短路；
 // PostToolUse 的其他工具零输出（matcher 已限 AskUserQuestion，脚本内再验防
 // 手工装错）；UserPromptSubmit 分支既有用例见 test_hooks_test.go（零改动）。
 
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"ferryman/internal/config"
 	"ferryman/internal/store"
 )
 
@@ -82,6 +84,77 @@ func TestT36AnswerGateHookBlocksIdle(t *testing.T) {
 	want := "午饭吃面还是吃饭?→面；要不要加个蛋?→加、不加"
 	if p.Prompt != want {
 		t.Fatalf("待续 prompt = %q, want %q", p.Prompt, want)
+	}
+}
+
+// TestT36AnswerGateHookObserveWarnAdditionalContext observe 档警告（US16
+// 「只提醒并放行」）：作答入口凉会话的 additional_context 必须到达模型——
+// 钩子以 PostToolUse 的 additionalContext 通道回写（CC 包成系统提醒带给
+// 模型，与打字闸门 warn 同机制）。MinCtxTokens 抬高＝不触发摆渡，钉纯
+// observe 警告形态（交接生成中…只提醒不拦）。
+func TestT36AnswerGateHookObserveWarnAdditionalContext(t *testing.T) {
+	h := newIntegHarness(t, succFerry,
+		func(c *config.Config) { c.GateCC = "observe" },
+		func(c *config.Config) { c.Thresholds.MinCtxTokens = 100000 })
+	proj := h.tmp + "\\proj"
+	sid := "auq-observe"
+	f := writeIntegSession(t, h.projects, sid, proj, 2000)
+	code, out := gateBlockPoll(t, "ferryman-gate.ps1", auqPostBody(sid, f, proj), liveEnv(t, h))
+	if code != 0 {
+		t.Fatalf("exit=%d, want 0", code)
+	}
+	payload := parseHookJSON(t, out)
+	hso, _ := payload["hookSpecificOutput"].(map[string]any)
+	if hso["hookEventName"] != "PostToolUse" {
+		t.Fatalf("hookEventName = %v, want PostToolUse（additionalContext 通道按事件名匹配）",
+			hso["hookEventName"])
+	}
+	ctx, _ := hso["additionalContext"].(string)
+	if !strings.Contains(ctx, "[Ferryman] 本会话已闲置") ||
+		!strings.Contains(ctx, "observe 模式只提醒不拦") {
+		t.Fatalf("additionalContext 缺 observe 警告文案: %q", ctx)
+	}
+	if _, has := payload["continue"]; has {
+		t.Fatalf("警告放行不得带 continue: %v", payload)
+	}
+	if _, has := payload["decision"]; has {
+		t.Fatalf("警告放行不得带 decision: %v", payload)
+	}
+}
+
+// TestT36AnswerGateHookPendingHandoffWarnAdditionalContext enforce 档分支 7
+//（US17「无有效交接按待交接标记语义：警告放行一次」）：凉会话首次作答 →
+// allow ＋待交接警告 additional_context 经 additionalContext 通道带给模型
+//（此前钩子吞掉了它——只认 block 输出）。MinCtxTokens 抬高＝无交接可产，
+// 分支 7 形态稳定（警告一次＋置 pending，下一次才真拦）。
+func TestT36AnswerGateHookPendingHandoffWarnAdditionalContext(t *testing.T) {
+	h := newIntegHarness(t, succFerry,
+		func(c *config.Config) { c.Thresholds.MinCtxTokens = 100000 })
+	proj := h.tmp + "\\proj"
+	sid := "auq-pending"
+	f := writeIntegSession(t, h.projects, sid, proj, 2000)
+	code, out := gateBlockPoll(t, "ferryman-gate.ps1", auqPostBody(sid, f, proj), liveEnv(t, h))
+	if code != 0 {
+		t.Fatalf("exit=%d, want 0", code)
+	}
+	payload := parseHookJSON(t, out)
+	hso, _ := payload["hookSpecificOutput"].(map[string]any)
+	if hso["hookEventName"] != "PostToolUse" {
+		t.Fatalf("hookEventName = %v, want PostToolUse", hso["hookEventName"])
+	}
+	ctx, _ := hso["additionalContext"].(string)
+	if !strings.Contains(ctx, "[Ferryman] 本会话已闲置") ||
+		!strings.Contains(ctx, "下次提交将被拦") {
+		t.Fatalf("additionalContext 缺待交接警告文案（willBlock 尾句）: %q", ctx)
+	}
+	if _, has := payload["continue"]; has {
+		t.Fatalf("分支 7 警告放行不得带 continue: %v", payload)
+	}
+	if _, has := payload["decision"]; has {
+		t.Fatalf("分支 7 警告放行不得带 decision: %v", payload)
+	}
+	if _, ok := h.d.Pending.Get([2]string{"cc", sid}); !ok {
+		t.Fatal("分支 7 警告应置待交接标记（pending）")
 	}
 }
 
