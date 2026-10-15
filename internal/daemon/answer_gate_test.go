@@ -236,7 +236,7 @@ func TestAnswerGateBlockAccountRowCarriesEntry(t *testing.T) {
 	if ansRow == nil || typRow == nil {
 		t.Fatalf("block 行不齐: ans=%v typ=%v", ansRow != nil, typRow != nil)
 	}
-	if got, _ := ansRow["entry"].(string); got != GateEntryAnswer {
+	if got, _ := ansRow["entry"].(string); got != string(GateEntryAnswer) {
 		t.Fatalf("作答 block 行 entry = %v, want %q", ansRow["entry"], GateEntryAnswer)
 	}
 	if _, has := typRow["entry"]; has {
@@ -273,7 +273,7 @@ func TestAnswerGateBlockNotifyCarriesEntry(t *testing.T) {
 			t.Fatal("异步通知未触发")
 		}
 	}
-	if !seen[GateEntryAnswer] || !seen[""] {
+	if !seen[string(GateEntryAnswer)] || !seen[""] {
 		t.Fatalf("通知入口标识不齐: %v（want answer 与 空）", seen)
 	}
 }

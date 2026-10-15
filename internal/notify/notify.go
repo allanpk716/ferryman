@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"ferryman/internal/accounts"
 	"ferryman/internal/config"
 )
 
@@ -200,8 +201,8 @@ func NotifyEvent(event, title, message string, cfg *config.Config) {
 // 裸数字 sid 无法分辨哪个项目哪个会话）；project/sessionTitle 皆空时回落
 // 旧标题（直调/旧测试兼容）。session id 移正文尾部小字。
 // #36：entry 入口标识（spec #34 两入口可区分）——空串＝打字入口（文案逐字
-// 零变化）；"answer"＝作答入口，正文首句标注（作答）。事件分级不分叉：
-// 两入口同走 block 事件三值。
+// 零变化）；作答入口（accounts.GateEntryAnswer，#36 单一定义点）正文首句标
+// 注（作答）。事件分级不分叉：两入口同走 block 事件三值。
 func NotifyBlock(handoffPath, agent, sessionID, project, sessionTitle, entry string, cfg *config.Config) {
 	_ = agent
 	sid := sessionID
@@ -209,7 +210,7 @@ func NotifyBlock(handoffPath, agent, sessionID, project, sessionTitle, entry str
 		sid = string(rs[:8])
 	}
 	entryLabel := ""
-	if entry == "answer" { // 入口标识不猜未知值：仅认作答值，其余同打字
+	if accounts.GateEntry(entry) == accounts.GateEntryAnswer { // 入口标识不猜未知值：仅认作答值，其余同打字
 		entryLabel = "（作答）"
 	}
 	message := "会话闲置被拦" + entryLabel + "，交接已生成：\n" + handoffPath + "\n" +

@@ -60,13 +60,11 @@ func (d *Daemon) SetQWatchMode(v string) {
 	d.cfgMu.Unlock()
 }
 
-// GateEntryAnswer 作答闸门入口标识（#36，ADR-0028）：CC 的 PostToolUse
-// (AskUserQuestion) 钩子分支发给闸门端点的 entry 值——作答与打字共用同一份
-// 台账判定（拦截阈值/有效交接/待交接标记/判热/三态/fail-open），差异仅在：
-// 强续前缀不适用作答、拦截文案「原话」换「你的选择」并带 cctrans.
-// AnswerGateBlockMarker、记账/通知带入口标识。缺省（空/未知值）＝打字入口，
-// 旧钩子旧行为零变化。
-const GateEntryAnswer = "answer"
+// GateEntryAnswer 作答闸门入口标识（#36，ADR-0028）——单一定义点在
+// internal/accounts（spec #34 评审 F3：daemon/notify/账本三方可导入的最低层），
+// 本包经别名引用，钩子/账本/通知的线协议照旧是裸串 "answer"。语义注记见
+// accounts.GateEntryAnswer 的定义处。
+const GateEntryAnswer = accounts.GateEntryAnswer
 
 // sessionSnap Gate 用的一次性台账快照（Python 直接读 st.* 的 Go 形——
 // 共享可变引用读写均须持锁，见包注释并发模型）。
@@ -97,7 +95,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	transcriptPath := pyStr(body["transcript_path"])
 	cwd := pyStr(body["cwd"])
 	prompt := pyStr(body["prompt"])
-	entry := pyStr(body["entry"]) // #36 作答入口标识；空＝打字入口（缺省）
+	entry := accounts.GateEntry(pyStr(body["entry"])) // #36 作答入口标识；空＝打字入口（缺省）
 	if agent == "cc" { // 钩子 cwd 随 Bash cd 漂移，校正回启动目录（交接/锚定同源键）
 		cwd = pathsx.CCLaunchCwd(cwd, transcriptPath)
 	}
@@ -666,7 +664,7 @@ func (d *Daemon) cacheInfoCtx(idle float64, th config.ThresholdCfg) string {
 // notify_block 同位；nil 回落真通道，签名不动——cutover/smoke 空操作注入
 // 不受影响）。#36：entry 随行（作答/打字入口标识，通知文案可区分），空串＝
 // 打字（旧形态）。
-func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float64, entry string) {
+func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float64, entry accounts.GateEntry) {
 	agent, sid := st.Agent, st.SessionID // goroutine 只碰本地副本（共享引用纪律）
 	// 票08 R1（评审补丁）：Cwd/Title 是可变字段（ai-title 更新），无锁直读与
 	// 仓库纪律（台账锁内快照——见 serve.go enqueue/alertCopy）不一致；agent/sid
@@ -681,7 +679,7 @@ func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float
 		fn = notify.NotifyBlock
 	}
 	path, cfg := h.Path, d.Cfg
-	go fn(path, agent, sid, cwd, title, entry, cfg)
+	go fn(path, agent, sid, cwd, title, string(entry), cfg)
 }
 
 // runeCap8 Python s[:8]：按码点截断。
