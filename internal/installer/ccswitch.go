@@ -125,7 +125,7 @@ func injectRows(dbPath, bak string, entries map[string]any) (int, error) {
 			string(dumpJSON(cfg)), r.ID); err != nil {
 			return 0, err
 		}
-		fmt.Printf("[ccswitch] ✓ %s: ferryman 四钩子已入快照"+
+		fmt.Printf("[ccswitch] ✓ %s: ferryman 五钩子已入快照"+
 			"（既有条目保留，备份 %s）\n", r.Name, filepath.Base(bak))
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil { // conn.commit()

@@ -60,6 +60,14 @@ func (d *Daemon) SetQWatchMode(v string) {
 	d.cfgMu.Unlock()
 }
 
+// GateEntryAnswer 作答闸门入口标识（#36，ADR-0028）：CC 的 PostToolUse
+// (AskUserQuestion) 钩子分支发给闸门端点的 entry 值——作答与打字共用同一份
+// 台账判定（拦截阈值/有效交接/待交接标记/判热/三态/fail-open），差异仅在：
+// 强续前缀不适用作答、拦截文案「原话」换「你的选择」并带 cctrans.
+// AnswerGateBlockMarker、记账/通知带入口标识。缺省（空/未知值）＝打字入口，
+// 旧钩子旧行为零变化。
+const GateEntryAnswer = "answer"
+
 // sessionSnap Gate 用的一次性台账快照（Python 直接读 st.* 的 Go 形——
 // 共享可变引用读写均须持锁，见包注释并发模型）。
 type sessionSnap struct {
@@ -89,6 +97,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	transcriptPath := pyStr(body["transcript_path"])
 	cwd := pyStr(body["cwd"])
 	prompt := pyStr(body["prompt"])
+	entry := pyStr(body["entry"]) // #36 作答入口标识；空＝打字入口（缺省）
 	if agent == "cc" { // 钩子 cwd 随 Bash cd 漂移，校正回启动目录（交接/锚定同源键）
 		cwd = pathsx.CCLaunchCwd(cwd, transcriptPath)
 	}
@@ -107,7 +116,10 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	//    消息仍被分支6第3次拦截——pending 原只在闲置≥summarize_s 的新周期才清，
 	//    正在对话的用户永不满足，强续沦为每条消息都要带前缀的跑步机）。清除后
 	//    若再长闲置，从分支7警告重新起圈，拦截保护不丢。
-	if strings.HasPrefix(prompt, "强续") || strings.HasPrefix(prompt, "!!") {
+	//    #36：强续前缀不适用于作答入口（ADR-0028）——作答文本不是打字，用户也
+	//    无法在答案里“重发”；强续留给其后的打字提交（实测模型能看到原答案）。
+	if entry != GateEntryAnswer &&
+		(strings.HasPrefix(prompt, "强续") || strings.HasPrefix(prompt, "!!")) {
 		d.Stats.addBypass()
 		stB := d.Ledger.Get(agent, sessionID) // 只取一次（lineage 尽力而为）
 		if stB == nil {
@@ -272,11 +284,20 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 	if h != nil { // 分支 5
 		d.Pending.Clear(key)
 		d.Stats.addBlocks()
-		d.Acct("block", st, "", "", "", accounts.Fields{
-			"prefix_tokens": snap.peak, "idle_s": mathx.Round(idle, 1)})
+		// #36：作答入口按同一 block 科目记账，多带入口标识（打字行零漂移——不带键）。
+		f := accounts.Fields{"prefix_tokens": snap.peak, "idle_s": mathx.Round(idle, 1)}
+		if entry == GateEntryAnswer {
+			f["entry"] = GateEntryAnswer
+		}
+		d.Acct("block", st, "", "", "", f)
 		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
 		d.Store.MarkBlocked(h.HandoffID)
-		d.notifyBlock(st, h, idle)
+		d.notifyBlock(st, h, idle, entry)
+		if entry == GateEntryAnswer { // 作答变体（ADR-0028）：「原话」换「你的选择」＋稳定标记
+			return map[string]any{"decision": "block",
+				"reason":       answerBlock5Reason(idle, prompt, h.Path),
+				"handoff_path": h.Path}
+		}
 		// 【推荐】段按 agent 分支（票01/D3）：dsh 无 /clear 命令，换「新建会话」
 		// 引导。强续段落与交接文档行两 agent 同文。cc 第1步加 Ctrl+U：部分 CC
 		// 版本被拦后原话留在输入框（2026-10-11 用户反馈），须先清空才能打 /clear。
@@ -311,9 +332,18 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 				"additional_context": d.warnCtx(agent, idle, nil, true)}
 		}
 		d.Stats.addBlocks()
-		d.Acct("block", st, "", "", "", accounts.Fields{
-			"prefix_tokens": snap.peak, "idle_s": mathx.Round(idle, 1)})
+		// #36：同分支 5——作答入口同科目带标识，打字行零漂移。
+		f := accounts.Fields{"prefix_tokens": snap.peak, "idle_s": mathx.Round(idle, 1)}
+		if entry == GateEntryAnswer {
+			f["entry"] = GateEntryAnswer
+		}
+		d.Acct("block", st, "", "", "", f)
 		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
+		if entry == GateEntryAnswer { // 作答变体（ADR-0028）：「原话」换「你的选择」＋稳定标记
+			return map[string]any{"decision": "block",
+				"reason": answerBlock6Reason(n, prompt),
+				"suppressOriginalPrompt": true}
+		}
 		// 【或换会话】段同上按 agent 分支（票01/D3）：分支6语义——交接若已生成
 		// 会一并带给新会话，没好则只带回原话。cc 同分支5 补 Ctrl+U 指引。
 		clearHow := "开场发一个字即可"
@@ -396,6 +426,47 @@ func blockExample(prompt string) string {
 		return ex
 	}
 	return "你的内容"
+}
+
+// answerBlock5Reason 分支 5 作答变体拦截文案（#36，ADR-0028）：与打字同结构
+//（闲置时长/缓存已失效/【推荐】换会话/【不想换会话】强续/交接路径），
+// 「原话」换「你的选择」；选择来自选择框不在输入框，第 1 步免 Ctrl+U；强续
+// 只需输入前缀（作答无法“重发”，实测模型能看到原答案）；文案前缀稳定标记
+// cctrans.AnswerGateBlockMarker——#37 以带标记的 hook_stopped_continuation
+// 为锚认出转录回写段。仅 cc（作答入口只由 CC 钩子发出）。
+func answerBlock5Reason(idle float64, choice, handoffPath string) string {
+	return cctrans.AnswerGateBlockMarker + fmt.Sprintf(" 此会话已闲置 %.0f 分钟（缓存已失效）。"+
+		"你刚作的选择没有发给模型，你的选择已保存：%s\n"+
+		"%s"+
+		"\n【不想换会话】在本会话输入「强续」（模型能看到你刚才的选择），"+
+		"解除本轮拦截、留在本会话继续。\n"+
+		"交接文档: %s",
+		idle/60, blockPreview(choice), answerBlockRec(), handoffPath)
+}
+
+// answerBlock6Reason 分支 6（无交接兜底拦截）作答变体（#36）：同款差异——
+// 「原话」换「你的选择」＋稳定标记；【或换会话】段交接未好则只带回选择。
+func answerBlock6Reason(n int, choice string) string {
+	return cctrans.AnswerGateBlockMarker + fmt.Sprintf(" 此会话闲置超时被拦（第 %d 次）。"+
+		"你刚作的选择没有发给模型，你的选择已保存：%s\n"+
+		"\n【现在就能继续】在本会话输入「强续」（模型能看到你刚才的选择），"+
+		"解除本轮拦截、留在本会话。\n"+
+		"%s", n, blockPreview(choice), answerBlockAlt())
+}
+
+// answerBlockRec 作答拦截的【推荐】段（cc）：换新会话自动带交接＋选择。
+func answerBlockRec() string {
+	return "\n【推荐】/clear 换新会话（约 10 秒，进度和你的选择自动带过去）：\n" +
+		"  1. 输入 /clear\n" +
+		"  2. 随便发一个字（如「继续」）\n" +
+		"  新会话开场自动收到：本会话的进度交接 + 你的选择，接着继续干。\n"
+}
+
+// answerBlockAlt 作答拦截的【或换会话】段（cc）：交接未好则新会话只带回选择。
+func answerBlockAlt() string {
+	return "\n【或 /clear 换新会话】输入 /clear 后开场发一个字即可；本会话的交接若已" +
+		"生成会一并带给新会话，此刻还没好则新会话只会带回你的选择（之前的进度" +
+		"需要自己简述两句）。"
 }
 
 // machineWaiting _machine_waiting（server.py:251-277 逐字）：缺口A：机器等机器
@@ -593,8 +664,9 @@ func (d *Daemon) cacheInfoCtx(idle float64, th config.ThresholdCfg) string {
 //（D2 缺省 toast——人被拦时必在电脑前，手机不发、桌面发；配置显式值仍可
 // 改回）。NotifyBlock 字段为注入 seam（Python monkeypatch notify_mod.
 // notify_block 同位；nil 回落真通道，签名不动——cutover/smoke 空操作注入
-// 不受影响）。
-func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float64) {
+// 不受影响）。#36：entry 随行（作答/打字入口标识，通知文案可区分），空串＝
+// 打字（旧形态）。
+func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float64, entry string) {
 	agent, sid := st.Agent, st.SessionID // goroutine 只碰本地副本（共享引用纪律）
 	// 票08 R1（评审补丁）：Cwd/Title 是可变字段（ai-title 更新），无锁直读与
 	// 仓库纪律（台账锁内快照——见 serve.go enqueue/alertCopy）不一致；agent/sid
@@ -609,7 +681,7 @@ func (d *Daemon) notifyBlock(st *ledger.SessionState, h *store.Entry, idle float
 		fn = notify.NotifyBlock
 	}
 	path, cfg := h.Path, d.Cfg
-	go fn(path, agent, sid, cwd, title, cfg)
+	go fn(path, agent, sid, cwd, title, entry, cfg)
 }
 
 // runeCap8 Python s[:8]：按码点截断。

@@ -140,8 +140,10 @@ ferryman --install-shortcuts    # 建桌面+开始菜单快捷方式后退出
 
 CC 钩子注入 `~/.claude/settings.json`；检测到 `~/.cc-switch/cc-switch.db` 时把钩子同步
 注入全部 claude 供应商快照（幂等、保留既有条目、改库前备份）。`--events` 缺省 = 全集
-（UserPromptSubmit,SessionStart,SubagentStart,SubagentStop）；切换日三类子集 =
-`SessionStart,SubagentStart,SubagentStop`（闸门 UserPromptSubmit 暂不装）。
+（UserPromptSubmit,PostToolUse,SessionStart,SubagentStart,SubagentStop——PostToolUse 带
+matcher=AskUserQuestion，即作答闸门，与打字闸门同一脚本按事件名分支）；切换日三类子集 =
+`SessionStart,SubagentStart,SubagentStop`（闸门 UserPromptSubmit/PostToolUse 暂不装，
+doctor 同级提示不判失败）。
 退出码：0 / 1；`-h` 退 0。
 
 ### `ferryman install-ccswitch`

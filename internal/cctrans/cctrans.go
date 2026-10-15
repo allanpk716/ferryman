@@ -152,12 +152,21 @@ func AssistantTurns(path string) []Turn {
 // mtime 兜底语义——宁可多摆渡一次，不误判内容未推进。
 const MaxLastTSWindowBytes = 2 * 1024 * 1024
 
+// AnswerGateBlockMarker 作答闸门拦截文案的稳定标记（#36，ADR-0028）：作答
+// 被拦时随 stopReason 进转录回写（hook_stopped_continuation 附件的 message），
+// #37 以此（＋hookName 以 "PostToolUse:" 开头）为锚认出整段回写——内容时钟
+// 与交接覆盖截止跳过（IsHookBlockNotice 同族）。daemon 侧拦截文案以此为前缀，
+// 单一定义点在本包（daemon/cctrans 已有依赖向，无环）。
+const AnswerGateBlockMarker = "[Ferryman 作答闸门]"
+
 // IsHookBlockNotice CC 钩子拦截回写判定（2026-10-11 拦截回写案）：
 // UserPromptSubmit 钩子 block 时，CC 往转录追加一条带 timestamp 的 system
 // 提示（实测 subtype=informational、level=warning、preventContinuation=true）。
 // 它不是会话内容——内容时钟与交接覆盖截止（extract LastTS）都须跳过：
 // 否则交接被判过期白重摆渡，且闸门闲置钟被归零（被拦后直接回车重发即
 // 冷缓存静默放行）。判定只认 type=system ∧ preventContinuation=true。
+// （作答闸门的 PostToolUse 回写段不带 preventContinuation——识别走本包
+// AnswerGateBlockMarker，#37 落地。）
 func IsHookBlockNotice(d map[string]any) bool {
 	typ, _ := d["type"].(string)
 	pc, _ := d["preventContinuation"].(bool)

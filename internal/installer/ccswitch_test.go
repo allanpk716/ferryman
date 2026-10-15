@@ -140,7 +140,7 @@ func TestInjectAllClaudeProvidersPreservesExisting(t *testing.T) {
 			t.Fatalf("%s: env 丢失", name)
 		}
 		hooks := cfgHooks(t, cfg)
-		for _, evt := range FerryEvents {
+		for _, evt := range CCEvents { // #36：CC 侧全集（含作答闸门 PostToolUse）
 			list := asList(hooks[evt])
 			count := 0
 			for _, e := range list {
@@ -151,6 +151,11 @@ func TestInjectAllClaudeProvidersPreservesExisting(t *testing.T) {
 			if count != 1 {
 				t.Fatalf("(%s, %s) ferryman 条目数 = %d, want 1", name, evt, count)
 			}
+		}
+		// 作答闸门 matcher：仅 AskUserQuestion
+		ptu := firstMap(t, asList(hooks["PostToolUse"]), "ferryman")
+		if m, _ := ptu["matcher"].(string); m != "AskUserQuestion" {
+			t.Fatalf("PostToolUse matcher = %v, want AskUserQuestion", ptu["matcher"])
 		}
 	}
 

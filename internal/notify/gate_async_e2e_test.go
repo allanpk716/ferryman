@@ -48,10 +48,10 @@ func TestGateBlockFiresNotificationAsync(t *testing.T) {
 	d := daemon.NewDaemon(cfg, led, st,
 		func(*ledger.SessionState) bool { return true }, acc, 0, nil)
 
-	fired := make(chan [5]string, 4)
-	d.NotifyBlock = func(handoffPath, agent, sessionID, project, sessionTitle string, _ *config.Config) {
-		fired <- [5]string{handoffPath, agent, sessionID, project, sessionTitle}
-	} // monkeypatch notify_block 同位（票08 加宽：project/sessionTitle）
+	fired := make(chan [6]string, 4)
+	d.NotifyBlock = func(handoffPath, agent, sessionID, project, sessionTitle, entry string, _ *config.Config) {
+		fired <- [6]string{handoffPath, agent, sessionID, project, sessionTitle, entry}
+	} // monkeypatch notify_block 同位（票08 加宽：project/sessionTitle；#36：entry）
 
 	// 造一个已达拦截阈值、有有效交接的会话（enforce 下必被拦）。
 	sid := "notify-0001"
