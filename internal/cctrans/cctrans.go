@@ -200,7 +200,19 @@ func LastTimestamp(path string) (float64, bool) {
 	}
 }
 
-// HasDanglingToolUse 尾部悬空 tool_use 判定（默认 256KB 尾窗）。
+// HumanInputTools 等人工具集合（#35 单一定义点，CONTEXT.md「等人工具」）：
+// 调用后由人作答才产出结果的工具——AskUserQuestion 选择框、ExitPlanMode
+// 批准计划。其悬空表示机器等人（与人不在同论：闲置照走、到阈值即摆渡/
+// 拦截），不算"仍有工具在跑"，不推迟摆渡、不豁免闸门。工具权限确认框
+// 在转录上与工具运行中无法区分，不归此类。qwatch 的"悬空集 ⊆
+// {AskUserQuestion}"开窗判据是另一套口径（仅 AskUserQuestion），不共用本集合。
+var HumanInputTools = map[string]bool{
+	"AskUserQuestion": true,
+	"ExitPlanMode":    true,
+}
+
+// HasDanglingToolUse 尾部悬空 tool_use 判定（默认 256KB 尾窗）——悬空集扣除
+// 等人工具（HumanInputTools）后仍非空才算"仍有工具在跑"（#35）。
 func HasDanglingToolUse(path string) bool {
 	return HasDanglingToolUseWindow(path, DefaultTailBytes)
 }
@@ -209,15 +221,18 @@ func HasDanglingToolUse(path string) bool {
 //
 // True = 仍有工具/子代理在跑（会话按 mtime 看似闲置，实则运行中），守望应推迟摆渡。
 // tool_result 恒在对应 tool_use 之后写入，故只需尾部窗口内做集合差：
-// 出现过的 tool_use id − 出现过的 tool_result id ≠ ∅ 即悬空。
+// 出现过的 tool_use id − 出现过的 tool_result id ≠ ∅ 即悬空；悬空集扣除
+// 等人工具（HumanInputTools）后仍非空才算在跑——仅等人工具悬空＝机器等人，
+// 不推迟（#35）。摆渡入队推迟（watcher.maybeEnqueue）与闸门机器等机器豁免
+// （daemon.machineWaiting）共用本函数即共用同一口径。
 // 坏行/缺字段/无 assistant 行一律 False（宁可多摆渡不误判运行中；漏判由
-// covers_until 兜住正确性）。
+// covers_until 兜住正确性）。tool_use 缺 name 按非等人工具计（不给豁免）。
 func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
 	lines, ok := jsonl.TailWindow(path, tailBytes) // 票10 骑手：尾窗读法收口 jsonl 单源
 	if !ok {
 		return false
 	}
-	used := map[string]bool{}
+	used := map[string]string{} // tool_use id → name
 	served := map[string]bool{}
 	for _, line := range lines {
 		if !strings.Contains(line, `"tool_use"`) && !strings.Contains(line, `"tool_result"`) {
@@ -244,7 +259,8 @@ func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
 			typ, _ := b["type"].(string)
 			if typ == "tool_use" {
 				if id, ok := b["id"].(string); ok {
-					used[id] = true
+					name, _ := b["name"].(string)
+					used[id] = name
 				}
 			} else if typ == "tool_result" {
 				if id, ok := b["tool_use_id"].(string); ok {
@@ -253,8 +269,8 @@ func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
 			}
 		}
 	}
-	for id := range used { // 集合差 used − served ≠ ∅
-		if !served[id] {
+	for id, name := range used { // 集合差（扣除等人工具）≠ ∅
+		if !served[id] && !HumanInputTools[name] {
 			return true
 		}
 	}

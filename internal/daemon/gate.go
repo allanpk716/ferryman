@@ -404,7 +404,10 @@ func blockExample(prompt string) string {
 //
 // cc/codex 三道 OR 互为兜底：守护重启丢内存计数→悬空道兜底；泄漏期已过计数清零
 // 而 tool_result 仍缺→悬空道兜底；T48 异步派发计数早归零而真身在跑→
-// 停车窗道兜底（window_wait）。上界分道（rev2 如实声明）：计数道 1h
+// 停车窗道兜底（window_wait）。悬空道扣除等人工具（#35）：仅 AskUserQuestion/
+// ExitPlanMode 悬空＝机器等人，不豁免（摆渡入队推迟与闸门豁免共用 cctrans.
+// HasDanglingToolUse 同一口径，单一定义点 cctrans.HumanInputTools）。
+// 上界分道（rev2 如实声明）：计数道 1h
 // 泄漏保护（ledger.py:28）；停车窗道 PARK_EXPIRE_S=1h（过期即豁免失效）；
 // 悬空道无时间上界、有内容量上界——尾部 256KB 滑窗（transcripts.py:73），
 // 悬空事件被后续内容顶出窗口即失效。dsh 道上界＝ledger.DshRunStaleS（1h，
