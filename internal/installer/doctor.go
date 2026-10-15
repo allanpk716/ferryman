@@ -1020,6 +1020,9 @@ func doctorResults(d doctorDeps) []CheckResult {
 	// daemon_liveness 同一探针（d.Probe）；daemon 不可达时本项 pass 注记不叠加
 	// 误报（活性 fail 由 daemon_liveness 独报，见 CheckDshPollerSentinel）。
 	out = append(out, CheckDshPollerSentinel(d.Probe).named("dsh_poller_sentinel"))
+	// 票39（spec#34）：/ferry-restore 斜杠命令在位（续接末位追加——顺序零漂移
+	// 纪律；缺位提示不判失败，与闸门事件缺位同级）。
+	out = append(out, CheckCCSlashCommand(CCSlashCommandPath(d.Home)).named("cc_slash_command"))
 	return out
 }
 

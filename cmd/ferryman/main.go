@@ -124,6 +124,8 @@ serve 与面板:
   ferryman status              # 探活：守护/版本、渡口监听、台账摘要（只读，不在线也如实报告）
   ferryman stop [--wait 秒]    # 优雅停：POST /shutdown+等让位（缺省预算 240s，绝不硬杀）
   ferryman restart [--from N] [--to M]  # 安全重启：停旧→按盘上配置拉新；健康失败自动还原上次健康配置
+  ferryman restore [--cwd 目录]  # 显式取回本目录交接（单份注入/多份列清单/无候选明说；
+                                #   /ferry-restore 斜杠命令的命令体，输出到 stdout）
 
 安装（钩子/配置注入与常驻保障）:
   ferryman install-cc [--events 事件1,事件2,…]
@@ -223,6 +225,8 @@ func run(args []string) int {
 		return cmdVerifyDsh(args[1:], os.Stdout)
 	case "status":
 		return cmdStatus(args[1:])
+	case "restore": // 票39（spec#34）：显式恢复薄客户端（/ferry-restore 命令体同源）
+		return cmdRestore(args[1:], os.Stdout, os.Stderr)
 	case "stop":
 		return cmdStop(args[1:])
 	case "restart": // 票07：安全重启帮手 CLI（端点拉起的同一形态，可独立复跑）

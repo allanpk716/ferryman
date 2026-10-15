@@ -16,6 +16,9 @@ package daemon
 // 新开）cc/codex 改为零注入终态——不注入交接、不列候选清单；原“单候选注入
 // 最新/多候选列清单”逻辑保留在 restoreNewest（#39 显式恢复入口
 // `ferryman restore` / `/ferry-restore` 复用），不在本票接通。
+// 票39（spec#34）：显式参数接通——Restore(agent,cwd,sessionID,explicit)，
+// explicit=true 走 restoreNewest 语义（信号②：用户显式命令），无候选时
+// 明说无可用交接（CLI/斜杠命令把 context 打给人看，沉默的 nil 等于没反应）。
 //
 // INJECT 标记单源：internal/ferry（ferry.InjectOpen/InjectClose；终局评审
 // 扫雷1——本地副本常量已删，勿再散抄第二份）。
@@ -25,6 +28,7 @@ import (
 	"strings"
 
 	"ferryman/internal/accounts"
+	"ferryman/internal/clock"
 	"ferryman/internal/extract"
 	"ferryman/internal/ferry"
 	"ferryman/internal/mathx"
@@ -41,7 +45,23 @@ import (
 // 多候选列清单”旧自动行为。dsh 的真入口 DshHandoff 已在无锚处先行返回
 // 零注入终态（此处保留 dsh 直调 restoreNewest——票03 新鲜度钉子的既有路径，
 // 行为不变）；cc/codex 原行为保留在 restoreNewest，供 #39 显式恢复入口复用。
-func (d *Daemon) Restore(agent, cwd, sessionID string) map[string]any {
+// 票39（ADR-0025 信号②）：explicit=true = 用户显式喊恢复（CLI / 斜杠命令）
+// ——不走锚定（锚是自动路径的信号①，显式路径无需它），直落 restoreNewest
+// 的“单候选注入最新／多候选列清单”语义，inject 记账与 mark_injected 照常
+// （上一代交接判定依赖注入登记）；无候选（含 dsh 全过期）明说无可用交接。
+// session_id 缺省（CLI 形态）由守护合成 cli-restore-<ts>——记账与登记的是
+// “显式取回”这一事件本身，取回人无法从请求面知晓，不猜。
+func (d *Daemon) Restore(agent, cwd, sessionID string, explicit bool) map[string]any {
+	if explicit {
+		if sessionID == "" {
+			sessionID = fmt.Sprintf("cli-restore-%d", int64(clock.Now()))
+		}
+		r := d.restoreNewest(agent, cwd, sessionID)
+		if r["context"] == nil { // 无候选：明说（不回 dsh 插件契约键 continuation）
+			return map[string]any{"context": restoreNoHandoffNotice}
+		}
+		return r
+	}
 	if p, ok := d.Store.LatestPendingFor(agent, cwd); ok {
 		return d.restoreAnchored(agent, cwd, sessionID, p)
 	}
@@ -50,6 +70,13 @@ func (d *Daemon) Restore(agent, cwd, sessionID string) map[string]any {
 	}
 	return d.restoreNewest(agent, cwd, sessionID)
 }
+
+// restoreNoHandoffNotice 显式恢复、无候选的明说文案：给人看（CLI stdout /
+// /ferry-restore 会话内），措辞交代“为什么没有”与“何时会有”——无锚新会话
+// 零注入（#38）后，交接只在闲置被摆渡后产生。
+const restoreNoHandoffNotice = "[Ferryman] 本目录没有可用交接（最近 24 小时内" +
+	"无 fresh/skeleton 交接落盘）。可直接继续工作；会话闲置超过总结阈值后" +
+	"Ferryman 会自动生成交接，届时可用 ferryman restore 或 /ferry-restore 取回。"
 
 // restoreContinue 票02（dsh-first-live-followups）续用归还：同会话续用（转录
 // 已有机器产出事件，判定见 dsh_receive.go dshTranscriptHasProduction）的交接

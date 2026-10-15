@@ -5,7 +5,7 @@ package accounts_test
 // 本文件为 Go 外部测试包——daemon → accounts 是生产依赖方向（装配器同
 // window_e2e_test.go 惯例），扩 Gate/Restore 通道：
 //   - d.Gate(body) = POST /gate（票14 gate.go；HTTP 面归票15）；
-//   - d.Restore(agent, cwd, sessionID) = GET /restore（同上）。
+//   - d.Restore(agent, cwd, sessionID, explicit) = GET /restore（explicit=1 时带；同上）。
 // 交接产物 Python 版经守望摆渡链生成（wait_for 轮询）；Go 版直构
 // Store.SaveHandoff（票面"最小测试装配器"口径）——闸门/归还的记账行为
 // 与链路无关，行为等价且全确定。
@@ -121,7 +121,7 @@ func TestRestoreBooksInject(t *testing.T) {
 	if r := h.d.Gate(body); r["decision"] != "block" {
 		t.Fatalf("应先被拦: %v", r)
 	}
-	r := h.d.Restore("cc", "C:/proj", "newsid")
+	r := h.d.Restore("cc", "C:/proj", "newsid", false)
 	if ctx, _ := r["context"].(string); ctx == "" {
 		t.Fatalf("context 不应为空: %v", r)
 	}

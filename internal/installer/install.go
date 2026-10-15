@@ -367,6 +367,10 @@ func InstallCC(settingsPath, dbPath, dataDir, repo string, events []string) int 
 	fmt.Printf("已追加 Ferryman 钩子到 %s（备份: %s）\n", settingsPath, filepath.Base(backup))
 	fmt.Println()
 
+	// 票39（spec#34）：用户级斜杠命令 /ferry-restore（显式恢复的 CC 内入口，
+	// 命令体调本 exe 的 restore；冲突处置见 slashcmd.go）
+	ensureSlashCommand(slashCommandPathForSettings(settingsPath), exePath())
+
 	// CC Switch 地雷（DESIGN §3）：检测到 → 钩子注进全部 claude 供应商快照
 	// （repo 透传——票22 骑手 M4：与 settings.json 侧同一 repo 根，消除
 	// repoRoot() 二次求值的分叉面）
