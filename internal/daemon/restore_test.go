@@ -30,24 +30,23 @@ func saveCand(t *testing.T, e *gateEnv, sid, title string, ageS float64, md stri
 }
 
 func TestRestoreNoCandidatesReturnsNone(t *testing.T) {
+	// 无候选：零注入终态（票38 后与有候选同形——context nil＋continuation
+	// true 终态标记，与 dsh 新会话分支同形）。
 	e := newGateEnv(t)
-	r := e.d.Restore("cc", "C:/proj", "newsid")
-	ctx, ok := r["context"]
-	if !ok || ctx != nil {
-		t.Fatalf("r = %v, want {context: nil}", r)
-	}
-	if len(r) != 1 {
-		t.Fatalf("r 应只有 context 键: %v", r)
-	}
+	assertZeroInjectTerminal(t, e.d.Restore("cc", "C:/proj", "newsid"))
 }
 
-func TestRestoreMultiCandidateListsTopFiveOnly(t *testing.T) {
+// TestRestoreNewestMultiListsTopFiveOnly 旧“单候选注入最新/多候选列清单”逻辑
+// 的行为钉子：票38 后自动路径（Restore）不再抵达，逻辑保留在 restoreNewest
+// 供 #39 显式恢复入口复用——此处直调钉住语义（前 5、covers 降序、
+// 必问不猜），#39 接通后改回端点缝。
+func TestRestoreNewestMultiListsTopFiveOnly(t *testing.T) {
 	// 多候选：只列清单不默认注入（前 5，covers 降序）。
 	e := newGateEnv(t)
 	for i := 1; i <= 7; i++ {
 		saveCand(t, e, fmt.Sprintf("s%d", i), fmt.Sprintf("h%d", i), float64(i)*100, "md")
 	}
-	r := e.d.Restore("cc", "C:/proj", "newsid")
+	r := e.d.restoreNewest("cc", "C:/proj", "newsid")
 	ctx, _ := r["context"].(string)
 	if !strings.HasPrefix(ctx, "[Ferryman] 本项目有 7 份可用交接——这个目录跑过多个会话") {
 		t.Fatalf("清单头不符: %q", ctx)
@@ -70,12 +69,12 @@ func TestRestoreMultiCandidateListsTopFiveOnly(t *testing.T) {
 
 // 2026-09-23 回归：候选 2~4 个时旧实现 cands[:5] 越界 panic（serve.err.log
 // 三次实炸，slice bounds out of range [:5] with capacity 2）——两候选必须
-// 正常列清单不炸。
-func TestRestoreTwoCandidatesListsBothNoPanic(t *testing.T) {
+// 正常列清单不炸。直调 restoreNewest（同上：#39 复用前的语义钉子）。
+func TestRestoreNewestTwoCandidatesListsBothNoPanic(t *testing.T) {
 	e := newGateEnv(t)
 	saveCand(t, e, "s1", "h1", 100, "md")
 	saveCand(t, e, "s2", "h2", 200, "md")
-	r := e.d.Restore("cc", "C:/proj", "newsid")
+	r := e.d.restoreNewest("cc", "C:/proj", "newsid")
 	ctx, _ := r["context"].(string)
 	if !strings.HasPrefix(ctx, "[Ferryman] 本项目有 2 份可用交接") {
 		t.Fatalf("清单头不符: %q", ctx)
@@ -87,10 +86,12 @@ func TestRestoreTwoCandidatesListsBothNoPanic(t *testing.T) {
 
 func TestRestoreSingleCandidateInjectLayerAndPending(t *testing.T) {
 	// 单候选：INJECT 层提取（strip），头部/免责声明/待续 prompt/完整文档行逐字。
+	// 票38：无锚不再自动注入——改有锚场景钉同一输出形状（锚定分支同走
+	// injectHandoff）。
 	e := newGateEnv(t)
 	c := saveCand(t, e, "src", "标题t", 100,
 		"HEAD\n<<<INJECT>>>\n交接正文X\n<<</INJECT>>>\nTAIL")
-	e.store.SavePendingPrompt("src", "原话XYZ")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "src", "原话XYZ")
 	r := e.d.Restore("cc", "C:/proj", "newsid")
 	ctx, _ := r["context"].(string)
 	wantHead := "[Ferryman 交接 · " + c["created"].(string) + " · 会话 标题t]\n" +
@@ -114,9 +115,11 @@ func TestRestoreSingleCandidateInjectLayerAndPending(t *testing.T) {
 
 func TestRestoreTitleFallsBackToSessionIDPrefix8(t *testing.T) {
 	// title 缺失 → 会话 id 前 8 码点（Python newest['title'] or newest['session_id'][:8]）。
+	// 有锚场景（票38：无锚零注入，注入形状经锚定分支钉）。
 	e := newGateEnv(t)
 	e.store.SaveHandoff("srcsession-very-long", "cc", "C:/proj", "",
 		isoUTC(e.t0-100), "fresh", "md")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "srcsession-very-long", "p")
 	r := e.d.Restore("cc", "C:/proj", "newsid")
 	ctx, _ := r["context"].(string)
 	if !strings.Contains(ctx, "会话 srcsessi]") {
@@ -125,10 +128,11 @@ func TestRestoreTitleFallsBackToSessionIDPrefix8(t *testing.T) {
 }
 
 func TestRestoreMissingInjectMarkFallsBackTo1800(t *testing.T) {
-	// INJECT 标记缺失 → 截前 1800 码点（无 strip）。
+	// INJECT 标记缺失 → 截前 1800 码点（无 strip）。有锚场景（票38）。
 	e := newGateEnv(t)
 	md := strings.Repeat("A", 1700) + strings.Repeat("B", 1300)
 	e.store.SaveHandoff("src", "cc", "C:/proj", "t", isoUTC(e.t0-100), "fresh", md)
+	e.store.SavePendingPromptFor("cc", "C:/proj", "src", "p")
 	r := e.d.Restore("cc", "C:/proj", "newsid")
 	ctx, _ := r["context"].(string)
 	if !strings.Contains(ctx, strings.Repeat("A", 1700)) {
@@ -144,9 +148,11 @@ func TestRestoreMissingInjectMarkFallsBackTo1800(t *testing.T) {
 
 func TestRestoreCtxCappedAt6000(t *testing.T) {
 	// ctx 截 6000 码点（Python ctx[:6000]）；tokens 记账按截断前全文算。
+	// 有锚场景（票38）。
 	e := newGateEnv(t)
 	e.store.SaveHandoff("src", "cc", "C:/proj", "t", isoUTC(e.t0-100), "fresh",
 		"<<<INJECT>>>\n"+strings.Repeat("长", 8000)+"\n<<</INJECT>>>")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "src", "p")
 	r := e.d.Restore("cc", "C:/proj", "newsid")
 	ctx, _ := r["context"].(string)
 	if got := mathx.RuneLen(ctx); got > 6000 {
@@ -165,6 +171,7 @@ func TestRestoreBooksInjectLineageAndMarkedInjected(t *testing.T) {
 	w.led.TouchFull("cc", "src", srcPath, w.t0, 10, "C:/srccwd", "", 100, 0)
 	en := w.store.SaveHandoff("src", "cc", "C:/proj", "t", isoUTC(w.t0-100), "fresh",
 		"<<<INJECT>>>\n交接正文\n<<</INJECT>>>")
+	w.store.SavePendingPromptFor("cc", "C:/proj", "src", "p") // 有锚（票38）
 	r := w.d.Restore("cc", "C:/proj", "newsid")
 	if ctx, _ := r["context"].(string); ctx == "" {
 		t.Fatal("context 不应为空")
@@ -209,20 +216,21 @@ func TestRestoreBooksInjectLineageAndMarkedInjected(t *testing.T) {
 }
 
 func TestRestoreConsumesPendingOnce(t *testing.T) {
-	// pop_pending_prompt(consume_for=请求会话)：注入一次后不再给。
+	// pop_pending_prompt(consume_for=请求会话)：注入一次后不再给；锚被消费后
+	// 再开新会话 → 零注入终态（票38）。
 	e := newGateEnv(t)
 	e.store.SaveHandoff("src", "cc", "C:/proj", "t", isoUTC(e.t0-100), "fresh", "md")
-	e.store.SavePendingPrompt("src", "只给一次的原话")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "src", "只给一次的原话")
 	r1 := e.d.Restore("cc", "C:/proj", "newsid")
 	ctx1, _ := r1["context"].(string)
 	if !strings.Contains(ctx1, "只给一次的原话") {
 		t.Fatalf("首次注入应带待续 prompt: %q", ctx1)
 	}
 	r2 := e.d.Restore("cc", "C:/proj", "other")
-	ctx2, _ := r2["context"].(string)
-	if strings.Contains(ctx2, "只给一次的原话") {
+	if ctx2, _ := r2["context"].(string); strings.Contains(ctx2, "只给一次的原话") {
 		t.Fatalf("消费后不得再给: %q", ctx2)
 	}
+	assertZeroInjectTerminal(t, r2)
 }
 
 // 2026-09-30 /clear 串台案（06703fbd→f65f65ce）锚定回归（用户令："一个目录
@@ -247,12 +255,8 @@ func TestRestoreAnchoredPinsBlockedSessionOverNewerSibling(t *testing.T) {
 	if !strings.Contains(ctx, "自检：这个目录还有别的工作线") || !strings.Contains(ctx, "- 别的线程 → ") {
 		t.Fatalf("锚定注入应附其他工作线尾注: %q", ctx)
 	}
-	// 锚已消费：再开新会话回落旧行为（两候选 → 列清单，不默认注入）
-	r2 := e.d.Restore("cc", "C:/proj", "fresh2")
-	ctx2, _ := r2["context"].(string)
-	if !strings.HasPrefix(ctx2, "[Ferryman] 本项目有 2 份可用交接") {
-		t.Fatalf("锚消费后应回落多候选清单: %q", ctx2)
-	}
+	// 锚已消费：再开新会话 → 零注入终态（票38：无锚不再回落多候选清单）
+	assertZeroInjectTerminal(t, e.d.Restore("cc", "C:/proj", "fresh2"))
 }
 
 func TestRestoreAnchoredNoHandoffDeliversPromptAndListsOthers(t *testing.T) {
@@ -396,8 +400,9 @@ func TestRestoreDshUnanchoredFiltersExpiredKeepsFreshPerCandidate(t *testing.T) 
 }
 
 func TestRestoreCcSameStaleDataUnchanged(t *testing.T) {
-	// cc 同数据（covers 落后 last_write）行为与改动前逐字一致：过期照供——
-	// 新鲜度校验仅 dsh，cc/codex 完全绕过。
+	// cc 同数据（covers 落后 last_write）：新鲜度校验仅 dsh，cc/codex 完全
+	// 绕过（有锔回过期交接照旧注入——锚定分支无新鲜度过滤，逐字旧行为）。
+	// 无锚侧票38 起一律零注入，过期照供与否不再可观察。
 	// 有锚：过期交接照旧注入+原话。
 	e := newGateEnv(t)
 	regAgentSrc(t, e, "cc", "blocked-src", e.t0-100)
@@ -414,16 +419,13 @@ func TestRestoreCcSameStaleDataUnchanged(t *testing.T) {
 	if !strings.Contains(ctx, "被拦原话T5") {
 		t.Fatalf("cc 有锚：原话应照旧带上: %q", ctx)
 	}
-	// 无锚：单候选（过期）照旧注入。
+	// 无锚：零注入终态（票38）——过期交接的“照供与否”在 cc 无锚路径不再
+	// 可观察（无锚一律不注入）；新鲜度绕过仍由上有锚部分钉住。
 	e2 := newGateEnv(t)
 	regAgentSrc(t, e2, "cc", "src", e2.t0-100)
 	e2.store.SaveHandoff("src", "cc", "C:/proj", "旧线",
 		isoUTC(e2.t0-1000), "fresh", "md-old")
-	r2 := e2.d.Restore("cc", "C:/proj", "newsid")
-	ctx2, _ := r2["context"].(string)
-	if !strings.Contains(ctx2, "会话 旧线") || !strings.Contains(ctx2, "[Ferryman 交接 ·") {
-		t.Fatalf("cc 无锚：过期交接应照旧注入（逐字旧行为）: %q", ctx2)
-	}
+	assertZeroInjectTerminal(t, e2.d.Restore("cc", "C:/proj", "newsid"))
 }
 
 // ---- 票02（dsh-first-live-followups）：RestoreCandidates 排序全序 ----
@@ -498,7 +500,7 @@ func TestRestoreCandidatesTotalOrderAndDeterministic(t *testing.T) {
 
 // 2026-10-11 上一代交接案回放（c2ffdd87→23040098→db572a88）：A 的交接注入
 // B 后 B 接着干出了自己的交接；B 被拦 /clear 到 C——注入 B 那份，尾注不得
-// 把 A（本线上一代）当"别的工作线"列出；之后自愿 /clear 也不再出两候选清单。
+// 把 A（本线上一代）当"别的工作线"列出；之后自愿 /clear 零注入（票38）。
 func TestRestoreDropsSupersededAncestorFromTailAndListing(t *testing.T) {
 	e := newGateEnv(t)
 	anc := saveCand(t, e, "anc-src", "MVP 方案评审与反馈文件", 900, "md-anc")
@@ -513,11 +515,80 @@ func TestRestoreDropsSupersededAncestorFromTailAndListing(t *testing.T) {
 	if strings.Contains(ctx, "MVP 方案评审与反馈文件") || strings.Contains(ctx, "自检：") {
 		t.Fatalf("上一代不得列为别的工作线: %q", ctx)
 	}
-	r2 := e.d.Restore("cc", "C:/proj", "new2-src") // 无锚：只剩本线最新一份 → 单候选注入
-	ctx2, _ := r2["context"].(string)
-	if !strings.Contains(ctx2, "会话 反馈提交情况") || strings.Contains(ctx2, "份可用交接") {
-		t.Fatalf("上一代剔除后应单候选注入: %q", ctx2)
+	// 无锚：零注入终态（票38）——既不注入本线最新，也不列候选清单
+	assertZeroInjectTerminal(t, e.d.Restore("cc", "C:/proj", "new2-src"))
+}
+
+// ---- 票38（spec#34）：CC/codex 无锚零注入（ADR-0025「CC/codex 同步生效」） ----
+//
+// 无锚＝自愿 /clear 或新开：归还一律零注入终态 {"context":null,
+// "continuation":true}（与 dsh 新会话分支同形）——不注入交接、不列候选清单。
+// 依据：本机交接库实测一份交接被注入 17 个新会话（另有 15、12 次），根因是
+// cc/codex 无锚分支仍走"单候选注入最新／多候选列清单"旧行为。原逻辑保留在
+// restoreNewest（#39 显式恢复入口复用）。
+
+func assertZeroInjectTerminal(t *testing.T, r map[string]any) {
+	t.Helper()
+	ctx, ok := r["context"]
+	if !ok || ctx != nil {
+		t.Fatalf("r = %v, want context=nil（零注入）", r)
 	}
+	if r["continuation"] != true {
+		t.Fatalf("r = %v, want continuation=true（终态，与 dsh 新会话分支同形）", r)
+	}
+}
+
+func TestRestoreCcNoAnchorSingleCandidateZeroInject(t *testing.T) {
+	// cc 无锚、同目录恰一份交接：零注入（不注入那份交接）。
+	e := newGateEnv(t)
+	saveCand(t, e, "src", "单线", 100, "md")
+	assertZeroInjectTerminal(t, e.d.Restore("cc", "C:/proj", "newsid"))
+}
+
+func TestRestoreCcNoAnchorMultiCandidateZeroInject(t *testing.T) {
+	// cc 无锚、多份交接：零注入——不注入最新，也不列候选清单。
+	e := newGateEnv(t)
+	for i := 1; i <= 3; i++ {
+		saveCand(t, e, fmt.Sprintf("s%d", i), fmt.Sprintf("h%d", i), float64(i)*100, "md")
+	}
+	assertZeroInjectTerminal(t, e.d.Restore("cc", "C:/proj", "newsid"))
+}
+
+func TestRestoreCodexNoAnchorZeroInject(t *testing.T) {
+	// codex 同 cc：无锚单份/多份一律零注入（三轨行为一致）。
+	e := newGateEnv(t)
+	e.store.SaveHandoff("src1", "codex", "C:/proj", "单线", isoUTC(e.t0-100), "fresh", "md")
+	e.store.SaveHandoff("src2", "codex", "C:/proj", "另一线", isoUTC(e.t0-200), "fresh", "md")
+	for _, sid := range []string{"newsid-1", "newsid-2"} {
+		assertZeroInjectTerminal(t, e.d.Restore("codex", "C:/proj", sid))
+	}
+}
+
+func TestRestoreCcAnchorConsumedThenNewSessionZeroInject(t *testing.T) {
+	// cc 有锚：注入锚会话交接＋原话一次，锚被消费，再开新会话为零注入终态。
+	e := newGateEnv(t)
+	saveCand(t, e, "blocked", "被拦线程", 100, "md-blocked")
+	e.store.SavePendingPromptFor("cc", "C:/proj", "blocked", "被拦原话Z")
+	r1 := e.d.Restore("cc", "C:/proj", "fresh1")
+	ctx1, _ := r1["context"].(string)
+	if !strings.Contains(ctx1, "会话 被拦线程") || !strings.Contains(ctx1, "被拦原话Z") {
+		t.Fatalf("有锚应注入锚会话交接+原话: %q", ctx1)
+	}
+	assertZeroInjectTerminal(t, e.d.Restore("cc", "C:/proj", "fresh2"))
+}
+
+func TestRestoreCodexAnchorConsumedThenNewSessionZeroInject(t *testing.T) {
+	// codex 有锚：注入锚会话交接＋原话一次，锚被消费，再开新会话为零注入终态。
+	e := newGateEnv(t)
+	e.store.SaveHandoff("blocked", "codex", "C:/proj", "被拦线程", isoUTC(e.t0-100),
+		"fresh", "<<<INJECT>>>\ncodex 交接正文\n<<</INJECT>>>")
+	e.store.SavePendingPromptFor("codex", "C:/proj", "blocked", "被拦原话W")
+	r1 := e.d.Restore("codex", "C:/proj", "fresh1")
+	ctx1, _ := r1["context"].(string)
+	if !strings.Contains(ctx1, "codex 交接正文") || !strings.Contains(ctx1, "被拦原话W") {
+		t.Fatalf("有锚应注入锚会话交接+原话: %q", ctx1)
+	}
+	assertZeroInjectTerminal(t, e.d.Restore("codex", "C:/proj", "fresh2"))
 }
 
 // 锚定钉死不受上一代剔除影响：用户回到旧窗口（上一代会话）被拦再 /clear，
