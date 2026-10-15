@@ -10,8 +10,12 @@ package daemon
 // 归还先查 (agent,cwd) 下未消费、被拦未超 PendingAnchorS 的待续锚——那是
 // "用户刚被拦、正照拦截文案 /clear"的会话。有锚：钉死注入锚会话自己的交接
 // （哪怕同目录有更新的别的线程交接）；锚会话没有交接：只带原话并明说，绝不
-// 静默注入别的线程的交接（其他候选降级为清单供选读）。无锚＝自愿 /clear：
-// 维持原行为（单候选注入最新/多候选列清单）。
+// 静默注入别的线程的交接（其他候选降级为清单供选读）。
+//
+// 票38（spec#34，ADR-0025「CC/codex 同步生效」）：无锚分支（自愿 /clear 或
+// 新开）cc/codex 改为零注入终态——不注入交接、不列候选清单；原“单候选注入
+// 最新/多候选列清单”逻辑保留在 restoreNewest（#39 显式恢复入口
+// `ferryman restore` / `/ferry-restore` 复用），不在本票接通。
 //
 // INJECT 标记单源：internal/ferry（ferry.InjectOpen/InjectClose；终局评审
 // 扫雷1——本地副本常量已删，勿再散抄第二份）。
@@ -30,11 +34,19 @@ import (
 
 // Restore 归还：新会话开场取回上下文。dsh 另有播种新鲜度校验（票03）：过期
 // 交接不供（covers 落后基准会话 last_write 超 60s 容差，与闸门覆盖判据
-// ValidHandoff 同口径；基准=有锚取锚会话、无锚取候选源会话），cc/codex 逐字
-// 零变化。
+// ValidHandoff 同口径；基准=有锚取锚会话、无锚取候选源会话）。
+// 票38（ADR-0025「CC/codex 同步生效」）：cc/codex 无锚（自愿 /clear 或新开）
+// 零注入终态，与 dsh 新会话分支同形——依据：本机交接库实测一份 mockit 交接
+// 被注入 17 个新会话（另有 15、12 次），根因是无锚分支仍走“单候选注入最新/
+// 多候选列清单”旧自动行为。dsh 的真入口 DshHandoff 已在无锚处先行返回
+// 零注入终态（此处保留 dsh 直调 restoreNewest——票03 新鲜度钉子的既有路径，
+// 行为不变）；cc/codex 原行为保留在 restoreNewest，供 #39 显式恢复入口复用。
 func (d *Daemon) Restore(agent, cwd, sessionID string) map[string]any {
 	if p, ok := d.Store.LatestPendingFor(agent, cwd); ok {
 		return d.restoreAnchored(agent, cwd, sessionID, p)
+	}
+	if agent != "dsh" { // cc/codex 无锚：零注入终态（票38）
+		return map[string]any{"context": nil, "continuation": true}
 	}
 	return d.restoreNewest(agent, cwd, sessionID)
 }
