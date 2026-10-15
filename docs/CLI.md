@@ -153,8 +153,10 @@ inject 账并登记注入会话（取回主体为 `cli-restore-*` 合成会话�
 
 CC 钩子注入 `~/.claude/settings.json`；检测到 `~/.cc-switch/cc-switch.db` 时把钩子同步
 注入全部 claude 供应商快照（幂等、保留既有条目、改库前备份）。`--events` 缺省 = 全集
-（UserPromptSubmit,SessionStart,SubagentStart,SubagentStop）；切换日三类子集 =
-`SessionStart,SubagentStart,SubagentStop`（闸门 UserPromptSubmit 暂不装）。
+（UserPromptSubmit,PostToolUse,SessionStart,SubagentStart,SubagentStop——PostToolUse 带
+matcher=AskUserQuestion，即作答闸门，与打字闸门同一脚本按事件名分支）；切换日三类子集 =
+`SessionStart,SubagentStart,SubagentStop`（闸门 UserPromptSubmit/PostToolUse 暂不装，
+doctor 同级提示不判失败）。
 同时写入用户级斜杠命令 `/ferry-restore`（`~/.claude/commands/ferry-restore.md`，命令体
 调本 exe 的 `ferryman restore` 把交接带回会话；幂等刷新；用户同名自定义文件不覆盖、
 报告冲突——doctor 的 `cc_slash_command` 项可查在位）。

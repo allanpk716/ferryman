@@ -303,6 +303,44 @@ func TestInstallCodexIdempotentAndCreatesMissing(t *testing.T) {
 	}
 }
 
+// ---- #36 作答闸门：install-cc 事件集合含 PostToolUse＋matcher=AskUserQuestion ----
+
+// TestInstallCCAddsAnswerGatePostToolUse 全集安装带作答闸门事件：PostToolUse
+// 指向同一闸门脚本、matcher 仅 AskUserQuestion、超时 3s；幂等不叠加。临时
+// home 密闭（永不碰本机 settings.json）。
+func TestInstallCCAddsAnswerGatePostToolUse(t *testing.T) {
+	tmp := t.TempDir()
+	p := orcaSettings(t, tmp)
+	noDB := filepath.Join(tmp, "no-ccswitch.db")
+	repo := filepath.Join(tmp, "repo")
+	dataDir := filepath.Join(tmp, "data")
+	read := captureStdout(t)
+	InstallCC(p, noDB, dataDir, repo, nil)
+	read()
+	hooks := hooksOf(t, parseFile(t, p))
+	if n := ferryCount(t, hooks, "PostToolUse"); n != 1 {
+		t.Fatalf("PostToolUse ferryman 条目数 = %d, want 1", n)
+	}
+	entry := firstMap(t, asList(hooks["PostToolUse"]), "ferryman")
+	if m, _ := entry["matcher"].(string); m != "AskUserQuestion" {
+		t.Fatalf("PostToolUse matcher = %v, want AskUserQuestion（仅作答入口）", entry["matcher"])
+	}
+	if blob := compactOf(t, entry); !strings.Contains(blob, "ferryman-gate.ps1") {
+		t.Fatalf("PostToolUse 不含 ferryman-gate.ps1: %s", blob)
+	}
+	hook := firstMap(t, asList(entry["hooks"]), "")
+	if timeout, _ := hook["timeout"].(float64); timeout != 3 {
+		t.Fatalf("PostToolUse timeout = %v, want 3", hook["timeout"])
+	}
+
+	read = captureStdout(t)
+	InstallCC(p, noDB, dataDir, repo, nil) // 幂等：作答闸门条目不重复
+	read()
+	if n := ferryCount(t, hooksOf(t, parseFile(t, p)), "PostToolUse"); n != 1 {
+		t.Fatalf("幂等后 PostToolUse 条目数 = %d, want 1", n)
+	}
+}
+
 // ---- 防线：既有 hooks 值非对象 → 响亮拒绝（Python AttributeError 崩的同位；
 // 静默覆盖 = 数据丢失） ----
 
@@ -376,12 +414,20 @@ func TestInstallSubsetOnlyWritesRequestedEvents(t *testing.T) {
 		}
 	}
 
-	// FerryHookEntries 直查：空 = 全集
-	if got := len(FerryHookEntries(tmp, nil)); got != 4 {
-		t.Fatalf("全集事件数 = %d, want 4", got)
+	// FerryHookEntries 直查：空 = 全集（CC 侧五事件——含作答闸门 PostToolUse）
+	if got := len(FerryHookEntries(tmp, nil)); got != 5 {
+		t.Fatalf("全集事件数 = %d, want 5", got)
 	}
 	if got := FerryHookEntries(tmp, subset); len(got) != 3 {
 		t.Fatalf("子集事件数 = %d, want 3", len(got))
+	}
+	// 子集不点名作答闸门 → 不装（与闸门事件同级的可选事件）
+	if _, has := hooks["PostToolUse"]; has {
+		t.Fatal("子集安装不应写入 PostToolUse（未点名不装）")
+	}
+	// codex 侧全集仍四事件（无作答路径，spec #34 边界）
+	if got := len(buildEntries(tmp, nil, FerryEvents, codexSpecs)); got != 4 {
+		t.Fatalf("codex 全集事件数 = %d, want 4", got)
 	}
 }
 

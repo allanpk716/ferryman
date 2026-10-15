@@ -45,7 +45,10 @@ var kindFields = map[string][]string{
 	// 追加，唯一生产者 bookBeat 恒写。
 	"beat": {"provider", "model", "price_ver", "prefix_tokens", "cache_read",
 		"outcome", "cost_pred", "cost_actual", "lane"},
-	"block":  {"prefix_tokens", "idle_s"},
+	// block 科目：闸门拦截流水。entry 入口标识（#36，spec #34 两入口可
+	// 区分；Go 版追加先例同 beat.lane）：打字行不带（存量零漂移）、作答行恒
+	// 带 "answer"；可选字段（kindOptional），只记元数据（隐私铁律不动）。
+	"block":  {"prefix_tokens", "idle_s", "entry"},
 	"inject": {"tokens", "handoff_id"},
 	"bypass": {"prefix_tokens"},
 	"window": {"opened_ts", "closed_ts", "dur_s", "prefix_tokens", "close_reason"},
@@ -103,6 +106,8 @@ var kindFields = map[string][]string{
 var kindOptional = map[string][]string{
 	"handoff": {"lane", "chain_pos", "err"},
 	"dock":    {"truncated"},
+	// block.entry（#36）：入口标识仅作答拦截行携带（打字行零漂移），恒可选。
+	"block": {"entry"},
 	// compacted（票02）：reason/source/prefix_tokens 上报方可省（插件读不到新
 	// 前缀时省略 prefix_tokens）；ok 为上报核心字段恒必填。
 	"compacted": {"reason", "prefix_tokens", "source"},

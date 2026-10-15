@@ -182,7 +182,7 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 		PushoverToken: "t", PushoverUser: "u", Toast: true,
 		// 票02：拦截走 block 事件分派；本段钉双通道形态，显式 both。
 		Events: map[string]config.NotifyEventTier{"block": config.NotifyEventBoth}}
-	NotifyBlock("C:/handoffs/h1.md", "cc", "s123", "", "", cfg)
+	NotifyBlock("C:/handoffs/h1.md", "cc", "s123", "", "", "", cfg)
 
 	if len(*toastCalls) != 1 || !strings.Contains((*toastCalls)[0], "h1.md") {
 		t.Fatalf("toast 应带交接路径，got %v", *toastCalls)
@@ -207,7 +207,7 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 	// 主场景——拦截通知可分辨哪个项目哪个会话）；project/title 皆空回落旧标题。
 	// R1：project 传全路径形态时提取项目基名（gate 生产路径传的是台账 Cwd 原文）。
 	ps.reset()
-	NotifyBlock("C:/handoffs/h3.md", "cc", "s456", "proj-x", "心跳保真实验", cfg)
+	NotifyBlock("C:/handoffs/h3.md", "cc", "s456", "proj-x", "心跳保真实验", "", cfg)
 	form = ps.form(t)
 	if form.Get("title") != "Ferryman｜proj-x：心跳保真实验" {
 		t.Fatalf("title = %q, want Ferryman｜proj-x：心跳保真实验", form.Get("title"))
@@ -216,7 +216,7 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 		t.Fatal("正文尾部应含 sid 小字（带项目标题形态）")
 	}
 	ps.reset()
-	NotifyBlock("C:/handoffs/h4.md", "cc", "s789", `C:\WorkSpace\agent\Ferryman`, "渡口联调", cfg)
+	NotifyBlock("C:/handoffs/h4.md", "cc", "s789", `C:\WorkSpace\agent\Ferryman`, "渡口联调", "", cfg)
 	form = ps.form(t)
 	if form.Get("title") != "Ferryman｜Ferryman：渡口联调" {
 		t.Fatalf("全路径形态应提取基名: title = %q", form.Get("title"))
@@ -227,7 +227,7 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 	cfg.Notify.Events = nil
 	ps.reset()
 	*toastCalls = nil
-	NotifyBlock("C:/handoffs/h5.md", "cc", "s000", "", "", cfg)
+	NotifyBlock("C:/handoffs/h5.md", "cc", "s000", "", "", "", cfg)
 	if n := ps.count(); n != 0 {
 		t.Fatalf("缺省 block=toast：手机不应推送, got %d 次", n)
 	}
@@ -238,7 +238,7 @@ func TestNotifyBlockIncludesHandoffPathAndRespectsFlags(t *testing.T) {
 	cfg.Notify.Enabled = false // 总开关关 → 全静默
 	ps.reset()
 	*toastCalls = nil
-	NotifyBlock("C:/h2.md", "cc", "s", "", "", cfg)
+	NotifyBlock("C:/h2.md", "cc", "s", "", "", "", cfg)
 	if ps.count() != 0 || len(*toastCalls) != 0 {
 		t.Fatalf("enabled=false 应全静默：push=%d toast=%d", ps.count(), len(*toastCalls))
 	}
@@ -255,7 +255,7 @@ func TestNotifyBlockMissingPushoverCredentialsSkipsPush(t *testing.T) {
 		// 显式 both：本例钉「通道开着但缺凭据 → 只走 toast」的凭据回落
 		//（缺省 block=toast 下手机本来就不发，测不到这条路径）。
 		Events: map[string]config.NotifyEventTier{"block": config.NotifyEventBoth}}
-	NotifyBlock("C:/h.md", "cc", "s", "", "", cfg)
+	NotifyBlock("C:/h.md", "cc", "s", "", "", "", cfg)
 	if len(*toastCalls) != 1 {
 		t.Fatalf("toast 应已发送，got %d", len(*toastCalls))
 	}

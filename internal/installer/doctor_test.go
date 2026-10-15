@@ -161,6 +161,46 @@ func TestCCHooksSessionStartTimeoutFails(t *testing.T) {
 	}
 }
 
+// ---- #36：作答闸门事件（PostToolUse）缺位 = 与闸门事件同级提示不失败 ----
+
+// TestCCHooksAnswerGateMissingHintNotFail 装四旧事件、仅缺作答闸门：
+// doctor 提示不判失败（与 UserPromptSubmit 同级处置），点名 PostToolUse。
+func TestCCHooksAnswerGateMissingHintNotFail(t *testing.T) {
+	tmp := t.TempDir()
+	repo := makeHookRepo(t, filepath.Join(tmp, "repo"))
+	p := filepath.Join(tmp, "settings.json")
+	subset := []string{"UserPromptSubmit", "SessionStart", "SubagentStart", "SubagentStop"}
+	read := captureStdout(t)
+	InstallCC(p, filepath.Join(tmp, "no.db"), filepath.Join(tmp, "data"), repo, subset)
+	read()
+	c := CheckCCHooks(p)
+	if !c.OK {
+		t.Fatalf("仅缺作答闸门应提示不失败（与闸门事件同级）: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "PostToolUse") || !strings.Contains(c.Msg, "未安装") {
+		t.Fatalf("提示应注明 PostToolUse 按用户指令未安装: %s", c.Msg)
+	}
+}
+
+// TestCCSwitchAnswerGateMissingHintNotFail 快照仅缺作答闸门：同款提示不失败。
+func TestCCSwitchAnswerGateMissingHintNotFail(t *testing.T) {
+	tmp := t.TempDir()
+	db := filepath.Join(tmp, "cc-switch.db")
+	makeDB(t, db, [][3]string{{"claude", "P1", mustJSON(t, map[string]any{"hooks": map[string]any{
+		"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+		"SessionStart":     []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+		"SubagentStart":    []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+		"SubagentStop":     []any{map[string]any{"hooks": []any{map[string]any{"command": "ferryman.ps1"}}}},
+	}})}})
+	c := CheckCCSwitch(db)
+	if !c.OK {
+		t.Fatalf("仅缺作答闸门应提示不失败: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "PostToolUse") || !strings.Contains(c.Msg, "未安装") {
+		t.Fatalf("提示应点名 PostToolUse: %s", c.Msg)
+	}
+}
+
 // ---- test_hook_scripts_bom_and_control_chars ----
 
 func TestHookScriptsBomAndControlChars(t *testing.T) {

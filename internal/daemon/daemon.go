@@ -177,8 +177,9 @@ type Daemon struct {
 	// NotifyBlock 通知 seam（T25 异步道）：gate block 分支起 goroutine 调用；
 	// nil 回落 notify.NotifyBlock（gate.go）。测试注入录制替身（Python
 	// monkeypatch notify_mod.notify_block 同位）。票08 加 project/sessionTitle
-	// 两参（标题降级链接线——seam 加宽，注入方同步更新）。
-	NotifyBlock func(handoffPath, agent, sessionID, project, sessionTitle string, cfg *config.Config)
+	// 两参（标题降级链接线——seam 加宽，注入方同步更新）；#36 加 entry 入口
+	// 标识（空串＝打字，GateEntryAnswer＝作答——通知可区分两入口）。
+	NotifyBlock func(handoffPath, agent, sessionID, project, sessionTitle, entry string, cfg *config.Config)
 
 	// windowsMu：C6 外层锁。窗口表被 HTTP 线程（gate/subagent）与守望线程
 	// （note_usage/window_wait，票03 接线）双头读写，本锁串行化；"先记后
