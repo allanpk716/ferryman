@@ -92,8 +92,8 @@ ferryman --install-shortcuts    # 建桌面+开始菜单快捷方式后退出
 ### `ferryman doctor [--json]`
 
 一键体检：钩子在位 / 脚本健康（BOM/控制字符）/ cc-switch 快照覆盖 / daemon 活性 /
-渡口上游生效链 / pi 生效链等。除恰好一个可选 `--json` 外**不收任何参数**（`-h` 亦然，
-给了就退 2，绝不执行体检）。
+渡口上游生效链 / pi 生效链 / `/ferry-restore` 斜杠命令在位等。除恰好一个可选 `--json`
+外**不收任何参数**（`-h` 亦然，给了就退 2，绝不执行体检）。
 
 退出码：0 = 全过（`not_checked` 不计失败）；1 = 有 fail 项；2 = 用法错。
 
@@ -134,14 +134,33 @@ ferryman --install-shortcuts    # 建桌面+开始菜单快捷方式后退出
 退出码：0 = 已停，或本就不在线（无需停止）；1 = 超时（端口/进程未让位，未硬杀）或被拒
 （401 鉴权失败）；2 = 用法错（负数 `--wait`、多余参数）。
 
+### `ferryman restore [--cwd 目录] [--session 会话id]`
+
+显式取回本目录交接（ADR-0025 信号②“用户显式命令”）：单份交接 → 注入最新一份；
+多份 → 列候选清单；无候选 → 明说无可用交接。注入文本打到标准输出；照常记
+inject 账并登记注入会话。守护`/restore?agent=cc&explicit=1` 端点的薄客户端——
+语义全在守护侧。`--cwd` 缺省 = 当前目录；`--session` 登记取回会话 id（缺省 =
+守护合成 `cli-restore-*`；会话内 /ferry-restore 斜杠命令自动传当前会话 id，
+终端手跑可显式传——上一代交接判定据此认出被接替的会话；安装见 `install-cc`）。
+
+退出码：0 = 成功（含“无可用交接”明说——那不足失败）；1 = 守护不可达
+（可读报错 + 启动提示，无堆栈）、鉴权失败或 HTTP 异常；2 = 用法错（未知旗标、
+多余位置参数）。
+
 ## 安装（⚠ 写宿主配置 / 系统注册）
 
 ### `ferryman install-cc [--events 事件1,事件2,…]`
 
 CC 钩子注入 `~/.claude/settings.json`；检测到 `~/.cc-switch/cc-switch.db` 时把钩子同步
 注入全部 claude 供应商快照（幂等、保留既有条目、改库前备份）。`--events` 缺省 = 全集
-（UserPromptSubmit,SessionStart,SubagentStart,SubagentStop）；切换日三类子集 =
-`SessionStart,SubagentStart,SubagentStop`（闸门 UserPromptSubmit 暂不装）。
+（UserPromptSubmit,PostToolUse,SessionStart,SubagentStart,SubagentStop——PostToolUse 带
+matcher=AskUserQuestion，即作答闸门，与打字闸门同一脚本按事件名分支）；切换日三类子集 =
+`SessionStart,SubagentStart,SubagentStop`（闸门 UserPromptSubmit/PostToolUse 暂不装，
+doctor 同级提示不判失败）。
+同时写入用户级斜杠命令 `/ferry-restore`（`~/.claude/commands/ferry-restore.md`，命令体
+调本 exe 的 `ferryman restore` 把交接带回会话，并自动传 `--session ${CLAUDE_SESSION_ID}`
+登记当前会话 id；幂等刷新；用户同名自定义文件不覆盖、报告冲突——doctor 的
+`cc_slash_command` 项可查在位）。
 退出码：0 / 1；`-h` 退 0。
 
 ### `ferryman install-ccswitch`

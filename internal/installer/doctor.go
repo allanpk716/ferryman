@@ -7,7 +7,8 @@
 // 检查项全部纯函数化（路径/探针可注入）；runDoctor 聚合并打印 ✓/✗。
 //
 // Go 新形态：
-//   - CheckCCHooks 闸门事件（UserPromptSubmit）缺位 = 提示不失败（C12 用户
+//   - CheckCCHooks 闸门类事件（UserPromptSubmit＋#36 作答闸门 PostToolUse）
+//     缺位 = 提示不失败（C12 用户
 //     策略：正文注明"闸门钩子按用户指令未安装"）；其余三事件缺失/路径不
 //     存在/SessionStart 超时 <10s 照旧失败；
 //   - CheckLauncher 查点火脚本启动行的 exe 路径有效性（Python 时代查
@@ -57,6 +58,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -121,8 +123,9 @@ var (
 	startExeRe = regexp.MustCompile(`"([^"]+)" serve`)
 )
 
-// CheckCCHooks settings.json 四事件齐全、路径存在、restore 超时够自举
-// （doctor.py check_cc_hooks 逐字 + C12 闸门缺位提示不失败）。Python 形参
+// CheckCCHooks settings.json 事件齐全（CC 五事件：共享四＋作答闸门
+// PostToolUse）、路径存在、restore 超时够自举（doctor.py check_cc_hooks 逐字
+// ＋ C12 闸门缺位提示不失败；#36 作答闸门与闸门事件同级豁免）。Python 形参
 // repo 从未参与检查（路径取 settings.json 内嵌绝对路径），Go 面去除。
 func CheckCCHooks(settingsPath string) Check {
 	if _, err := os.Stat(settingsPath); err != nil {
@@ -138,28 +141,27 @@ func CheckCCHooks(settingsPath string) Check {
 	}
 	hooks, _ := root["hooks"].(map[string]any)
 	var missing []string
-	for _, evt := range FerryEvents {
+	for _, evt := range CCEvents {
 		if !eventHasFerryman(hooks, evt) {
 			missing = append(missing, evt)
 		}
 	}
-	gateMissing := false
-	var others []string
+	var gates, others []string
 	for _, m := range missing {
-		if m == GateEvent {
-			gateMissing = true
+		if isGateEvent(m) {
+			gates = append(gates, m)
 		} else {
 			others = append(others, m)
 		}
 	}
 	if len(others) > 0 {
-		// 文案逐字（missing 列全量——含闸门；闸门缺位只在"仅缺闸门"时放行）
+		// 文案逐字（missing 列全量——含闸门；闸门缺位只在"仅缺闸门类"时放行）
 		return Check{false, fmt.Sprintf("settings.json 缺 ferryman 钩子事件: %s"+
 			"（CC Switch 切换会抹钩子——跑 install-cc / install-ccswitch）",
 			strings.Join(missing, ", "))}
 	}
 	// 路径存在性 + restore 超时（自举等待预算）
-	for _, evt := range FerryEvents {
+	for _, evt := range CCEvents {
 		for _, entry := range asList(hooks[evt]) {
 			entryObj, isObj := entry.(map[string]any)
 			if !isObj {
@@ -187,12 +189,18 @@ func CheckCCHooks(settingsPath string) Check {
 			}
 		}
 	}
-	if gateMissing {
-		// C12 用户策略：闸门钩子按用户指令未安装——提示不失败
-		return Check{true, "settings.json 缺闸门钩子 UserPromptSubmit——" +
-			"闸门钩子按用户指令未安装（C12：防子代理久跑场景主会话输入被吞），提示不判失败；其余三事件在位"}
+	if len(gates) > 0 {
+		// C12 用户策略：闸门类钩子（打字＋作答）按用户指令未装——提示不失败
+		return Check{true, fmt.Sprintf("settings.json 缺闸门钩子 %s——"+
+			"闸门钩子按用户指令未安装（C12：防子代理久跑场景主会话输入被吞），"+
+			"提示不判失败；其余事件在位", strings.Join(gates, ", "))}
 	}
-	return Check{true, "settings.json 四钩子在位"}
+	return Check{true, "settings.json 五钩子在位"}
+}
+
+// isGateEvent 闸门类事件判定（C12 豁免桶）：打字闸门＋作答闸门（#36 同级处置）。
+func isGateEvent(evt string) bool {
+	return slices.Contains(GateEvents, evt)
 }
 
 // CheckHookScripts BOM 在位（PS5.1 中文注释地雷）+ 无控制字符（\a→BEL / \f→FF
@@ -245,45 +253,50 @@ func CheckCCSwitch(dbPath string) Check {
 		return Check{false, fmt.Sprintf("cc-switch.db 读取失败: %v", err) + CCSwitchDeprecationRoute}
 	}
 	var lacking []string
-	gateMissing := false
+	var gates []string
+	seen := map[string]bool{}
 	for _, r := range rows {
-		others, gate := snapshotMissing(r.Raw)
+		others, g := snapshotMissing(r.Raw)
 		if len(others) > 0 {
 			lacking = append(lacking, r.Name)
-		} else if gate {
-			gateMissing = true
+		}
+		for _, evt := range g { // 闸门类缺位汇总去重（提示不失败）
+			if !seen[evt] {
+				seen[evt] = true
+				gates = append(gates, evt)
+			}
 		}
 	}
 	if len(lacking) > 0 {
 		return Check{false, fmt.Sprintf("供应商快照缺钩子: %s（重跑 install-ccswitch）%s",
 			strings.Join(lacking, ", "), CCSwitchDeprecationRoute)}
 	}
-	if gateMissing {
-		// C12 用户策略：闸门钩子按用户指令未安装——提示不失败
+	if len(gates) > 0 {
+		// C12 用户策略：闸门类钩子（打字＋作答）按用户指令未装——提示不失败
 		return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照钩子在位"+
-			"（缺闸门 UserPromptSubmit——闸门钩子按用户指令未安装，提示不判失败）%s",
-			len(rows), CCSwitchDeprecationRoute)}
+			"（缺闸门 %s——闸门钩子按用户指令未安装，提示不判失败）%s",
+			len(rows), strings.Join(gates, ", "), CCSwitchDeprecationRoute)}
 	}
 	return Check{true, fmt.Sprintf("CC Switch %d 个 claude 快照全带钩子%s",
 		len(rows), CCSwitchDeprecationRoute)}
 }
 
-// snapshotMissing 单快照缺位清单分两桶（票22 骑手 M2）：others = 硬性三事件
-// （SessionStart/SubagentStart/SubagentStop，缺一即该快照需重注入）；gate =
-// 闸门 UserPromptSubmit 缺位（C12 豁免）。NULL/坏 JSON/非 dict = 全缺（照旧
-// 记缺——该快照需要的正是重注入）。
-func snapshotMissing(raw sql.NullString) (others []string, gate bool) {
+// snapshotMissing 单快照缺位清单分两桶（票22 骑手 M2＋#36）：others = 硬性
+// 三事件（SessionStart/SubagentStart/SubagentStop，缺一即该快照需重注入）；
+// gates = 闸门类事件缺位（打字 UserPromptSubmit＋作答 PostToolUse，C12 豁免）。
+// NULL/坏 JSON/非 dict = 全缺（照旧记缺——该快照需要的正是重注入）。
+func snapshotMissing(raw sql.NullString) (others, gates []string) {
 	var root map[string]any
 	if !raw.Valid || json.Unmarshal([]byte(raw.String), &root) != nil {
 		root = nil
 	}
 	hooks, _ := root["hooks"].(map[string]any)
-	for _, evt := range FerryEvents {
+	for _, evt := range CCEvents {
 		if eventHasFerryman(hooks, evt) {
 			continue
 		}
-		if evt == GateEvent {
-			gate = true
+		if isGateEvent(evt) {
+			gates = append(gates, evt)
 		} else {
 			others = append(others, evt)
 		}
@@ -1007,6 +1020,9 @@ func doctorResults(d doctorDeps) []CheckResult {
 	// daemon_liveness 同一探针（d.Probe）；daemon 不可达时本项 pass 注记不叠加
 	// 误报（活性 fail 由 daemon_liveness 独报，见 CheckDshPollerSentinel）。
 	out = append(out, CheckDshPollerSentinel(d.Probe).named("dsh_poller_sentinel"))
+	// 票39（spec#34）：/ferry-restore 斜杠命令在位（续接末位追加——顺序零漂移
+	// 纪律；缺位提示不判失败，与闸门事件缺位同级）。
+	out = append(out, CheckCCSlashCommand(CCSlashCommandPath(d.Home)).named("cc_slash_command"))
 	return out
 }
 

@@ -55,7 +55,7 @@ func TestResolveDataDir(t *testing.T) {
 }
 
 // TestParseEvents --events 逗号列表解析：空白裁剪、空段丢弃；
-// 空/缺省 = nil（= installer.normalizeEvents 的全集语义）。
+// 空/缺省 = nil（= 安装侧事件全集语义）。
 func TestParseEvents(t *testing.T) {
 	got := parseEvents("SessionStart, SubagentStart ,SubagentStop")
 	want := []string{"SessionStart", "SubagentStart", "SubagentStop"}

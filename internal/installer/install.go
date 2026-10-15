@@ -37,11 +37,29 @@ import (
 // LauncherName 点火脚本文件名（Python LAUNCHER_NAME）。
 const LauncherName = "start-daemon.cmd"
 
-// FerryEvents 四事件（doctor 覆盖口径同此序；Python FERRY_EVENTS）。
-var FerryEvents = []string{"UserPromptSubmit", "SessionStart", "SubagentStart", "SubagentStop"}
+// FerryEvents 四共享事件（codex 覆盖口径同此序；Python FERRY_EVENTS）。闸门
+// 位引用 GateEvent 常量（spec #34 评审 F4：事件名不二次拼写）。
+var FerryEvents = []string{GateEvent, "SessionStart", "SubagentStart", "SubagentStop"}
 
 // GateEvent 闸门事件（C12：缺位=提示不失败——用户指令未装）。
 const GateEvent = "UserPromptSubmit"
+
+// AnswerGateEvent 作答闸门事件（#36，ADR-0028）：CC 的 PostToolUse，matcher
+// 仅 AskUserQuestion——作答后、答案发给模型前询问闸门（与打字闸门同一脚本
+// 按事件名分支）。缺位处置与 GateEvent 同级（C12 提示不失败）。
+const AnswerGateEvent = "PostToolUse"
+
+// AnswerGateMatcher 作答闸门 matcher（spec #34 实现决策：只匹配 AskUserQuestion）。
+const AnswerGateMatcher = "AskUserQuestion"
+
+// CCEvents CC 侧事件全集（#36）：共享四事件＋作答闸门 PostToolUse（规范序＝
+// 两闸门位在前；事件名引用 GateEvent/AnswerGateEvent 常量，不二次拼写）；
+// codex 侧维持 FerryEvents（无作答路径，spec #34 边界）。
+var CCEvents = []string{GateEvent, AnswerGateEvent, "SessionStart", "SubagentStart", "SubagentStop"}
+
+// GateEvents 闸门类事件（缺位＝C12 提示不失败）：打字闸门＋作答闸门（#36
+// 起两级同级处置；ExitPlanMode 作答闸门不在本期，spec #34 边界）。
+var GateEvents = []string{GateEvent, AnswerGateEvent}
 
 // CCSwitchDBPath <home>/.cc-switch/cc-switch.db（路径经 HOME 注入，测试可指临时目录）。
 func CCSwitchDBPath(home string) string {
@@ -125,12 +143,15 @@ type hookSpec struct {
 	matcher string
 }
 
-// ccSpecs CC 侧四段钩子（install.py _ferry_hook_entries 逐字）：
+// ccSpecs CC 侧五段钩子（install.py _ferry_hook_entries 逐字＋#36 作答闸门）：
 // SessionStart 仅 clear|startup 注入（resume/compact 不注入，DESIGN §5）；
 // 超时 10s：钩子内含 daemon 自举（最坏 ~2.5s 等就绪）+ POST。
 // T32：子代理生命周期（CC ≥2.1.273；旧版本不触发事件 → T31 悬空检测兜底）。
+// #36：PostToolUse＋matcher=AskUserQuestion＝作答闸门，指向同一闸门脚本
+//（ferryman-gate.ps1 按事件名分支；超时 3s 同打字闸门）。
 var ccSpecs = map[string]hookSpec{
 	"UserPromptSubmit": {script: "ferryman-gate.ps1", timeout: 3},
+	"PostToolUse":      {script: "ferryman-gate.ps1", timeout: 3, matcher: AnswerGateMatcher},
 	"SessionStart":     {script: "ferryman-restore.ps1", timeout: 10, matcher: "clear|startup"},
 	"SubagentStart":    {script: "ferryman-subagent.ps1", timeout: 3},
 	"SubagentStop":     {script: "ferryman-subagent.ps1", timeout: 3},
@@ -147,16 +168,17 @@ var codexSpecs = map[string]hookSpec{
 	"SubagentStop":     {script: "ferryman-subagent-codex.ps1", timeout: 3},
 }
 
-// FerryHookEntries 四段钩子条目（settings.json 与 CC Switch 快照共用同一结构；
-// install.py _ferry_hook_entries 逐字）。events 子集筛选：空 = 全集（C12 /
-// 评审附录#1）；输出按 FerryEvents 规范序（Go map 无序，落盘/打印序由
-// orderedEvents 兜住）。
+// FerryHookEntries 五段钩子条目（settings.json 与 CC Switch 快照共用同一结构；
+// install.py _ferry_hook_entries 逐字＋#36 作答闸门）。events 子集筛选：空 =
+// CC 全集（C12 / 评审附录#1）；输出按 CCEvents 规范序（Go map 无序，落盘/
+// 打印序由 orderedEvents 兑住）。
 func FerryHookEntries(repo string, events []string) map[string]any {
-	return buildEntries(repo, events, ccSpecs)
+	return buildEntries(repo, events, CCEvents, ccSpecs)
 }
 
-// buildEntries specs → 条目 map（PS 命令行/timeout 逐字）。
-func buildEntries(repo string, events []string, specs map[string]hookSpec) map[string]any {
+// buildEntries specs → 条目 map（PS 命令行/timeout 逐字）；universe＝事件
+// 规范序与全集（CC＝CCEvents 含作答闸门；codex＝FerryEvents）。
+func buildEntries(repo string, events, universe []string, specs map[string]hookSpec) map[string]any {
 	ps := "powershell -NoProfile -ExecutionPolicy Bypass -File"
 	entry := func(evt string) map[string]any {
 		sp := specs[evt]
@@ -172,19 +194,21 @@ func buildEntries(repo string, events []string, specs map[string]hookSpec) map[s
 		return inner
 	}
 	out := map[string]any{}
-	for _, evt := range normalizeEvents(events) {
+	for _, evt := range filterEvents(universe, events) {
 		out[evt] = []any{entry(evt)}
 	}
 	return out
 }
 
-// normalizeEvents 空 = 全集；否则按 FerryEvents 规范序过滤（未知事件名忽略）。
-func normalizeEvents(events []string) []string {
+// filterEvents 空 events = universe 全集；否则按 universe 规范序过滤。
+// （spec #34 评审 F4：旧 normalizeEvents 已成本包内零调用的纯透传，删除；
+// codex 面调用方直接用本函数。）
+func filterEvents(universe, events []string) []string {
 	if len(events) == 0 {
-		return slices.Clone(FerryEvents)
+		return slices.Clone(universe)
 	}
 	var out []string
-	for _, evt := range FerryEvents {
+	for _, evt := range universe {
 		if slices.Contains(events, evt) {
 			out = append(out, evt)
 		}
@@ -192,9 +216,10 @@ func normalizeEvents(events []string) []string {
 	return out
 }
 
-// orderedEvents entries 的规范序键（Python dict 插入序的 Go 形）。
-func orderedEvents(entries map[string]any) []string {
-	return normalizeEvents(keysOf(entries))
+// orderedEvents entries 的规范序键（Python dict 插入序的 Go 形）；CC 面传
+// CCEvents、codex 面传 FerryEvents。
+func orderedEvents(entries map[string]any, universe []string) []string {
+	return filterEvents(universe, keysOf(entries))
 }
 
 func keysOf(m map[string]any) []string {
@@ -330,7 +355,7 @@ func InstallCC(settingsPath, dbPath, dataDir, repo string, events []string) int 
 		return 1
 	}
 	entries := FerryHookEntries(repo, events)
-	for _, evt := range orderedEvents(entries) {
+	for _, evt := range orderedEvents(entries, CCEvents) {
 		mergeHooks(hooks, evt, entries[evt].([]any))
 	}
 	if err := os.WriteFile(settingsPath, dumpJSON(data), 0o644); err != nil {
@@ -340,6 +365,10 @@ func InstallCC(settingsPath, dbPath, dataDir, repo string, events []string) int 
 	fmt.Printf("已追加 Ferryman 钩子到 %s（备份: %s）\n", settingsPath, filepath.Base(backup))
 	fmt.Println()
 
+	// 票39（spec#34）：用户级斜杠命令 /ferry-restore（显式恢复的 CC 内入口，
+	// 命令体调本 exe 的 restore；冲突处置见 slashcmd.go）
+	ensureSlashCommand(slashCommandPathForSettings(settingsPath), exePath())
+
 	// CC Switch 地雷（DESIGN §3）：检测到 → 钩子注进全部 claude 供应商快照
 	// （repo 透传——票22 骑手 M4：与 settings.json 侧同一 repo 根，消除
 	// repoRoot() 二次求值的分叉面）
@@ -348,7 +377,7 @@ func InstallCC(settingsPath, dbPath, dataDir, repo string, events []string) int 
 		fmt.Println("[!] CC Switch 地雷（DESIGN §3）：切换供应商会全量覆盖 settings.json。")
 		fmt.Println("   未检测到 cc-switch.db——若日后安装 CC Switch，重跑本命令或 install-ccswitch。")
 		fmt.Println("   手动方案（四段钩子同步进各供应商模板）：")
-		for _, evt := range orderedEvents(entries) {
+		for _, evt := range orderedEvents(entries, CCEvents) {
 			fmt.Printf("# %s\n", evt)
 			fmt.Println(string(dumpJSON(entries[evt])))
 		}
@@ -378,7 +407,7 @@ func InstallCodex(hooksPath, configPath, repo string, events []string) int {
 	if repo == "" {
 		repo = repoRoot()
 	}
-	entries := buildEntries(repo, events, codexSpecs)
+	entries := buildEntries(repo, events, FerryEvents, codexSpecs)
 
 	var data map[string]any
 	if _, err := os.Stat(hooksPath); err == nil {
@@ -405,7 +434,7 @@ func InstallCodex(hooksPath, configPath, repo string, events []string) int {
 		fmt.Println("hooks.json 的 hooks 不是对象，拒绝改写")
 		return 1
 	}
-	for _, evt := range orderedEvents(entries) {
+	for _, evt := range orderedEvents(entries, FerryEvents) {
 		mergeHooks(hooks, evt, entries[evt].([]any))
 	}
 	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {

@@ -152,12 +152,21 @@ func AssistantTurns(path string) []Turn {
 // mtime 兜底语义——宁可多摆渡一次，不误判内容未推进。
 const MaxLastTSWindowBytes = 2 * 1024 * 1024
 
+// AnswerGateBlockMarker 作答闸门拦截文案的稳定标记（#36，ADR-0028）：作答
+// 被拦时随 stopReason 进转录回写（hook_stopped_continuation 附件的 message），
+// #37 以此（＋hookName 以 "PostToolUse:" 开头）为锚认出整段回写——内容时钟
+// 与交接覆盖截止跳过（IsHookBlockNotice 同族）。daemon 侧拦截文案以此为前缀，
+// 单一定义点在本包（daemon/cctrans 已有依赖向，无环）。
+const AnswerGateBlockMarker = "[Ferryman 作答闸门]"
+
 // IsHookBlockNotice CC 钩子拦截回写判定（2026-10-11 拦截回写案）：
 // UserPromptSubmit 钩子 block 时，CC 往转录追加一条带 timestamp 的 system
 // 提示（实测 subtype=informational、level=warning、preventContinuation=true）。
 // 它不是会话内容——内容时钟与交接覆盖截止（extract LastTS）都须跳过：
 // 否则交接被判过期白重摆渡，且闸门闲置钟被归零（被拦后直接回车重发即
 // 冷缓存静默放行）。判定只认 type=system ∧ preventContinuation=true。
+// （作答闸门的 PostToolUse 回写段不带 preventContinuation——识别走本包
+// answer_gate_writeback.go 的锚判定，#37 落地。）
 func IsHookBlockNotice(d map[string]any) bool {
 	typ, _ := d["type"].(string)
 	pc, _ := d["preventContinuation"].(bool)
@@ -170,7 +179,8 @@ func IsHookBlockNotice(d map[string]any) bool {
 // 与 extract 的 covers_until 同语义（extract.go：文件序最后一条含 timestamp 的
 // 行，任意 type）——CC 的周期性状态块（last-prompt/ai-title/mode/…，无
 // timestamp 字段）天然被跳过。CC 与 codex rollout 同形（顶层 timestamp），
-// 两轨通用。防御纪律同包：任何坏行/读失败静默跳过；窗内无带时间戳行 →
+// 两轨通用。拦截回写（打字＋作答两族，WritebackSkips 单源）不是会话内容，
+// 一并跳过。防御纪律同包：任何坏行/读失败静默跳过；窗内无带时间戳行 →
 // 窗口翻倍重试至 MaxLastTSWindowBytes，仍无 → false（fail-open 回 mtime 口径）。
 func LastTimestamp(path string) (float64, bool) {
 	for window := int64(DefaultTailBytes); ; window *= 2 {
@@ -178,16 +188,17 @@ func LastTimestamp(path string) (float64, bool) {
 		if !ok {
 			return 0, false
 		}
+		skips := WritebackSkips(lines) // 拦截回写不是会话内容（两族单源，F10）
 		for i := len(lines) - 1; i >= 0; i-- {
 			line := lines[i]
 			if !strings.Contains(line, `"timestamp"`) { // 子串预筛快速跳行
 				continue
 			}
-			d, ok := jsonl.DecodeDict(line)
-			if !ok {
+			if skips[i] { // 拦截回写不是会话内容（#36/#37、2026-10-11）
 				continue
 			}
-			if IsHookBlockNotice(d) { // 拦截回写不是会话内容（2026-10-11）
+			d, ok := jsonl.DecodeDict(line)
+			if !ok {
 				continue
 			}
 			if ts, ok := TSToEpoch(d["timestamp"]); ok {
@@ -200,7 +211,19 @@ func LastTimestamp(path string) (float64, bool) {
 	}
 }
 
-// HasDanglingToolUse 尾部悬空 tool_use 判定（默认 256KB 尾窗）。
+// HumanInputTools 等人工具集合（#35 单一定义点，CONTEXT.md「等人工具」）：
+// 调用后由人作答才产出结果的工具——AskUserQuestion 选择框、ExitPlanMode
+// 批准计划。其悬空表示机器等人（与人不在同论：闲置照走、到阈值即摆渡/
+// 拦截），不算"仍有工具在跑"，不推迟摆渡、不豁免闸门。工具权限确认框
+// 在转录上与工具运行中无法区分，不归此类。qwatch 的"悬空集 ⊆
+// {AskUserQuestion}"开窗判据是另一套口径（仅 AskUserQuestion），不共用本集合。
+var HumanInputTools = map[string]bool{
+	"AskUserQuestion": true,
+	"ExitPlanMode":    true,
+}
+
+// HasDanglingToolUse 尾部悬空 tool_use 判定（默认 256KB 尾窗）——悬空集扣除
+// 等人工具（HumanInputTools）后仍非空才算"仍有工具在跑"（#35）。
 func HasDanglingToolUse(path string) bool {
 	return HasDanglingToolUseWindow(path, DefaultTailBytes)
 }
@@ -209,15 +232,18 @@ func HasDanglingToolUse(path string) bool {
 //
 // True = 仍有工具/子代理在跑（会话按 mtime 看似闲置，实则运行中），守望应推迟摆渡。
 // tool_result 恒在对应 tool_use 之后写入，故只需尾部窗口内做集合差：
-// 出现过的 tool_use id − 出现过的 tool_result id ≠ ∅ 即悬空。
+// 出现过的 tool_use id − 出现过的 tool_result id ≠ ∅ 即悬空；悬空集扣除
+// 等人工具（HumanInputTools）后仍非空才算在跑——仅等人工具悬空＝机器等人，
+// 不推迟（#35）。摆渡入队推迟（watcher.maybeEnqueue）与闸门机器等机器豁免
+// （daemon.machineWaiting）共用本函数即共用同一口径。
 // 坏行/缺字段/无 assistant 行一律 False（宁可多摆渡不误判运行中；漏判由
-// covers_until 兜住正确性）。
+// covers_until 兜住正确性）。tool_use 缺 name 按非等人工具计（不给豁免）。
 func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
 	lines, ok := jsonl.TailWindow(path, tailBytes) // 票10 骑手：尾窗读法收口 jsonl 单源
 	if !ok {
 		return false
 	}
-	used := map[string]bool{}
+	used := map[string]string{} // tool_use id → name
 	served := map[string]bool{}
 	for _, line := range lines {
 		if !strings.Contains(line, `"tool_use"`) && !strings.Contains(line, `"tool_result"`) {
@@ -244,7 +270,8 @@ func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
 			typ, _ := b["type"].(string)
 			if typ == "tool_use" {
 				if id, ok := b["id"].(string); ok {
-					used[id] = true
+					name, _ := b["name"].(string)
+					used[id] = name
 				}
 			} else if typ == "tool_result" {
 				if id, ok := b["tool_use_id"].(string); ok {
@@ -253,8 +280,8 @@ func HasDanglingToolUseWindow(path string, tailBytes int64) bool {
 			}
 		}
 	}
-	for id := range used { // 集合差 used − served ≠ ∅
-		if !served[id] {
+	for id, name := range used { // 集合差（扣除等人工具）≠ ∅
+		if !served[id] && !HumanInputTools[name] {
 			return true
 		}
 	}

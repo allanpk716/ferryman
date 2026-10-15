@@ -1,4 +1,4 @@
-﻿# Ferryman 闸门钩子（dsh CC 钩子桥 UserPromptSubmit，票01 终局修复1 变体）—— 任何故障一律放行（DESIGN §4 fail-open）。与 ferryman-gate.ps1 逐字同源，仅改 agent='dsh' 与 /dsh/gate：桥 base() 恒传空 transcript_path（index.ts:331-333），cc 键必 miss 台账＝永 no-ledger 放行，dsh 键才命中
+﻿# Ferryman 闸门钩子（dsh CC 钩子桥 UserPromptSubmit，票01 终局修复1 变体）—— 任何故障一律放行（DESIGN §4 fail-open）。与 ferryman-gate.ps1 逐字同源，仅改 agent='dsh' 与 /dsh/gate：桥 base() 恒传空 transcript_path（index.ts:331-333），cc 键必 miss 台账＝永 no-ledger 放行，dsh 键才命中。作答闸门（PostToolUse）仅 CC 轨（spec #34 边界），本变体无该分支——dsh 桥也只注册 UserPromptSubmit
 # 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 15700）；
 #               FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
 if ($env:FERRYMAN_DISABLE -eq '1') { exit 0 }
@@ -16,6 +16,7 @@ try {
     $raw = [Console]::In.ReadToEnd()
     $j = $raw | ConvertFrom-Json
     $token = (Get-Content $tokenFile -Raw -ErrorAction Stop).Trim()
+    # ---- 打字闸门（UserPromptSubmit，原逻辑逐字不变）----
     $body = @{
         agent           = 'dsh'
         session_id      = [string]$j.session_id

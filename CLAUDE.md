@@ -9,3 +9,13 @@
 - 仓库:https://github.com/farion1231/cc-switch (Tauri 2 桌面应用,MIT)
 - 背景:Ferryman 渡口改为直连各供应商后,原先 cc-switch 中转层修过的兼容坑需自行处理,本条即为此立。
 - 查证供应商端点事实时,以各家官方文档为准(模型名换代快,2026 年主力:智谱 glm-5.3 系、Kimi Coding Plan 的 kimi-for-coding/k3 系、DeepSeek 的 deepseek-flash/v4-pro 系)。
+
+## Agent skills
+
+### Issue tracker
+
+Issue 与规格放在 GitHub Issues（allanpk716/ferryman，用 `gh` 操作）。See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+单上下文：词汇表是根目录 `CONTEXT.md`（不叫 GLOSSARY.md），ADR 在 `docs/adr/`。See `docs/agents/domain.md`.

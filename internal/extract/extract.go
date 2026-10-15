@@ -218,7 +218,16 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 	lastAsstTools := []string{}
 	var lastAsstChoice *Choice
 
+	// 拦截回写段行号集（两族合一单源 cctrans.WritebackSkipsFile，spec #34
+	// 评审 F10——打字族 IsHookBlockNotice ＋作答族 #37；行号＝文件序，与下方
+	// ReadLines 交付序一致）。无回写（常态）nil、零解码开销；读失败按无回写
+	// ＝旧行为。
+	skipAG := cctrans.WritebackSkipsFile(path)
+	lineIdx := 0
+
 	scanErr := jsonl.ReadLines(path, func(line string) bool {
+		i := lineIdx // 预扫与主扫描同一行序（行号对齐 skipAG）
+		lineIdx++
 		if !strings.Contains(line, `"type"`) { // 子串预筛快速跳行
 			return true
 		}
@@ -228,7 +237,7 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 		}
 		typ, _ := d["type"].(string)
 
-		if ts, ok := d["timestamp"].(string); ok && !cctrans.IsHookBlockNotice(d) {
+		if ts, ok := d["timestamp"].(string); ok && !skipAG[i] {
 			if !haveFirst {
 				firstISO = ts
 				haveFirst = true
