@@ -360,10 +360,52 @@ func TestCommandsRecentTail(t *testing.T) {
 func TestExtractLastTSSkipsHookBlockNotice(t *testing.T) {
 	lines := append(fixtureLines(), map[string]any{"type": "system",
 		"subtype": "informational", "level": "warning", "preventContinuation": true,
-		"content": "UserPromptSubmit operation blocked by hook:\n此会话已闲置",
+		"content":   "UserPromptSubmit operation blocked by hook:\n此会话已闲置",
 		"timestamp": "2026-09-16T18:00:00.000Z"})
 	facts, _, _ := Extract(writeJSONL(t, lines))
 	if facts.LastTS != "2026-09-16T10:00:40.000Z" {
 		t.Fatalf("LastTS = %q, want 拦截提示前最后内容行 2026-09-16T10:00:40.000Z", facts.LastTS)
+	}
+}
+
+// TestExtractLastTSSkipsAnswerGateWriteback #37 作答拦截回写案（ADR-0028）：
+// 交接覆盖截止提取与内容时钟同源跳过作答回写段（单源判定 cctrans）——以带
+// Ferryman 拦截标记、hookName 以 "PostToolUse:" 开头的 hook_stopped_continuation
+// 为锚、按其 toolUseID 认出整段（答案 tool_result、PostToolUse hook_success、锚、
+// prompt_snapshot、turn_duration），LastTS 停在拦截前最后真实内容。
+func TestExtractLastTSSkipsAnswerGateWriteback(t *testing.T) {
+	const tuID = "toolu_016F8WSMD6TXerSGRxuDZMPp"
+	auqInput := map[string]any{"questions": []any{map[string]any{
+		"question": "午饭吃面还是吃饭?", "options": []any{
+			map[string]any{"label": "面"}, map[string]any{"label": "饭"}}}}}
+	lines := append(fixtureLines(),
+		map[string]any{"type": "assistant", "timestamp": "2026-09-16T10:00:50.000Z",
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": tuID, "name": "AskUserQuestion",
+					"input": auqInput}}}},
+		// 拦截前最后真实内容：PreToolUse hook_success（同 toolUseID、但先于作答）。
+		map[string]any{"type": "attachment", "timestamp": "2026-09-16T10:00:51.000Z",
+			"attachment": map[string]any{"type": "hook_success",
+				"hookName": "PreToolUse:AskUserQuestion", "toolUseID": tuID}},
+		// 回写段五件（实测形状）：答案 tool_result、PostToolUse hook_success、锚、
+		// prompt_snapshot、turn_duration。
+		map[string]any{"type": "user", "timestamp": "2026-09-16T10:01:00.300Z",
+			"message": map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": tuID,
+					"content": "Your questions have been answered"}}}},
+		map[string]any{"type": "attachment", "timestamp": "2026-09-16T10:01:00.000Z",
+			"attachment": map[string]any{"type": "hook_success",
+				"hookName": "PostToolUse:AskUserQuestion", "toolUseID": tuID}},
+		map[string]any{"type": "attachment", "timestamp": "2026-09-16T10:01:00.200Z",
+			"attachment": map[string]any{"type": "hook_stopped_continuation",
+				"hookName": "PostToolUse:AskUserQuestion", "toolUseID": tuID,
+				"message": cctrans.AnswerGateBlockMarker + " 此会话已闲置 58 分钟（缓存已失效）"}},
+		map[string]any{"type": "attachment", "timestamp": "2026-09-16T10:01:00.400Z",
+			"attachment": map[string]any{"type": "prompt_snapshot"}},
+		map[string]any{"type": "system", "subtype": "turn_duration",
+			"timestamp": "2026-09-16T10:01:00.500Z"})
+	facts, _, _ := Extract(writeJSONL(t, lines))
+	if facts.LastTS != "2026-09-16T10:00:51.000Z" {
+		t.Fatalf("LastTS = %q, want 作答回写段前最后真实内容行 2026-09-16T10:00:51.000Z", facts.LastTS)
 	}
 }
