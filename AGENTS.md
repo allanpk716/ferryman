@@ -16,6 +16,7 @@
 |---|---|
 | 全面体检（钩子在位/脚本健康/快照覆盖/守护活性/供应商生效链） | `ferryman doctor`（机器读加 `--json`） |
 | 快速探活（守护/版本/渡口/台账摘要） | `ferryman status` |
+| 显式取回交接（单份注入/多份清单/无候选明说；/ferry-restore 的命令体） | `ferryman restore [--cwd 目录]` |
 | 停守护（优雅停，绝不硬杀） | `ferryman stop` |
 | 看供应商表（含 codex/pi 可用性，密钥脱敏） | `ferryman provider list`（机器读加 `--json`） |
 | 切换活跃供应商 | `ferryman provider switch <名>`（热切换：不重启、在跑会话不断流） |

@@ -780,9 +780,10 @@ func TestRunDoctorConclusionCount(t *testing.T) {
 	// 票11 起：+1 = pi 生效链（provider_pi_dock，同上按 not_checked 计入）；
 	// verify-dsh 票06 起：+1 = dsh_plugin_static（脚本清单七→八经
 	// len(doctorScriptNames()) 随动，另有 +1 在此显式入账）；
-	// dsh-host-guard 票03 起：+1 = 宿主插件哨兵（dsh_poller_sentinel）。
-	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1+1+1,
-		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1+1+1)
+	// dsh-host-guard 票03 起：+1 = 宿主插件哨兵（dsh_poller_sentinel）；
+	// 票39（spec#34）起：+1 = cc_slash_command（/ferry-restore 斜杠命令）。
+	want := fmt.Sprintf("体检结论: %d/%d 通过", 1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1+1+1+1,
+		1+1+1+1+len(doctorScriptNames())+1+1+2+1+1+3+1+1+1+1)
 	if !strings.Contains(got, want) {
 		t.Fatalf("结论计数不符:\nwant: %s\ngot:\n%s", want, got)
 	}
@@ -1365,6 +1366,7 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		"provider_pi_dock",
 		"dsh_plugin_static",   // verify-dsh 票06：末位连续块追加（夹具无 ~/.dsh → not_checked）
 		"dsh_poller_sentinel", // dsh-host-guard 票03：续接末位（顺序零漂移纪律）
+		"cc_slash_command",    // 票39（spec#34）：/ferry-restore 斜杠命令（续接末位追加）
 	}
 	if len(got) != len(want) {
 		t.Fatalf("项数 = %d, want %d: %+v", len(got), len(want), got)
@@ -1378,9 +1380,10 @@ func TestDoctorResultsThreeFieldsAndOrder(t *testing.T) {
 		}
 		// 夹具 [dock] 未配置：provider 四项与 dsh_plugin_static 按 not_checked
 		// 如实标注（不伪造）；哨兵在夹具探针下无 poller 数据 → pass 注记。
-		// 合并 main 后末段=provider×4+dsh_plugin_static(not_checked)+哨兵(pass)，
-		// not_checked 允许窗=末 6 位。
-		notCheckedOK := i >= len(want)-6
+		// 合并 main 后末段=provider×4+dsh_plugin_static(not_checked)+哨兵(pass)
+		// +cc_slash_command(pass，羻39)，not_checked 允许窗=末 7 位的前 5 位
+		//（哨兵与斜杠命令在 green 夹具恒 pass，落入窗口亦无妨）。
+		notCheckedOK := i >= len(want)-7
 		if r.Status != StatusPass && !(notCheckedOK && r.Status == StatusNotChecked) {
 			t.Fatalf("全绿夹具应 pass（provider 四项可 not_checked）: %+v", r)
 		}
@@ -1612,13 +1615,15 @@ func TestDoctorProviderTakeoverChecksPass(t *testing.T) {
 	//   provider_pi_dock not_checked 如实标注，不产红）
 	// + 宿主插件哨兵 1（dsh-host-guard 票03 续接末位；夹具探针无 poller 数据 →
 	//   pass 注记）。
-	// 合并 main 后：19+6+4+1 = 30。
-	if len(res) != 30 {
+	// + cc_slash_command 1（票39 spec#34：/ferry-restore 斜杠命令；green 夹具经
+	//   InstallCC 装态 → pass）。
+	// 合并 main 后：19+6+4+1+1 = 31。
+	if len(res) != 31 {
 		names := make([]string, 0, len(res))
 		for _, r := range res {
 			names = append(names, r.Name+":"+string(r.Status))
 		}
-		t.Fatalf("应 30 项(19+6+4+1), got %d: %v", len(res), names)
+		t.Fatalf("应 31 项(19+6+4+1+1), got %d: %v", len(res), names)
 	}
 	for _, n := range []string{"provider_cc_dock", "provider_codex_dock", "provider_orca_codex"} {
 		if r := providerCheckByName(t, res, n); r.Status != StatusPass {
@@ -1923,15 +1928,16 @@ func TestDoctorDshPollerSentinel(t *testing.T) {
 	}
 }
 
-// TestDoctorResultsPollerSentinelWiring 接线钉：哨兵项续接 doctorResults 末位；
-// stale → doctor 全局 fail（退出 1，人面点名）；daemon 不可达 → 哨兵 pass 注记
-// 不叠加误报，活性 fail 只由 daemon_liveness 独报（验收红线）。
+// TestDoctorResultsPollerSentinelWiring 接线钉：哨兵项在 doctorResults 序内
+// （羻39 起 cc_slash_command 续接末位，哨兵为倒数第二）；stale → doctor 全局
+// fail（退出 1，人面点名）；daemon 不可达 → 哨兵 pass 注记不叠加误报，活性
+// fail 只由 daemon_liveness 独报（验收红线）。
 func TestDoctorResultsPollerSentinelWiring(t *testing.T) {
 	deps, _ := greenDoctorDeps(t, sentinelProbe(map[string]any{
 		"name": "desktop", "last_seen": float64(1_800_000_000), "age_s": 91.0, "state": "stale"}))
 	res := doctorResults(deps)
-	if last := res[len(res)-1]; last.Name != "dsh_poller_sentinel" || last.Status != StatusFail {
-		t.Fatalf("末位应为哨兵项且 stale 判 fail: %+v", last)
+	if n := len(res); n < 2 || res[n-2].Name != "dsh_poller_sentinel" || res[n-2].Status != StatusFail {
+		t.Fatalf("哨兵项应判 stale fail（羻39 起末位为 cc_slash_command）: %+v", res[n-2])
 	}
 	var out strings.Builder
 	deps.Out = &out

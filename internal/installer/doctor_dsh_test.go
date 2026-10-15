@@ -173,10 +173,12 @@ func TestDoctorDshPluginStaticNotCheckedWithoutAssembly(t *testing.T) {
 		t.Fatalf("缝未装配应 not_checked（如实标注不伪造）: %+v", r)
 	}
 	// 合并 main 后（PR#15）：末位序=dsh_plugin_static → dsh_poller_sentinel
-	//（并行链哨兵续接末位；本项居其前，仍是连续块末段）。
+	//（并行链哨兵续接末位；本项居其前，仍是连续块末段）；羻39 起
+	// cc_slash_command 再续末位，本块序不变。
 	last, second := res[len(res)-1].Name, res[len(res)-2].Name
-	if last != "dsh_poller_sentinel" || second != "dsh_plugin_static" {
-		t.Fatalf("末位序应 dsh_plugin_static→dsh_poller_sentinel: 末项=%s,次项=%s", last, second)
+	if last != "cc_slash_command" || second != "dsh_poller_sentinel" ||
+		res[len(res)-3].Name != "dsh_plugin_static" {
+		t.Fatalf("末位序应 dsh_plugin_static→dsh_poller_sentinel→cc_slash_command: 末项=%s,次项=%s", last, second)
 	}
 	var out strings.Builder
 	deps.Out = &out

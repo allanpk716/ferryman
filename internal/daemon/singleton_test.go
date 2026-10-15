@@ -49,8 +49,9 @@ func freePort(t *testing.T) int {
 // 全实现，补空实现）。health_msg 塞中文+HTML 字符：钉"非 ASCII 直出且不转义
 // HTML"（SetEscapeHTML(false) 契约，Python ensure_ascii=False 同位）。
 type stopDaemon struct {
-	mu       sync.Mutex
-	lastRest [3]string // agent, cwd, session_id（/restore 缺省语义钉子用）
+	mu           sync.Mutex
+	lastRest     [3]string // agent, cwd, session_id（/restore 缺省语义钉子用）
+	lastExplicit bool      // /restore 的 explicit 参数透传钉子（票39）
 }
 
 func (s *stopDaemon) Gate(map[string]any) map[string]any {
@@ -63,10 +64,11 @@ func (s *stopDaemon) Subagent(map[string]any) (map[string]any, error) {
 
 func (s *stopDaemon) QWatchStop() map[string]any { return map[string]any{"stopped": true} }
 
-func (s *stopDaemon) Restore(agent, cwd, sessionID string) map[string]any {
+func (s *stopDaemon) Restore(agent, cwd, sessionID string, explicit bool) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastRest = [3]string{agent, cwd, sessionID}
+	s.lastExplicit = explicit
 	return map[string]any{"context": nil}
 }
 
@@ -79,6 +81,12 @@ func lastRestore(s *stopDaemon) [3]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastRest
+}
+
+func lastRestoreExplicit(s *stopDaemon) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastExplicit
 }
 
 // serveBg tests/test_singleton.py::_serve_bg 1:1：起后台 serve，测试结束回收。
@@ -325,6 +333,19 @@ func TestHTTPHandlerAllPaths(t *testing.T) {
 	// 空值视同缺省（parse_qs keep_blank_values=False）
 	if _, _ = getRaw(t, port, "/restore?agent=&cwd=x", "tok"); lastRestore(d) != [3]string{"cc", "x", ""} {
 		t.Fatalf("restore 空值回缺省 = %v", lastRestore(d))
+	}
+	// 票39：explicit 参数透传——真值集 {1,true,yes,on}，缺省/空值/0 为 false
+	if _, _ = getRaw(t, port, "/restore?agent=cc&cwd=x&explicit=1", "tok"); !lastRestoreExplicit(d) {
+		t.Fatalf("explicit=1 应传到 daemon 面")
+	}
+	if _, _ = getRaw(t, port, "/restore?agent=cc&cwd=x&explicit=true", "tok"); !lastRestoreExplicit(d) {
+		t.Fatalf("explicit=true 应传到 daemon 面")
+	}
+	if _, _ = getRaw(t, port, "/restore?agent=cc&cwd=x&explicit=0", "tok"); lastRestoreExplicit(d) {
+		t.Fatalf("explicit=0 应为非显式")
+	}
+	if _, _ = getRaw(t, port, "/restore?agent=cc&cwd=x&explicit=", "tok"); lastRestoreExplicit(d) {
+		t.Fatalf("explicit 空值视同缺省（非显式）")
 	}
 }
 
