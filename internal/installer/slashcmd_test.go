@@ -64,6 +64,13 @@ func TestInstallCCWritesFerryRestoreSlashCommand(t *testing.T) {
 	if !strings.Contains(body, "\""+exeFwd+"\" restore") {
 		t.Fatalf("命令体应调 %q restore:\n%s", exeFwd, body)
 	}
+	// 会话占位：命令体固定传 --session ${CLAUDE_SESSION_ID}（CC 在命令文件内
+	// 替换该变量＝登记真实会话 id，上一代交接判定可认出被接替会话；CC 若不
+	// 替换，bash 把未设变量展开为空词后消失＝干净回落守护侧合成——spec #34
+	// 评审 F5。末位放置：$ARGUMENTS 在前，避免 --session 吞掉用户旗标值。
+	if !strings.Contains(body, "--session ${CLAUDE_SESSION_ID}") {
+		t.Fatalf("命令体应含会话占位 --session ${CLAUDE_SESSION_ID}:\n%s", body)
+	}
 	if !strings.Contains(out, "ferry-restore") {
 		t.Fatalf("安装输出应提及斜杠命令: %q", out)
 	}
