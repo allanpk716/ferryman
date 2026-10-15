@@ -148,12 +148,14 @@ func TestCheckCCSlashCommandStates(t *testing.T) {
 	if c = CheckCCSlashCommand(p); !c.OK || !strings.Contains(c.Msg, "在位") {
 		t.Fatalf("自有文件应在位: %+v", c)
 	}
-	// 他人同名文件：冲突（fail 方向——需要人处置）
+	// 他人同名文件：与缺位同级的提示（spec #34 评审 F7——安装面已响亮报告
+	// 不覆盖，doctor 再判 fail 只会把"用户自定义了同名命令"红成故障）：点名
+	// 文件非 Ferryman 写入、/ferry-restore 不是 Ferryman 的入口，需要人处置。
 	if err := os.WriteFile(p, []byte("用户自定义\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if c = CheckCCSlashCommand(p); c.OK || !strings.Contains(c.Msg, "非 Ferryman") {
-		t.Fatalf("他人同名文件应 fail 点名冲突: %+v", c)
+	if c = CheckCCSlashCommand(p); !c.OK || !strings.Contains(c.Msg, "非 Ferryman") {
+		t.Fatalf("他人同名文件应为提示不产红（与缺位同级）: %+v", c)
 	}
 }
 

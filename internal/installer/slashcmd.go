@@ -87,7 +87,9 @@ func ensureSlashCommand(path, exe string) {
 //   - 缺位 → 提示不失败（spec#34「斜杠命令文件缺位同样提示」——与闸门事件
 //     缺位同级处置：未跑新 install-cc 的存量用户不产红）；
 //   - 自有标记在位 → pass；
-//   - 他人同名文件 → fail（同名冲突已让 install-cc 跳过覆盖，需要人处置）。
+//   - 他人同名文件 → 与缺位同级的提示（spec #34 评审 F7：install-cc 已响亮
+//     报告不覆盖，doctor 再判 fail 只会把"用户自定义了同名命令"红成故障）
+//     ——明说该文件非 Ferryman 写入、/ferry-restore 不是 Ferryman 的入口。
 func CheckCCSlashCommand(path string) Check {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -98,8 +100,9 @@ func CheckCCSlashCommand(path string) Check {
 		return Check{false, fmt.Sprintf("%s 读取失败: %v", path, err)}
 	}
 	if !bytes.Contains(raw, []byte(slashCommandMarker)) {
-		return Check{false, fmt.Sprintf("%s 存在但非 Ferryman 写入（同名冲突——install-cc 已跳过覆盖；"+
-			"确认后改名或删除该文件再重跑 install-cc）", path)}
+		return Check{true, fmt.Sprintf("%s 存在但非 Ferryman 写入（同名冲突，install-cc 已跳过"+
+			"覆盖——/ferry-restore 不是 Ferryman 的入口；确认后改名或删除该文件再重跑"+
+			"install-cc。提示不判失败，与缺位同级）", path)}
 	}
 	return Check{true, "/" + slashCommandName + " 斜杠命令在位"}
 }
