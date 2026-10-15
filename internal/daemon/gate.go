@@ -288,7 +288,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			f["entry"] = GateEntryAnswer
 		}
 		d.Acct("block", st, "", "", "", f)
-		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
+		d.Store.SavePendingPromptForEntry(agent, cwd, snap.sid, prompt, string(entry))
 		d.Store.MarkBlocked(h.HandoffID)
 		d.notifyBlock(st, h, idle, entry)
 		if entry == GateEntryAnswer { // 作答变体（ADR-0028）：「原话」换「你的选择」＋稳定标记
@@ -336,7 +336,7 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 			f["entry"] = GateEntryAnswer
 		}
 		d.Acct("block", st, "", "", "", f)
-		d.Store.SavePendingPromptFor(agent, cwd, snap.sid, prompt)
+		d.Store.SavePendingPromptForEntry(agent, cwd, snap.sid, prompt, string(entry))
 		if entry == GateEntryAnswer { // 作答变体（ADR-0028）：「原话」换「你的选择」＋稳定标记
 			return map[string]any{"decision": "block",
 				"reason": answerBlock6Reason(n, prompt),

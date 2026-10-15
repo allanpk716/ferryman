@@ -92,6 +92,10 @@ type PendingPrompt struct {
 	// 旧条目两字段为空 → LatestPendingFor 不匹配（回落"最新交接"旧行为）。
 	Agent string `json:"agent,omitempty"`
 	Cwd   string `json:"cwd,omitempty"`
+	// Entry 拦截入口标识（spec #34 评审 F8，additive——旧条目缺省空串＝打字）：
+	// 归还时的标签据此分岔——打字待续标「原话」、作答待续标「你的选择」
+	//（值域见 accounts.GateEntry）。
+	Entry string `json:"entry,omitempty"`
 }
 
 // indexFile index.json 的内存形（Python dict {"handoffs": [], "pending_prompts": []}）。
@@ -420,6 +424,13 @@ func (s *Store) SavePendingPromptFor(agent, cwd, sessionID, prompt string) {
 	s.savePending(PendingPrompt{Agent: agent, Cwd: cwd}, sessionID, prompt)
 }
 
+// SavePendingPromptForEntry 带入口标识的保存（spec #34 评审 F8）：作答闸门
+// 拦下的待续在归还时按「你的选择」标注——入口随记录落盘（additive，重启
+// 不丢；旧条目无字段＝打字，行为不变）。entry 值域见 accounts.GateEntry。
+func (s *Store) SavePendingPromptForEntry(agent, cwd, sessionID, prompt, entry string) {
+	s.savePending(PendingPrompt{Agent: agent, Cwd: cwd, Entry: entry}, sessionID, prompt)
+}
+
 func (s *Store) savePending(anchor PendingPrompt, sessionID, prompt string) {
 	if extract.TokenEstimate(prompt) > pendingPromptCap {
 		prompt = mathx.RuneTrunc(prompt, pendingPromptCap) + pendingTruncMark
@@ -470,20 +481,27 @@ func (s *Store) LatestPendingFor(agent, cwd string) (PendingPrompt, bool) {
 // PopPendingPrompt 取未消费的待续 prompt；consumeFor 非空时同时标记消费
 // （注入一次后不再给）。返回 "" 表示无（Python None）。
 func (s *Store) PopPendingPrompt(sessionID, consumeFor string) string {
+	prompt, _ := s.PopPendingPromptEntry(sessionID, consumeFor)
+	return prompt
+}
+
+// PopPendingPromptEntry 同款取回，一并带回入口标识（归还标签分岔用，
+// spec #34 评审 F8；无记录/已消费 → ("", "")）。
+func (s *Store) PopPendingPromptEntry(sessionID, consumeFor string) (string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.index.PendingPrompts {
 		p := &s.index.PendingPrompts[i]
 		if p.SessionID == sessionID && p.ConsumedBy == nil {
-			prompt := p.Prompt
+			prompt, entry := p.Prompt, p.Entry
 			if consumeFor != "" {
 				p.ConsumedBy = &consumeFor
 				s.flush()
 			}
-			return prompt
+			return prompt, entry
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // ---------- 归还 ----------
