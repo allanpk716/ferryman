@@ -64,11 +64,21 @@ func (s *stopDaemon) Subagent(map[string]any) (map[string]any, error) {
 
 func (s *stopDaemon) QWatchStop() map[string]any { return map[string]any{"stopped": true} }
 
-func (s *stopDaemon) Restore(agent, cwd, sessionID string, explicit bool) map[string]any {
+func (s *stopDaemon) Restore(agent, cwd, sessionID string) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastRest = [3]string{agent, cwd, sessionID}
-	s.lastExplicit = explicit
+	s.lastExplicit = false
+	return map[string]any{"context": nil}
+}
+
+// RestoreExplicit spec #34 评审 F6：HTTP 面按 explicit 参数挑方法——替身分别
+// 记录，透传钉子（explicit=1/true → 显式方法）不变。
+func (s *stopDaemon) RestoreExplicit(agent, cwd, sessionID string) map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRest = [3]string{agent, cwd, sessionID}
+	s.lastExplicit = true
 	return map[string]any{"context": nil}
 }
 

@@ -14,8 +14,6 @@ package main
 // realRestoreDeps 从 config 派生 port/token（与守护同源）。
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,7 +21,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"time"
 
 	"ferryman/internal/config"
 	"ferryman/internal/daemon"
@@ -32,11 +29,13 @@ import (
 
 // restoreUsage 用法面（-h/--help 与用法错共用一份常量，票01 契约）。
 const restoreUsage string = `用法:
-  ferryman restore [--cwd 目录]  # 显式取回本目录交接（ADR-0025 信号②）：
-                                 #   单份注入最新／多份列清单／无候选明说
-                                 #   （输出到标准输出；守护 /restore?explicit=1
-                                 #   的薄客户端）
+  ferryman restore [--cwd 目录] [--session 会话id]  # 显式取回本目录交接
+                                 #   （ADR-0025 信号②）：单份注入最新／多份列清单
+                                 #   ／无候选明说（输出到标准输出；守护
+                                 #   /restore?agent=cc&explicit=1 的薄客户端）
                                  #   --cwd 缺省 = 当前目录
+                                 #   --session 缺省 = 守护合成 cli-restore-*
+                                 #   （斜杠命令自动传当前会话 id）
 `
 
 // cmdRestore `ferryman restore` 入口（help 安全契约：-h/--help 打印 usage
@@ -50,6 +49,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cwd := fs.String("cwd", "", "目标项目目录（缺省 = 当前目录）")
+	session := fs.String("session", "", "取回会话 id（缺省 = 守护合成 cli-restore-*；斜杠命令自动传）")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) { // 迟到的 -h（如 `restore --cwd X -h`）
 			return 0
@@ -58,15 +58,15 @@ func cmdRestore(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "未知参数 %q——ferryman restore 只接受 --cwd\n%s", fs.Arg(0), restoreUsage)
+		fmt.Fprintf(stderr, "未知参数 %q——ferryman restore 只接受 --cwd 与 --session\n%s", fs.Arg(0), restoreUsage)
 		return 2
 	}
 	cfg, err := config.Load("", false)
 	if err != nil {
 		fmt.Fprintf(stderr, "配置加载失败（按缺省口 %d 发请求）: %v\n", installer.DefaultDaemonPort, err)
-		return restoreRun(stdout, stderr, restoreCwdOrDefault(*cwd, os.Getwd), realRestoreDeps(nil))
+		return restoreRun(stdout, stderr, restoreCwdOrDefault(*cwd, os.Getwd), *session, realRestoreDeps(nil))
 	}
-	return restoreRun(stdout, stderr, restoreCwdOrDefault(*cwd, os.Getwd), realRestoreDeps(cfg))
+	return restoreRun(stdout, stderr, restoreCwdOrDefault(*cwd, os.Getwd), *session, realRestoreDeps(cfg))
 }
 
 // restoreCwdOrDefault --cwd 缺省 = 当前目录（纯函数；getwd 失败空串照传——
@@ -110,13 +110,16 @@ func realRestoreDeps(cfg *config.Config) *restoreDeps {
 }
 
 // daemonRestoreGet GET /restore?agent=cc&explicit=1（daemonGet 复用：Bearer、
-// 2s 超时、网络错 → errDaemonOffline / 401·403 → errAuth）。sessionID 由
-// 调用方合成（cli-restore-*：inject 账与 mark_injected 的登记主体）。
+// 2s 超时、网络错 → errDaemonOffline / 401·403 → errAuth）。sessionID 空 ＝
+// 不设（守护侧合成 cli-restore-*——合成单源，spec #34 评审 F5：CLI 不再
+// 自拼第二份合成 id）。
 func daemonRestoreGet(port int, token, cwd, sessionID string) (map[string]any, error) {
 	q := url.Values{}
 	q.Set("agent", "cc") // CLI 是 CC 显式入口（codex 入口不在票39）
 	q.Set("cwd", cwd)
-	q.Set("session_id", sessionID)
+	if sessionID != "" {
+		q.Set("session_id", sessionID)
+	}
 	q.Set("explicit", "1")
 	body, err := daemonGet(port, token, "/restore?"+q.Encode())
 	if err != nil {
@@ -129,23 +132,12 @@ func daemonRestoreGet(port int, token, cwd, sessionID string) (map[string]any, e
 	return out, nil
 }
 
-// restoreSessionID 合成取回会话 id：cli-restore-<unix 秒>-<6 位随机 hex>（store
-// 交接 id 的 randHex6 同款随机源；Windows 时钟精度粗，秒+随机比纳秒更稳）。
-// 每次 CLI 调用各自成 id——inject 账与 mark_injected 登记的是“这一次显式取回”。
-func restoreSessionID() string {
-	suffix := ""
-	b := make([]byte, 3)
-	if _, err := rand.Read(b); err == nil {
-		suffix = "-" + hex.EncodeToString(b)
-	}
-	return fmt.Sprintf("cli-restore-%d%s", time.Now().Unix(), suffix)
-}
-
-// restoreRun 可测核心：合成会话 id → 端点取回 → context 打到 stdout。失败面
+// restoreRun 可测核心：端点取回 → context 打到 stdout（sessionID 由旗标直通：
+// 空＝未设，守护侧合成 cli-restore-*——合成单源在守护，本侧不预拼）。失败面
 // 全部可读报错退 1（守护不在线/鉴权失败/HTTP 异常——绝无堆栈）；context 为
 // null/空串时零输出退 0（守护端点对显式请求恒有明说文案，null 只是协议兼容）。
-func restoreRun(stdout, stderr io.Writer, cwd string, deps *restoreDeps) int {
-	r, err := deps.Get(deps.Port, deps.Token, cwd, restoreSessionID())
+func restoreRun(stdout, stderr io.Writer, cwd, sessionID string, deps *restoreDeps) int {
+	r, err := deps.Get(deps.Port, deps.Token, cwd, sessionID)
 	if err != nil {
 		switch {
 		case errors.Is(err, errDaemonOffline):

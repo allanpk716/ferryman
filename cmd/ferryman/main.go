@@ -536,7 +536,7 @@ func spawnDetachedHidden(exe string, args ...string) error {
 // ---- 子命令 ----
 
 // parseEvents --events 逗号列表 → 子集（空白裁剪、空段丢弃）；空/缺省 = nil =
-// installer.normalizeEvents 的全集语义。
+// 安装侧事件全集语义（filterEvents 对空子集取全集）。
 func parseEvents(s string) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil

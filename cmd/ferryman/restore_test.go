@@ -103,13 +103,25 @@ func TestDaemonRestoreGetRequestShape(t *testing.T) {
 	if ctx, _ := r["context"].(string); ctx != "交接文本" {
 		t.Fatalf("context = %v", r["context"])
 	}
+	// --session 缺省（空）＝不设：请求不带 session_id（守护侧合成 cli-restore-*，
+	// 合成单源；spec #34 评审 F5）。
+	r2, err := daemonRestoreGet(port, "tok-x", `C:\proj`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery.Get("session_id") != "" {
+		t.Fatalf("空 session 不应携带 session_id 参数: %q", gotQuery.Get("session_id"))
+	}
+	if ctx, _ := r2["context"].(string); ctx != "交接文本" {
+		t.Fatalf("context = %v", r2["context"])
+	}
 }
 
 // ---- 决策树（注桩 deps，零网络） ----
 
 func TestRestoreRunPrintsContext(t *testing.T) {
 	var stdout, stderr strings.Builder
-	code := restoreRun(&stdout, &stderr, "C:/proj", &restoreDeps{
+	code := restoreRun(&stdout, &stderr, "C:/proj", "", &restoreDeps{
 		Port: 1, Token: "t",
 		Get: func(port int, token, cwd, sid string) (map[string]any, error) {
 			return map[string]any{"context": "[Ferryman 交接 · …] 注入文本"}, nil
@@ -129,7 +141,7 @@ func TestRestoreRunPrintsContext(t *testing.T) {
 func TestRestoreRunUnreachableReadableNoStack(t *testing.T) {
 	// 守护不可达：可读报错（人话 + 处置提示）、退 1、绝无堆栈。
 	var stdout, stderr strings.Builder
-	code := restoreRun(&stdout, &stderr, "C:/proj", &restoreDeps{
+	code := restoreRun(&stdout, &stderr, "C:/proj", "", &restoreDeps{
 		Port: 1, Token: "t",
 		Get: func(port int, token, cwd, sid string) (map[string]any, error) {
 			return nil, fmt.Errorf("%w（127.0.0.1:1 无应答）", errDaemonOffline)
@@ -155,7 +167,7 @@ func TestRestoreRunUnreachableReadableNoStack(t *testing.T) {
 
 func TestRestoreRunAuthFailedReadable(t *testing.T) {
 	var stdout, stderr strings.Builder
-	code := restoreRun(&stdout, &stderr, "C:/proj", &restoreDeps{
+	code := restoreRun(&stdout, &stderr, "C:/proj", "", &restoreDeps{
 		Port: 1, Token: "t",
 		Get: func(port int, token, cwd, sid string) (map[string]any, error) {
 			return nil, errAuth
@@ -169,29 +181,43 @@ func TestRestoreRunAuthFailedReadable(t *testing.T) {
 	}
 }
 
-func TestRestoreRunSynthesizesSessionIDPerCall(t *testing.T) {
-	// 请求面 session_id：CLI 不传空（守护按空合成 cli-restore-*，此处 CLI 侧
-	// 只须传非空且带 cli-restore 前缀的合成 id——每次调用各异，inject 账不串）。
-	var seen []string
+func TestRestoreRunPassesSessionThrough(t *testing.T) {
+	// --session 非空：原样传给端点缝（inject 账与 mark_injected 的登记主体＝
+	// 真实会话 id，上一代交接判定可据此认出被接替的会话——US31）。
+	var got string
+	var stdout, stderr strings.Builder
+	code := restoreRun(&stdout, &stderr, "C:/proj", "sess-42", &restoreDeps{
+		Port: 1, Token: "t",
+		Get: func(port int, token, cwd, sid string) (map[string]any, error) {
+			got = sid
+			return map[string]any{"context": "x"}, nil
+		},
+	})
+	if code != 0 || got != "sess-42" {
+		t.Fatalf("--session 应原样透传: code=%d sid=%q", code, got)
+	}
+}
+
+func TestRestoreRunEmptySessionMeansUnset(t *testing.T) {
+	// --session 空（缺省）＝不设：CLI 不再合成 cli-restore-*（合成单源在守护侧
+	// RestoreExplicit——空 session_id 请求到达后由守护合成；spec #34 评审 F5）。
+	var got []string
 	call := func() {
 		var stdout, stderr strings.Builder
-		restoreRun(&stdout, &stderr, "C:/proj", &restoreDeps{
+		restoreRun(&stdout, &stderr, "C:/proj", "", &restoreDeps{
 			Port: 1, Token: "t",
 			Get: func(port int, token, cwd, sid string) (map[string]any, error) {
-				seen = append(seen, sid)
+				got = append(got, sid)
 				return map[string]any{"context": "x"}, nil
 			},
 		})
 	}
 	call()
 	call()
-	for _, sid := range seen {
-		if !strings.HasPrefix(sid, "cli-restore-") {
-			t.Fatalf("session_id 应为 cli-restore-* 合成形: %q", sid)
+	for _, sid := range got {
+		if sid != "" {
+			t.Fatalf("空 --session 应以未设传端（守护侧合成），CLI 不预合成: %q", sid)
 		}
-	}
-	if seen[0] == seen[1] {
-		t.Fatalf("两次调用 session_id 应各异: %v", seen)
 	}
 }
 

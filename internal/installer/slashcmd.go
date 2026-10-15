@@ -41,6 +41,11 @@ func slashCommandPathForSettings(settingsPath string) string {
 }
 
 // slashCommandBody 命令文件内容（幂等——字节确定，重跑刷新即覆盖）。
+// 命令体末位固定传 --session ${CLAUDE_SESSION_ID}（spec #34 评审 F5，US31：
+// 显式取回登记真实会话 id，上一代交接判定 DropSuperseded 才能认出被接替的
+// 会话）：CC 在命令文件内替换该变量＝登记真实会话；CC 若不替换，bash 把
+// 未设变量展开为空词后消失＝干净回落守护侧合成（cli-restore-*，合成单源）。
+// 末位放置（$ARGUMENTS 在前）：--session 空词消失后不吞用户旗标的值。
 func slashCommandBody(exe string) string {
 	p := filepath.ToSlash(exe) // bash 引号内的可执行形（反斜杠会被 bash 吃掉）
 	return "---\n" +
@@ -50,7 +55,7 @@ func slashCommandBody(exe string) string {
 		"argument-hint: [--cwd 目录]\n" +
 		"---\n" +
 		"\n" +
-		"!`\"" + p + "\" restore $ARGUMENTS`\n"
+		"!`\"" + p + "\" restore $ARGUMENTS --session ${CLAUDE_SESSION_ID}`\n"
 }
 
 // ensureSlashCommand 写入/幂等刷新斜杠命令文件（票39）。冲突处置：既有文件
@@ -82,7 +87,9 @@ func ensureSlashCommand(path, exe string) {
 //   - 缺位 → 提示不失败（spec#34「斜杠命令文件缺位同样提示」——与闸门事件
 //     缺位同级处置：未跑新 install-cc 的存量用户不产红）；
 //   - 自有标记在位 → pass；
-//   - 他人同名文件 → fail（同名冲突已让 install-cc 跳过覆盖，需要人处置）。
+//   - 他人同名文件 → 与缺位同级的提示（spec #34 评审 F7：install-cc 已响亮
+//     报告不覆盖，doctor 再判 fail 只会把"用户自定义了同名命令"红成故障）
+//     ——明说该文件非 Ferryman 写入、/ferry-restore 不是 Ferryman 的入口。
 func CheckCCSlashCommand(path string) Check {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -93,8 +100,9 @@ func CheckCCSlashCommand(path string) Check {
 		return Check{false, fmt.Sprintf("%s 读取失败: %v", path, err)}
 	}
 	if !bytes.Contains(raw, []byte(slashCommandMarker)) {
-		return Check{false, fmt.Sprintf("%s 存在但非 Ferryman 写入（同名冲突——install-cc 已跳过覆盖；"+
-			"确认后改名或删除该文件再重跑 install-cc）", path)}
+		return Check{true, fmt.Sprintf("%s 存在但非 Ferryman 写入（同名冲突，install-cc 已跳过"+
+			"覆盖——/ferry-restore 不是 Ferryman 的入口；确认后改名或删除该文件再重跑"+
+			"install-cc。提示不判失败，与缺位同级）", path)}
 	}
 	return Check{true, "/" + slashCommandName + " 斜杠命令在位"}
 }

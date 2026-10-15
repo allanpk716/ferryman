@@ -121,7 +121,7 @@ func TestRestoreBooksInject(t *testing.T) {
 	if r := h.d.Gate(body); r["decision"] != "block" {
 		t.Fatalf("应先被拦: %v", r)
 	}
-	r := h.d.Restore("cc", "C:/proj", "newsid", false)
+	r := h.d.Restore("cc", "C:/proj", "newsid")
 	if ctx, _ := r["context"].(string); ctx == "" {
 		t.Fatalf("context 不应为空: %v", r)
 	}

@@ -20,7 +20,10 @@ try {
     if ($j.hook_event_name -eq 'PostToolUse') {
         # ---- 作答闸门（#36/ADR-0028）：AskUserQuestion 作答后、答案发给模型前询问闸门。
         # matcher 已限 AskUserQuestion，此处再验一次（手工装错防误拦）；其余工具零输出放行。
-        # 被拦 → continue:false + stopReason（拦截文案）；放行/任何故障零输出（fail-open）。
+        # 被拦 → continue:false + stopReason（拦截文案）；放行且 daemon 带警告
+        # additional_context（observe 档警告/待交接标记警告，US16/US17）→ 经
+        # PostToolUse 的 additionalContext 通道带给模型（CC 包成系统提醒，
+        # 同打字闸门 warn 机制）；纯放行/任何故障零输出（fail-open）。
         if ($j.tool_name -ne 'AskUserQuestion') { exit 0 }
         # 答案取自钩子输入的 tool_response.answers（问题→所选标签映射；
         # multiSelect 的数组值并入一行），格式化为“问题→所选答案”、多问以；相连。
@@ -48,6 +51,18 @@ try {
             -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 2
         if ($resp.decision -eq 'block') {
             $out = @{ continue = $false; stopReason = $resp.reason } | ConvertTo-Json -Compress
+            [Console]::Out.Write($out)
+            exit 0
+        }
+        # 放行带警告（US16/US17）：additional_context 经 additionalContext 通道回写
+        #（CC 包成系统提醒带给模型；纯放行仍零输出）。
+        if ($resp.additional_context) {
+            $out = @{
+                hookSpecificOutput = @{
+                    hookEventName    = 'PostToolUse'
+                    additionalContext = $resp.additional_context
+                }
+            } | ConvertTo-Json -Compress -Depth 5
             [Console]::Out.Write($out)
         }
         exit 0

@@ -1,6 +1,6 @@
 # 作答闸门借 PostToolUse `continue:false`
 
-2026-10-15 立则：闸门新增第二入口——CC 的 AskUserQuestion 作答。挂 PostToolUse（matcher=`AskUserQuestion`），与打字闸门同一份台账判定（拦截阈值、有效交接、待交接标记、判热、三态、fail-open 全复用，不新增分支、不另设开关）；拦截＝输出 `continue:false`＋`stopReason`（原因与交接路径），答案（钩子输入 `tool_response.answers`，"问题→所选答案"）作为待续 prompt 保管、归还时随交接注入。同一脚本 `ferryman-gate.ps1` 按 `hook_event_name` 分支。
+2026-10-15 立则：闸门新增第二入口——CC 的 AskUserQuestion 作答。挂 PostToolUse（matcher=`AskUserQuestion`），与打字闸门同一份台账判定（拦截阈值、有效交接、待交接标记、判热、三态、fail-open 全复用，不新增分支、不另设开关）；拦截＝输出 `continue:false`＋`stopReason`（原因与交接路径），答案（钩子输入 `tool_response.answers`，“问题→所选答案”）作为待续 prompt 保管、归还时随交接注入。放行分两形：daemon 带 `additional_context`（observe 档警告、待交接标记警告——闸门三态与待交接标记语义对作答入口同样生效）→ 经 PostToolUse 的 `additionalContext` 回写（CC 包成系统提醒带给模型，与打字闸门 warn 同机制）；纯放行与任何故障零输出（fail-open）。同一脚本 `ferryman-gate.ps1` 按 `hook_event_name` 分支。
 
 起因（2026-10-15 本机日报系统案）：会话停在 AskUserQuestion 选择框过夜，睡醒作答即对凉缓存全量重付，全程无摆渡无拦截。两个洞：①悬空道把等人工具的悬空当"仍有工具在跑"，摆渡与闸门豁免永久推迟（问询守望默认 off、且只认问询潮，死线出口够不着）；②作答以 tool_result 回送模型，不经 UserPromptSubmit，打字闸门从未被问询。①由"等人工具"（AskUserQuestion、ExitPlanMode）排出悬空道修复；本篇管②。
 

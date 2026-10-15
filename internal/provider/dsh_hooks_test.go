@@ -578,6 +578,39 @@ func TestBridgePinSessionKeyZeroConversion(t *testing.T) {
 	}
 }
 
+// gateVariantComparableLines 变体纪律对照用的归一化行集：剔除 PostToolUse 作答分支
+// 区域（F2：作答闸门仅 CC 轨——基脚本有该分支，dsh 变体显式早退或无分支；
+// 两形态都是合法差异，纪律只钉两轨共管的打字闸门面不漂移出第三种行为）与
+// 顶部重复的 fail-open 注释行（#36 同步镜像时在 dsh 侧多写的一行，F2 删）。
+// 分支区域按首行匹配＋花括号配平认定。
+func gateVariantComparableLines(lines []string) []string {
+	const branchHead = "    if ($j.hook_event_name -eq 'PostToolUse') {"
+	const dupComment = "# —— 任何故障一律放行（DESIGN §4 fail-open）"
+	var out []string
+	inBranch := false
+	depth := 0
+	for _, raw := range lines {
+		ln := strings.TrimSuffix(raw, "\r") // ps1 是 CRLF：行尾 \r 不得进等值判定
+		if !inBranch && ln == branchHead {
+			inBranch = true
+			depth = 1
+			continue
+		}
+		if inBranch {
+			depth += strings.Count(ln, "{") - strings.Count(ln, "}")
+			if depth <= 0 {
+				inBranch = false // 闭合行整行舍弃
+			}
+			continue
+		}
+		if ln == dupComment {
+			continue
+		}
+		out = append(out, ln)
+	}
+	return out
+}
+
 // TestDshGateVariantScriptPins 终局修复1（票01×票04 跨票缝）值层钉：dsh 桥的
 // 闸门脚本必须是 ferryman-gate.ps1 的 dsh 变体 ferryman-gate-dsh.ps1——桥的
 // base() 恒传 transcript_path=''（hooks-claude-code/src/index.ts:331-333），
@@ -586,7 +619,9 @@ func TestBridgePinSessionKeyZeroConversion(t *testing.T) {
 // 键命中台账。行为面（fail-open/UTF-8 body/block 透传/session_id 原样透传）
 // 由四组桥钉测试对同文件钉（repoGateScript 已指向变体），本测试只钉差异面
 // ＋逐字变体纪律（与基脚本逐行 diff，差异行只许 键值/端点/平台指称 且变体侧
-// 含 "dsh"——防变体与基脚本漂移出第三种行为）。
+// 含 "dsh"——防变体与基脚本漂移出第三种行为）。对照面前先剔除作答分支区域：
+// spec #34 明定 dsh 轨的闸门行为逐字不变、作答闸门不在 dsh 范围（F2），两轨
+// 在该分支的形状差异是设计内的。
 func TestDshGateVariantScriptPins(t *testing.T) {
 	s := readRepoGateScript(t)
 	if !strings.Contains(s, "agent           = 'dsh'") {
@@ -605,9 +640,10 @@ func TestDshGateVariantScriptPins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("基脚本读不到（逐字变体纪律的对照前提）: %v", err)
 	}
-	vl, bl := strings.Split(s, "\n"), strings.Split(string(base), "\n")
+	vl, bl := gateVariantComparableLines(strings.Split(s, "\n")),
+		gateVariantComparableLines(strings.Split(string(base), "\n"))
 	if len(vl) != len(bl) {
-		t.Fatalf("变体 %d 行 ≠ 基脚本 %d 行——逐字变体纪律破坏（只许改行,不许增删行）",
+		t.Fatalf("变体 %d 行 ≠ 基脚本 %d 行——逐字变体纪律破坏（只许改行,不许增删行；作答分支区域已剔）",
 			len(vl), len(bl))
 	}
 	for i := range vl {

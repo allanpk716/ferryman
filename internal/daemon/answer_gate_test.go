@@ -95,7 +95,7 @@ func TestAnswerGateAnchoredRestoreCarriesChoice(t *testing.T) {
 	if r := e.d.Gate(answerBody("ans-2", f, proj, testChoice)); r["decision"] != "block" {
 		t.Fatalf("前置：作答应被拦: %v", r)
 	}
-	r := e.d.Restore("cc", proj, "fresh-session", false)
+	r := e.d.Restore("cc", proj, "fresh-session")
 	ctx, _ := r["context"].(string)
 	if ctx == "" {
 		t.Fatalf("锚窗内归还应注入交接: %v", r)
@@ -106,7 +106,43 @@ func TestAnswerGateAnchoredRestoreCarriesChoice(t *testing.T) {
 	if _, ok := e.store.LatestPendingFor("cc", proj); ok {
 		t.Fatal("锚领走即消费，待续不得残留")
 	}
-	assertZeroInjectTerminal(t, e.d.Restore("cc", proj, "fresh-2", false))
+	assertZeroInjectTerminal(t, e.d.Restore("cc", proj, "fresh-2"))
+}
+
+// TestAnswerGateAnchoredRestoreLabelsChoice 作答待续的锚定归还标签用
+//「你的选择」（spec #34 措辞——锚定注入不得把"问题→所选答案"介绍成用户
+// 原话；F8）：待续记录携带来源入口（additive entry 字段，旧条目缺省打字）。
+func TestAnswerGateAnchoredRestoreLabelsChoice(t *testing.T) {
+	e := newGateEnv(t)
+	proj := filepath.Join(e.tmp, "proj")
+	f := filepath.Join(e.tmp, "ans-lb.jsonl")
+	e.reg("ans-lb", f, proj, testBlockS+5, 99999)
+	e.store.SaveHandoff("ans-lb", "cc", proj, "交接L", isoUTC(e.t0), "fresh", "md")
+	if r := e.d.Gate(answerBody("ans-lb", f, proj, testChoice)); r["decision"] != "block" {
+		t.Fatalf("前置：作答应被拦: %v", r)
+	}
+	ctx, _ := e.d.Restore("cc", proj, "fresh-lb")["context"].(string)
+	if !strings.Contains(ctx, "用户被拦时的选择") {
+		t.Fatalf("作答待续注入应标「选择」（不再称原话）: %q", ctx)
+	}
+	if strings.Contains(ctx, "原话") {
+		t.Fatalf("作答待续注入不得称「原话」: %q", ctx)
+	}
+	// 无交接兑底分支（锚会话没有交接：只带选择＋明说）同款标签。
+	e2 := newGateEnv(t)
+	proj2 := filepath.Join(e2.tmp, "proj")
+	f2 := filepath.Join(e2.tmp, "ans-lb2.jsonl")
+	e2.reg("ans-lb2", f2, proj2, testBlockS+5, 99999)
+	if r := e2.d.Gate(answerBody("ans-lb2", f2, proj2, testChoice)); r["decision"] != "allow" {
+		t.Fatalf("前置（分支7 首次警告放行）: %v", r)
+	}
+	if r := e2.d.Gate(answerBody("ans-lb2", f2, proj2, testChoice)); r["decision"] != "block" {
+		t.Fatalf("前置（分支6 无交接真拦）: %v", r)
+	}
+	ctx2, _ := e2.d.Restore("cc", proj2, "fresh-lb2")["context"].(string)
+	if !strings.Contains(ctx2, "你的选择") || strings.Contains(ctx2, "原话") {
+		t.Fatalf("分支 6 作答待续也应标「你的选择」: %q", ctx2)
+	}
 }
 
 // TestAnswerGateHotCacheAllows 缓存仍热（判热必活带）→ 放行；不落待续 prompt。
@@ -236,7 +272,7 @@ func TestAnswerGateBlockAccountRowCarriesEntry(t *testing.T) {
 	if ansRow == nil || typRow == nil {
 		t.Fatalf("block 行不齐: ans=%v typ=%v", ansRow != nil, typRow != nil)
 	}
-	if got, _ := ansRow["entry"].(string); got != GateEntryAnswer {
+	if got, _ := ansRow["entry"].(string); got != string(GateEntryAnswer) {
 		t.Fatalf("作答 block 行 entry = %v, want %q", ansRow["entry"], GateEntryAnswer)
 	}
 	if _, has := typRow["entry"]; has {
@@ -273,7 +309,7 @@ func TestAnswerGateBlockNotifyCarriesEntry(t *testing.T) {
 			t.Fatal("异步通知未触发")
 		}
 	}
-	if !seen[GateEntryAnswer] || !seen[""] {
+	if !seen[string(GateEntryAnswer)] || !seen[""] {
 		t.Fatalf("通知入口标识不齐: %v（want answer 与 空）", seen)
 	}
 }

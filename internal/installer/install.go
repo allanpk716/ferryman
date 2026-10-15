@@ -37,8 +37,9 @@ import (
 // LauncherName 点火脚本文件名（Python LAUNCHER_NAME）。
 const LauncherName = "start-daemon.cmd"
 
-// FerryEvents 四共享事件（codex 覆盖口径同此序；Python FERRY_EVENTS）。
-var FerryEvents = []string{"UserPromptSubmit", "SessionStart", "SubagentStart", "SubagentStop"}
+// FerryEvents 四共享事件（codex 覆盖口径同此序；Python FERRY_EVENTS）。闸门
+// 位引用 GateEvent 常量（spec #34 评审 F4：事件名不二次拼写）。
+var FerryEvents = []string{GateEvent, "SessionStart", "SubagentStart", "SubagentStop"}
 
 // GateEvent 闸门事件（C12：缺位=提示不失败——用户指令未装）。
 const GateEvent = "UserPromptSubmit"
@@ -52,8 +53,9 @@ const AnswerGateEvent = "PostToolUse"
 const AnswerGateMatcher = "AskUserQuestion"
 
 // CCEvents CC 侧事件全集（#36）：共享四事件＋作答闸门 PostToolUse（规范序＝
-// 两闸门位在前）；codex 侧维持 FerryEvents（无作答路径，spec #34 边界）。
-var CCEvents = []string{"UserPromptSubmit", "PostToolUse", "SessionStart", "SubagentStart", "SubagentStop"}
+// 两闸门位在前；事件名引用 GateEvent/AnswerGateEvent 常量，不二次拼写）；
+// codex 侧维持 FerryEvents（无作答路径，spec #34 边界）。
+var CCEvents = []string{GateEvent, AnswerGateEvent, "SessionStart", "SubagentStart", "SubagentStop"}
 
 // GateEvents 闸门类事件（缺位＝C12 提示不失败）：打字闸门＋作答闸门（#36
 // 起两级同级处置；ExitPlanMode 作答闸门不在本期，spec #34 边界）。
@@ -198,13 +200,9 @@ func buildEntries(repo string, events, universe []string, specs map[string]hookS
 	return out
 }
 
-// normalizeEvents 空 = 共享四事件全集（codex 面）；否则按 FerryEvents 规范序
-// 过滤（未知事件名忽略）。
-func normalizeEvents(events []string) []string {
-	return filterEvents(FerryEvents, events)
-}
-
 // filterEvents 空 events = universe 全集；否则按 universe 规范序过滤。
+// （spec #34 评审 F4：旧 normalizeEvents 已成本包内零调用的纯透传，删除；
+// codex 面调用方直接用本函数。）
 func filterEvents(universe, events []string) []string {
 	if len(events) == 0 {
 		return slices.Clone(universe)

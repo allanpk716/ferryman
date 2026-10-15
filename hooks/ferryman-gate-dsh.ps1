@@ -1,5 +1,4 @@
-﻿# Ferryman 闸门钩子（dsh CC 钩子桥 UserPromptSubmit，票01 终局修复1 变体）—— 任何故障一律放行（DESIGN §4 fail-open）。与 ferryman-gate.ps1 逐字同源，仅改 agent='dsh' 与 /dsh/gate：桥 base() 恒传空 transcript_path（index.ts:331-333），cc 键必 miss 台账＝永 no-ledger 放行，dsh 键才命中
-# —— 任何故障一律放行（DESIGN §4 fail-open）
+﻿# Ferryman 闸门钩子（dsh CC 钩子桥 UserPromptSubmit，票01 终局修复1 变体）—— 任何故障一律放行（DESIGN §4 fail-open）。与 ferryman-gate.ps1 逐字同源，仅改 agent='dsh' 与 /dsh/gate：桥 base() 恒传空 transcript_path（index.ts:331-333），cc 键必 miss 台账＝永 no-ledger 放行，dsh 键才命中。作答闸门（PostToolUse）仅 CC 轨（spec #34 边界），本变体无该分支——dsh 桥也只注册 UserPromptSubmit
 # 可配环境变量：FERRYMAN_DISABLE=1 短路；FERRYMAN_PORT（默认 15700）；
 #               FERRYMAN_TOKEN_FILE（默认 ~/ferryman/daemon.token）
 if ($env:FERRYMAN_DISABLE -eq '1') { exit 0 }
@@ -17,41 +16,6 @@ try {
     $raw = [Console]::In.ReadToEnd()
     $j = $raw | ConvertFrom-Json
     $token = (Get-Content $tokenFile -Raw -ErrorAction Stop).Trim()
-    if ($j.hook_event_name -eq 'PostToolUse') {
-        # ---- 作答闸门（#36/ADR-0028）：AskUserQuestion 作答后、答案发给模型前询问闸门。
-        # matcher 已限 AskUserQuestion，此处再验一次（手工装错防误拦）；其余工具零输出放行。
-        # 被拦 → continue:false + stopReason（拦截文案）；放行/任何故障零输出（fail-open）。
-        if ($j.tool_name -ne 'AskUserQuestion') { exit 0 }
-        # 答案取自钩子输入的 tool_response.answers（问题→所选标签映射；
-        # multiSelect 的数组值并入一行），格式化为“问题→所选答案”、多问以；相连。
-        $answers = @()
-        if ($j.tool_response -and $j.tool_response.answers) {
-            foreach ($p in $j.tool_response.answers.PSObject.Properties) {
-                $v = $p.Value
-                if ($v -is [System.Array]) { $v = ($v -join '、') }
-                $answers += ('{0}→{1}' -f $p.Name, $v)
-            }
-        }
-        $body = @{
-            agent           = 'dsh'
-            session_id      = [string]$j.session_id
-            transcript_path = [string]$j.transcript_path
-            cwd             = [string]$j.cwd
-            prompt          = ($answers -join '；')
-            entry           = 'answer'
-        } | ConvertTo-Json -Compress
-        # PS5.1 对字符串 body 默认按 ANSI(GBK) 编码——中文答案会打崩 daemon 的 UTF-8 解码，
-        # 必须显式转 UTF-8 字节发送（同打字分支）。
-        $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/dsh/gate" -Method Post `
-            -Headers @{ Authorization = "Bearer $token" } `
-            -ContentType 'application/json' `
-            -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 2
-        if ($resp.decision -eq 'block') {
-            $out = @{ continue = $false; stopReason = $resp.reason } | ConvertTo-Json -Compress
-            [Console]::Out.Write($out)
-        }
-        exit 0
-    }
     # ---- 打字闸门（UserPromptSubmit，原逻辑逐字不变）----
     $body = @{
         agent           = 'dsh'
