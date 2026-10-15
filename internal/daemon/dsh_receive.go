@@ -350,7 +350,7 @@ func (d *Daemon) DshHandoff(cwd, sessionID string) map[string]any {
 		return d.restoreContinue(cwd, sessionID)
 	}
 	if _, ok := d.Store.LatestPendingFor("dsh", cwd); ok {
-		return d.Restore("dsh", cwd, sessionID) // 有锚：Restore 自然落锚定归还分支
+		return d.Restore("dsh", cwd, sessionID, false) // 有锚：Restore 自然落锚定归还分支
 	}
 	return map[string]any{"context": nil, "continuation": true}
 }
