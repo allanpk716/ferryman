@@ -1,7 +1,11 @@
 package cctrans
 
-// answer_gate_writeback.go — 作答拦截回写识别（#37，ADR-0028「拦截回写不算
-// 会话内容」段；IsHookBlockNotice 的同族、同一单源判定处）。
+// answer_gate_writeback.go — 拦截回写识别的单源判定处（spec #34 评审 F10）：
+// 两族合一——打字族 IsHookBlockNotice（2026-10-11 案：UserPromptSubmit 拦截
+// 提示行）与作答族（#37，ADR-0028「拦截回写不算会话内容」段：PostToolUse
+// continue:false 拦下后的整段回写）。消费点（本包 LastTimestamp 尾窗 /
+// extract.Extract 全文件）只调 WritebackSkips / WritebackSkipsFile，不再各自
+// 双检两族。
 //
 // 2026-10-15 实测形状（notes/auq-blocked-transcript.jsonl）：作答被 PostToolUse
 // continue:false 拦下后，CC 仍向转录追加带 timestamp 的一段——答案 tool_result、
@@ -194,52 +198,77 @@ func (m *answerGateSegMarker) feed(i int, line string) {
 	}
 }
 
-// answerGateSkips 一批文件序行的回写段行号集（LastTimestamp 尾窗内两小遍：
-// 先集锚、再标段；无锚（常态）返回 nil，零解码开销）。
-func answerGateSkips(lines []string) map[int]bool {
-	anchors := answerGateAnchorIDs(lines)
-	if len(anchors) == 0 {
-		return nil
+// isTypingWriteback 打字族行级判定（IsHookBlockNotice 的行形态：子串预筛＋
+// 解码＋判定；两族单源的打字腿——2026-10-11 拦截回写案）。
+func isTypingWriteback(line string) bool {
+	if !strings.Contains(line, `"preventContinuation"`) {
+		return false
 	}
-	m := &answerGateSegMarker{anchors: anchors, skips: map[int]bool{}}
+	d, ok := jsonl.DecodeDict(line)
+	return ok && IsHookBlockNotice(d)
+}
+
+// WritebackSkips 一批文件序行的拦截回写行号集（两族合一的单源判定处，
+// spec #34 评审 F10）：打字族逐行判定＋作答族两小遍（先集锚、再标段）。
+// LastTimestamp 尾窗用它。无回写（常态）返回 nil，近零解码开销。
+func WritebackSkips(lines []string) map[int]bool {
+	m := &answerGateSegMarker{anchors: answerGateAnchorIDs(lines), skips: map[int]bool{}}
 	for i, line := range lines {
+		if isTypingWriteback(line) {
+			m.skips[i] = true
+		}
 		m.feed(i, line)
+	}
+	if len(m.skips) == 0 {
+		return nil
 	}
 	return m.skips
 }
 
-// AnswerGateSkipsFile 整文件预扫作答回写段行号集（交接覆盖截止提取用）。行号
-// ＝文件序 0 起，与 jsonl.ReadLines 的交付序一致——调用方按同一行序计数即可
-// 对齐（extract.Extract 的主扫描即此读法）。无锚（常态）返回 nil；读失败按
-// 无锚处理＝旧行为 fail-open。
-func AnswerGateSkipsFile(path string) map[int]bool {
+// WritebackSkipsFile 整文件预扫的拦截回写行号集（两族合一；交接覆盖截止提取
+// 用）。行号＝文件序 0 起，与 jsonl.ReadLines 的交付序一致——调用方按同一
+// 行序计数即可对齐（extract.Extract 的主扫描即此读法）。无作答锚（常态）
+// 单遍即出（打字族逐行判定）；有锚才走第二遍标段。读失败：作答族按无锚＝
+// 旧行为 fail-open（打字族保留已扫部分）。空集归一为 nil（同旧契约）。
+func WritebackSkipsFile(path string) map[int]bool {
 	var anchors map[string]bool
+	skips := map[int]bool{}
+	idx := 0
 	err := jsonl.ReadLines(path, func(line string) bool {
-		if !strings.Contains(line, answerGateAnchorSubstr) {
-			return true
-		}
-		if d, ok := jsonl.DecodeDict(line); ok {
-			if id, is := answerGateAnchorID(d); is && id != "" {
-				if anchors == nil {
-					anchors = map[string]bool{}
+		i := idx
+		idx++
+		if strings.Contains(line, answerGateAnchorSubstr) {
+			if d, ok := jsonl.DecodeDict(line); ok {
+				if id, is := answerGateAnchorID(d); is && id != "" {
+					if anchors == nil {
+						anchors = map[string]bool{}
+					}
+					anchors[id] = true
 				}
-				anchors[id] = true
 			}
+		}
+		if isTypingWriteback(line) {
+			skips[i] = true
 		}
 		return true
 	})
 	if err != nil || len(anchors) == 0 {
-		return nil
+		if len(skips) == 0 {
+			return nil
+		}
+		return skips // 无作答锚（或首遍读失败）：打字族单遍结果
 	}
-	m := &answerGateSegMarker{anchors: anchors, skips: map[int]bool{}}
-	idx := 0
-	err = jsonl.ReadLines(path, func(line string) bool {
+	m := &answerGateSegMarker{anchors: anchors, skips: skips}
+	idx = 0
+	if err := jsonl.ReadLines(path, func(line string) bool {
 		m.feed(idx, line)
 		idx++
 		return true
-	})
-	if err != nil {
+	}); err != nil {
+		return nil // 第二遍读失败：按旧行为整集作废（fail-open）
+	}
+	if len(skips) == 0 {
 		return nil
 	}
-	return m.skips
+	return skips
 }

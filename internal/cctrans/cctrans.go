@@ -179,7 +179,8 @@ func IsHookBlockNotice(d map[string]any) bool {
 // 与 extract 的 covers_until 同语义（extract.go：文件序最后一条含 timestamp 的
 // 行，任意 type）——CC 的周期性状态块（last-prompt/ai-title/mode/…，无
 // timestamp 字段）天然被跳过。CC 与 codex rollout 同形（顶层 timestamp），
-// 两轨通用。防御纪律同包：任何坏行/读失败静默跳过；窗内无带时间戳行 →
+// 两轨通用。拦截回写（打字＋作答两族，WritebackSkips 单源）不是会话内容，
+// 一并跳过。防御纪律同包：任何坏行/读失败静默跳过；窗内无带时间戳行 →
 // 窗口翻倍重试至 MaxLastTSWindowBytes，仍无 → false（fail-open 回 mtime 口径）。
 func LastTimestamp(path string) (float64, bool) {
 	for window := int64(DefaultTailBytes); ; window *= 2 {
@@ -187,20 +188,17 @@ func LastTimestamp(path string) (float64, bool) {
 		if !ok {
 			return 0, false
 		}
-		skipsAG := answerGateSkips(lines) // #37 作答回写段（IsHookBlockNotice 同族）
+		skips := WritebackSkips(lines) // 拦截回写不是会话内容（两族单源，F10）
 		for i := len(lines) - 1; i >= 0; i-- {
 			line := lines[i]
 			if !strings.Contains(line, `"timestamp"`) { // 子串预筛快速跳行
 				continue
 			}
-			if skipsAG[i] { // 作答回写不是会话内容（#37，ADR-0028）
+			if skips[i] { // 拦截回写不是会话内容（#36/#37、2026-10-11）
 				continue
 			}
 			d, ok := jsonl.DecodeDict(line)
 			if !ok {
-				continue
-			}
-			if IsHookBlockNotice(d) { // 拦截回写不是会话内容（2026-10-11）
 				continue
 			}
 			if ts, ok := TSToEpoch(d["timestamp"]); ok {
