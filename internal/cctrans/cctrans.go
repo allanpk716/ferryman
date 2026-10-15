@@ -166,7 +166,7 @@ const AnswerGateBlockMarker = "[Ferryman 作答闸门]"
 // 否则交接被判过期白重摆渡，且闸门闲置钟被归零（被拦后直接回车重发即
 // 冷缓存静默放行）。判定只认 type=system ∧ preventContinuation=true。
 // （作答闸门的 PostToolUse 回写段不带 preventContinuation——识别走本包
-// AnswerGateBlockMarker，#37 落地。）
+// answer_gate_writeback.go 的锚判定，#37 落地。）
 func IsHookBlockNotice(d map[string]any) bool {
 	typ, _ := d["type"].(string)
 	pc, _ := d["preventContinuation"].(bool)
@@ -187,9 +187,13 @@ func LastTimestamp(path string) (float64, bool) {
 		if !ok {
 			return 0, false
 		}
+		skipsAG := answerGateSkips(lines) // #37 作答回写段（IsHookBlockNotice 同族）
 		for i := len(lines) - 1; i >= 0; i-- {
 			line := lines[i]
 			if !strings.Contains(line, `"timestamp"`) { // 子串预筛快速跳行
+				continue
+			}
+			if skipsAG[i] { // 作答回写不是会话内容（#37，ADR-0028）
 				continue
 			}
 			d, ok := jsonl.DecodeDict(line)

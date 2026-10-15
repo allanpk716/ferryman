@@ -537,7 +537,7 @@ func TestLastTimestampSkipsHookBlockNotice(t *testing.T) {
 		lineOf(map[string]any{"type": "system", "subtype": "turn_duration", "timestamp": tsB}),
 		lineOf(map[string]any{"type": "system", "subtype": "informational",
 			"content": "UserPromptSubmit operation blocked by hook:\n此会话已闲置",
-			"level": "warning", "preventContinuation": true,
+			"level":   "warning", "preventContinuation": true,
 			"timestamp": "2026-10-11T08:08:31.913Z"}),
 		lineOf(map[string]any{"type": "cost-state", "sessionId": "s"}),
 	})
@@ -555,5 +555,102 @@ func TestLastTimestampSkipsHookBlockNotice(t *testing.T) {
 	}
 	if IsHookBlockNotice(map[string]any{"type": "user", "preventContinuation": true}) {
 		t.Fatal("非 system 行不应判拦截提示")
+	}
+}
+
+// ---- #37 作答拦截回写（ADR-0028「拦截回写不算会话内容」段） ----
+
+// 作答被拦转录的时间戳轴（2026-10-15 本机实测样本形状，
+// notes/auq-blocked-transcript.jsonl）：真实内容在前、回写段五件在后。
+const (
+	agAskUserTS  = "2026-10-15T00:25:25.692Z" // 首条 prompt（真实内容）
+	agAskTS      = "2026-10-15T00:25:43.375Z" // assistant AskUserQuestion tool_use（真实内容）
+	agPreHookTS  = "2026-10-15T00:25:43.522Z" // PreToolUse hook_success（拦截前最后真实内容）
+	agResultTS   = "2026-10-15T00:25:56.468Z" // 答案 tool_result（回写段）
+	agPostHookTS = "2026-10-15T00:25:56.136Z" // PostToolUse hook_success（回写段；实测 ts 早于 tool_result）
+	agAnchorTS   = "2026-10-15T00:25:56.467Z" // hook_stopped_continuation 锚（回写段）
+	agSnapTS     = "2026-10-15T00:25:56.476Z" // prompt_snapshot（回写段）
+	agTurnDurTS  = "2026-10-15T00:25:56.479Z" // turn_duration（回写段）
+	agResumeTS   = "2026-10-15T00:26:43.006Z" // 回写段之后的真实新内容
+)
+
+// answerGateBlockedLines 伪造"作答被拦"转录（实测形状逐段复刻）：真实内容
+// 三行——首条 prompt、assistant AskUserQuestion tool_use（被拦前的真实内容，
+// 照常计数）、PreToolUse hook_success；回写段五行——答案 tool_result、
+// PostToolUse hook_success、hook_stopped_continuation 锚、prompt_snapshot、
+// turn_duration。anchorMessage 为锚的 message（生产＝带 AnswerGateBlockMarker
+// 的拦截文案；别家钩子＝无标记文本）。
+func answerGateBlockedLines(anchorMessage string) []string {
+	const tuID = "toolu_016F8WSMD6TXerSGRxuDZMPp"
+	return []string{
+		lineOf(map[string]any{"type": "user", "timestamp": agAskUserTS, "cwd": "C:\\proj",
+			"message": map[string]any{"role": "user", "content": "午饭前收个尾"}}),
+		lineOf(map[string]any{"type": "assistant", "timestamp": agAskTS,
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": tuID, "name": "AskUserQuestion",
+					"input": map[string]any{"questions": []any{map[string]any{
+						"question": "午饭吃面还是吃饭?", "options": []any{
+							map[string]any{"label": "面"}, map[string]any{"label": "饭"}}}}}}}}}),
+		lineOf(map[string]any{"type": "attachment", "timestamp": agPreHookTS,
+			"attachment": map[string]any{"type": "hook_success",
+				"hookName": "PreToolUse:AskUserQuestion", "toolUseID": tuID}}),
+		lineOf(map[string]any{"type": "user", "timestamp": agResultTS,
+			"message": map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": tuID,
+					"content": "Your questions have been answered: 午饭吃面还是吃饭?=面"}}}}),
+		lineOf(map[string]any{"type": "attachment", "timestamp": agPostHookTS,
+			"attachment": map[string]any{"type": "hook_success",
+				"hookName": "PostToolUse:AskUserQuestion", "toolUseID": tuID}}),
+		lineOf(map[string]any{"type": "attachment", "timestamp": agAnchorTS,
+			"attachment": map[string]any{"type": "hook_stopped_continuation",
+				"hookName": "PostToolUse:AskUserQuestion", "toolUseID": tuID,
+				"message": anchorMessage}}),
+		lineOf(map[string]any{"type": "attachment", "timestamp": agSnapTS,
+			"attachment": map[string]any{"type": "prompt_snapshot"}}),
+		lineOf(map[string]any{"type": "system", "subtype": "turn_duration",
+			"timestamp": agTurnDurTS, "durationMs": 18671}),
+	}
+}
+
+// TestLastTimestampSkipsAnswerGateWriteback #37 作答拦截回写案：以带 Ferryman
+// 标记、hookName 以 "PostToolUse:" 开头的 hook_stopped_continuation 为锚、按其
+// toolUseID 认出整段回写（该 id 的 tool_result 与 PostToolUse hook_success、锚
+// 自身、其后 prompt_snapshot 与 turn_duration）——内容时钟停在拦截前最后一条
+// 真实内容（PreToolUse hook_success；同 id 但先于作答，属正常写入不跳过；
+// 其前的 AskUserQuestion tool_use 同样照常计数）。计入则交接被判过期白重摆、
+// 闸门闲置钟归零。
+func TestLastTimestampSkipsAnswerGateWriteback(t *testing.T) {
+	f := writeLines(t, answerGateBlockedLines(
+		AnswerGateBlockMarker+" 此会话已闲置 58 分钟（缓存已失效）。你刚作的选择没有发给模型"))
+	ts, ok := LastTimestamp(f)
+	want, _ := TSToEpoch(agPreHookTS)
+	if !ok || ts != want {
+		t.Fatalf("LastTimestamp = (%v,%v), want (%v,true)（作答回写段不推进内容时钟）", ts, ok, want)
+	}
+}
+
+// TestLastTimestampAnswerGateWritebackThenRealContent 回写段之后出现真实新
+// 内容 → 内容时钟正常推进：跳过的只有回写段，不是"锚之后一切"。
+func TestLastTimestampAnswerGateWritebackThenRealContent(t *testing.T) {
+	lines := append(answerGateBlockedLines(AnswerGateBlockMarker+" 被拦"),
+		lineOf(map[string]any{"type": "user", "timestamp": agResumeTS, "cwd": "C:\\proj",
+			"message": map[string]any{"role": "user", "content": "强续 继续干"}}))
+	f := writeLines(t, lines)
+	ts, ok := LastTimestamp(f)
+	want, _ := TSToEpoch(agResumeTS)
+	if !ok || ts != want {
+		t.Fatalf("LastTimestamp = (%v,%v), want (%v,true)（回写段后真实新内容应推进时钟）", ts, ok, want)
+	}
+}
+
+// TestLastTimestampForeignHookStoppedContinuation 无 Ferryman 标记的
+// hook_stopped_continuation（别家钩子拦的，同形不同源）不跳过——内容时钟照取
+// 其后带时间戳行（turn_duration）。
+func TestLastTimestampForeignHookStoppedContinuation(t *testing.T) {
+	f := writeLines(t, answerGateBlockedLines("SPIKE: answer blocked by hook (continue:false)"))
+	ts, ok := LastTimestamp(f)
+	want, _ := TSToEpoch(agTurnDurTS)
+	if !ok || ts != want {
+		t.Fatalf("LastTimestamp = (%v,%v), want (%v,true)（别家钩子回写不跳过）", ts, ok, want)
 	}
 }
