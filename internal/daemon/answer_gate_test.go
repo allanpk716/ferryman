@@ -95,7 +95,7 @@ func TestAnswerGateAnchoredRestoreCarriesChoice(t *testing.T) {
 	if r := e.d.Gate(answerBody("ans-2", f, proj, testChoice)); r["decision"] != "block" {
 		t.Fatalf("前置：作答应被拦: %v", r)
 	}
-	r := e.d.Restore("cc", proj, "fresh-session", false)
+	r := e.d.Restore("cc", proj, "fresh-session")
 	ctx, _ := r["context"].(string)
 	if ctx == "" {
 		t.Fatalf("锚窗内归还应注入交接: %v", r)
@@ -106,7 +106,7 @@ func TestAnswerGateAnchoredRestoreCarriesChoice(t *testing.T) {
 	if _, ok := e.store.LatestPendingFor("cc", proj); ok {
 		t.Fatal("锚领走即消费，待续不得残留")
 	}
-	assertZeroInjectTerminal(t, e.d.Restore("cc", proj, "fresh-2", false))
+	assertZeroInjectTerminal(t, e.d.Restore("cc", proj, "fresh-2"))
 }
 
 // TestAnswerGateHotCacheAllows 缓存仍热（判热必活带）→ 放行；不落待续 prompt。

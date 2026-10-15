@@ -66,7 +66,8 @@ type DaemonLike interface {
 	Gate(body map[string]any) map[string]any
 	Subagent(body map[string]any) (map[string]any, error)
 	QWatchStop() map[string]any
-	Restore(agent, cwd, sessionID string, explicit bool) map[string]any
+	Restore(agent, cwd, sessionID string) map[string]any
+	RestoreExplicit(agent, cwd, sessionID string) map[string]any
 	Health() map[string]any
 }
 
@@ -258,8 +259,14 @@ func doGet(d DaemonLike, token string, w http.ResponseWriter, r *http.Request) {
 			cwd = pathsx.CCLaunchCwd(cwd, qsOr(q, "transcript_path", ""))
 		}
 		// 票39（spec#34）：explicit=1 = 用户显式喊恢复（ferryman restore /
-		// /ferry-restore）——走“单候选注入最新／多候选列清单／无候选明说”语义。
-		writeJSON(w, http.StatusOK, d.Restore(agent, cwd, qsOr(q, "session_id", ""), qsBool(q, "explicit")))
+		// /ferry-restore）——走“单候选注入最新／多候选列清单／无候选明说”
+		// 语义（RestoreExplicit；spec #34 评审 F6：独立方法，非布尔开关）。
+		sid := qsOr(q, "session_id", "")
+		if qsBool(q, "explicit") {
+			writeJSON(w, http.StatusOK, d.RestoreExplicit(agent, cwd, sid))
+		} else {
+			writeJSON(w, http.StatusOK, d.Restore(agent, cwd, sid))
+		}
 	case "/settings": // 设置视图读面（settings-view 票02）：settings_read.go，只读+脱敏
 		handleSettingsRead(d, w, r)
 	case "/settings/snapshots": // 设置快照清单（票05）：仅元数据，读面不取写锁

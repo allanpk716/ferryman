@@ -29,7 +29,7 @@ func TestRestoreExplicitSingleInjectsAndBooks(t *testing.T) {
 	w.led.TouchFull("cc", "src", srcPath, w.t0, 10, "C:/srccwd", "", 100, 0)
 	en := w.store.SaveHandoff("src", "cc", "C:/proj", "标题显式",
 		isoUTC(w.t0-100), "fresh", "<<<INJECT>>>\n显式取回正文\n<<</INJECT>>>")
-	r := w.d.Restore("cc", "C:/proj", "explicit-sid", true)
+	r := w.d.RestoreExplicit("cc", "C:/proj", "explicit-sid")
 	ctx, _ := r["context"].(string)
 	if !strings.Contains(ctx, "会话 标题显式") || !strings.Contains(ctx, "显式取回正文") {
 		t.Fatalf("显式单份应注入该交接: %q", ctx)
@@ -78,7 +78,7 @@ func TestRestoreExplicitMultiLists(t *testing.T) {
 	e := newGateEnv(t)
 	saveCand(t, e, "s1", "h1", 100, "md")
 	saveCand(t, e, "s2", "h2", 200, "md")
-	r := e.d.Restore("cc", "C:/proj", "explicit-sid", true)
+	r := e.d.RestoreExplicit("cc", "C:/proj", "explicit-sid")
 	ctx, _ := r["context"].(string)
 	if !strings.HasPrefix(ctx, "[Ferryman] 本项目有 2 份可用交接") {
 		t.Fatalf("显式多份应列清单: %q", ctx)
@@ -92,7 +92,7 @@ func TestRestoreExplicitNoCandidatesSaysPlainly(t *testing.T) {
 	// 显式、无候选：明说无可用交接（CLI/斜杠命令把 context 打给人看——
 	// 沉默的 nil 会变成“命令没反应”）。
 	e := newGateEnv(t)
-	r := e.d.Restore("cc", "C:/proj", "explicit-sid", true)
+	r := e.d.RestoreExplicit("cc", "C:/proj", "explicit-sid")
 	ctx, _ := r["context"].(string)
 	if ctx == "" || !strings.Contains(ctx, "没有可用交接") {
 		t.Fatalf("显式无候选应明说: %v", r)
@@ -106,8 +106,8 @@ func TestRestoreExplicitContrastNonExplicitZeroInject(t *testing.T) {
 	// 同数据对照：非显式（无锚）零注入终态（#38 逐字不变）；显式注入。
 	e := newGateEnv(t)
 	saveCand(t, e, "src", "单线", 100, "md")
-	assertZeroInjectTerminal(t, e.d.Restore("cc", "C:/proj", "newsid", false))
-	ctx, _ := e.d.Restore("cc", "C:/proj", "newsid2", true)["context"].(string)
+	assertZeroInjectTerminal(t, e.d.Restore("cc", "C:/proj", "newsid"))
+	ctx, _ := e.d.RestoreExplicit("cc", "C:/proj", "newsid2")["context"].(string)
 	if !strings.Contains(ctx, "会话 单线") {
 		t.Fatalf("显式应注入单份交接: %q", ctx)
 	}
@@ -119,7 +119,7 @@ func TestRestoreExplicitEmptySessionIDSynthesizesCLIRestoreID(t *testing.T) {
 	w := newWenv(t)
 	w.store.SaveHandoff("src", "cc", "C:/proj", "t", isoUTC(w.t0-100), "fresh",
 		"<<<INJECT>>>\n正文\n<<</INJECT>>>")
-	r := w.d.Restore("cc", "C:/proj", "", true)
+	r := w.d.RestoreExplicit("cc", "C:/proj", "")
 	if ctx, _ := r["context"].(string); !strings.Contains(ctx, "正文") {
 		t.Fatalf("应照常注入: %v", r)
 	}
@@ -155,7 +155,7 @@ func TestRestoreExplicitConsumesPendingOfNewest(t *testing.T) {
 	e := newGateEnv(t)
 	saveCand(t, e, "src", "t", 100, "md")
 	e.store.SavePendingPromptFor("cc", "C:/proj", "src", "被拦原话E")
-	ctx, _ := e.d.Restore("cc", "C:/proj", "explicit-sid", true)["context"].(string)
+	ctx, _ := e.d.RestoreExplicit("cc", "C:/proj", "explicit-sid")["context"].(string)
 	if !strings.Contains(ctx, "被拦原话E") {
 		t.Fatalf("显式注入应带最新候选的待续原话: %q", ctx)
 	}

@@ -1616,7 +1616,7 @@ func TestGateDshCopyBranchesByAgent(t *testing.T) {
 		out.b6 = r6["reason"].(string)
 		// 位点4 锚定归还·无交接：锚在、候选无 → 只带原话
 		e.store.SavePendingPromptFor(agent, proj2, "nohandoff-src", "原话R")
-		rr := e.d.Restore(agent, proj2, "fresh", false)
+		rr := e.d.Restore(agent, proj2, "fresh")
 		out.restore, _ = rr["context"].(string)
 		return out
 	}
@@ -2219,7 +2219,7 @@ func TestBranch5CwdDriftedIntoSubdir(t *testing.T) {
 	assertStr(t, r, "handoff_path", en.Path)
 
 	newTp := filepath.Join(projDir, "s2.jsonl")
-	res := e.d.Restore("cc", pathsx.CCLaunchCwd(sub, newTp), "s2", false)
+	res := e.d.Restore("cc", pathsx.CCLaunchCwd(sub, newTp), "s2")
 	ctx, _ := res["context"].(string)
 	if !strings.Contains(ctx, "被拦的原话") {
 		t.Fatalf("子目录 /clear 后归还应带回原话, context = %q", ctx)
