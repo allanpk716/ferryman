@@ -206,6 +206,13 @@ type Config struct {
 	// 用户未拍板**（D3：晨报置顶待确认，翻转=config 一行）。cc/codex 永不
 	// 受本键影响。
 	GateDshHandoffOnContinue bool
+	// GateExemptCwds 机器自发 prompt 的目录豁免（2026-10-15 17:30 Orca 自动化
+	// 误拦案）：Orca 的定时自动化（reuseSession）把固定 prompt 送进固定目录里
+	// 已凉的会话，且不给自动化会话设置任何可识别的环境变量——只能按目录豁免。
+	// 命中的提交（cwd 归一后等于某项或位于其子树内）闸门一律放行
+	// （reason=exempt-cwd），不警告/不动 pending/不存待续/不入账（不污染
+	// bypass 对照组）；豁免只影响闸门判定，摆渡照常。缺省空＝不豁免。
+	GateExemptCwds []string
 	// GateCacheTTLS 闸门判热专用 TTL（秒；2026-10-11 原生 CC 误拦案）。
 	// 「热缓存不拦」原只读 [heartbeat].ttl_s——原生 CC 不配心跳（配了会点亮
 	// 等待窗心跳真发，越过"不碰官方 CC"红线），判热恒冷：分支7 警告后会话
@@ -237,8 +244,9 @@ type Config struct {
 // Default 内置全默认值（config.py 各 dataclass 默认逐字）。
 func Default() *Config {
 	return &Config{
-		GateCC:    "observe",
-		GateCodex: "off",
+		GateCC:       "observe",
+		GateCodex:    "off",
+		GateExemptCwds: []string{},
 		Thresholds: ThresholdCfg{
 			SummarizeS:   25 * 60,
 			BlockS:       35 * 60,
@@ -384,6 +392,19 @@ func applyTOML(cfg *Config, data map[string]any) error {
 				return err
 			}
 			cfg.GateCacheTTLS = f
+		}
+		// exempt_cwds：机器自发 prompt 的目录豁免（数组；缺省空）。TOML 数组
+		// 元素宽松转串（与 codex_extra_dirs 同口径），非数组拒绝。
+		if v, ok := g["exempt_cwds"]; ok {
+			arr, ok := v.([]any)
+			if !ok {
+				return errors.New("config: gate.exempt_cwds 应为字符串数组")
+			}
+			dirs := make([]string, 0, len(arr))
+			for _, item := range arr {
+				dirs = append(dirs, pyStr(item))
+			}
+			cfg.GateExemptCwds = dirs
 		}
 	}
 	if raw, ok := data["thresholds"]; ok {

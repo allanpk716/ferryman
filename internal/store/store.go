@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"ferryman/internal/accounts"
 	"ferryman/internal/clock"
 	"ferryman/internal/extract"
 	"ferryman/internal/mathx"
@@ -96,6 +97,14 @@ type PendingPrompt struct {
 	// 归还时的标签据此分岔——打字待续标「原话」、作答待续标「你的选择」
 	//（值域见 accounts.GateEntry）。
 	Entry string `json:"entry,omitempty"`
+	// PriorChoice 被打字待续顶掉的旧作答选择（2026-10-17 de9af594 案）：同
+	// 会话先有窗内未消费的作答待续、其后打字入口又落新待续时，旧选择不丢
+	// ——随新记录保存，归还时在打字待续之前一并注入（“用户被拦前的选择”）。
+	// 携带规则：打字入口覆盖同会话窗内未消费记录时继承——旧记录是作答取
+	// 其 Prompt；旧记录是打字且已带 PriorChoice（作答→打字的产物）则续传
+	// 该 PriorChoice（作答→打字→打字链不丢，2026-10-17 回归）；作答入口
+	// 不继承（新一轮选择）。旧索引无此字段＝行为不变（additive）。
+	PriorChoice string `json:"prior_choice,omitempty"`
 }
 
 // indexFile index.json 的内存形（Python dict {"handoffs": [], "pending_prompts": []}）。
@@ -441,6 +450,21 @@ func (s *Store) savePending(anchor PendingPrompt, sessionID, prompt string) {
 	for _, p := range s.index.PendingPrompts {
 		if p.SessionID != sessionID {
 			kept = append(kept, p)
+			continue
+		}
+		// 作答→打字护选择（2026-10-17 de9af594 案）：同会话已有窗内未消费的
+		// 作答待续、本次落的是打字待续时，旧选择不丢——保留到新记录
+		// PriorChoice，随归还一并注入。链式续传：旧打字记录已带 PriorChoice
+		//（作答→打字的产物）时再落打字（作答→打字→打字）原样继承，不随
+		// 覆盖丢失；作答入口不继承（新一轮选择），其余组合维持最新覆盖。
+		if anchor.Entry != string(accounts.GateEntryAnswer) && p.ConsumedBy == nil &&
+			pendingInWindowLocked(p.BlockedAt) {
+			switch {
+			case p.Entry == string(accounts.GateEntryAnswer):
+				anchor.PriorChoice = p.Prompt
+			case p.PriorChoice != "":
+				anchor.PriorChoice = p.PriorChoice
+			}
 		}
 	}
 	anchor.SessionID = sessionID
@@ -450,6 +474,14 @@ func (s *Store) savePending(anchor PendingPrompt, sessionID, prompt string) {
 	kept = append(kept, anchor)
 	s.index.PendingPrompts = kept
 	s.flush()
+}
+
+// pendingInWindowLocked 待续时效判定（持锁内用；与 LatestPendingFor 同款
+// fail-safe）：BlockedAt 解析失败/已超 PendingAnchorS → 超窗。BlockedAt 由
+// time.Now 写入，同源比对（clock 可被测试冻结，混用会假超窗）。
+func pendingInWindowLocked(blockedAt string) bool {
+	bat, err := time.ParseInLocation(dispTimeFmt, blockedAt, time.Local)
+	return err == nil && time.Since(bat).Seconds() <= PendingAnchorS
 }
 
 // LatestPendingFor 归还锚点（2026-09-30 /clear 串台案）：该 (agent,cwd) 下最新
@@ -488,20 +520,47 @@ func (s *Store) PopPendingPrompt(sessionID, consumeFor string) string {
 // PopPendingPromptEntry 同款取回，一并带回入口标识（归还标签分岔用，
 // spec #34 评审 F8；无记录/已消费 → ("", "")）。
 func (s *Store) PopPendingPromptEntry(sessionID, consumeFor string) (string, string) {
+	p, _ := s.PopPendingPromptFull(sessionID, consumeFor)
+	return p.Prompt, p.Entry
+}
+
+// PopPendingPromptFull 同款取回，带回完整待续记录（PriorChoice 等，作答→
+// 打字护选择的归还注入用；无记录/已消费 → 零值 + false）。
+func (s *Store) PopPendingPromptFull(sessionID, consumeFor string) (PendingPrompt, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.index.PendingPrompts {
 		p := &s.index.PendingPrompts[i]
 		if p.SessionID == sessionID && p.ConsumedBy == nil {
-			prompt, entry := p.Prompt, p.Entry
+			got := *p
 			if consumeFor != "" {
 				p.ConsumedBy = &consumeFor
 				s.flush()
 			}
-			return prompt, entry
+			return got, true
 		}
 	}
-	return "", ""
+	return PendingPrompt{}, false
+}
+
+// PendingInWindow 该会话是否有未消费、被拦未超 PendingAnchorS 的待续
+//（/loop 唤醒豁免的护选择判定：有＝用户正处在“被拦→/clear 接力”流程中，
+// 唤醒照拦但不覆盖）。时效口径与 LatestPendingFor 同款 fail-safe。命中返回
+// 记录副本。
+func (s *Store) PendingInWindow(sessionID string) (PendingPrompt, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.index.PendingPrompts) - 1; i >= 0; i-- { // 倒扫第一条即最新
+		p := s.index.PendingPrompts[i]
+		if p.SessionID != sessionID || p.ConsumedBy != nil {
+			continue
+		}
+		if !pendingInWindowLocked(p.BlockedAt) {
+			continue
+		}
+		return p, true
+	}
+	return PendingPrompt{}, false
 }
 
 // ---------- 归还 ----------

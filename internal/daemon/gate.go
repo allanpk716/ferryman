@@ -3,7 +3,8 @@ package daemon
 // 闸门状态机（规格 ferryman/server.py:135-334 逐字平移，票14）。
 //
 // 七分支顺序是权威序（server.py gate()）：
-// 步0 闭窗钩子 → 1 强续/!! bypass → 2 台账 miss 放行 → 3 mode off →
+// 步0 闭窗钩子 → 1 强续/!! bypass → 1.5 机器自发 prompt 豁免（目录/
+// loop 定时唤醒，fix/gate-machine-exempt）→ 2 台账 miss 放行 → 3 mode off →
 // 2.5 机器等机器豁免 → observe 只警告 → enforce 完整状态机（5/6/7）。
 // _warn_ctx/_cache_info_ctx/_notify_block/_acct 一并落本文件（_acct 已在
 // windows.go 票13 落地，此处只接线）。
@@ -147,6 +148,22 @@ func (d *Daemon) Gate(body map[string]any) map[string]any {
 		d.Acct("bypass", stB, agent, sessionID, "",
 			accounts.Fields{"prefix_tokens": peak})
 		return map[string]any{"decision": "allow", "reason": "bypass"}
+	}
+
+	// 1.5 机器自发 prompt 豁免（fix/gate-machine-exempt，两起生产误拦案；
+	//     详见 gate_exempt.go 头注）：a) 目录豁免 [gate].exempt_cwds——Orca 等
+	//     自动化定时往固定目录的凉会话发 prompt，命中即放行（exempt-cwd），
+	//     不警告/不动 pending/不存待续/不入账；b) /loop 定时唤醒豁免（仅 cc
+	//     打字入口）——scheduled_task_fire 机器自发，凉会话放行
+	//     （loop-wakeup），唯一例外是同会话有窗内未消费待续：照拦但绝不
+	//     用唤醒文本覆盖用户已存的待续。两路都只记 gate.log [exempt]/
+	//     [warn] 行，豁免只影响闸门，摆渡照常。
+	if cwdExemptHit(cwd, d.Cfg.GateExemptCwds) {
+		d.gateExempt(agent, sessionID, "exempt-cwd")
+		return map[string]any{"decision": "allow", "reason": "exempt-cwd"}
+	}
+	if r, ok := d.loopWakeupExempt(agent, sessionID, transcriptPath, prompt, entry); ok {
+		return r
 	}
 	st := d.Ledger.Get(agent, sessionID)
 	if st == nil {

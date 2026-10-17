@@ -603,3 +603,160 @@ func TestDropSupersededAncestor(t *testing.T) {
 		t.Fatalf("跨 agent 不算接替: %+v", got)
 	}
 }
+
+// ---------- fix/gate-machine-exempt：作答→打字护选择（de9af594 案） ----------
+//
+// savePending 的 PriorChoice 携带规则：打字入口覆盖同会话窗内未消费记录时
+// 保留旧选择（作答取其 Prompt；打字续传其 PriorChoice——作答→打字→打字链
+// 不丢）；作答入口不继承（新一轮选择）；旧记录须未消费且在 PendingAnchorS
+// 窗内。
+
+func TestSavePendingAnswerThenTypingKeepsPriorChoice(t *testing.T) {
+	st := mk(t)
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "午饭吃面还是吃饭?→面", "answer")
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "唤醒后用户自己打字", "")
+	p, ok := st.PopPendingPromptFull("s1", "")
+	if !ok {
+		t.Fatal("应有待续")
+	}
+	if p.Prompt != "唤醒后用户自己打字" || p.Entry != "" {
+		t.Fatalf("新待续应为打字条目: %+v", p)
+	}
+	if p.PriorChoice != "午饭吃面还是吃饭?→面" {
+		t.Fatalf("旧作答选择应保留到 PriorChoice: %q", p.PriorChoice)
+	}
+}
+
+func TestSavePendingOtherCombosOverwrite(t *testing.T) {
+	// 打字→打字：最新覆盖，无 PriorChoice
+	st := mk(t)
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "第一条打字", "")
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "第二条打字", "")
+	p, _ := st.PopPendingPromptFull("s1", "")
+	if p.Prompt != "第二条打字" || p.PriorChoice != "" {
+		t.Fatalf("打字→打字应最新覆盖且不携带: %+v", p)
+	}
+	// 作答→作答：最新覆盖，无 PriorChoice
+	st2 := mk(t)
+	st2.SavePendingPromptForEntry("cc", "C:/p", "s1", "选择一", "answer")
+	st2.SavePendingPromptForEntry("cc", "C:/p", "s1", "选择二", "answer")
+	p2, _ := st2.PopPendingPromptFull("s1", "")
+	if p2.Prompt != "选择二" || p2.Entry != "answer" || p2.PriorChoice != "" {
+		t.Fatalf("作答→作答应最新覆盖且不携带: %+v", p2)
+	}
+}
+
+func TestSavePendingPriorChoiceNeedsFreshUnconsumedAnswer(t *testing.T) {
+	// 旧作答已超窗（3 小时前被拦、一直没 /clear）→ 打字不携带
+	st := mk(t)
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "陈年选择", "answer")
+	st.mu.Lock()
+	old := time.Now().Add(-3 * time.Hour).Format(dispTimeFmt)
+	for i := range st.index.PendingPrompts {
+		if st.index.PendingPrompts[i].SessionID == "s1" {
+			st.index.PendingPrompts[i].BlockedAt = old
+		}
+	}
+	st.mu.Unlock()
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "今日打字", "")
+	p, _ := st.PopPendingPromptFull("s1", "")
+	if p.PriorChoice != "" {
+		t.Fatalf("超窗旧作答不应携带: %+v", p)
+	}
+	// 旧作答已消费（已注入过）→ 打字不携带
+	st2 := mk(t)
+	st2.SavePendingPromptForEntry("cc", "C:/p", "s1", "已交付选择", "answer")
+	if got := st2.PopPendingPrompt("s1", "consumer"); got != "已交付选择" {
+		t.Fatalf("消费取回应得旧作答: %q", got)
+	}
+	st2.SavePendingPromptForEntry("cc", "C:/p", "s1", "之后的打字", "")
+	p2, _ := st2.PopPendingPromptFull("s1", "")
+	if p2.Prompt != "之后的打字" || p2.PriorChoice != "" {
+		t.Fatalf("已消费旧作答不应携带: %+v", p2)
+	}
+}
+
+func TestSavePendingTypingChainKeepsPriorChoice(t *testing.T) {
+	st := mk(t)
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "午饭吃面还是吃饭?→面", "answer")
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "第一次打字", "")
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "第二次打字", "")
+	p, ok := st.PopPendingPromptFull("s1", "")
+	if !ok {
+		t.Fatal("应有待续")
+	}
+	if p.Prompt != "第二次打字" || p.Entry != "" {
+		t.Fatalf("最新打字应覆盖: %+v", p)
+	}
+	// 回归（2026-10-17 审查）：第二次打字时旧记录已是打字（带 PriorChoice），
+	// 若只认作答旧记录，选择会随覆盖丢失——须链式续传。
+	if p.PriorChoice != "午饭吃面还是吃饭?→面" {
+		t.Fatalf("作答→打字→打字后 PriorChoice 应仍是最初选择: %q", p.PriorChoice)
+	}
+	// 打字（带 PriorChoice）→作答：新一轮选择，不继承
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "新一轮选择→饭", "answer")
+	p2, _ := st.PopPendingPromptFull("s1", "")
+	if p2.Entry != "answer" || p2.PriorChoice != "" {
+		t.Fatalf("作答入口不应继承旧 PriorChoice: %+v", p2)
+	}
+}
+
+func TestSavePendingTypingChainNeedsInWindowUnconsumed(t *testing.T) {
+	// 旧打字（带 PriorChoice）超窗 → 不续传
+	st := mk(t)
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "最初选择", "answer")
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "陈年打字", "")
+	st.mu.Lock()
+	old := time.Now().Add(-3 * time.Hour).Format(dispTimeFmt)
+	for i := range st.index.PendingPrompts {
+		if st.index.PendingPrompts[i].SessionID == "s1" {
+			st.index.PendingPrompts[i].BlockedAt = old
+		}
+	}
+	st.mu.Unlock()
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "今日打字", "")
+	p, _ := st.PopPendingPromptFull("s1", "")
+	if p.Prompt != "今日打字" || p.PriorChoice != "" {
+		t.Fatalf("超窗旧打字不应续传 PriorChoice: %+v", p)
+	}
+	// 旧打字（带 PriorChoice）已消费 → 不续传
+	st2 := mk(t)
+	st2.SavePendingPromptForEntry("cc", "C:/p", "s1", "最初选择", "answer")
+	st2.SavePendingPromptForEntry("cc", "C:/p", "s1", "已交付打字", "")
+	if got := st2.PopPendingPrompt("s1", "consumer"); got != "已交付打字" {
+		t.Fatalf("消费取回应得打字待续: %q", got)
+	}
+	st2.SavePendingPromptForEntry("cc", "C:/p", "s1", "之后的打字", "")
+	p2, _ := st2.PopPendingPromptFull("s1", "")
+	if p2.Prompt != "之后的打字" || p2.PriorChoice != "" {
+		t.Fatalf("已消费旧打字不应续传 PriorChoice: %+v", p2)
+	}
+}
+
+func TestPendingInWindow(t *testing.T) {
+	st := mk(t)
+	st.SavePendingPromptForEntry("cc", "C:/p", "s1", "待续", "answer")
+	if p, ok := st.PendingInWindow("s1"); !ok || p.Prompt != "待续" {
+		t.Fatalf("窗内未消费应命中: %+v ok=%v", p, ok)
+	}
+	if _, ok := st.PendingInWindow("s2"); ok {
+		t.Fatal("无记录不应命中")
+	}
+	st.PopPendingPrompt("s1", "consumer") // 消费
+	if _, ok := st.PendingInWindow("s1"); ok {
+		t.Fatal("已消费不应命中")
+	}
+	// 超窗/坏时间 fail-safe
+	st.SavePendingPromptForEntry("cc", "C:/p", "s3", "超窗", "")
+	st.mu.Lock()
+	old := time.Now().Add(-3 * time.Hour).Format(dispTimeFmt)
+	for i := range st.index.PendingPrompts {
+		if st.index.PendingPrompts[i].SessionID == "s3" {
+			st.index.PendingPrompts[i].BlockedAt = old
+		}
+	}
+	st.mu.Unlock()
+	if _, ok := st.PendingInWindow("s3"); ok {
+		t.Fatal("超窗不应命中")
+	}
+}
