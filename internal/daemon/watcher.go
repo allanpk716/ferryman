@@ -1610,7 +1610,7 @@ func (w *Watcher) runSameModel(task smExecTask, upstream string) bool {
 			"wall_s": mathx.Round(wall, 1),
 		}
 		if md, _, err := ferry.SameModelMarkdown(facts.Title, res.Text,
-			facts.SkeletonText(), meta); err == nil {
+			facts, meta); err == nil {
 			if w.Store != nil {
 				w.Store.SaveHandoff(task.sid, task.agent, task.cwd, facts.Title,
 					facts.LastTS, "fresh", md)

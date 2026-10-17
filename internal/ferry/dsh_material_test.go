@@ -176,7 +176,7 @@ func TestDshFerrySessionMaterialContainsConversation(t *testing.T) {
 	if !strings.Contains(md, "[Ferryman 交接 · 会话 (无标题)]") {
 		t.Fatalf("无标题回落缺失:\n%s", md)
 	}
-	if !strings.Contains(md, "<<<INJECT>>>\n注入层：登录分支已修") {
-		t.Fatalf("注入层缺失:\n%s", md)
+	if !strings.Contains(md, "<<<INJECT>>>\n## 末段定格（最后一轮对话，程序化保留）\n[user] 继续跑一下登录回归测试\n[assistant] 改完了登录分支\n\n注入层：登录分支已修") {
+		t.Fatalf("注入层缺失(定格应程序置顶第一段):\n%s", md)
 	}
 }

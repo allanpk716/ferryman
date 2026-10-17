@@ -96,6 +96,7 @@ func ChainSession(path string, chain []Provider, timeoutS float64, agent string,
 			fail(strings.TrimPrefix(perr.Error(), "same_model: "))
 			continue
 		}
+		inject = withFreeze(facts, inject) // 定格程序置顶（fix/freeze-frame，与第三方档同源）
 		meta := map[string]any{
 			"source": path, "title": facts.Title, "mode": mode,
 			"model": pr.Model, "provider": pr.Name,

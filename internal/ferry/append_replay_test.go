@@ -16,6 +16,8 @@ package ferry
 import (
 	"strings"
 	"testing"
+
+	"ferryman/internal/extract"
 )
 
 func TestSameModelInstructionContract(t *testing.T) {
@@ -36,6 +38,12 @@ func TestSameModelInstructionContract(t *testing.T) {
 	// 只输出结构、不开场白。
 	if !strings.Contains(SameModelInstruction, "只输出交接 MD 结构") {
 		t.Fatal("指令模板须明令只输出交接 MD 结构")
+	}
+	// fix/freeze-frame：定格程序置顶——模型不得抄写，不得把未回复写成已确认。
+	for _, want := range []string{"末段定格", "由程序逐字置顶", "待用户确认"} {
+		if !strings.Contains(SameModelInstruction, want) {
+			t.Fatalf("指令模板须包含定格约束 %q", want)
+		}
 	}
 }
 
@@ -107,16 +115,20 @@ func TestParseSameModelOutputTrimsOversizeInject(t *testing.T) {
 
 func TestSameModelMarkdownComposes(t *testing.T) {
 	narrative := InjectOpen + "\n注入层:目标过半\n" + InjectClose + "\n# 目标\n做完 A\n# 续接第一句话\n接 B"
-	skeleton := "## 末段定格（最后一轮对话，程序化保留）\n[user] 问\n## 确定性骨架（程序化抽取，未经模型）\n- 标题: T"
+	// fix/freeze-frame：facts 携带定格 → withFreeze 程序置顶注入层。
+	facts := extract.Facts{Title: "T", FreezeUser: "问"}
+	skeleton := facts.SkeletonText()
 	meta := map[string]any{"model": "glm-5.3", "mode": "same_model", "wall_s": 3.2}
-	md, inject, err := SameModelMarkdown("标题T", narrative, skeleton, meta)
+	md, inject, err := SameModelMarkdown("标题T", narrative, facts, meta)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inject != "注入层:目标过半\n\n**目标**（程序补自全文「目标」节）：做完 A" { // 缺目标程序补齐（2026-10-11）
-		t.Fatalf("inject = %q", inject)
+	wantInject := "## 末段定格（最后一轮对话，程序化保留）\n[user] 问\n[assistant] （无）\n\n" +
+		"注入层:目标过半\n\n**目标**（程序补自全文「目标」节）：做完 A"
+	if inject != wantInject { // 定格置顶 + 缺目标程序补齐（2026-10-11）
+		t.Fatalf("inject = %q, want %q", inject, wantInject)
 	}
-	// 产物结构与第三方档同构:头部 + INJECT 层 + 分隔 + 全文(尾部拼程序骨架)。
+	// 产物结构与第三方档同构:头部 + INJECT 层(定格第一段) + 分隔 + 全文(尾部拼程序骨架)。
 	for _, want := range []string{"[Ferryman 交接 · 会话 标题T]", InjectOpen, InjectClose,
 		"做完 A", "确定性骨架（程序化抽取，未经模型）"} {
 		if !strings.Contains(md, want) {
@@ -129,9 +141,9 @@ func TestSameModelMarkdownComposes(t *testing.T) {
 	if idx := strings.Index(md, "做完 A"); idx == -1 || idx > strings.Index(md, "确定性骨架") {
 		t.Fatal("叙事须在骨架之前")
 	}
-	// 单源证明:与 HandoffMarkdown(同输入)逐字相等。
+	// 单源证明:与 HandoffMarkdown(同输入)逐字相等(注入层含定格置顶)。
 	inj, full, _ := ParseSameModelOutput(narrative)
-	want := HandoffMarkdown("标题T", inj, full+"\n\n"+skeleton, meta)
+	want := HandoffMarkdown("标题T", withFreeze(facts, inj), full+"\n\n"+skeleton, meta)
 	if md != want {
 		t.Fatal("SameModelMarkdown 与 HandoffMarkdown 单源分叉")
 	}
