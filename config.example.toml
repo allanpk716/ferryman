@@ -135,6 +135,14 @@ toast = true
 # 都不附续用会话（设计判断）。
 # dsh_handoff_on_continue = false
 
+# 机器自发 prompt 的目录豁免（2026-10-15 Orca 自动化误拦案）：Orca 的定时
+# 自动化（reuseSession）往固定目录里已凉的会话发送 prompt，且不给自动化会话
+# 设置任何可识别的环境变量——只能按目录豁免。命中的提交（cwd 归一后等于
+# 某项或位于其子树内，大小写不敏感）闸门一律放行（reason=exempt-cwd）；
+# 不警告、不存待续、不入账，只记 gate.log 一行 [exempt]。豁免只影响闸门，
+# 摆渡（交接生成）照常进行。TOML 单引号字面串保留反斜杠，Windows 路径免转义。
+# exempt_cwds = ['C:\WorkSpace\AutoTasks']
+
 #[watch]
 # codex_extra_dirs = []   # 额外 codex 会话目录；Orca 运行时目录
 #                         # (%APPDATA%\orca\codex-runtime-home\home\sessions) 存在时自动追加

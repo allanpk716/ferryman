@@ -845,3 +845,31 @@ func TestGateCacheTTLParsedAndValidated(t *testing.T) {
 		t.Fatalf("负值应拒启: %v", err)
 	}
 }
+
+// TestGateExemptCwdsParsed [gate] exempt_cwds（机器自发 prompt 目录豁免，
+// 2026-10-15 Orca 自动化误拦案）：缺省空、可读入、非数组拒启。
+func TestGateExemptCwdsParsed(t *testing.T) {
+	if got := Default().GateExemptCwds; len(got) != 0 {
+		t.Fatalf("缺省应为空, got %v", got)
+	}
+	dir := t.TempDir()
+	f := filepath.Join(dir, "c.toml")
+	if err := os.WriteFile(f, []byte("[gate]\nexempt_cwds = ['C:\\WorkSpace\\AutoTasks', 'D:/Orca/Tasks']\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(f, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"C:\\WorkSpace\\AutoTasks", "D:/Orca/Tasks"}
+	if len(cfg.GateExemptCwds) != 2 || cfg.GateExemptCwds[0] != want[0] || cfg.GateExemptCwds[1] != want[1] {
+		t.Fatalf("exempt_cwds = %v, want %v", cfg.GateExemptCwds, want)
+	}
+	bad := filepath.Join(dir, "bad.toml")
+	if err := os.WriteFile(bad, []byte("[gate]\nexempt_cwds = 'C:\\x'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(bad, false); err == nil || !strings.Contains(err.Error(), "exempt_cwds") {
+		t.Fatalf("非数组应拒启: %v", err)
+	}
+}
