@@ -19,6 +19,8 @@ package ferry
 import (
 	"errors"
 	"strings"
+
+	"ferryman/internal/extract"
 )
 
 // SameModelMaxTokens 追加重放 max_tokens 封顶（票03；默认 4096＝PromptReserve
@@ -44,7 +46,7 @@ const SameModelInstruction = `【摆渡指令】以上是你刚处理过的开�
 输出结构（直接以标记行开始）：
 
 <<<INJECT>>>
-（注入层：≤2200 token 的浓缩版——目标/最新状态/下一步/关键文件/续接第一句话。必须自包含，新会话只看这一段也能续接。）
+（注入层：≤1500 token 的浓缩版——目标/最新状态/下一步/关键文件/续接第一句话，程序还会在其上逐字置顶末段定格。必须自包含，新会话只看这一段也能续接。）
 <<</INJECT>>>
 （全文：以下六节，总量 ≤8000 token）
 # 目标
@@ -54,7 +56,8 @@ const SameModelInstruction = `【摆渡指令】以上是你刚处理过的开�
 # 踩过的坑与决策
 # 续接第一句话
 
-要求：文件路径、命令一律从上述上下文逐字引用，不要凭记忆改写或编造；凡无法从上下文逐字核实的状态断言（如「已完成」「已修复」「没问题」）必须加「（推测）」标注，不得写成确定事实；已成文的项目资料（spec/ADR/issue/提交记录）只给路径引用，不要整段抄录。`
+要求：文件路径、命令一律从上述上下文逐字引用，不要凭记忆改写或编造；凡无法从上下文逐字核实的状态断言（如「已完成」「已修复」「没问题」）必须加「（推测）」标注，不得写成确定事实；已成文的项目资料（spec/ADR/issue/提交记录）只给路径引用，不要整段抄录。
+末段定格（最后一轮对话）由程序逐字置顶到注入层，你不要在注入层抄写它；若会话停在等用户回复（你的提问/提议还没得到答复），不得写成用户已接受或已确认，应写「待用户确认」。`
 
 // ErrSameModelBadFormat 输出不合交接 MD 结构（决定三：判该档失败）。
 var ErrSameModelBadFormat = errors.New("same_model: 输出不合交接 MD 结构")
@@ -78,14 +81,19 @@ func ParseSameModelOutput(reply string) (inject, full string, err error) {
 }
 
 // SameModelMarkdown 同模型产物合成：严格解析叙事 + 程序骨架 → 两层交接 MD。
-// skeleton 为空（提取失败防御形态）时退化为纯叙事两层——产物结构不变。
-func SameModelMarkdown(title, narrative, skeleton string, meta map[string]any) (md, inject string, err error) {
+// facts 为程序抽取的确定性地面真值（ADR-0015：骨架仍程序抽取、同模型只写
+// 叙事）；骨架拼在全文尾，末段定格经 withFreeze 程序置顶注入层（fix/
+// freeze-frame：与第三方档同源，定格不经模型手）。skeleton 恒非空
+// （SkeletonText 头两节恒在场），空串防御分支保留。
+func SameModelMarkdown(title, narrative string, facts extract.Facts,
+	meta map[string]any) (md, inject string, err error) {
 	inject, full, err := ParseSameModelOutput(narrative)
 	if err != nil {
 		return "", "", err
 	}
-	if skeleton != "" {
+	if skeleton := facts.SkeletonText(); skeleton != "" {
 		full = full + "\n\n" + skeleton
 	}
+	inject = withFreeze(facts, inject)
 	return HandoffMarkdown(title, inject, full, meta), inject, nil
 }

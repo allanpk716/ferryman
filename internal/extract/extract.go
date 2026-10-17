@@ -79,11 +79,23 @@ type Facts struct {
 	FreezeAsstText string   // 末条助手文本（≤1500 字）
 	FreezeTools    []string // 末条助手的工具名
 	FreezeChoice   *Choice  // nil ≡ Python None
+
+	// FreezeAwaitingUser 末段定格的「等用户回复」标记（fix/freeze-frame）：
+	// 末条助手文字（或选择）出现在末条 user item 之后——会话停在助手发言、
+	// 用户还没回。末条助手只有工具调用、没有文字时为假。钉住交接叙事不得把
+	// 助手的提问/提议/推荐写成用户已接受或已确认（生产实证：一份交接在用户
+	// 尚未回复时写成"用户已对 Q1–Q9 全部接受推荐答案"）。
+	FreezeAwaitingUser bool
 }
 
-// SkeletonText 骨架中文文案逐字（extract.py:59-86）。末段定格三档互斥，
-// 优先级：choice > 工具摘要 > 逐字文本（choice 时文本也带上）。
-func (f *Facts) SkeletonText() string {
+// freezeAwaitingNote FreezeAwaitingUser 为真时定格末尾的一行尾注。
+const freezeAwaitingNote = "（会话停在助手这条消息：用户尚未回复，上面的提问/提议都还没有得到确认）"
+
+// FreezeText 末段定格节的单源渲染（fix/freeze-frame：定格由程序确定性写入，
+// 不再靠模型照抄）：SkeletonText 的「## 末段定格」节与 ferry 侧置顶 INJECT 层
+// 共用此函数——定格文案改一处即两处同步。三档互斥，优先级：choice >
+// 工具摘要 > 逐字文本（choice 时文本也带上）。
+func (f *Facts) FreezeText() string {
 	lines := []string{"## 末段定格（最后一轮对话，程序化保留）"}
 	lines = append(lines, "[user] "+orFallback(f.FreezeUser, "（无）"))
 	if f.FreezeChoice != nil {
@@ -98,6 +110,16 @@ func (f *Facts) SkeletonText() string {
 	} else {
 		lines = append(lines, "[assistant] "+orFallback(f.FreezeAsstText, "（无）"))
 	}
+	if f.FreezeAwaitingUser {
+		lines = append(lines, freezeAwaitingNote)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// SkeletonText 骨架中文文案逐字（extract.py:59-86）。末段定格节经 FreezeText
+// 单源渲染（fix/freeze-frame 起定格可带「等用户回复」尾注，此外逐字不变）。
+func (f *Facts) SkeletonText() string {
+	lines := strings.Split(f.FreezeText(), "\n")
 	lines = append(lines,
 		"## 确定性骨架（程序化抽取，未经模型）",
 		"- 标题: "+orFallback(f.Title, "(无)"),
@@ -180,10 +202,44 @@ func inputDict(b map[string]any) map[string]any {
 	return map[string]any{}
 }
 
+// sessionMgmtCommands 纯会话管理类斜杠命令（裸名，不带 /）：不携带用户意图，
+// 连简短形也不进正文——/clear、/compact 只改会话状态（清空/压缩），定格与
+// 模型材料都不需要它们；若保留，被拦后照拦截文案 /clear 重开的会话会把
+// "/clear"误当末轮用户发言（取舍定案：跳过）。
+var sessionMgmtCommands = map[string]bool{"clear": true, "compact": true}
+
+// xmlTagValue 取 <tag>…</tag> 内文（缺任一标记返回 ""）。斜杠命令解析专用，
+// 不做转义/嵌套容错——CC 写入的命令 XML 形状稳定。
+func xmlTagValue(s, tag string) string {
+	i := strings.Index(s, "<"+tag+">")
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(tag)+2:]
+	j := strings.Index(rest, "</"+tag+">")
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
+}
+
+// slashCommandParts 把 CC 斜杠命令的 XML 形拆 (裸名, args)；不含 <command-name>
+// 或名字为空时 ok=false。CC 实测形名字自带 /（如 /ferry-restore），统一剪成
+// 裸名返回，调用方拼简短形时不再重复加 /。
+func slashCommandParts(s string) (name, args string, ok bool) {
+	name = strings.TrimSpace(xmlTagValue(s, "command-name"))
+	if name == "" {
+		return "", "", false
+	}
+	args = strings.TrimSpace(xmlTagValue(s, "command-args"))
+	return strings.TrimPrefix(name, "/"), args, true
+}
+
 // freezeFinalize 末段定格定稿：末条用户/助手文本（超长截断加尾标）+ 末条助手的
-// 选择与工具名。
+// 选择与工具名 + 「等用户回复」标记（awaiting 由扫描侧按记录序跟踪，见
+// Extract 内注释）。
 func freezeFinalize(facts *Facts, items []Item,
-	asstText string, asstTools []string, asstChoice *Choice) {
+	asstText string, asstTools []string, asstChoice *Choice, awaiting bool) {
 	facts.FreezeUser = ""
 	for i := len(items) - 1; i >= 0; i-- {
 		if items[i].Role == "user" {
@@ -202,6 +258,7 @@ func freezeFinalize(facts *Facts, items []Item,
 	}
 	facts.FreezeTools = asstTools
 	facts.FreezeChoice = asstChoice
+	facts.FreezeAwaitingUser = awaiting
 }
 
 // Extract 读取一个 CC 会话：返回 (骨架, 正文条目, usage 轮次)。单遍扫描。
@@ -217,6 +274,14 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 	lastAsstText := "" // 末段定格跟踪（每条 assistant 覆盖）
 	lastAsstTools := []string{}
 	var lastAsstChoice *Choice
+
+	// FreezeAwaitingUser 跟踪（记录序）：末条助手含文字或选择 → true（会话
+	// 此刻停在助手发言）；末条助手纯工具调用 → false（工具还没回，不是人在
+	// 等）；末条 user item（含斜杠命令）与工具回执 tool_result → false（会话
+	// 已越过上一条助手发言——AskUserQuestion 的人答回执也是 tool_result，
+	// 用户答过了就不算"还没回"）。isMeta 技能正文/本地命令回显是机器注入，
+	// 不翻动此标记。
+	awaiting := false
 
 	// 拦截回写段行号集（两族合一单源 cctrans.WritebackSkipsFile，spec #34
 	// 评审 F10——打字族 IsHookBlockNotice ＋作答族 #37；行号＝文件序，与下方
@@ -329,7 +394,16 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 			if s := strings.TrimSpace(lastAsstText); s != "" {
 				items = append(items, Item{Role: "assistant", Text: mathx.RuneTrunc(s, ItemCharCap)})
 			}
+			awaiting = strings.TrimSpace(lastAsstText) != "" || lastAsstChoice != nil
 		} else { // user：只要 text，tool_result（工具输出）整块丢弃
+			if jsonl.Truthy(d["isMeta"]) {
+				// CC 元消息（顶层 isMeta）：/技能 命令或模型调 Skill 工具注入的
+				// 技能正文（"Base directory for this skill: …"）——机器注入非
+				// 用户发言，整条跳过：不进 items、不参与 FreezeUser（2026-10-17
+				// 案：会话以技能调用收尾时定格被 500 字技能正文占据，用户真正
+				// 的话丢失）。
+				return true
+			}
 			if blocks, ok := content.([]any); ok {
 				hasResult := false
 				for _, bAny := range blocks {
@@ -343,18 +417,40 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 					}
 				}
 				if hasResult {
+					awaiting = false // 工具回执：会话已越过上一条助手发言
 					return true
 				}
 			}
-			if s := strings.TrimSpace(contentText(content)); s != "" {
-				items = append(items, Item{Role: "user", Text: mathx.RuneTrunc(s, ItemCharCap)})
+			text := strings.TrimSpace(contentText(content))
+			if text == "" {
+				return true
 			}
+			if name, args, isCmd := slashCommandParts(text); isCmd {
+				// 斜杠命令：XML 形压成 "/name args" 简短形——保留用户动作痕迹，
+				// 不保留标签原文（标签正文进模型材料是纯噪音）。
+				awaiting = false
+				if sessionMgmtCommands[name] {
+					return true // 纯会话管理命令（/clear、/compact）：跳过（见表注释）
+				}
+				short := "/" + name
+				if args != "" {
+					short += " " + args
+				}
+				items = append(items, Item{Role: "user", Text: short})
+				return true
+			}
+			if strings.HasPrefix(text, "<local-command-caveat>") || strings.HasPrefix(text, "<local-command-stdout>") {
+				// 本地命令回显（caveat 提示/stdout 输出）：机器产物非用户发言，跳过
+				return true
+			}
+			items = append(items, Item{Role: "user", Text: mathx.RuneTrunc(text, ItemCharCap)})
+			awaiting = false
 		}
 		return true
 	})
 	if scanErr != nil {
 		// Python except OSError：已收部分定格，turns 全弃
-		freezeFinalize(&facts, items, lastAsstText, lastAsstTools, lastAsstChoice)
+		freezeFinalize(&facts, items, lastAsstText, lastAsstTools, lastAsstChoice, awaiting)
 		return facts, items, []cctrans.Turn{}
 	}
 
@@ -386,7 +482,7 @@ func Extract(path string) (Facts, []Item, []cctrans.Turn) {
 	}
 	facts.Files = files
 	facts.Commands = commands
-	freezeFinalize(&facts, items, lastAsstText, lastAsstTools, lastAsstChoice)
+	freezeFinalize(&facts, items, lastAsstText, lastAsstTools, lastAsstChoice, awaiting)
 	if facts.Title == "" {
 		facts.Title = cctrans.AITitle(path)
 	}

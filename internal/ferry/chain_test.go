@@ -351,7 +351,7 @@ func TestChainSessionKilledLevelSlidesInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(md, "<<<INJECT>>>\n注入层：干完了 fb.py\n<<</INJECT>>>") ||
+	if !strings.Contains(md, "<<<INJECT>>>\n## 末段定格（最后一轮对话，程序化保留）\n[user] 做点活\n[assistant] 干完了\n（会话停在助手这条消息：用户尚未回复，上面的提问/提议都还没有得到确认）\n\n注入层：干完了 fb.py\n<<</INJECT>>>") ||
 		!strings.Contains(md, "[Ferryman 交接 · 会话 ") {
 		t.Fatalf("交接 MD 两层结构缺失:\n%s", md)
 	}
