@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"ferryman/internal/extract"
 	"ferryman/internal/mathx"
 )
 
@@ -102,7 +103,7 @@ func TestSystemPromptVerbatim(t *testing.T) {
 按以下结构输出，直接以标记行开始、不要任何开场白：
 
 <<<INJECT>>>
-（注入层：≤2200 token 的浓缩版——目标/最新状态/下一步/关键文件/续接第一句话。
+（注入层：≤1500 token 的浓缩版——目标/最新状态/下一步/关键文件/续接第一句话，程序还会在其上逐字置顶末段定格。
 必须自包含，新会话只看这一段也能续接。）
 <<</INJECT>>>
 （全文：以下六节，总量 ≤8000 token）
@@ -115,8 +116,9 @@ func TestSystemPromptVerbatim(t *testing.T) {
 
 要求：文件路径、命令一律从骨架逐字引用，不要凭记忆改写或编造。
 『关键文件与改动』一节必须逐字列出骨架"涉及文件"前 10 项与骨架命令节的最后 5 条，不得省略或概括。
-骨架『末段定格』节必须原样保留为 INJECT 层的第一段（逐字照录，不改写、不删节、不总结）；
+骨架『末段定格』节不要抄写进 INJECT 层（程序会把它逐字置顶到 INJECT 层），但 INJECT 层其余内容必须依据它来写；
 若定格显示上次停在选择（【上次停在选择】标记），『续接第一句话』必须重述该选择（问题+全部选项）。
+若定格标明用户尚未回复（会话停在助手这条消息），不得把助手的提问、提议、推荐写成用户已接受或已确认，未答复就写「待用户确认」；
 凡无法从骨架或材料逐字核实的状态断言（如「已完成」「已修复」「没问题」），必须加「（推测）」标注，
 不得写成确定事实——交接会被下一个会话当作合同使用，错误的确定断言会成为假前提。
 已成文的项目资料（spec/ADR/issue/提交记录）只给路径引用，不要整段抄录进叙事。`
@@ -422,9 +424,11 @@ func TestFerrySessionL2ChunkingReduceAndMeta(t *testing.T) {
 	if meta["inject_tokens_est"].(int) <= 0 || meta["full_tokens_est"].(int) <= 0 {
 		t.Fatalf("token 估算缺失: %v/%v", meta["inject_tokens_est"], meta["full_tokens_est"])
 	}
-	// 交接 MD：头部 + 注入层 + 全文两层俱在
+	// 交接 MD：头部 + 注入层 + 全文两层俱在；定格程序置顶（fix/freeze-frame：
+	// INJECT 标记内第一段即定格——末条用户超长截断，无助手发言，无等回复尾注）
 	if !strings.Contains(md, "[Ferryman 交接 · 会话 ") ||
-		!strings.Contains(md, "<<<INJECT>>>\n注入层：收尾\n<<</INJECT>>>") ||
+		!strings.Contains(md, "<<<INJECT>>>\n## 末段定格（最后一轮对话，程序化保留）\n[user] msg19") ||
+		!strings.Contains(md, "（已截断，全文见会话文件）\n[assistant] （无）\n\n注入层：收尾\n<<</INJECT>>>") ||
 		!strings.Contains(md, "\n\n---\n\n# 全文\n长会话收尾\n") {
 		t.Fatalf("交接 MD 两层结构缺失:\n%s", md)
 	}
@@ -610,4 +614,118 @@ func TestChatOpenAIExtraBodyMerged(t *testing.T) {
 		t.Fatalf("temperature = %v, want 0.9（透传覆盖默认）", p["temperature"])
 	}
 	// 零值（无 ExtraBody）路径既有测试已覆盖——此处只钉并入语义。
+}
+
+// ---------- fix/freeze-frame：定格程序置顶 INJECT 层 ----------
+
+// TestWithFreezePrependsAndSurvivesTrim 定格置顶 + 截断保头 + 全空定格不置顶。
+func TestWithFreezePrependsAndSurvivesTrim(t *testing.T) {
+	facts := extract.Facts{FreezeUser: "问", FreezeAsstText: "答"}
+	got := withFreeze(facts, strings.Repeat("长", 6000))
+	if !strings.HasPrefix(got, "## 末段定格（最后一轮对话，程序化保留）\n[user] 问\n[assistant] 答\n\n") {
+		t.Fatalf("定格未置顶: %.80s", got)
+	}
+	if l := len([]rune(got)); l > InjectBudget+10 { // 超预算从尾部截（CJK≈1 token/字）
+		t.Fatalf("超预算未截: %d 字", l)
+	}
+	if strings.Count(got, "长") >= 6000 { // 尾部叙事被截，定格头部保住
+		t.Fatal("截断应从尾部截")
+	}
+	if !strings.HasSuffix(got, "…(已截断)") {
+		t.Fatalf("缺截断尾标: …%.40s", got[len(got)-40:])
+	}
+	// 全空定格（codex 提取器现不产定格、dsh 退化体零消息）不置顶——不制造「（无）」噪音
+	if got := withFreeze(extract.Facts{}, "注入层"); got != "注入层" {
+		t.Fatalf("全空定格应原样返回: %q", got)
+	}
+}
+
+// TestWithFreezeCompressesFreezeNotModelTail 评审修复：置顶后总量超预算时
+// 优先压缩定格（中略保头保尾），绝不动模型部分——TrimInjectLayer 从尾部
+// 硬截，尾部恰是模型写的『续接第一句话』，是 INJECT 层最关键的一段。
+// 长模型 inject（接近 1500 token，尾部唯一标记）+ 超长 FreezeAsstText
+// （3000 字，尾部唯一标记）：结果 ≤ 预算，两个结尾标记都在。
+func TestWithFreezeCompressesFreezeNotModelTail(t *testing.T) {
+	inject := strings.Repeat("叙", 1450) + "\n# 续接第一句话\n续接第一句话 XYZMARK"
+	facts := extract.Facts{
+		FreezeUser:     strings.Repeat("问", 480),
+		FreezeAsstText: strings.Repeat("答", 3000) + "最后的提问 ASSTMARK",
+	}
+	got := withFreeze(facts, inject)
+	if toks := extract.TokenEstimate(got); toks > InjectBudget {
+		t.Fatalf("置顶后应 ≤ InjectBudget: got %d > %d", toks, InjectBudget)
+	}
+	if !strings.Contains(got, "续接第一句话 XYZMARK") {
+		t.Fatal("模型部分尾部的『续接第一句话』被截——应压缩定格而非截模型部分")
+	}
+	if !strings.Contains(got, "最后的提问 ASSTMARK") {
+		t.Fatal("定格助手末条结尾（最后的提问）应在中略压缩后保住")
+	}
+	if !strings.Contains(got, freezeElideMark) {
+		t.Fatalf("定格超剩余预算应走中略压缩而非原样:\n%.160s", got)
+	}
+	if strings.Contains(got, "…(已截断)") {
+		t.Fatal("模型部分尚在预算内，不应退回 TrimInjectLayer 整体硬截")
+	}
+	// 定格结构行完整：标题与两行前缀未被切坏
+	if !strings.HasPrefix(got, "## 末段定格（最后一轮对话，程序化保留）\n[user] 问") ||
+		!strings.Contains(got, "\n[assistant] 答") {
+		t.Fatalf("定格结构行被切坏: %.120s", got)
+	}
+	// 定格未越过保底线
+	freeze := strBefore(got, "\n\n"+inject)
+	if toks := extract.TokenEstimate(freeze); toks < 400 || toks > max(freezeMinTokens, InjectBudget-extract.TokenEstimate(inject))+40 {
+		t.Fatalf("定格压缩后应落在保底与剩余预算之间: got %d", toks)
+	}
+}
+
+// TestWithFreezeCompressKeepsChoiceLines 选择定格压缩：选择的问题与全部
+// 选项行是结构行，压缩只动两个自由文本字段——必须完整逐字保留。
+func TestWithFreezeCompressKeepsChoiceLines(t *testing.T) {
+	inject := strings.Repeat("叙", 1200) + "\n续接第一句话 CHOICEMARK"
+	facts := extract.Facts{
+		FreezeUser:     "选一下方案",
+		FreezeAsstText: strings.Repeat("答", 3000) + "尾标ASEND",
+		FreezeChoice: &extract.Choice{
+			Question: "用哪个方案？",
+			Labels:   []string{"方案A", "方案B", "方案C"},
+		},
+	}
+	got := withFreeze(facts, inject)
+	if toks := extract.TokenEstimate(got); toks > InjectBudget {
+		t.Fatalf("置顶后应 ≤ InjectBudget: got %d > %d", toks, InjectBudget)
+	}
+	for _, want := range []string{
+		"【上次停在选择】问题：用哪个方案？",
+		"  选项：方案A", "  选项：方案B", "  选项：方案C",
+		"（选择原文见会话文件，请在新会话中重述该选择）",
+		"续接第一句话 CHOICEMARK", // 模型部分尾部不动
+		"尾标ASEND",              // 定格助手末条结尾保住
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("压缩后缺结构行/结尾标记 %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestFerrySessionInjectFreezeFirstParagraph L1 单发路径：INJECT 标记内第一段
+// 即程序置顶的定格（含「等用户回复」尾注），模型写的注入层在其后。
+func TestFerrySessionInjectFreezeFirstParagraph(t *testing.T) {
+	srv := newChatSrv(t, []string{chatBody(t,
+		"<<<INJECT>>>\n注入层：干完了\n<<</INJECT>>>\n\n# 全文\n干完了")})
+	f := writeSmallCCSession(t, t.TempDir())
+	md, _, err := FerrySession(f, Provider{Name: "fake", BaseURL: srv.srv.URL, Model: "fake"}, 10, "cc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, j := strings.Index(md, InjectOpen), strings.Index(md, InjectClose)
+	if i < 0 || j < 0 || j < i {
+		t.Fatalf("INJECT 标记缺失:\n%s", md)
+	}
+	inject := strings.TrimSpace(md[i+len(InjectOpen)+1 : j])
+	want := "## 末段定格（最后一轮对话，程序化保留）\n[user] 做点活\n[assistant] 干完了\n" +
+		"（会话停在助手这条消息：用户尚未回复，上面的提问/提议都还没有得到确认）\n\n注入层：干完了"
+	if inject != want {
+		t.Fatalf("INJECT 第一段应为定格:\ngot  %q\nwant %q", inject, want)
+	}
 }

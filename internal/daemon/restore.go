@@ -102,7 +102,7 @@ func (d *Daemon) restoreContinue(cwd, sessionID string) map[string]any {
 			// 续用档回话带 continuation 标记（夜链终局评审小修）：插件据此把
 			// {"context":null} 与"材料未到稍后重试"区分开——见标记即清欠账
 			// 止问；真新会话（走 Restore）回话无此键＝旧插件旧行为兼容。
-			r := d.injectHandoff("dsh", cwd, sessionID, c, "", "")
+			r := d.injectHandoff("dsh", cwd, sessionID, c, "", "", "")
 			r["continuation"] = true
 			return r
 		}
@@ -122,7 +122,8 @@ func pendingNoun(entry string) string {
 
 // restoreAnchored 锚定归还：被拦会话钉死。
 func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPrompt) map[string]any {
-	pending, pendingEntry := d.Store.PopPendingPromptEntry(p.SessionID, sessionID) // 交付即消费
+	pend, _ := d.Store.PopPendingPromptFull(p.SessionID, sessionID) // 交付即消费
+	pending, pendingEntry, prior := pend.Prompt, pend.Entry, pend.PriorChoice
 	cands := d.Store.RestoreCandidates(agent, cwd)
 	for _, c := range cands {
 		if c.SessionID == p.SessionID {
@@ -132,12 +133,13 @@ func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPr
 			if agent == "dsh" && !d.coversFreshForDsh(agent, c) {
 				continue
 			}
-			return d.injectHandoff(agent, cwd, sessionID, c, pending, pendingEntry)
+			return d.injectHandoff(agent, cwd, sessionID, c, pending, pendingEntry, prior)
 		}
 	}
 	// 锚会话没有交接（生成失败/未完成）：只带原话 + 明说 + 其他线程列清单选读。
 	// 首句按 agent 分支（票01/D3）：dsh 无 /clear 命令，中性表述；cc 逐字零变化。
-	// 作答待续标「你的选择」（F8）。
+	// 作答待续标「你的选择」（F8）；作答→打字护选择（de9af594 案）多带一行
+	// 旧选择。
 	noun := pendingNoun(pendingEntry)
 	head := "[Ferryman] 你 /clear 前被拦的那条消息没有丢"
 	if agent == "dsh" {
@@ -145,6 +147,9 @@ func (d *Daemon) restoreAnchored(agent, cwd, sessionID string, p store.PendingPr
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s，%s如下，接着它继续即可：\n「%s」\n", head, noun, pending)
+	if prior != "" { // 作答→打字护选择：旧选择随打字待续一并带回
+		fmt.Fprintf(&b, "\n用户被拦前的选择（待续）：%s\n", prior)
+	}
 	b.WriteString("\n说明：这个会话的进度交接没有生成（失败或未完成），所以没有自动交接可带；")
 	rest := make([]store.Entry, 0, len(cands))
 	for _, c := range d.Store.DropSuperseded(cands) { // 上一代不列（2026-10-11）
@@ -223,8 +228,8 @@ func (d *Daemon) restoreNewest(agent, cwd, sessionID string) map[string]any {
 		return map[string]any{"context": ctx}
 	}
 	newest := cands[0]
-	pending, pendingEntry := d.Store.PopPendingPromptEntry(newest.SessionID, sessionID) // consume_for
-	return d.injectHandoff(agent, cwd, sessionID, newest, pending, pendingEntry)
+	pend, _ := d.Store.PopPendingPromptFull(newest.SessionID, sessionID) // consume_for
+	return d.injectHandoff(agent, cwd, sessionID, newest, pend.Prompt, pend.Entry, pend.PriorChoice)
 }
 
 // coversFreshForDsh 票03 播种新鲜度（调用方已按 agent=="dsh" 收窄）：交接
@@ -246,7 +251,7 @@ func (d *Daemon) coversFreshForDsh(agent string, h store.Entry) bool {
 // injectHandoff 注入单份交接（锚定/最新两路共用）：INJECT 层提取 + 头部免责 +
 // 待续原话/选择（入口分岔，F8） + 完整文档行 + 其他工作线尾注（自检换轨） +
 // 记账 + mark_injected + 6000 码点截断。
-func (d *Daemon) injectHandoff(agent, cwd, sessionID string, h store.Entry, pending, pendingEntry string) map[string]any {
+func (d *Daemon) injectHandoff(agent, cwd, sessionID string, h store.Entry, pending, pendingEntry, prior string) map[string]any {
 	md := d.Store.ReadHandoff(h)
 	var inject string
 	if strings.Contains(md, ferry.InjectOpen) && strings.Contains(md, ferry.InjectClose) {
@@ -266,6 +271,10 @@ func (d *Daemon) injectHandoff(agent, cwd, sessionID string, h store.Entry, pend
 	b.WriteString(inject)
 	if pending != "" { // Python ... if pending else ""
 		// 打字＝原话、作答＝选择（spec #34 评审 F8——前缀已是"用户被拦时的"）。
+		// 作答→打字护选择（de9af594 案）：旧选择在待续原话之前多带一行。
+		if prior != "" {
+			fmt.Fprintf(&b, "\n\n用户被拦前的选择（待续）：%s", prior)
+		}
 		label := "原话"
 		if accounts.GateEntry(pendingEntry) == accounts.GateEntryAnswer {
 			label = "选择"

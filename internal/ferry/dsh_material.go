@@ -50,6 +50,7 @@ func DshFerrySession(sid string, body []byte, coversAt float64, pr Provider,
 		return "", nil, err
 	}
 	inject, full := ParseOutput(reply)
+	inject = withFreeze(facts, inject) // 定格程序置顶（fix/freeze-frame，与第三方档同源）
 	meta := map[string]any{
 		"source": sid, "title": facts.Title, "mode": mode,
 		"model": pr.Model, "provider": pr.Name,
@@ -84,16 +85,21 @@ func DshMaterial(sid string, body []byte, coversAt float64) (extract.Facts, []ex
 	lastAsstText := ""
 	lastAsstTools := []string{}
 	asstCount := 0
+	// FreezeAwaitingUser 跟踪（extract.Extract 同位语义）：末条助手含文字 →
+	// true（会话停在助手发言）；纯工具轮/末条 user item/工具回执 → false。
+	awaiting := false
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "user":
 			text, hasResult := dshContentText(m.Content)
 			if hasResult { // 工具输出整条丢弃（CC 提取器同位）
+				awaiting = false // 会话已越过上一条助手发言
 				continue
 			}
 			if s := strings.TrimSpace(text); s != "" {
 				items = append(items, extract.Item{Role: "user",
 					Text: mathx.RuneTrunc(s, extract.ItemCharCap)})
+				awaiting = false
 			}
 		case "assistant":
 			asstCount++
@@ -104,6 +110,7 @@ func DshMaterial(sid string, body []byte, coversAt float64) (extract.Facts, []ex
 			}
 			// 末段定格跟踪（每条 assistant 覆盖——CC 提取器同位）
 			lastAsstText, lastAsstTools = text, dshToolNames(m.Content)
+			awaiting = strings.TrimSpace(lastAsstText) != ""
 		}
 	}
 	// 末段定格定稿（extract.freezeFinalize 同语义：末条 user/assistant 文本 +
@@ -125,6 +132,7 @@ func DshMaterial(sid string, body []byte, coversAt float64) (extract.Facts, []ex
 		facts.FreezeAsstText = at
 	}
 	facts.FreezeTools = lastAsstTools
+	facts.FreezeAwaitingUser = awaiting
 	return facts, items
 }
 

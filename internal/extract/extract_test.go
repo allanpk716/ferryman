@@ -409,3 +409,179 @@ func TestExtractLastTSSkipsAnswerGateWriteback(t *testing.T) {
 		t.Fatalf("LastTS = %q, want 作答回写段前最后真实内容行 2026-09-16T10:00:51.000Z", facts.LastTS)
 	}
 }
+
+// ---------- fix/freeze-frame：CC 元消息过滤 + FreezeAwaitingUser ----------
+
+// commandLine CC 斜杠命令记录（<command-name> XML 形；args 可空）。
+func commandLine(ts, name, args string) map[string]any {
+	xml := "<command-name>" + name + "</command-name>" +
+		"<command-message>msg</command-message>" +
+		"<command-args>" + args + "</command-args>"
+	return map[string]any{"type": "user", "timestamp": ts,
+		"message": map[string]any{"role": "user", "content": xml}}
+}
+
+// itemTexts items 的文本串接（过滤断言面：在场/缺席一把查）。
+func itemTexts(items []Item) string {
+	texts := make([]string, 0, len(items))
+	for _, it := range items {
+		texts = append(texts, it.Text)
+	}
+	return strings.Join(texts, "\n")
+}
+
+// TestExtractFiltersCCMetaMessages 元消息过滤四类：顶层 isMeta 技能正文整条
+// 跳过（不进 items、不参与 FreezeUser）；斜杠命令压 "/name args" 简短形（名字
+// 自带 / 不重复加）；/clear、/compact 纯会话管理命令连简短形也不进；
+// <local-command-caveat>/<local-command-stdout> 本地命令回显跳过。
+func TestExtractFiltersCCMetaMessages(t *testing.T) {
+	f := writeJSONL(t, []any{
+		commandLine("2026-09-16T10:00:00.000Z", "/ferry-restore", ""),
+		commandLine("2026-09-16T10:00:01.000Z", "/model", "sonnet"),
+		map[string]any{"type": "user", "timestamp": "2026-09-16T10:00:02.000Z",
+			"message": map[string]any{"role": "user",
+				"content": "<local-command-caveat>Caution: 不要改 settings.local.json</local-command-caveat>"}},
+		map[string]any{"type": "user", "timestamp": "2026-09-16T10:00:03.000Z",
+			"message": map[string]any{"role": "user",
+				"content": "<local-command-stdout>已切换模型</local-command-stdout>"}},
+		map[string]any{"type": "user", "timestamp": "2026-09-16T10:00:04.000Z",
+			"isMeta": true, "message": map[string]any{"role": "user",
+				"content": "Base directory for this skill: C:/skills/fix-login（技能正文，不得进材料）"}},
+		commandLine("2026-09-16T10:00:05.000Z", "/clear", ""),
+		commandLine("2026-09-16T10:00:06.000Z", "/compact", ""),
+		map[string]any{"type": "user", "timestamp": "2026-09-16T10:00:07.000Z",
+			"message": map[string]any{"role": "user", "content": "真正的用户话"}},
+	})
+	facts, items, _ := Extract(f)
+	got := itemTexts(items)
+	for _, want := range []string{"/ferry-restore", "/model sonnet", "真正的用户话"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("items 缺简短形/用户真话 %q:\n%s", want, got)
+		}
+	}
+	for _, banned := range []string{"command-name", "command-message", "Base directory",
+		"local-command-stdout", "/clear", "/compact", "已切换模型"} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("元消息 %q 泄入 items:\n%s", banned, got)
+		}
+	}
+	if facts.FreezeUser != "真正的用户话" { // isMeta 技能正文不得顶掉用户真话
+		t.Fatalf("FreezeUser = %q, want 真正的用户话", facts.FreezeUser)
+	}
+}
+
+// TestFreezeMetaSkillTail20261017Case 复刻 2026-10-17 生产案（15/148 中招）：
+// 用户真话 → assistant 调 Skill 工具 → isMeta 技能正文 → 若干工具调用 →
+// assistant 列问收尾——定格取用户真话与 Q9，FreezeAwaitingUser=true，
+// FreezeText 含「用户尚未回复」尾注。
+func TestFreezeMetaSkillTail20261017Case(t *testing.T) {
+	skillBody := "Base directory for this skill: C:/skills/fix-login\n" +
+		strings.Repeat("技能正文细节。", 80) // 远超 500 字定格上限——占了定格就必中截断尾标
+	f := writeJSONL(t, []any{
+		map[string]any{"type": "user", "timestamp": "2026-10-17T09:00:00.000Z",
+			"message": map[string]any{"role": "user", "content": "登录页 500 修一下"}},
+		map[string]any{"type": "assistant", "timestamp": "2026-10-17T09:00:10.000Z",
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "name": "Skill",
+					"input": map[string]any{"command": "fix-login"}}}}},
+		map[string]any{"type": "user", "timestamp": "2026-10-17T09:00:11.000Z",
+			"isMeta": true, "message": map[string]any{"role": "user", "content": skillBody}},
+		map[string]any{"type": "assistant", "timestamp": "2026-10-17T09:00:20.000Z",
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "name": "Edit",
+					"input": map[string]any{"file_path": "auth.py"}}}}},
+		map[string]any{"type": "assistant", "timestamp": "2026-10-17T09:00:30.000Z",
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "text", "text": "改完了，确认几件事：Q1 回归跑了吗 Q2 日志看了吗 Q3 缓存清了吗 Q4 端口对吗 Q5 环境变量改了吗 Q6 密钥轮换了吗 Q7 文档更新了吗 Q8 通知发了吗 Q9 要不要顺手补个监控"}}}},
+	})
+	facts, items, _ := Extract(f)
+	if facts.FreezeUser != "登录页 500 修一下" { // 技能正文不得顶掉用户真话
+		t.Fatalf("FreezeUser = %.80s…, want 用户真话", facts.FreezeUser)
+	}
+	if !strings.Contains(facts.FreezeAsstText, "Q9 要不要顺手补个监控") {
+		t.Fatalf("FreezeAsstText 缺末条助手 Q9:\n%s", facts.FreezeAsstText)
+	}
+	if !facts.FreezeAwaitingUser { // 会话停在助手列问，用户尚未回复
+		t.Fatal("FreezeAwaitingUser 应为 true（停在助手发言）")
+	}
+	if got := facts.FreezeText(); !strings.Contains(got, "用户尚未回复") {
+		t.Fatalf("FreezeText 缺「用户尚未回复」尾注:\n%s", got)
+	}
+	if strings.Contains(itemTexts(items), "Base directory") {
+		t.Fatal("isMeta 技能正文泄入 items")
+	}
+}
+
+// TestFreezeAwaitingUserTrueFalseCases 真假判定：末条助手文字在末条 user item
+// 之后 → true（含停在选择）；末条 assistant 纯工具调用、末条为 user item、
+// 选择已被 tool_result 回执（用户答过）→ false。
+func TestFreezeAwaitingUserTrueFalseCases(t *testing.T) {
+	ts := func(i int) string {
+		return fmt.Sprintf("2026-10-17T09:00:%02d.000Z", i)
+	}
+	user := func(i int, text string) map[string]any {
+		return map[string]any{"type": "user", "timestamp": ts(i),
+			"message": map[string]any{"role": "user", "content": text}}
+	}
+	asstText := func(i int, text string) map[string]any {
+		return map[string]any{"type": "assistant", "timestamp": ts(i),
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "text", "text": text}}}}
+	}
+	asstTool := func(i int, name string) map[string]any {
+		return map[string]any{"type": "assistant", "timestamp": ts(i),
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "name": name,
+					"input": map[string]any{"command": "pytest -q"}}}}}
+	}
+	choice := func(i int) map[string]any {
+		return map[string]any{"type": "assistant", "timestamp": ts(i),
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "name": "AskUserQuestion",
+					"input": map[string]any{"questions": []any{map[string]any{
+						"question": "选哪个", "options": []any{
+							map[string]any{"label": "甲"}, map[string]any{"label": "乙"}}}}}}}}}
+	}
+	toolResult := func(i int) map[string]any {
+		return map[string]any{"type": "user", "timestamp": ts(i),
+			"message": map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1",
+					"content": "已答"}}}}
+	}
+	cases := []struct {
+		name    string
+		lines   []any
+		awaitIn bool
+	}{
+		{"停在助手文字", []any{user(0, "问"), asstText(1, "答")}, true},
+		{"停在选择", []any{user(0, "问"), choice(1)}, true},
+		{"助手文字后被纯工具轮", []any{user(0, "问"), asstText(1, "答"), asstTool(2, "Bash")}, false},
+		{"停在用户", []any{user(0, "问"), asstText(1, "答"), user(2, "再问")}, false},
+		{"选择已答（tool_result 回执）", []any{user(0, "问"), choice(1), toolResult(2)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			facts, _, _ := Extract(writeJSONL(t, tc.lines))
+			if facts.FreezeAwaitingUser != tc.awaitIn {
+				t.Fatalf("FreezeAwaitingUser = %v, want %v", facts.FreezeAwaitingUser, tc.awaitIn)
+			}
+		})
+	}
+}
+
+// TestSkeletonTextViaFreezeTextSingleSource 骨架的「## 末段定格」节由
+// FreezeText 单源渲染：awaiting 尾注在场、节标题与档位文案不变。
+func TestSkeletonTextViaFreezeTextSingleSource(t *testing.T) {
+	f := writeJSONL(t, []any{
+		map[string]any{"type": "user", "timestamp": "2026-10-17T09:00:00.000Z",
+			"message": map[string]any{"role": "user", "content": "问"}},
+		map[string]any{"type": "assistant", "timestamp": "2026-10-17T09:00:10.000Z",
+			"message": map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "text", "text": "答"}}}},
+	})
+	facts, _, _ := Extract(f)
+	sk := facts.SkeletonText()
+	if !strings.HasPrefix(sk, "## 末段定格（最后一轮对话，程序化保留）\n[user] 问\n[assistant] 答\n（会话停在助手这条消息：用户尚未回复，上面的提问/提议都还没有得到确认）\n## 确定性骨架") {
+		t.Fatalf("骨架定格节与 FreezeText 单源分叉:\n%s", sk[:min(200, len(sk))])
+	}
+}

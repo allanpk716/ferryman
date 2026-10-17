@@ -29,6 +29,19 @@ func appendGateWarn(dataDir, agent, sid, mode string, idleS float64) {
 	_ = appendLineBestEffort(filepath.Join(dataDir, "gate.log"), line)
 }
 
+// appendGateExempt 豁免行落盘（fix/gate-machine-exempt：目录豁免/loop 唤醒豁免
+// 的可数痕——豁免不入账（不污染 bypass 对照组），gate.log 逐条可数是唯一轨迹）。
+// 形态对齐 appendGateWarn（时间/标签/agent/会话短 id/原因），标签用 [exempt]
+// ——与 [warn]（人因警告）区分。
+func appendGateExempt(dataDir, agent, sid, reason string) {
+	if dataDir == "" {
+		return
+	}
+	line := fmt.Sprintf("%s [exempt] %s sid=%s reason=%s\n",
+		time.Now().Format("2006-01-02 15:04:05"), agent, shortSid(sid), reason)
+	_ = appendLineBestEffort(filepath.Join(dataDir, "gate.log"), line)
+}
+
 // appendLineBestEffort 追加一行（建文件，失败静默）。var 形＝测试缝（对齐
 // logShutdownSource 惯例）。
 var appendLineBestEffort = func(path, line string) error {
@@ -56,4 +69,12 @@ func (d *Daemon) gateWarn(agent, sid, mode string, idleS float64) {
 		return
 	}
 	appendGateWarn(d.Cfg.DataDir(), agent, sid, mode, idleS)
+}
+
+// gateExempt 豁免站点共用入口（Daemon 形；无配置＝不落）。
+func (d *Daemon) gateExempt(agent, sid, reason string) {
+	if d.Cfg == nil {
+		return
+	}
+	appendGateExempt(d.Cfg.DataDir(), agent, sid, reason)
 }

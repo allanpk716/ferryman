@@ -59,7 +59,7 @@ const SystemPrompt = `你是开发会话的交接总结器（摆渡人）。输�
 按以下结构输出，直接以标记行开始、不要任何开场白：
 
 <<<INJECT>>>
-（注入层：≤2200 token 的浓缩版——目标/最新状态/下一步/关键文件/续接第一句话。
+（注入层：≤1500 token 的浓缩版——目标/最新状态/下一步/关键文件/续接第一句话，程序还会在其上逐字置顶末段定格。
 必须自包含，新会话只看这一段也能续接。）
 <<</INJECT>>>
 （全文：以下六节，总量 ≤8000 token）
@@ -72,8 +72,9 @@ const SystemPrompt = `你是开发会话的交接总结器（摆渡人）。输�
 
 要求：文件路径、命令一律从骨架逐字引用，不要凭记忆改写或编造。
 『关键文件与改动』一节必须逐字列出骨架"涉及文件"前 10 项与骨架命令节的最后 5 条，不得省略或概括。
-骨架『末段定格』节必须原样保留为 INJECT 层的第一段（逐字照录，不改写、不删节、不总结）；
+骨架『末段定格』节不要抄写进 INJECT 层（程序会把它逐字置顶到 INJECT 层），但 INJECT 层其余内容必须依据它来写；
 若定格显示上次停在选择（【上次停在选择】标记），『续接第一句话』必须重述该选择（问题+全部选项）。
+若定格标明用户尚未回复（会话停在助手这条消息），不得把助手的提问、提议、推荐写成用户已接受或已确认，未答复就写「待用户确认」；
 凡无法从骨架或材料逐字核实的状态断言（如「已完成」「已修复」「没问题」），必须加「（推测）」标注，
 不得写成确定事实——交接会被下一个会话当作合同使用，错误的确定断言会成为假前提。
 已成文的项目资料（spec/ADR/issue/提交记录）只给路径引用，不要整段抄录进叙事。`
@@ -296,6 +297,118 @@ func ParseOutput(reply string) (inject, full string) {
 	return TrimInjectLayer(inject), full
 }
 
+// withFreeze 末段定格程序置顶（fix/freeze-frame：生产实证 148 份交接 15 份
+// 定格失真——模型照抄不可靠，标题各异/丢助手末条/把未回复写成已接受，改由
+// 程序确定性写入）：把 facts.FreezeText() 逐字放在 INJECT 层最前（空行
+// 分隔）。全空定格（四件皆空——codex 提取器现不产定格、dsh 退化体零消息）
+// 不置顶：置一段「（无）」是纯噪音；上游一旦填充定格，此函数自然生效。
+//
+// 预算裁决（评审修复）：置顶后总量超 InjectBudget 时不能直接过
+// TrimInjectLayer——它从尾部硬截，尾部恰是模型写的『续接第一句话』，是
+// INJECT 层最关键的一段。改为给模型部分留足全额（剩余预算 = InjectBudget
+// - 模型部分 - 分隔余量），定格超剩余预算时优先压缩定格（compressFreeze
+// 经 Facts 副本重新渲染：中略助手末条保头保尾、必要时再缩用户末条，保底
+// freezeMinTokens）；只有压到保底后仍超预算（模型部分本身吃光了剩余），
+// 才退回 TrimInjectLayer 整体截断——定格在头部，硬截也保得住。
+func withFreeze(facts extract.Facts, inject string) string {
+	if facts.FreezeUser == "" && facts.FreezeAsstText == "" &&
+		len(facts.FreezeTools) == 0 && facts.FreezeChoice == nil {
+		return inject
+	}
+	sep := extract.TokenEstimate("\n\n") // 置顶分隔的少量余量
+	freezeBudget := InjectBudget - extract.TokenEstimate(inject) - sep
+	freeze := facts.FreezeText()
+	if extract.TokenEstimate(freeze) <= freezeBudget {
+		return freeze + "\n\n" + inject
+	}
+	budget := max(freezeBudget, freezeMinTokens) // 压缩不越过保底线
+	compressed := compressFreeze(facts, budget)
+	if extract.TokenEstimate(compressed)+sep+extract.TokenEstimate(inject) <= InjectBudget {
+		return compressed + "\n\n" + inject
+	}
+	// 压到保底仍超（模型部分已占满剩余预算）——退回整体硬截：定格在
+	// 头部能保住，牺牲的是模型部分尾部。
+	return TrimInjectLayer(compressed + "\n\n" + inject)
+}
+
+// freezeMinTokens 定格压缩保底：定格（末轮逐字对话）是注入层最关键的
+// 逐字段，压到该线即停；低于它宁可让 withFreeze 退回整体截断兜底。
+const freezeMinTokens = 600
+
+// freezeElideMark 定格中略标记：自由文本字段压缩时保头保尾、中段以它
+// 替代（全文见会话文件）。
+const freezeElideMark = "…（中略，全文见会话文件）…"
+
+// compressFreeze 把定格压到 ≤budget token：只经 Facts 副本改写
+// FreezeAsstText/FreezeUser 两个自由文本字段（elideToFit 中略保头保尾），
+// 结构行——标题、[user]/[assistant] 前缀、【上次停在选择】的问题与全部
+// 选项行、工具摘要行、等回复尾注——逐字不动（不对渲染后的字符串乱切，
+// 避免切坏标签行/选项行）。先压助手末条（用户末条保全额——提取侧上限
+// 本就只有 500 字），用户末条全额装不下时按 3:2 重分一起压（助手侧保
+// 至少 1/3——尾部通常是最后的提问）。
+func compressFreeze(facts extract.Facts, budget int) string {
+	cp := facts // 副本：改写只落在副本（FreezeChoice 指针共享但不改写）
+	if extract.TokenEstimate(cp.FreezeText()) <= budget {
+		return cp.FreezeText()
+	}
+	// 固定开销（结构行 + 行前缀，按两字段清零的渲染计量，保守高估）
+	probe := cp
+	probe.FreezeUser, probe.FreezeAsstText = "", ""
+	const slack = 8 // TokenEstimate 分段计量的 +1 项等零头余量
+	avail := budget - extract.TokenEstimate(probe.FreezeText()) - slack
+	if avail <= 0 {
+		return cp.FreezeText() // 预算连结构行都装不下：不压，交上层兜底
+	}
+	userToks := extract.TokenEstimate(cp.FreezeUser)
+	asstToks := extract.TokenEstimate(cp.FreezeAsstText)
+	asstShare := avail - userToks // 用户末条保全额，余量给助手末条
+	if userToks+asstToks > avail && asstShare < avail/3 {
+		asstShare = avail / 3 // 装不下：助手末条保 1/3（保尾优先），其余让给用户末条
+	}
+	if asstShare < asstToks {
+		cp.FreezeAsstText = elideToFit(cp.FreezeAsstText, asstShare)
+	}
+	if userShare := avail - asstShare; userShare < userToks {
+		cp.FreezeUser = elideToFit(cp.FreezeUser, userShare)
+	}
+	return cp.FreezeText()
+}
+
+// elideToFit 把一段自由文本压到 ≤availToks token：合额原样返回；超了则
+// 保头保尾、中段以 freezeElideMark 替代（头尾按 2:3 分——尾部多保，那里
+// 通常是最后的提问）。按码点近似切（CJK 1 token/字主口径）后复核 token，
+// 仍超则小步同缩头尾直至合额；预算连标记都装不下时只保尾逐字截断。
+func elideToFit(s string, availToks int) string {
+	if availToks <= 0 || s == "" || extract.TokenEstimate(s) <= availToks {
+		return s
+	}
+	markToks := extract.TokenEstimate(freezeElideMark)
+	if availToks <= markToks {
+		return lastRunes(s, availToks) // 预算极小：只保尾（仍是保尾优先）
+	}
+	keep := availToks - markToks
+	head, tail := keep*2/5, keep-keep*2/5
+	out := mathx.RuneTrunc(s, head) + freezeElideMark + lastRunes(s, tail)
+	for extract.TokenEstimate(out) > availToks && head+tail > 8 {
+		head = head * 9 / 10
+		tail = tail * 9 / 10
+		out = mathx.RuneTrunc(s, head) + freezeElideMark + lastRunes(s, tail)
+	}
+	return out
+}
+
+// lastRunes 取 s 的末 n 个码点（n≤0 → 空串；n 超长 → 原样）。
+func lastRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := mathx.RuneLen(s)
+	if n >= r {
+		return s
+	}
+	return string([]rune(s)[r-n:])
+}
+
 // metaGet Python meta.get(k) 的取值形（nil map 安全）。
 func metaGet(meta map[string]any, key string) any {
 	if meta == nil {
@@ -376,6 +489,7 @@ func FerrySession(path string, pr Provider, timeoutS float64, agent string) (str
 	}
 
 	inject, full := ParseOutput(reply)
+	inject = withFreeze(facts, inject) // 定格程序置顶（fix/freeze-frame，链/同模型/dsh 同款）
 	meta := map[string]any{
 		"source": path, "title": facts.Title, "mode": mode,
 		"model": pr.Model, "provider": pr.Name,
