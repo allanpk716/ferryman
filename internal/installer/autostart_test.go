@@ -1,3 +1,5 @@
+//go:build windows
+
 // autostart_test.go — 票02：HKCU Run 键自启 Install/Uninstall/Status 三操作验收。
 //
 // 全部走 fake 注册表面（runKeyStore 注入），绝不碰真注册表（本票副作用声明）。

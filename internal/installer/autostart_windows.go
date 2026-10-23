@@ -1,14 +1,16 @@
+//go:build windows
+
 // autostart.go — 票02：HKCU Run 键登录自启（常驻保障第 1 腿，规格
 // docs/superpowers/specs/20260919-dock-heartbeat-spec.md「常驻保障」节）。
 //
 // 真实冒烟清单（runbook 票引用；本票单测全走 fake 注册表面，不碰真注册表）：
-//   1. ferryman autostart install → reg query
-//      "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Ferryman 值在
-//   2. 再跑一次 install           → 值不重复写（幂等；值内容逐字不变）
-//   3. ferryman autostart status  → installed
-//   4. 注销并重新登录             → daemon 无窗口自拉起（127.0.0.1:15700 在听）
-//   5. ferryman autostart uninstall → reg query 报系统找不到指定的注册表项或值
-//   6. ferryman autostart status  → missing
+//  1. ferryman autostart install → reg query
+//     "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Ferryman 值在
+//  2. 再跑一次 install           → 值不重复写（幂等；值内容逐字不变）
+//  3. ferryman autostart status  → installed
+//  4. 注销并重新登录             → daemon 无窗口自拉起（127.0.0.1:15700 在听）
+//  5. ferryman autostart uninstall → reg query 报系统找不到指定的注册表项或值
+//  6. ferryman autostart status  → missing
 //
 // 启动形态（2026-09-21 闪窗事故后改版）：Run 键值＝wscript + VBS 隐身启动器
 // 拉起 ~/ferryman/start-daemon.cmd。旧 powershell -WindowStyle Hidden 形态会闪

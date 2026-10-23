@@ -46,3 +46,8 @@ func SpawnDetachedHidden(exe string, args ...string) error {
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return c.Start()
 }
+
+// hiddenSysProcAttr unix 形态：nil（无控制台隐藏语义；go test 本就在终端里跑）。
+func hiddenSysProcAttr() *syscall.SysProcAttr {
+	return nil
+}
