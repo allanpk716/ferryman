@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 // rehearsal_test.go — 彩排台测试（票05）。两层：

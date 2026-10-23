@@ -139,3 +139,8 @@ func SpawnDetachedHidden(exe string, args ...string) error {
 	}
 	return c.Start()
 }
+
+// hiddenSysProcAttr 零闪窗 Windows 形态（测试替身拉起用；installer/procattr_windows.go 同款）。
+func hiddenSysProcAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{HideWindow: true}
+}

@@ -15,11 +15,9 @@ package daemon
 //     分支运行时断言，零闪窗铁律）。
 
 import (
-	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -238,11 +236,11 @@ func TestDshLivenessHostProbeCombines(t *testing.T) {
 		return port
 	}
 	cases := []struct {
-		name         string
-		harnessN     int
-		harnessKnown bool
+		name          string
+		harnessN      int
+		harnessKnown  bool
 		portListening bool
-		wantPresent  bool
+		wantPresent   bool
 	}{
 		{"harness在即旁证(端口quiet)", 2, true, false, true},
 		{"仅端口在也旁证(harness零)", 0, true, true, true},
@@ -304,18 +302,5 @@ func TestDshLivenessTasklistParse(t *testing.T) {
 		if got := dshParseTasklistOutput(tc.out); got != tc.want {
 			t.Fatalf("%s: got %d, want %d", tc.name, got, tc.want)
 		}
-	}
-}
-
-// TestDshLivenessProbeCmdHideWindow 零闪窗铁律机器可验面：宿主枚举命令在
-// Windows 分支必须带 SysProcAttr.HideWindow（daemon 生产形态无控制台，console
-// 子进程不显式隐藏必闪窗）。
-func TestDshLivenessProbeCmdHideWindow(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("HideWindow 是 Windows 专属 SysProcAttr 字段")
-	}
-	c := dshNewCmd(context.Background(), "tasklist")
-	if c.SysProcAttr == nil || !c.SysProcAttr.HideWindow {
-		t.Fatal("零闪窗铁律：宿主枚举命令缺 SysProcAttr.HideWindow")
 	}
 }

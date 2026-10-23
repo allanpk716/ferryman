@@ -1,3 +1,5 @@
+//go:build windows
+
 package update
 
 // 监督者全流程测试(票05 验收面):httptest 伪 GitHub + 测试内替身 exe +
@@ -70,7 +72,7 @@ func newUpdateWorld(t *testing.T, rels []fakeRel, mod func(*Config, *updateWorld
 		// 探针窗测试尺寸(生产缺省 2s/10s 由 TestProbeDefaultsMatchSpec 钉):
 		// 首测 50ms 后开始,2s 内应答即过——替身启动常在数百 ms,过窗只是
 		// 多一条告警日志,不影响流程断言(探针只报告不裁决)。
-		ProbeDelay:  50 * time.Millisecond,
+		ProbeDelay:   50 * time.Millisecond,
 		ProbeTimeout: 2 * time.Second,
 		Logf:         func(f string, a ...any) { fmt.Fprintf(logs, f+"\n", a...) },
 	}

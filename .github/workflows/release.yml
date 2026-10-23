@@ -6,11 +6,19 @@
 # lightweight tag(轻量标签)没有注释对象,Release body 会是空的——务必用 annotated tag。
 #
 # 所有 run 步骤显式 shell: bash:windows-latest runner 默认 shell 是 pwsh,而
-# ${GITHUB_REF_NAME} 展开与 sha256sum 是 bash 语法;runner 自带 Git Bash(F11/G2)。
+# ${GITHUB_REF_NAME} 展开与 sha256sum 是 bash 语法;runner 自带 Git Bash(F11/G2);
+# macos-latest 默认 shell 本就是 bash,shasum 输出格式与 sha256sum 一致(两空格分隔)。
 #
 # 发布直接 publish(不加 draft),用 runner 预装的 gh CLI,不引第三方 release action。
 # 含预发布后缀(-rc. / -beta. / -alpha. / 任意 -<pre> 段)的 tag 会把 Release 标为
 # prerelease: true——GitHub latest 通道只返回非 prerelease 非 draft,默认忽略预发布。
+#
+# v0.9.25 起双平台发布(macOS 移植):windows 作业建 Release 并上传 exe;
+# macos 作业(needs windows)构建 darwin/arm64 压缩包补传。macos 作业失败时
+# Release 已带 Windows 产物,可 gh run rerun 或手动 gh release upload 补传,
+# 不回滚 Release。
+# macos 作业只构建不跑测试:cutover/dshsandbox 等包的部分测试断言 Windows 形态
+# (VBS/schtasks/USERPROFILE 语义),darwin 上必红;darwin 测试面收口后再加回。
 
 name: release
 
@@ -98,3 +106,34 @@ jobs:
             --title "ferryman ${GITHUB_REF_NAME}" \
             --notes-file tag_notes.txt \
             "${args[@]}"
+
+  release-macos:
+    # macOS 产物补传作业:windows 作业已建好 Release,这里只构建并 upload。
+    # darwin/arm64 单架构(Intel Mac 不在支持面);cgo/clang 由 runner 的 Xcode 提供,
+    # systray 的 darwin 端要求 cgo——本作业就是 macOS 版的构建真源。
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go (version from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build darwin/arm64 + package (inject tag as main.version)
+        shell: bash
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o ferryman ./cmd/ferryman
+          tar czf ferryman_darwin_arm64.tar.gz ferryman
+          shasum -a 256 ferryman_darwin_arm64.tar.gz > ferryman_darwin_arm64.tar.gz.sha256
+
+      - name: Upload darwin assets to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            ferryman_darwin_arm64.tar.gz ferryman_darwin_arm64.tar.gz.sha256 \
+            --clobber

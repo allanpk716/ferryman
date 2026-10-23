@@ -22,7 +22,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -178,7 +177,7 @@ func startStandinProcess(t *testing.T, exePath string, port int, token, dataDir 
 	if noShutdown {
 		cmd.Env = append(cmd.Env, standinEnvNoShut+"=1")
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 测试进程不闪窗
+	cmd.SysProcAttr = hiddenSysProcAttr() // 测试进程不闪窗（平台工厂：Win=HideWindow；unix=nil）
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
