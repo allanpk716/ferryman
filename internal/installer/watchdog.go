@@ -284,7 +284,7 @@ func daemonStartPSArgs(launcher string) []string {
 // 本次看门结束（等就绪是钩子自举的职责，不归看门）。
 func LaunchDaemon(launcher string) error {
 	cmd := exec.Command("powershell", daemonStartPSArgs(launcher)...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 双保险：PS 进程本体也不闪窗
+	cmd.SysProcAttr = newHiddenSysProcAttr() // 双保险（平台工厂：Win=HideWindow；unix=nil）
 	return cmd.Start()
 }
 

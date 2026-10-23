@@ -118,6 +118,9 @@ const HttpBeatNotice = "[提示] 心跳真发送已实装（Q14 已过）；实�
 var (
 	escPathRe   = regexp.MustCompile(`-File \\"(.*?)\\"`)
 	plainPathRe = regexp.MustCompile(`-File "(.*?)"`)
+	// posixCmdPathRe POSIX 裸路径形态（macOS/Linux 移植：sh 钩子直接写脚本绝对路径，
+	// 无 powershell -File 包装）。匹配 compact JSON 里的 "command":"/abs/path"。
+	posixCmdPathRe = regexp.MustCompile(`"command":"(/[^"]+)"`)
 	// startExeRe 点火脚本启动行的 exe 路径（裸形态 EnsureLauncher 产物，票22
 	// 骑手1/M6：`"<exe>" serve >> …`——` serve` 尾注保证日志路径不会被误捕）。
 	startExeRe = regexp.MustCompile(`"([^"]+)" serve`)
@@ -174,6 +177,9 @@ func CheckCCHooks(settingsPath string) Check {
 			m := escPathRe.FindStringSubmatch(blob)
 			if m == nil {
 				m = plainPathRe.FindStringSubmatch(blob)
+			}
+			if m == nil {
+				m = posixCmdPathRe.FindStringSubmatch(blob)
 			}
 			if m == nil || !pathExists(m[1]) {
 				detail := ""
